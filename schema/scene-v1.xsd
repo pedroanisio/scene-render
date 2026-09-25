@@ -113,6 +113,10 @@
     <xs:attribute name="start" type="xs:double" default="0"/>
     <xs:attribute name="end" type="xs:double"/>
     <xs:attributeGroup ref="transformAttributes"/>
+    <!-- Any of these makes the node a depth card projected by the camera. -->
+    <xs:attribute name="depth" type="xs:double"/>
+    <xs:attribute name="rotationX" type="xs:double"/>
+    <xs:attribute name="rotationY" type="xs:double"/>
   </xs:attributeGroup>
 
   <xs:complexType name="imageAssetType">
@@ -351,6 +355,9 @@
     <xs:attribute name="fov" type="positiveDecimal" default="60"/>
     <xs:attribute name="near" type="positiveDecimal" default="0.1"/>
     <xs:attribute name="far" type="positiveDecimal" default="10000"/>
+    <xs:attribute name="zoom" type="positiveDecimal"/>
+    <xs:attribute name="focusDistance" type="positiveDecimal" default="1000"/>
+    <xs:attribute name="aperture" type="nonNegativeDecimal" default="0"/>
     <xs:attribute name="yaw" type="xs:double" default="0"/>
     <xs:attribute name="pitch" type="xs:double" default="0"/>
     <xs:attribute name="roll" type="xs:double" default="0"/>

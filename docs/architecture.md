@@ -27,8 +27,9 @@ FreeType. The engine starts no child processes.
 | `raster` | premultiplied W3C blend kernel and signed-distance anti-aliased coverage |
 | `audio` | in-memory libav/swresample decode per asset and sample-exact block mixer |
 | `physics` | fixed-step 2D solver (OBB/circle contacts, springs, pins, fields), mass-spring soft bodies, and atomic cache serialization |
-| `lighting` | CPU primitive/triangle rasterization, depth, material lighting, shadow maps, 3D supersampling |
-| `compositor` | hierarchy, isolated group buffers, group effects, masks, deformation, sampling, and particle drawing |
+| `lighting` | CPU primitive/triangle rasterization, depth, material lighting, shadow maps, 3D supersampling; whole-pass or per-object drawing |
+| `card` | depth-card camera view, plane pose and homography, per-sample plane depth, depth-of-field radius |
+| `compositor` | hierarchy, isolated group buffers, group effects, masks, deformation, sampling, particle drawing, depth-card projection, run sorting, and 3D interleaving |
 | `particles` | closed-form, stateless parametric particle evaluation |
 | `deform` | bilinear control-grid inverse warp shared by mesh-warp and soft bodies |
 | `camera` | equirectangular viewport mapping and deterministic row workers |
@@ -88,7 +89,7 @@ FreeType. The engine starts no child processes.
 ```mermaid
 flowchart TD
   A["XML + semantic validation"] --> B["Assets + fixed-step physics"]
-  B --> C["Camera, lit 3D, layered 2D"]
+  B --> C["Camera, lit 3D, layered 2D (interleaved when depth cards exist)"]
   C --> D["Viewport projection + effects"]
   D --> E["Output color conversion"]
   E --> F["In-process encode/mux (or --resume segments + packet-copy mux)"]
@@ -179,6 +180,25 @@ and the screen-space blob. `project antialias3d` N renders the pass into an
 N x N supersampled buffer (depth per sample) and box-filters it over the
 frame; N = 1 draws directly and is bit-identical to earlier builds. These
 are useful visual behavior, not a claim of a physically based renderer.
+Under a camera, a sprite's depth is its camera-facing surface (the center's
+view depth minus the sphere bulge) and mesh depth interpolates 1/z, so
+intersecting objects occlude correctly.
+
+Scenes with depth cards (see the XML reference) render the 3D pass and the
+scene graph through `sr_compositor_render_scene`, which owns a per-sample
+view-depth buffer shared by both. The 3D pass is split into begin / draw
+object / flush: with cards directly under the composition, each object is
+drawn and resolved individually at its far-to-near place among the first
+run of them, so supersampled edges keep correct coverage against the cards
+behind them. A card renders into its pooled isolated buffer, either with an
+exact affine world matrix or through a quantized plane buffer (its own pool,
+so sizes do not churn the group pool) and a perspective warp; its composite
+tests each depth sample against the buffer and writes where opaque. Depth
+rows of a pixel row belong to that row, so row-parallel composites stay
+deterministic across thread counts. Scenes without cards take the previous
+code path; only the sprite and mesh depth corrections above can change
+their pixels, and only where 3D objects overlap under a camera (none of the
+golden scenes do).
 
 Physics samples at the XML `fixedStep`, independently of output FPS. Dynamic
 bodies receive gravity, force fields (directional, radial, vortex; fields

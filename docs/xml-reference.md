@@ -312,8 +312,13 @@ perspective output.
 
 `camera` inside `composition` requires `id` and accepts `active`,
 `projection="perspective|orthographic"`, `x/y/z`, `yaw/pitch/roll`, `fov`,
-`near`, and `far`. Spherical viewports use orientation and FOV; standard 3D
-primitives additionally use translation and projection.
+`near`, `far`, `zoom`, `focusDistance`, and `aperture`. Spherical viewports
+use orientation and FOV; standard 3D primitives and depth cards additionally
+use translation and projection. `zoom` (positive, px, animatable as
+`zoom`) is the focal length and replaces `fov` when present:
+`fov = 2 atan(height / 2 / zoom)`. `focusDistance` (positive, default 1000)
+and `aperture` (non-negative px, default 0) set depth of field for depth
+cards; both animate under the same names.
 
 Viewport orientation conventions (all angles in degrees):
 
@@ -338,6 +343,81 @@ either MP4 layout (the encoder writes `moov` first, "faststart"; chunk offsets
 are shifted accordingly). Matroska receives its equirectangular `Projection`
 element from the same side data. Injection is atomic and only occurs after a
 successful encode.
+
+## Depth cards (2.5D)
+
+Any group, layer, shape, or particle emitter that declares `depth`,
+`rotationX`, or `rotationY` (as attributes or animated as `depth`,
+`rotation.x`, `rotation.y`) is a **depth card**: a flat plane placed in the
+3D world and projected by the active camera. Nodes without them, and all
+nodes of scenes without cards, render exactly as before (camera ignored).
+
+- **Placement.** A card's plane coordinates are ordinary composition
+  pixels (its ancestors' and its own 2D transforms, including physics
+  poses). At `depth` d the plane point (u, v) is the world point
+  (u − W/2, H/2 − v, d): x right, y up, z away from the camera, the same
+  space 3D objects use under a camera. `rotationX` tips the top edge away
+  from the camera and `rotationY` turns the right edge away (degrees, about
+  the card's anchor, X first).
+- **Recipe.** A camera at `z = -zoom` shows a card at depth 0 at its
+  authored pixels. A card at depth d then scales by zoom / (zoom + d), and a
+  camera move of D px shifts it by D · zoom / (zoom + d): parallax and depth
+  scaling follow from camera motion alone, and yaw, pitch, roll, and zoom
+  animate the whole layered scene in perspective.
+- **Without a camera** the view is orthographic from the origin: untilted
+  cards keep their authored pixels and depth only orders them (3D objects
+  then have view depth −z).
+- **As a unit.** A card renders its subtree into its own buffer and is
+  composited once with its blend, opacity, and the masks of pass-through
+  ancestors; children blend inside the card. Its own masks apply in its
+  local space; its group `effects` and depth-of-field blur run in screen
+  space after projection. Particles inside a card scale uniformly with it
+(they stay screen-aligned discs or squares, not foreshortened ellipses). A card
+  inside another card is a validation error, and cards require
+  `mode="standard"` (reported by `--validate` too).
+- **Order.** Children keep (`z`, XML order). Each run of consecutive card
+  siblings is re-sorted every frame far to near by the view depth of each
+  card's anchor; any non-card sibling ends a run. The 3D objects of the
+  scene join the first run of cards that are direct children of
+  `composition`, sorted by their centers, and are drawn one at a time among
+  them; with no such run they are drawn before the scene graph, as without
+  cards. Cards that must interleave with 3D objects belong directly under
+  `composition`.
+- **Occlusion.** Cards and 3D objects share a per-sample depth buffer
+  (`antialias3d` samples). Every card sample is depth tested (a card sample
+  wins a tie against what was drawn before it; 3D objects keep their strict
+  test) and clipped to [`near`, `far`]; a card compositing straight
+  into the frame writes its depth where its composited alpha is at least
+  0.5. Opaque cards and objects therefore occlude each other per pixel, even
+  when they intersect or tilt through each other. Limitations: crossing
+  *translucent* cards blend in draw order, a translucent 3D material in front
+  of a card hides it, and cards inside isolated groups (blend, opacity < 1,
+  effects) test but never write depth. With `antialias3d` above 1, a card
+  and a 3D object adjacent in draw order that share a pixel edge blend by
+  resolved coverage (consecutive 3D objects resolve together).
+- **Quality.** Untilted cards under a camera without yaw or pitch map by an
+  exact affine transform, so text, vectors, and images keep full quality.
+  Otherwise the visible part of the plane (content bounds clipped to the
+  screen edges and the near and far planes) renders into a plane buffer at
+  the largest on-screen magnification, capped at 4096 px a side and 8 Mpx,
+  then warps to the screen with bilinear taps, up to 4 × 4 per pixel where
+  the plane is minified.
+- **Depth of field.** With `aperture` > 0 a card whose anchor is at view
+  depth z is blurred by r = aperture · |z − focusDistance| / z px (a
+  near-Gaussian with σ = r / 2, saturating at σ = 64; fractional radii blend
+  smoothly). 3D objects are not blurred.
+
+```xml
+<camera id="cam" z="-1000" zoom="1000" focusDistance="1000" aperture="6">
+  <animate property="position.x"><key time="0" value="0"/>
+    <key time="8" value="600"/></animate>
+</camera>
+<layer id="sky" asset="sky" depth="6000"/>
+<layer id="hills" asset="hills" depth="1500"/>
+<object3D id="moon" primitive="sphere" z="4000" radius="300"/>
+<layer id="trees" asset="trees" depth="0"/>
+<layer id="title" asset="title" depth="-300" rotationY="-12"/>
+```
 
 ## Materials, 3D, and lights
 

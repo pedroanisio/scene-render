@@ -250,14 +250,23 @@ static SrStatus sr_render_frame(SrScene *scene, uint64_t index,
     sr_frame_clear(composition, background, threads);
     sr_stage_end(times, SR_STAGE_CLEAR, mark);
     double time = (double)index * scene->project.fps_den / scene->project.fps_num;
-    mark = sr_stage_begin();
-    SrStatus status = sr_lighting_render(scene, time, composition, diag);
-    sr_stage_end(times, SR_STAGE_LIGHTING, mark);
-    if (status == SR_OK) {
+    SrStatus status;
+    if (scene->has_cards) {
+        /* Cards interleave with the 3D objects: one timed stage. */
         mark = sr_stage_begin();
-        status = sr_compositor_render(&state->compositor, scene, time,
-                                      composition, diag);
+        status = sr_compositor_render_scene(&state->compositor, scene, time,
+                                            composition, diag);
         sr_stage_end(times, SR_STAGE_COMPOSITE, mark);
+    } else {
+        mark = sr_stage_begin();
+        status = sr_lighting_render(scene, time, composition, diag);
+        sr_stage_end(times, SR_STAGE_LIGHTING, mark);
+        if (status == SR_OK) {
+            mark = sr_stage_begin();
+            status = sr_compositor_render(&state->compositor, scene, time,
+                                          composition, diag);
+            sr_stage_end(times, SR_STAGE_COMPOSITE, mark);
+        }
     }
     if (status == SR_OK && scene->project.mode == SR_MODE_VIEWPORT) {
         mark = sr_stage_begin();
@@ -547,6 +556,12 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
         return SR_ERR_ARGUMENT;
     }
     *metrics = (SrRenderMetrics){0};
+    if (scene->has_cards && scene->project.mode != SR_MODE_STANDARD) {
+        sr_diag_error(diag, 0, "project", "mode",
+                      "depth cards require mode standard; equirectangular and "
+                      "viewport canvases are not projected by a camera");
+        return SR_ERR_ARGUMENT;
+    }
     if (options->validate_only) {
         return SR_OK;
     }

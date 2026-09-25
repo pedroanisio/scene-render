@@ -69,7 +69,7 @@ TEST_WRAPS := avformat_alloc_output_context2 avcodec_find_encoder_by_name \
 	sws_setColorspaceDetails sws_scale
 TEST_LDFLAGS := $(foreach fn,$(TEST_WRAPS),-Wl,--wrap=$(fn))
 
-CORE_SOURCES := src/common.c src/parallel.c src/color.c src/raster.c src/vector_path.c src/mesh.c src/gpu.c src/spatial.c src/diagnostics.c src/timeline.c src/scene.c \
+CORE_SOURCES := src/common.c src/card.c src/parallel.c src/color.c src/raster.c src/vector_path.c src/mesh.c src/gpu.c src/spatial.c src/diagnostics.c src/timeline.c src/scene.c \
 	src/assets.c src/text.c src/procedural.c src/audio.c src/compositor.c src/camera.c \
 	src/lighting.c src/effects.c src/particles.c src/deform.c src/physics.c \
 	src/encoder.c src/video.c src/renderer.c \
@@ -85,7 +85,7 @@ TEST_SOURCES := $(sort $(wildcard tests/unit/*.c))
 TEST_OBJECTS := $(TEST_SOURCES:tests/unit/%.c=$(BUILD)/unit/%.o)
 UNIT_SUITES := timeline geometry compositor color vector mesh scene xml \
 	camera physics blend group raster mask path image encode encode_faults \
-	audio video fx anim_color particles deform shadow text args
+	audio video fx anim_color particles deform shadow text args depth
 TEST_CPPFLAGS := -DSR_TEST_DATA_DIR='"$(CURDIR)"' \
 	-DSR_TEST_TMP_DIR='"$(CURDIR)/$(BUILD)/test_tmp"'
 DEPS := $(CORE_OBJECTS:.o=.d) $(APP_OBJECT:.o=.d) $(TEST_OBJECTS:.o=.d)

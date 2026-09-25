@@ -100,7 +100,16 @@ bool sr_xml_parse_node_common(ParseContext *ctx, const char *element,
         !sr_xml_parse_double_attr(ctx, element, attrs, "anchorY",
                            &node->transform.anchor_y.base) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "start", &node->start_time) ||
-        !sr_xml_parse_double_attr(ctx, element, attrs, "end", &node->end_time)) return false;
+        !sr_xml_parse_double_attr(ctx, element, attrs, "end", &node->end_time) ||
+        !sr_xml_parse_double_attr(ctx, element, attrs, "depth",
+                           &node->transform.z.base) ||
+        !sr_xml_parse_double_attr(ctx, element, attrs, "rotationX",
+                           &node->transform.rotation_x.base) ||
+        !sr_xml_parse_double_attr(ctx, element, attrs, "rotationY",
+                           &node->transform.rotation_y.base)) return false;
+    if (sr_xml_attr(attrs, "depth") || sr_xml_attr(attrs, "rotationX") ||
+        sr_xml_attr(attrs, "rotationY"))
+        node->card = true;
     if (node->opacity.base < 0.0 || node->opacity.base > 1.0) {
         sr_xml_fail(ctx, element, "opacity", "expected a number in [0,1]");
         return false;
@@ -368,6 +377,11 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
     SrAnimValue *anim = p->node && p->kind != E_MASK && p->kind != E_POINT
         ? sr_node_property(p->node, property) : NULL;
     SrAnimColor *color = animate_color_target(p, property);
+    if ((p->kind == E_GROUP || p->kind == E_LAYER || p->kind == E_PARTICLES) &&
+        p->node && anim &&
+        (strcmp(property, "depth") == 0 || strcmp(property, "rotation.x") == 0 ||
+         strcmp(property, "rotation.y") == 0))
+        p->node->card = true;
     if (p->kind == E_MASK && p->mask) {
         if (strcmp(property, "x") == 0) anim = &p->mask->x;
         else if (strcmp(property, "y") == 0) anim = &p->mask->y;
@@ -388,6 +402,11 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
         else if (strcmp(property, "pitch") == 0) anim = &p->camera->pitch;
         else if (strcmp(property, "roll") == 0) anim = &p->camera->roll;
         else if (strcmp(property, "fov") == 0) anim = &p->camera->fov;
+        else if (strcmp(property, "zoom") == 0 && p->camera->zoom_set)
+            anim = &p->camera->zoom;
+        else if (strcmp(property, "focusDistance") == 0)
+            anim = &p->camera->focus_distance;
+        else if (strcmp(property, "aperture") == 0) anim = &p->camera->aperture;
     }
     if (p->light) {
         if (strcmp(property, "intensity") == 0) anim = &p->light->intensity;

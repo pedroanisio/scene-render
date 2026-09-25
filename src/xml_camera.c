@@ -47,8 +47,9 @@ void sr_xml_start_scene360(ParseContext *ctx, const XML_Char **attrs) {
 
 void sr_xml_start_camera(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"id", "active", "projection", "x", "y", "z",
-        "yaw", "pitch", "roll", "fov", "near", "far"};
-    if (!sr_xml_attrs_allowed(ctx, "camera", attrs, allowed, 12)) return;
+        "yaw", "pitch", "roll", "fov", "near", "far", "zoom", "focusDistance",
+        "aperture"};
+    if (!sr_xml_attrs_allowed(ctx, "camera", attrs, allowed, 15)) return;
     const char *id = sr_xml_required(ctx, "camera", attrs, "id");
     if (!id) return;
     if (!sr_id_valid(id))
@@ -71,6 +72,7 @@ void sr_xml_start_camera(ParseContext *ctx, const XML_Char **attrs) {
     camera->id = sr_strdup(id);
     camera->active = true;
     camera->fov.base = 90.0;
+    camera->focus_distance.base = 1000.0;
     camera->near_plane = 0.1;
     camera->far_plane = 10000.0;
     if (!camera->id) SR_XML_FAIL_RETURN(ctx, "camera", NULL, "out of memory");
@@ -91,7 +93,18 @@ void sr_xml_start_camera(ParseContext *ctx, const XML_Char **attrs) {
         !decimal(ctx, "camera", attrs, "roll", &camera->roll.base) ||
         !decimal(ctx, "camera", attrs, "fov", &camera->fov.base) ||
         !decimal(ctx, "camera", attrs, "near", &camera->near_plane) ||
-        !decimal(ctx, "camera", attrs, "far", &camera->far_plane)) return;
+        !decimal(ctx, "camera", attrs, "far", &camera->far_plane) ||
+        !decimal(ctx, "camera", attrs, "zoom", &camera->zoom.base) ||
+        !decimal(ctx, "camera", attrs, "focusDistance",
+                 &camera->focus_distance.base) ||
+        !decimal(ctx, "camera", attrs, "aperture", &camera->aperture.base)) return;
+    camera->zoom_set = sr_xml_attr(attrs, "zoom") != NULL;
+    if (camera->zoom_set && !(camera->zoom.base > 0.0))
+        SR_XML_FAIL_RETURN(ctx, "camera", "zoom", "expected a positive focal length");
+    if (!(camera->focus_distance.base > 0.0))
+        SR_XML_FAIL_RETURN(ctx, "camera", "focusDistance", "expected a positive distance");
+    if (camera->aperture.base < 0.0)
+        SR_XML_FAIL_RETURN(ctx, "camera", "aperture", "expected a non-negative radius");
     if (camera->fov.base <= 1.0 || camera->fov.base >= 179.0 ||
         camera->near_plane <= 0.0 || camera->far_plane <= camera->near_plane)
         SR_XML_FAIL_RETURN(ctx, "camera", "fov/near/far",

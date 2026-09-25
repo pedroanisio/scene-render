@@ -60,6 +60,7 @@ configure_file(cmake/schema_data.c.in
 
 set(SCENE_RENDER_SOURCES
     src/common.c
+    src/card.c
     src/parallel.c
     src/color.c
     src/raster.c
@@ -115,7 +116,7 @@ if(BUILD_TESTING)
     set(SR_UNIT_SUITES timeline geometry compositor color vector mesh scene xml
                        camera physics blend group raster mask path image
                        encode encode_faults audio video
-                       fx anim_color particles deform shadow text args)
+                       fx anim_color particles deform shadow text args depth)
     file(GLOB SR_UNIT_SOURCES CONFIGURE_DEPENDS
          ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/*.c)
     add_executable(sr-unit-tests ${SR_UNIT_SOURCES})

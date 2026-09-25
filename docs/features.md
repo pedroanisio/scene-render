@@ -27,7 +27,8 @@ decode/encode. Details: [xml-reference](xml-reference.md) ·
 | 3D | Sphere, box, plane, Wavefront OBJ meshes; depth buffer; `antialias3d` 1–4 supersampling |
 | Materials | Base color, emissive, metallic, roughness |
 | Lights | Ambient, directional, point, spot; shadow maps (PCF) for directional/spot, approximate for point; animated color |
-| Cameras | Perspective / orthographic |
+| Cameras | Perspective / orthographic; `fov` or `zoom` focal length; depth of field for cards |
+| Depth cards (2.5D) | Any 2D node with `depth` / `rotationX` / `rotationY` is a plane projected by the camera: automatic parallax and depth scaling, tilted cards in true perspective, far-to-near sorting, per-sample occlusion shared with 3D objects |
 | Particles | Parametric emitters (direction, spread, speed ± variance, gravity, size→sizeEnd, color→colorEnd, lifetime ± variance, spawn area, cap, seed, disc/square); optional smoke/sparks/dust/rain presets; stateless and deterministic |
 
 ## Compositing

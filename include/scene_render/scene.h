@@ -231,6 +231,10 @@ typedef struct SrNode {
     SrNodeType type;
     char *id;
     int z;
+    /* A depth card: the node declared depth, rotationX or rotationY (see
+     * src/card.c). transform.z is its depth and transform.rotation_x/_y its
+     * tilt in degrees; it renders as one unit projected by the camera. */
+    bool card;
     size_t order;
     size_t source_line;
     bool visible;
@@ -378,6 +382,12 @@ typedef struct {
     bool orthographic;
     SrAnimValue x, y, z;
     SrAnimValue yaw, pitch, roll, fov;
+    /* Focal length in px; when zoom_set it replaces fov for projection. */
+    SrAnimValue zoom;
+    bool zoom_set;
+    /* Depth of field for cards: blur radius px = aperture * |z - focus| / z. */
+    SrAnimValue focus_distance;
+    SrAnimValue aperture;
     double near_plane;
     double far_plane;
     size_t source_line;
@@ -516,6 +526,7 @@ typedef struct {
     size_t effect_count;
     size_t effect_capacity;
     SrPhysicsWorld physics;
+    bool has_cards;             /* some node is a depth card (see card.h) */
     struct SrFontCache *font_cache; /* text fonts opened while loading assets */
 } SrScene;
 

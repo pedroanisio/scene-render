@@ -223,6 +223,59 @@ static SrStatus blur_region(const Region *region, int radius, unsigned threads,
                         threads, result);
 }
 
+/* Three box passes of radius q: an approximately Gaussian kernel of
+ * standard deviation about q. Consumes `buffer`. */
+static SrStatus blur_gauss(float *buffer, uint32_t width, uint32_t height,
+                           int q, unsigned threads, float **result) {
+    SrStatus status = SR_OK;
+    for (int pass = 0; pass < 3 && status == SR_OK; ++pass)
+        status = blur_compact(buffer, width, height, q, threads, &buffer);
+    *result = status == SR_OK ? buffer : NULL;
+    return status;
+}
+
+SrStatus sr_effects_blur_rect(SrFrame *frame, SrEffectRect *rect,
+                              double radius, unsigned threads) {
+    double sigma = fmin((double)MAX_RADIUS, fmax(0.0, radius * 0.5));
+    if (!(sigma > 0.0)) return SR_OK;
+    int lo = (int)floor(sigma), hi = lo + 1;
+    if (hi > MAX_RADIUS) hi = MAX_RADIUS;
+    float t = (float)(sigma - lo);
+    int reach = 3 * hi;
+    SrEffectRect grown = {rect->x0 - reach, rect->y0 - reach, rect->x1 + reach,
+                          rect->y1 + reach};
+    if (grown.x0 < 0) grown.x0 = 0;
+    if (grown.y0 < 0) grown.y0 = 0;
+    if (grown.x1 > (int)frame->width) grown.x1 = (int)frame->width;
+    if (grown.y1 > (int)frame->height) grown.y1 = (int)frame->height;
+    if (grown.x1 <= grown.x0 || grown.y1 <= grown.y0) return SR_OK;
+    Region region = {frame, grown};
+    size_t width = region_width(&region), height = region_height(&region);
+    size_t bytes = width * height * 4 * sizeof(float);
+    float *low = malloc(bytes), *high = malloc(bytes);
+    if (!low || !high) { free(low); free(high); return SR_ERR_MEMORY; }
+    for (size_t row = 0; row < height; ++row) {
+        memcpy(low + row * width * 4, region_px(&region, row, 0), width * 4 * sizeof(float));
+        memcpy(high + row * width * 4, region_px(&region, row, 0), width * 4 * sizeof(float));
+    }
+    SrStatus status = SR_OK;
+    if (lo > 0) status = blur_gauss(low, (uint32_t)width, (uint32_t)height, lo, threads, &low);
+    if (status == SR_OK && t > 0.0f && hi > lo)
+        status = blur_gauss(high, (uint32_t)width, (uint32_t)height, hi, threads, &high);
+    else if (status == SR_OK)
+        t = 0.0f;
+    if (status != SR_OK) { free(low); free(high); return status; }
+    for (size_t row = 0; row < height; ++row) {
+        float *d = region_px(&region, row, 0);
+        const float *a = low + row * width * 4, *b = high + row * width * 4;
+        for (size_t i = 0; i < width * 4; ++i) d[i] = a[i] + (b[i] - a[i]) * t;
+    }
+    free(low);
+    free(high);
+    *rect = grown;
+    return SR_OK;
+}
+
 /* ---- per-pixel effects --------------------------------------------------- */
 
 typedef struct {
