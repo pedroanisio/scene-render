@@ -14,7 +14,8 @@ rendering. The pipeline therefore:
      continuous audio track (audio does not depend on the card text).
 
 Requires ffmpeg on PATH and a built ./build/scene-render. Pass --skip-pass1 to
-reuse existing build/pass1 outputs and their logs.
+reuse existing build/pass1 outputs and their logs. build_scene.py needs
+fontTools, so run this with a Python that has it installed.
 """
 import argparse
 import os
@@ -68,7 +69,7 @@ def wall_seconds(log):
 def spoken(seconds):
     seconds = int(round(seconds))
     minutes, rest = divmod(seconds, 60)
-    return f"{minutes} MIN {rest} S" if minutes else f"{rest} S"
+    return f"{minutes} min {rest} s" if minutes else f"{rest} s"
 
 
 def last_keyframe(path, limit):
@@ -90,6 +91,18 @@ def count_frames(path):
     return int(re.findall(r"frame=\s*(\d+)", out)[-1])
 
 
+def spatial_injector():
+    """Build the helper that re-applies the engine's spherical metadata."""
+    tool = os.path.join(BUILD, "sr-spatial-inject")
+    objects = [os.path.join(BUILD, f"{name}.o")
+               for name in ("spatial", "diagnostics", "common")]
+    run([os.environ.get("CC", "cc"), "-std=c17", "-O2",
+         "-D_POSIX_C_SOURCE=200809L", "-I", os.path.join(ROOT, "include"),
+         os.path.join(HERE, "spatial_inject.c"), *objects, "-lm", "-pthread",
+         "-o", tool])
+    return tool
+
+
 def splice(version, key):
     full = os.path.join(PASS1, f"archive-beacon-{version}.mp4")
     tail = os.path.join(PASS1, f"archive-beacon-{version}.tail.mp4")
@@ -103,9 +116,11 @@ def splice(version, key):
         f.write(f"file '{head}'\nfile '{tail}'\n")
     run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "concat", "-safe",
          "0", "-i", listing, "-map", "0:v", "-c", "copy", joined])
+    # No +faststart: the spatial injector patches a trailing moov in place.
     run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", joined, "-i", full,
-         "-map", "0:v", "-map", "1:a", "-c", "copy", "-movflags", "+faststart",
-         final])
+         "-map", "0:v", "-map", "1:a", "-c", "copy", final])
+    if version == "360":
+        run([spatial_injector(), final, "3840", "1920"])
     frames = count_frames(final)
     if frames != TOTAL:
         raise SystemExit(f"{final}: {frames} frames, expected {TOTAL}")

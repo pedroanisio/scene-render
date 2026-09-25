@@ -215,3 +215,9 @@ when exposed by FFmpeg. CMake/CTest and sanitizer results are recorded in
 Original code is Apache-2.0; see [`LICENSE`](LICENSE). Third-party components
 are not vendored as source. Exact verified versions and licenses are documented
 in [`docs/dependencies.md`](docs/dependencies.md).
+
+The one vendored third-party asset is the Inter typeface in
+[`assets/third-party/inter`](assets/third-party/inter), used by
+`archive-beacon.xml`. It is licensed under the SIL Open Font License 1.1, not
+Apache-2.0; its source URL, version, checksums, and attribution sit beside the
+font files.

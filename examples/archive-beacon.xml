@@ -14,22 +14,22 @@
     <audio id="sfx_alarm" src="../assets/generated/audio/alarm.wav"/>
     <audio id="sfx_shield" src="../assets/generated/audio/shield.wav"/>
     <audio id="sfx_transmit" src="../assets/generated/audio/transmit.wav"/>
-    <text id="titleText" text="THE ARCHIVE BEACON" width="622" height="44" size="42" color="#EAF6FFFF"/>
-    <text id="subtitleText" text="TRANSMISSION LOG 01" width="331" height="23" size="21" color="#7FC8F8FF"/>
-    <text id="onlineText" text="ARCHIVE STATION ONLINE" width="258" height="16" size="14" color="#7FF3FFFF"/>
-    <text id="warnText" text="IMPACT WARNING" width="328" height="30" size="28" color="#FF5A5AFF"/>
-    <text id="sigA" text="SIGNAL A" width="94" height="16" size="14" color="#7FE3FFFF"/>
-    <text id="sigB" text="SIGNAL B" width="94" height="16" size="14" color="#FFC46BFF"/>
-    <text id="sigC" text="SIGNAL C" width="94" height="16" size="14" color="#FF8FE0FF"/>
-    <text id="card0" text="SCENE GENERATED FROM XML" width="689" height="37" size="35" color="#EAF6FFFF"/>
-    <text id="card1" text="UHD 3840X2160    360 3840X1920" width="505" height="23" size="21" color="#9FD8FFFF"/>
-    <text id="card2" text="30 FPS    900 FRAMES    SEED 20260925" width="601" height="23" size="21" color="#9FD8FFFF"/>
-    <text id="card3" text="RENDER TIME    UHD PENDING    360 PENDING" width="673" height="23" size="21" color="#FFD37AFF"/>
-    <text id="card4" text="SCENE RENDER 1 0 0    CPU    DETERMINISTIC" width="458" height="16" size="14" color="#6E8FB0FF"/>
+    <text id="titleText" text="THE ARCHIVE BEACON" width="669" height="78" size="60" color="#EAF6FFFF" fontFile="../assets/third-party/inter/Inter-Light.ttf"/>
+    <text id="subtitleText" text="Transmission log 01" width="252" height="34" size="26" color="#7FC8F8FF" fontFile="../assets/third-party/inter/Inter-Regular.ttf"/>
+    <text id="onlineText" text="ARCHIVE STATION ONLINE" width="271" height="26" size="20" color="#7FF3FFFF" fontFile="../assets/third-party/inter/Inter-Medium.ttf"/>
+    <text id="warnText" text="IMPACT WARNING" width="320" height="45" size="34" color="#FF5A5AFF" fontFile="../assets/third-party/inter/Inter-SemiBold.ttf"/>
+    <text id="sigA" text="SIGNAL A" width="93" height="24" size="18" color="#7FE3FFFF" fontFile="../assets/third-party/inter/Inter-Medium.ttf"/>
+    <text id="sigB" text="SIGNAL B" width="92" height="24" size="18" color="#FFC46BFF" fontFile="../assets/third-party/inter/Inter-Medium.ttf"/>
+    <text id="sigC" text="SIGNAL C" width="93" height="24" size="18" color="#FF8FE0FF" fontFile="../assets/third-party/inter/Inter-Medium.ttf"/>
+    <text id="card0" text="Scene generated from XML" width="671" height="65" size="50" color="#EAF6FFFF" fontFile="../assets/third-party/inter/Inter-SemiBold.ttf"/>
+    <text id="card1" text="UHD 3840 × 2160  ·  360° 3840 × 1920" width="527" height="37" size="28" color="#9FD8FFFF" fontFile="../assets/third-party/inter/Inter-Regular.ttf"/>
+    <text id="card2" text="30 fps  ·  900 frames  ·  seed 20260925" width="536" height="37" size="28" color="#9FD8FFFF" fontFile="../assets/third-party/inter/Inter-Regular.ttf"/>
+    <text id="card3" text="Render time  ·  UHD PENDING  ·  360° PENDING" width="641" height="37" size="28" color="#FFD37AFF" fontFile="../assets/third-party/inter/Inter-Medium.ttf"/>
+    <text id="card4" text="scene-render 1.1.0  ·  CPU  ·  deterministic" width="404" height="26" size="20" color="#6E8FB0FF" fontFile="../assets/third-party/inter/Inter-Regular.ttf"/>
   </assets>
   <materials>
     <material id="hullMat" baseColor="#2F4D72FF" metallic="0.45" roughness="0.5" emissive="#03060CFF"/>
-    <material id="wornMat" baseColor="#4A5058FF" metallic="0.3" roughness="0.75" emissive="#050505FF"/>
+    <material id="wornMat" baseColor="#7A838EFF" metallic="0.3" roughness="0.7" emissive="#050505FF"/>
     <material id="dishMat" baseColor="#A8B4C2FF" metallic="0.3" roughness="0.4" emissive="#0A1420FF"/>
     <material id="beaconMat" baseColor="#FF6A5AFF" metallic="0" roughness="0.2" emissive="#C03020FF"/>
     <material id="planetMat" baseColor="#2E6FA6FF" metallic="0" roughness="0.85" emissive="#030C18FF"/>
@@ -533,16 +533,16 @@
       </animate>
     </shape>
     <shape id="atmosphere" shape="ellipse" width="836" height="584" x="1330" y="1470" anchorX="418" anchorY="292" fill="#00000000" stroke="#5FB8FF99" strokeWidth="10" blend="screen"/>
-    <object3D id="module" primitive="box" material="hullMat" x="1920" y="960" z="0" radius="60" scaleX="2.4" scaleY="0.45" castShadow="true"/>
-    <object3D id="trussL" primitive="box" material="wornMat" x="1683" y="960" z="0" radius="50" scaleX="1.86" scaleY="0.12" castShadow="true"/>
-    <object3D id="trussR" primitive="box" material="wornMat" x="2157" y="960" z="0" radius="50" scaleX="1.86" scaleY="0.12" castShadow="true"/>
-    <object3D id="antenna" primitive="box" material="wornMat" x="1920" y="845" z="0" radius="40" scaleX="0.1" scaleY="1" castShadow="true"/>
-    <object3D id="podL" primitive="sphere" material="wornMat" x="1790" y="960" z="0" radius="34" scaleX="1" scaleY="1" castShadow="true"/>
-    <object3D id="podR" primitive="sphere" material="wornMat" x="2050" y="960" z="0" radius="34" scaleX="1" scaleY="1" castShadow="true"/>
-    <object3D id="hub" primitive="sphere" material="hullMat" x="1920" y="960" z="0" radius="78" scaleX="1" scaleY="1" castShadow="true"/>
-    <object3D id="dish" primitive="sphere" material="dishMat" x="1920" y="1045" z="0" radius="26" scaleX="1.3" scaleY="0.8" castShadow="true"/>
-    <object3D id="beaconLamp" primitive="sphere" material="beaconMat" x="1920" y="800" z="0" radius="12" scaleX="1" scaleY="1" castShadow="true"/>
-    <group id="title" x="533" y="960" anchorX="309" anchorY="21" opacity="0">
+    <object3D id="module" primitive="box" material="hullMat" x="1920" y="960" z="0" radius="60" scaleX="2.4" scaleY="0.45" scaleZ="0.45" castShadow="true"/>
+    <object3D id="trussL" primitive="box" material="wornMat" x="1683" y="960" z="0" radius="50" scaleX="1.86" scaleY="0.12" scaleZ="0.12" castShadow="true"/>
+    <object3D id="trussR" primitive="box" material="wornMat" x="2157" y="960" z="0" radius="50" scaleX="1.86" scaleY="0.12" scaleZ="0.12" castShadow="true"/>
+    <object3D id="antenna" primitive="box" material="wornMat" x="1920" y="845" z="0" radius="40" scaleX="0.1" scaleY="1" scaleZ="1" castShadow="true"/>
+    <object3D id="podL" primitive="sphere" material="wornMat" x="1790" y="960" z="0" radius="34" scaleX="1" scaleY="1" scaleZ="1" castShadow="true"/>
+    <object3D id="podR" primitive="sphere" material="wornMat" x="2050" y="960" z="0" radius="34" scaleX="1" scaleY="1" scaleZ="1" castShadow="true"/>
+    <object3D id="hub" primitive="sphere" material="hullMat" x="1920" y="960" z="0" radius="78" scaleX="1" scaleY="1" scaleZ="1" castShadow="true"/>
+    <object3D id="dish" primitive="sphere" material="dishMat" x="1920" y="1045" z="0" radius="26" scaleX="1.3" scaleY="0.8" scaleZ="1" castShadow="true"/>
+    <object3D id="beaconLamp" primitive="sphere" material="beaconMat" x="1920" y="800" z="0" radius="12" scaleX="1" scaleY="1" scaleZ="1" castShadow="true"/>
+    <group id="title" x="533" y="960" anchorX="330.1318" anchorY="39" opacity="0">
       <animate property="opacity" defaultInterpolation="ease-in-out">
         <key time="0.6" value="0"/>
         <key time="1.8" value="1"/>
@@ -558,13 +558,13 @@
         <key time="2.4" value="1"/>
       </animate>
       <layer id="titleLayer" asset="titleText" x="0" y="0"/>
-      <layer id="subtitleLayer" asset="subtitleText" x="145.5" y="70" opacity="0">
+      <layer id="subtitleLayer" asset="subtitleText" x="208.4028" y="100" opacity="0">
         <animate property="opacity" defaultInterpolation="ease-in-out">
           <key time="1.4" value="0"/>
           <key time="2.4" value="1"/>
         </animate>
       </layer>
-      <shape id="titleRule" shape="rect" width="618" height="3" x="0" y="56" fill="#4FC3F7CC" blend="add"/>
+      <shape id="titleRule" shape="rect" width="660.2637" height="3" x="0" y="86" fill="#4FC3F7CC" blend="add"/>
     </group>
     <shape id="ring" shape="ellipse" width="460" height="460" x="1920" y="960" anchorX="230" anchorY="230" fill="#00000000" stroke="#6FA8DCFF" strokeWidth="6">
       <rigidBody type="static" shape="circle" radius="230" mass="1" friction="0.4" restitution="0.55"/>
@@ -644,7 +644,7 @@
         <key time="30.1" value="0"/>
       </animate>
     </shape>
-    <layer id="onlineLabel" asset="onlineText" x="1793" y="1216" opacity="0">
+    <layer id="onlineLabel" asset="onlineText" x="1788.7109" y="1216" opacity="0">
       <animate property="opacity" defaultInterpolation="ease-in-out">
         <key time="8.4" value="0"/>
         <key time="9" value="1"/>
@@ -724,7 +724,7 @@
       </layer>
       <shape id="tintA" shape="rect" width="320" height="180" x="0" y="0" fill="#3FD0FFFF" blend="multiply"/>
       <shape id="frameA" shape="rect" width="336" height="196" x="-8" y="-8" fill="#00000000" stroke="#3FD0FFFF" strokeWidth="3"/>
-      <layer id="labelA" asset="sigA" x="0" y="-30"/>
+      <layer id="labelA" asset="sigA" x="0" y="-34"/>
     </group>
     <group id="displayB" start="7.9" end="17.6" x="2404" y="1141" anchorX="144" anchorY="81">
       <animate property="scale.y" defaultInterpolation="ease-out">
@@ -745,7 +745,7 @@
       </layer>
       <shape id="tintB" shape="rect" width="288" height="162" x="0" y="0" fill="#FFB347FF" blend="multiply"/>
       <shape id="frameB" shape="rect" width="304" height="178" x="-8" y="-8" fill="#00000000" stroke="#FFB347FF" strokeWidth="3"/>
-      <layer id="labelB" asset="sigB" x="0" y="-30"/>
+      <layer id="labelB" asset="sigB" x="0" y="-34"/>
     </group>
     <group id="displayC" start="7.9" end="17.6" x="1584" y="691" anchorX="144" anchorY="81">
       <animate property="scale.y" defaultInterpolation="ease-out">
@@ -774,7 +774,7 @@
       </layer>
       <shape id="tintC" shape="rect" width="288" height="162" x="0" y="0" fill="#FF5FD2FF" blend="multiply"/>
       <shape id="frameC" shape="rect" width="304" height="178" x="-8" y="-8" fill="#00000000" stroke="#FF5FD2FF" strokeWidth="3"/>
-      <layer id="labelC" asset="sigC" x="0" y="-30"/>
+      <layer id="labelC" asset="sigC" x="0" y="-34"/>
     </group>
     <group id="burstBand" start="12.9" end="14.5" x="-700" y="0">
       <animate property="position.x" defaultInterpolation="ease-in-out">
@@ -790,7 +790,7 @@
         <key time="14.6" value="0"/>
       </animate>
     </particleEmitter>
-    <layer id="warning" asset="warnText" x="1758" y="670" start="16.3" end="18.6">
+    <layer id="warning" asset="warnText" x="1764.1943" y="670" start="16.3" end="18.6">
       <animate property="opacity" defaultInterpolation="step">
         <key time="16.3" value="1" interpolation="step"/>
         <key time="16.5" value="0" interpolation="step"/>
@@ -1335,37 +1335,37 @@
           <key time="27.7" value="1"/>
         </animate>
       </shape>
-      <layer id="cardLine0" asset="card0" x="190.5" y="790" opacity="0">
+      <layer id="cardLine0" asset="card0" x="201.8721" y="775" opacity="0">
         <animate property="opacity" defaultInterpolation="ease-in-out">
           <key time="27.6" value="0"/>
           <key time="28" value="1"/>
         </animate>
       </layer>
-      <layer id="cardLine1" asset="card1" x="282.5" y="890" opacity="0">
+      <layer id="cardLine1" asset="card1" x="273.7402" y="882" opacity="0">
         <animate property="opacity" defaultInterpolation="ease-in-out">
           <key time="27.8" value="0"/>
           <key time="28.2" value="1"/>
         </animate>
       </layer>
-      <layer id="cardLine2" asset="card2" x="234.5" y="940" opacity="0">
+      <layer id="cardLine2" asset="card2" x="269.29" y="932" opacity="0">
         <animate property="opacity" defaultInterpolation="ease-in-out">
           <key time="28" value="0"/>
           <key time="28.4" value="1"/>
         </animate>
       </layer>
-      <layer id="cardLine3" asset="card3" x="198.5" y="1000" opacity="0">
+      <layer id="cardLine3" asset="card3" x="216.5986" y="990" opacity="0">
         <animate property="opacity" defaultInterpolation="ease-in-out">
           <key time="28.2" value="0"/>
           <key time="28.6" value="1"/>
         </animate>
       </layer>
-      <layer id="cardLine4" asset="card4" x="306" y="1090" opacity="0">
+      <layer id="cardLine4" asset="card4" x="335.1924" y="1085" opacity="0">
         <animate property="opacity" defaultInterpolation="ease-in-out">
           <key time="28.4" value="0"/>
           <key time="28.8" value="1"/>
         </animate>
       </layer>
-      <shape id="cardRule" shape="rect" width="760" height="4" x="533" y="850" anchorX="380" anchorY="2" fill="#4FC3F7FF" blend="add" scaleX="0">
+      <shape id="cardRule" shape="rect" width="760" height="4" x="533" y="856" anchorX="380" anchorY="2" fill="#4FC3F7FF" blend="add" scaleX="0">
         <animate property="scale.x" defaultInterpolation="ease-out">
           <key time="27.7" value="0"/>
           <key time="28.2" value="1"/>
