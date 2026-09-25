@@ -6,3 +6,6 @@
 assets/generated/
 _tmp/
 .agent-tasks/
+tmp/
+*.pyc
+/.claude/worktrees/
