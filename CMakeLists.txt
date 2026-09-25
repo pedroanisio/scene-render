@@ -43,6 +43,10 @@ find_package(EXPAT 2.5 REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
     libavformat>=60 libavcodec>=60 libavutil>=58 libswscale>=7 libswresample>=4)
+# Text: Fontconfig lookup, FriBidi reordering, HarfBuzz shaping, FreeType
+# rasterization, all in-process (src/text.c).
+pkg_check_modules(TEXT REQUIRED IMPORTED_TARGET
+    freetype2 harfbuzz>=2.8.2 fribidi>=1.0 fontconfig>=2.13)
 
 set(SCENE_RENDER_SOURCES
     src/common.c
@@ -57,6 +61,7 @@ set(SCENE_RENDER_SOURCES
     src/timeline.c
     src/scene.c
     src/assets.c
+    src/text.c
     src/procedural.c
     src/audio.c
     src/compositor.c
@@ -84,7 +89,8 @@ target_include_directories(scene_render_core PUBLIC include)
 target_compile_definitions(scene_render_core PUBLIC _POSIX_C_SOURCE=200809L)
 sr_configure_target(scene_render_core)
 find_package(Threads REQUIRED)
-target_link_libraries(scene_render_core PUBLIC EXPAT::EXPAT PkgConfig::LIBAV m
+target_link_libraries(scene_render_core PUBLIC EXPAT::EXPAT PkgConfig::LIBAV
+                      PkgConfig::TEXT m
                       Threads::Threads ${CMAKE_DL_LIBS})
 
 add_executable(scene-render src/main.c)
@@ -96,7 +102,7 @@ if(BUILD_TESTING)
     set(SR_UNIT_SUITES timeline geometry compositor color vector mesh scene xml
                        camera physics blend group raster mask path image
                        encode encode_faults audio video
-                       fx anim_color particles deform shadow)
+                       fx anim_color particles deform shadow text)
     file(GLOB SR_UNIT_SOURCES CONFIGURE_DEPENDS
          ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/*.c)
     add_executable(sr-unit-tests ${SR_UNIT_SOURCES})

@@ -3,9 +3,10 @@
 These are the exact versions used for the v1.1 verification on Ubuntu 24.04
 x86-64. Expat, the FFmpeg libraries (libavformat, libavcodec, libavutil,
 libswscale, libswresample), pthreads, `libm`, and `libdl` are linked through
-their C APIs; all video/audio/image decoding and encoding runs in-process. The
-`ffmpeg` executable is still run as a child process for text assets only
-(drawtext). OpenCL is loaded dynamically, so it is optional at runtime.
+their C APIs; all video/audio/image decoding and encoding runs in-process.
+Text uses FreeType, HarfBuzz, FriBidi and Fontconfig through their C APIs,
+also in-process; the engine starts no child processes. OpenCL is loaded
+dynamically, so it is optional at runtime.
 
 ## Runtime and linked components
 
@@ -13,25 +14,25 @@ their C APIs; all video/audio/image decoding and encoding runs in-process. The
 |---|---:|---|---|
 | Expat / `libexpat1-dev` | 2.6.1-2ubuntu0.3 | XML tokenization through the C API | MIT |
 | FFmpeg libraries | libavformat ≥ 60, libavcodec ≥ 60, libavutil ≥ 58, libswscale ≥ 7, libswresample ≥ 4 (pkg-config); P1/P2 verified with 61.7.100 / 61.19.101 / 59.39.100 / 8.3.100 / 5.3.100 (Freedesktop SDK 25.08) | in-process demux/decode, swscale color conversion, swresample, H.264/H.265/FFV1/AAC encode, PNG preview encode, MP4/Matroska mux | LGPL-2.1-or-later normally; GPL when built with libx264/libx265 |
-| FFmpeg executable | 6.1.1-3ubuntu5 | drawtext text rendering only | as above |
 | libx264 | 0.164.3108+git31e19f9-1 | H.264 encoder exposed by libavcodec | GPL-2.0-or-later |
 | libx265 | 3.5-2build1 | H.265 encoder exposed by libavcodec | GPL-2.0-or-later |
 | OpenCL ICD loader | 2.3.2-1build1 | optional OpenCL 1.2 GPU discovery/kernel dispatch | BSD-2-Clause |
-| Fontconfig | 2.15.0-1.1ubuntu2 | FFmpeg drawtext font matching | Fontconfig license (MIT-style) |
-| FreeType | 2.13.2+dfsg-1ubuntu0.1 | FFmpeg drawtext glyph rasterization | FreeType License or GPL-2.0-only |
-| FriBidi | 1.0.13-3build1 | FFmpeg drawtext bidirectional layout | LGPL-2.1-or-later |
-| HarfBuzz | 8.3.0-2build2 | FFmpeg drawtext shaping | Old MIT |
-| glibc / pthreads | 2.39-0ubuntu8.6 | allocation, threads, the drawtext child process, clocks, dynamic loading | LGPL-2.1-or-later plus system-library terms |
+| FreeType (`freetype2`) | pkg-config any; P3 verified with 26.6.20 (FreeType 2.14, Freedesktop SDK 25.08) | unhinted outline loading and 8-bit anti-aliased glyph rasterization | FreeType License (FTL) or GPL-2.0-only |
+| HarfBuzz | ≥ 2.8.2; P3 verified with 11.4.5 (Freedesktop SDK 25.08) | OpenType shaping: kerning, ligatures, complex-script forms, font metrics | Old MIT |
+| FriBidi | ≥ 1.0; P3 verified with 1.0.16 (Freedesktop SDK 25.08) | UAX #9 bidirectional embedding levels | LGPL-2.1-or-later |
+| Fontconfig | ≥ 2.13; P3 verified with 2.17.1 (Freedesktop SDK 25.08) | `font` family lookup (FcNameParse, FcConfigSubstitute, FcFontMatch) | Fontconfig license (MIT-style) |
+| glibc / pthreads | 2.39-0ubuntu8.6 | allocation, threads, clocks, dynamic loading | LGPL-2.1-or-later plus system-library terms |
 
 The engine never implements or embeds a production codec; it links the
 FFmpeg libraries dynamically. Their legal terms depend on their build
 configuration and enabled codecs (`libx264`/`libx265` make the build GPL);
 distributors must review the libraries and patent obligations they ship.
 
-The text engine invokes FFmpeg's drawtext filter. UTF-8 shaping therefore
-depends on the Fontconfig/FreeType/FriBidi/HarfBuzz capabilities in that FFmpeg
-build. A missing requested font produces a render error rather than silently
-changing the XML font file.
+The text engine (`src/text.c`) links FreeType, HarfBuzz, FriBidi and
+Fontconfig directly. Rendered text depends on the fonts installed (for
+`font` families) and on the exact FreeType/HarfBuzz versions; it is identical
+for identical inputs and versions. A missing requested font or font file
+produces a render error rather than a silent substitution.
 
 ## Build and test tools
 
@@ -39,7 +40,7 @@ changing the XML font file.
 |---|---:|---|
 | GCC | 13.3.0 | GPL-3.0-or-later with GCC Runtime Library Exception |
 | GNU Make | 4.3 | GPL-3.0-or-later |
-| pkg-config / pkgconf | any | locates the FFmpeg libraries for CMake and Make |
+| pkg-config / pkgconf | any | locates the FFmpeg and text libraries for CMake and Make |
 | CMake | 3.30.5 | BSD-3-Clause; generated and test builds verified |
 | Python | 3.12.14 | PSF-2.0; integration-test driver only |
 | `sr-probe` (`tests/tools/sr-probe.c`) | built with the tests | stream inspection for the integration test; replaces `ffprobe` |

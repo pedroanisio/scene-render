@@ -63,7 +63,7 @@ reported when the encoder opens, before the first frame renders.
 | `image` | `id`, `src`, `width`, `height` | `colorSpace` |
 | `video` | `id`, `src`, `width`, `height`, `fps`, `duration` | `colorSpace` |
 | `audio` | `id`, `src` | — |
-| `text` | `id`, `text`, `width`, `height`, `size` | `color`, `font`, `fontFile` |
+| `text` | `id`, `text`, `width`, `height`, `size` | `color`, `font`, `fontFile`, `align`, `lineHeight`, `letterSpacing`, `direction`, `language`, `verticalAlign` |
 | `vector` | `id`, `shape`, `width`, `height` | `fill`, `path`, `fillRule`, `stroke`, `strokeWidth` |
 | `mesh` | `id`, `src` | — |
 
@@ -84,10 +84,9 @@ below). Images are decoded in-process too, from any format libavformat reads
 (PNG, JPEG, PPM, WebP, ...); PPM/PNM files must match the declared size,
 other formats are resampled to it (Lanczos). Image
 and video pixels are converted from their declared source color space to the
-project working space. Text is shaped and rasterized by FFmpeg's drawtext
-stack (FreeType, Fontconfig, FriBidi, and HarfBuzz in the verified build), so
-UTF-8 and bidirectional scripts are supported. `fontFile` paths are resolved
-relative to the XML file.
+project working space.
+
+Text is laid out and rasterized in-process (see "Text" below).
 
 Vectors use `shape="rect|ellipse|path"`. Path data supports absolute and
 relative `M`, `L`, `H`, `V`, `C`, `Q`, and `Z` commands in asset pixel
@@ -100,6 +99,44 @@ as if closed. Rect and ellipse vectors fill the asset box with one pixel of
 anti-aliasing; half of their stroke lies outside the box and is clipped. Meshes load Wavefront OBJ vertices,
 normals, and polygonal faces; faces are fan-triangulated and missing normals
 are generated.
+
+### Text
+
+A `text` asset is a `width` x `height` box; `size` is the font size in pixels
+per em. The font is `fontFile` (resolved relative to the XML file; face 0) or,
+without it, the `font` family (default `Sans`) looked up through Fontconfig.
+A family that is not installed is an error naming the family: when
+Fontconfig's best match belongs to a different family the render fails rather
+than substituting silently. The generic names `sans`, `sans-serif`, `serif`,
+`monospace`, `mono` and `system-ui` accept whatever Fontconfig maps them to.
+Characters the font lacks render as its missing-glyph box (no fallback).
+
+- Paragraphs are separated by line feeds, written `&#10;` in the attribute
+  (XML turns literal newlines in attribute values into spaces).
+- Each paragraph's direction is `direction="auto"` (default: from its first
+  strong character, UAX #9; left-to-right when there is none), `ltr` or `rtl`.
+  Bidirectional reordering follows UAX #9 per line.
+- Text is shaped with HarfBuzz (kerning, ligatures, contextual forms of
+  complex scripts) per bidi level and script run; `language` (a BCP 47 tag
+  such as `ar` or `sr-Latn`) selects language-specific shaping.
+- Lines wrap to `width`: at spaces (which hang at the line end) and after
+  hyphens; a word wider than the box breaks between grapheme clusters.
+- `align="start|center|end|justify"` (default `start`); start and end follow
+  the paragraph direction (start is the right edge for right-to-left text).
+  `justify` widens the spaces of every line except a paragraph's last line.
+- `lineHeight` is the baseline distance as a multiple of `size` (default
+  1.2). Each line box is `lineHeight x size` tall with the font's ascent and
+  descent centred in it; baselines are whole pixels.
+- `letterSpacing` (pixels, default 0, may be negative) is added after each
+  cluster, so a line of N clusters grows by (N-1) x letterSpacing.
+- `verticalAlign="top|middle|bottom"` (default `top`) places the block of
+  lines inside the box.
+- Ink outside the box is clipped, with one warning per asset.
+
+Glyphs are unhinted FreeType outlines placed at HarfBuzz positions quantized
+to 1/4 pixel and anti-aliased at 8 bits; the text color is an XML color
+(working space) converted to blend space like every other color. Output is
+identical for identical inputs and library versions.
 
 ## Composition nodes
 

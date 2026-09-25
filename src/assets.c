@@ -3,17 +3,12 @@
 #include "scene_render/color.h"
 #include "scene_render/mesh.h"
 #include "scene_render/procedural.h"
+#include "scene_render/text.h"
 #include "scene_render/video.h"
 
-#include <ctype.h>
-#include <errno.h>
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 /* Wraps decoded 8-bit straight RGBA (consumed) as a blend-space image. */
 static SrImage *sr_image_from_rgba8(const SrScene *scene, SrColorSpace space,
@@ -100,72 +95,6 @@ static SrStatus sr_open_video(SrScene *scene, const char *path, SrAsset *asset,
     return SR_OK;
 }
 
-static bool sr_font_name_valid(const char *name) {
-    if (!name || !*name) return false;
-    for (const unsigned char *p=(const unsigned char *)name;*p;++p)
-        if (!isalnum(*p) && *p!=' ' && *p!='_' && *p!='-' && *p!='.')
-            return false;
-    return true;
-}
-
-static char *sr_filter_escape(const char *text) {
-    size_t length=0;
-    for(const char *p=text;*p;++p)length+=(*p==':'||*p=='\\'||*p=='\'')?2:1;
-    char *result=sr_alloc(length+1);if(!result)return NULL;char *out=result;
-    for(const char *p=text;*p;++p){if(*p==':'||*p=='\\'||*p=='\'')*out++='\\';*out++=*p;}
-    *out='\0';return result;
-}
-
-static SrImage *sr_render_text_ffmpeg(const SrScene *scene,SrAsset *asset,
-                                      SrDiagnostics *diag){
-    char temporary[]="/tmp/scene-render-text-XXXXXX";int text_fd=mkstemp(temporary);
-    if(text_fd<0)return NULL;
-    size_t length=strlen(asset->text),written=0;
-    while(written<length){ssize_t amount=write(text_fd,asset->text+written,length-written);
-        if(amount>0)written+=(size_t)amount;else if(amount<0&&errno==EINTR)continue;else break;}
-    close(text_fd);if(written!=length){unlink(temporary);return NULL;}
-    char *font_path=asset->font_file?sr_path_join(scene->base_dir,asset->font_file):NULL;
-    char *font_value=sr_filter_escape(font_path?font_path:asset->font_family);
-    char *text_path=sr_filter_escape(temporary);free(font_path);
-    if(!font_value||!text_path){free(font_value);free(text_path);unlink(temporary);return NULL;}
-    char input[128],filter[2048],color[64];
-    snprintf(input,sizeof(input),"color=c=black@0.0:s=%ux%u:r=1,format=rgba",
-             asset->width,asset->height);
-    snprintf(color,sizeof(color),"0x%02X%02X%02X@%.9f",
-             (unsigned)lrint(asset->color.r*255.0),
-             (unsigned)lrint(asset->color.g*255.0),
-             (unsigned)lrint(asset->color.b*255.0),asset->color.a);
-    snprintf(filter,sizeof(filter),
-             "drawtext=%s='%s':textfile='%s':fontsize=%.9g:fontcolor=%s:"
-             "x=0:y=0:text_shaping=1:fix_bounds=1",
-             asset->font_file?"fontfile":"font",font_value,text_path,
-             asset->text_size,color);
-    free(font_value);free(text_path);
-    int output[2];if(pipe(output)!=0){unlink(temporary);return NULL;}
-    pid_t pid=fork();if(pid<0){close(output[0]);close(output[1]);unlink(temporary);return NULL;}
-    if(pid==0){dup2(output[1],STDOUT_FILENO);close(output[0]);close(output[1]);
-        const char *argv[]={"ffmpeg","-nostdin","-v","error","-f","lavfi",
-            "-i",input,"-vf",filter,"-frames:v","1","-f","rawvideo",
-            "-pix_fmt","rgba","pipe:1",NULL};
-        execvp(argv[0],(char *const *)argv);_exit(127);}
-    close(output[1]);size_t pixels=(size_t)asset->width*asset->height;
-    if ((asset->height && pixels / asset->height != asset->width) ||
-        pixels > SIZE_MAX / 4) {
-        close(output[0]);waitpid(pid,NULL,0);unlink(temporary);return NULL;
-    }
-    size_t size=pixels*4;uint8_t *rgba=sr_alloc(size);
-    if(!rgba){close(output[0]);waitpid(pid,NULL,0);unlink(temporary);return NULL;}
-    size_t received=0;while(received<size){ssize_t amount=read(output[0],rgba+received,size-received);
-        if(amount>0)received+=(size_t)amount;else if(amount<0&&errno==EINTR)continue;else break;}
-    close(output[0]);int status=0;pid_t waited;do{waited=waitpid(pid,&status,0);}while(waited<0&&errno==EINTR);
-    unlink(temporary);if(received!=size||waited<0||!WIFEXITED(status)||WEXITSTATUS(status)!=0){
-        sr_diag_error(diag,asset->source_line,"text",asset->font_file?"fontFile":"font",
-                      "FFmpeg drawtext could not shape the UTF-8 text");free(rgba);return NULL;}
-    /* Text colors are working-space values, like every XML color. */
-    return sr_image_from_rgba8(scene,scene->project.working_color_space,rgba,
-                               asset->width,asset->height);
-}
-
 SrStatus sr_assets_load(SrScene *scene, SrDiagnostics *diag) {
     for (size_t i = 0; i < scene->asset_count; ++i) {
         SrAsset *asset = &scene->assets[i];
@@ -177,13 +106,8 @@ SrStatus sr_assets_load(SrScene *scene, SrDiagnostics *diag) {
             SrStatus status=sr_mesh_load_obj(path,&asset->mesh,asset->source_line,diag);
             free(path);if(status!=SR_OK)return status;continue;}
         if (asset->type == SR_ASSET_TEXT) {
-            if (!sr_font_name_valid(asset->font_family)) {
-                sr_diag_error(diag,asset->source_line,"text","font",
-                              "font family contains unsupported characters");
-                return SR_ERR_ASSET;
-            }
-            asset->decoded=sr_render_text_ffmpeg(scene,asset,diag);
-            if(!asset->decoded)return SR_ERR_ASSET;
+            SrStatus status = sr_text_render_asset(scene, asset, diag);
+            if (status != SR_OK) return status;
             continue;
         }
         if (asset->type == SR_ASSET_VECTOR) {
@@ -222,6 +146,8 @@ void sr_assets_unload(SrScene *scene) {
         asset->audio_frames = 0;
         asset->audio_decoded = false;
     }
+    sr_font_cache_free(scene->font_cache);
+    scene->font_cache = NULL;
 }
 
 void sr_assets_video_stats(const SrScene *scene, size_t *sources,

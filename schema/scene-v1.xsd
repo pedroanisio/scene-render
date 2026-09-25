@@ -129,6 +129,31 @@
     <xs:attribute name="color" type="colorType" default="#FFFFFFFF"/>
     <xs:attribute name="font" type="xs:string" default="Sans"/>
     <xs:attribute name="fontFile" type="xs:anyURI"/>
+    <xs:attribute name="align" default="start">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="start"/><xs:enumeration value="center"/>
+        <xs:enumeration value="end"/><xs:enumeration value="justify"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="lineHeight" type="positiveDecimal" default="1.2"/>
+    <xs:attribute name="letterSpacing" type="xs:double" default="0"/>
+    <xs:attribute name="direction" default="auto">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="auto"/><xs:enumeration value="ltr"/>
+        <xs:enumeration value="rtl"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="language">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:pattern value="[A-Za-z][A-Za-z0-9\-]*"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="verticalAlign" default="top">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="top"/><xs:enumeration value="middle"/>
+        <xs:enumeration value="bottom"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
   </xs:complexType>
   <xs:complexType name="vectorAssetType">
     <xs:attribute name="id" type="xs:ID" use="required"/>
