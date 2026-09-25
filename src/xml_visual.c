@@ -1,4 +1,5 @@
 #include "xml_internal.h"
+#include "scene_render/text.h"
 #include "scene_render/vector_path.h"
 
 #include <ctype.h>
@@ -37,6 +38,10 @@ static bool font_name_valid(const char *name) {
     return true;
 }
 
+/* XML bounds of a text asset (the layout API itself accepts more). */
+#define SR_TEXT_MAX_SIZE 4096.0
+#define SR_TEXT_MAX_BYTES ((size_t)1 << 20)
+
 static bool keyword(const char *text, const char *const *names, size_t count,
                     int *value) {
     for (size_t i = 0; i < count; ++i)
@@ -70,16 +75,21 @@ static void text_layout_attributes(ParseContext *ctx, const XML_Char **attrs,
     asset->text_valign = (SrTextVAlign)value;
     asset->text_line_height = 1.2;
     if (!decimal(ctx, "text", attrs, "lineHeight", &asset->text_line_height)) return;
-    if (asset->text_line_height <= 0.0)
-        SR_XML_FAIL_RETURN(ctx, "text", "lineHeight", "expected a positive multiple of size");
+    if (!(asset->text_line_height >= 0.1 && asset->text_line_height <= 10.0))
+        SR_XML_FAIL_RETURN(ctx, "text", "lineHeight",
+                           "expected a multiple of size in [0.1, 10]");
+    /* Checked against size, which the caller has already validated. */
     if (!decimal(ctx, "text", attrs, "letterSpacing", &asset->text_letter_spacing)) return;
+    if (!(asset->text_letter_spacing >= -asset->text_size &&
+          asset->text_letter_spacing <= 4.0 * asset->text_size))
+        SR_XML_FAIL_RETURN(ctx, "text", "letterSpacing",
+                           "expected pixels in [-size, 4 x size]");
     text = sr_xml_attr(attrs, "language");
     if (text) {
-        bool valid = *text && isalpha((unsigned char)*text);
-        for (const unsigned char *p = (const unsigned char *)text; valid && *p; ++p)
-            valid = isalnum(*p) || *p == '-';
-        if (!valid)
-            SR_XML_FAIL_RETURN(ctx, "text", "language", "expected a BCP 47 language tag");
+        if (!sr_text_language_valid(text))
+            SR_XML_FAIL_RETURN(ctx, "text", "language",
+                               "expected a BCP 47 language tag "
+                               "([A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*, at most 35 characters)");
         asset->text_language = sr_strdup(text);
         if (!asset->text_language) SR_XML_FAIL_RETURN(ctx, "text", "language", "out of memory");
     }
@@ -107,6 +117,10 @@ void sr_xml_start_text(ParseContext *ctx, const XML_Char **attrs) {
         !sr_parse_u32(height, &asset->height) || !asset->height ||
         !sr_parse_double(size, &asset->text_size) || asset->text_size <= 0.0)
         SR_XML_FAIL_RETURN(ctx, "text", "width/height/size", "expected positive values");
+    if (asset->text_size > SR_TEXT_MAX_SIZE)
+        SR_XML_FAIL_RETURN(ctx, "text", "size", "expected a size in (0, 4096] px");
+    if (strlen(content) > SR_TEXT_MAX_BYTES)
+        SR_XML_FAIL_RETURN(ctx, "text", "text", "text is longer than 1 MiB (1048576 bytes)");
     const char *color = sr_xml_attr(attrs, "color");
     if (color && !sr_parse_color(color, &asset->color))
         SR_XML_FAIL_RETURN(ctx, "text", "color", "invalid color");

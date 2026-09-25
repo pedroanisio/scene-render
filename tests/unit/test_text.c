@@ -1,9 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0 */
+#define _GNU_SOURCE /* RTLD_NEXT */
 #include "fixture.h"
+#include "scene_text.h"
 
 #include "scene_render/assets.h"
 #include "scene_render/text.h"
 
+#include <dlfcn.h>
 #include <hb.h>
 #include <stdlib.h>
 
@@ -437,6 +440,326 @@ static void test_missing_fonts(sr_test_ctx *t)
                       "not a readable font");
 }
 
+/* ------------------------------------------------ HarfBuzz fault injection
+ * The core library is linked statically, so these definitions interpose on
+ * libharfbuzz for the text engine; disarmed they forward to the real ones. */
+
+static int hb_fail_alloc_at;   /* 1-based call to fail, 0 = never */
+static int hb_alloc_calls;
+static bool hb_fail_shape;
+
+static void *hb_real(const char *name)
+{
+    return dlsym(RTLD_NEXT, name);
+}
+
+hb_bool_t hb_buffer_allocation_successful(hb_buffer_t *buffer)
+{
+    hb_bool_t (*real)(hb_buffer_t *);
+    void *symbol = hb_real("hb_buffer_allocation_successful");
+    memcpy(&real, &symbol, sizeof(real));
+    if (hb_fail_alloc_at && ++hb_alloc_calls == hb_fail_alloc_at) return false;
+    return real(buffer);
+}
+
+hb_bool_t hb_shape_full(hb_font_t *font, hb_buffer_t *buffer,
+                        const hb_feature_t *features, unsigned int num_features,
+                        const char *const *shaper_list)
+{
+    hb_bool_t (*real)(hb_font_t *, hb_buffer_t *, const hb_feature_t *,
+                      unsigned int, const char *const *);
+    void *symbol = hb_real("hb_shape_full");
+    memcpy(&real, &symbol, sizeof(real));
+    if (hb_fail_shape) return false;
+    return real(font, buffer, features, num_features, shaper_list);
+}
+
+static void test_shaping_failures(sr_test_ctx *t)
+{
+    SrFont *font = open_inter(t);
+    if (!font) return;
+    SrTextStyle style = style_for(20, 300, 100);
+    SrTextLayout layout;
+    char err[256] = "";
+    /* Call 1 checks the new buffer; call 2 follows the first add. */
+    hb_alloc_calls = 0;
+    hb_fail_alloc_at = 2;
+    CHECK(t, sr_text_layout(font, "Hello world", &style, &layout, err, sizeof(err)) ==
+             SR_ERR_MEMORY);
+    CHECK_CONTAINS(t, err, "HarfBuzz");
+    CHECK(t, layout.glyph_count == 0 && layout.line_count == 0);
+    hb_fail_alloc_at = 0;
+    err[0] = '\0';
+    hb_fail_shape = true;
+    CHECK(t, sr_text_layout(font, "Hello world", &style, &layout, err, sizeof(err)) ==
+             SR_ERR_MEMORY);
+    CHECK_CONTAINS(t, err, "HarfBuzz");
+    hb_fail_shape = false;
+    if (layout_ok(t, font, "Hello world", &style, &layout)) {
+        CHECK_INT(t, layout.line_count, 1);
+        sr_text_layout_free(&layout);
+    }
+    sr_font_close(font);
+}
+
+/* ------------------------------------------------------ review findings */
+
+static SrFont *open_dejavu(const uint32_t *cps, size_t count)
+{
+    return open_family_covering("DejaVu Sans", cps, count);
+}
+
+/* Breaks never separate a combining mark from its base: after a hyphen the
+ * break follows the hyphen's whole cluster; a space and its mark hang (and
+ * are trimmed) together. */
+static void test_breaks_at_cluster_starts(sr_test_ctx *t)
+{
+    static const uint32_t cps[] = {'a', '-', ' ', 0x0301, 'b'};
+    SrFont *font = open_dejavu(cps, 5);
+    if (!font) return;
+    SrTextStyle style = style_for(40, 40, 400);
+    SrTextLayout layout;
+    /* a(0) -(1) U+0301(2-3) b(4) */
+    if (layout_ok(t, font, "a-\xCC\x81" "b", &style, &layout)) {
+        CHECK_INT(t, layout.line_count, 2);
+        for (size_t i = 0; i < layout.line_count; ++i) {
+            CHECK(t, layout.lines[i].byte_start != 2);
+            CHECK(t, layout.lines[i].byte_end != 2);
+        }
+        if (layout.line_count == 2) {
+            CHECK_INT(t, layout.lines[0].byte_end, 4);
+            CHECK_INT(t, layout.lines[1].byte_start, 4);
+        }
+        sr_text_layout_free(&layout);
+    }
+    /* a(0) space(1) U+0301(2-3) b(4) */
+    if (layout_ok(t, font, "a \xCC\x81" "b", &style, &layout)) {
+        CHECK_INT(t, layout.line_count, 2);
+        if (layout.line_count == 2) {
+            CHECK_INT(t, layout.lines[0].byte_end, 1);
+            CHECK_INT(t, layout.lines[1].byte_start, 4);
+        }
+        sr_text_layout_free(&layout);
+    }
+    sr_font_close(font);
+}
+
+/* Each line is shaped on its own: its glyphs equal those of its text laid
+ * out alone, so joining forms do not connect across a wrap. */
+static void test_lines_shaped_alone(sr_test_ctx *t)
+{
+    static const uint32_t beh[] = {0x0628};
+    SrFont *font = open_dejavu(beh, 1);
+    if (!font) return;
+    const char *text = "\xD8\xA8\xD8\xA8\xD8\xA8"; /* ببب */
+    SrTextStyle wide = style_for(40, 2000, 100);
+    SrTextLayout layout, alone;
+    double isolated = line_width(t, font, "\xD8\xA8", wide);
+    SrTextStyle style = style_for(40, (uint32_t)ceil(isolated) + 1, 400);
+    if (layout_ok(t, font, text, &style, &layout)) {
+        CHECK(t, layout.line_count >= 2);
+        for (size_t i = 0; i < layout.line_count; ++i) {
+            const SrTextLine *line = &layout.lines[i];
+            char part[16] = "";
+            size_t length = line->byte_end - line->byte_start;
+            if (length >= sizeof(part)) continue;
+            memcpy(part, text + line->byte_start, length);
+            if (!layout_ok(t, font, part, &wide, &alone)) continue;
+            CHECK_INT(t, alone.glyph_count, line->glyph_count);
+            for (size_t g = 0; g < alone.glyph_count && g < line->glyph_count; ++g)
+                if (alone.glyphs[g].glyph != layout.glyphs[line->first_glyph + g].glyph)
+                    SR_FAIL(t, "line %zu glyph %zu is %u, alone %u", i, g,
+                            layout.glyphs[line->first_glyph + g].glyph,
+                            alone.glyphs[g].glyph);
+            sr_text_layout_free(&alone);
+        }
+        sr_text_layout_free(&layout);
+    }
+    sr_font_close(font);
+}
+
+/* A break chosen on paragraph advances is re-checked after reshaping: "AV"
+ * fits with the V-A kern of the paragraph (49.6 px) but not alone. */
+static void test_reshaped_lines_fit(sr_test_ctx *t)
+{
+    static const uint32_t cps[] = {'A', 'V'};
+    SrFont *font = open_dejavu(cps, 2);
+    if (!font) return;
+    SrTextStyle style = style_for(40, 51, 400);
+    SrTextLayout layout;
+    if (layout_ok(t, font, "AVA", &style, &layout)) {
+        CHECK(t, layout.line_count >= 2);
+        CHECK(t, !layout.overflow);
+        for (size_t i = 0; i < layout.line_count; ++i)
+            if (layout.lines[i].width > 51.0 + 1.0 / 64.0)
+                SR_FAIL(t, "line %zu is %g px wide in a 51 px box", i,
+                        layout.lines[i].width);
+        sr_text_layout_free(&layout);
+    }
+    /* A single cluster wider than the box stays alone and overflows. */
+    style = style_for(40, 10, 400);
+    if (layout_ok(t, font, "AV", &style, &layout)) {
+        CHECK_INT(t, layout.line_count, 2);
+        CHECK(t, layout.overflow);
+        sr_text_layout_free(&layout);
+    }
+    sr_font_close(font);
+}
+
+/* UAX #9 L1: whitespace ending a line takes the paragraph level, so in an
+ * LTR paragraph the U+2003 that ends line 1 of "aאב ג" is at the visual
+ * line end, not between "a" and the Hebrew. */
+static void test_bidi_line_end_whitespace(sr_test_ctx *t)
+{
+    static const uint32_t cps[] = {'a', 0x05D0, 0x05D1, 0x2003, 0x05D2};
+    SrFont *font = open_dejavu(cps, 5);
+    if (!font) return;
+    SrTextStyle style = style_for(40, 120, 400);
+    SrTextLayout layout;
+    /* a(0) alef(1) bet(3) U+2003(5-7) gimel(8) */
+    if (layout_ok(t, font, "a\xD7\x90\xD7\x91\xE2\x80\x83\xD7\x92", &style, &layout)) {
+        CHECK_INT(t, layout.line_count, 2);
+        if (layout.line_count == 2) {
+            const SrTextLine *line = &layout.lines[0];
+            CHECK(t, !line->rtl);
+            CHECK_INT(t, line->byte_end, 8);
+            const SrTextGlyph *last = &layout.glyphs[line->first_glyph + line->glyph_count - 1];
+            CHECK_INT(t, last->cluster, 5);
+            CHECK(t, cluster_x(&layout, 0) < cluster_x(&layout, 3));
+            CHECK(t, cluster_x(&layout, 3) < cluster_x(&layout, 1));
+            CHECK(t, cluster_x(&layout, 1) < cluster_x(&layout, 5));
+        }
+        sr_text_layout_free(&layout);
+    }
+    sr_font_close(font);
+}
+
+/* Extreme coordinates never reach an out-of-range integer conversion. */
+static void test_extreme_values(sr_test_ctx *t)
+{
+    SrFont *font = open_inter(t);
+    if (!font) return;
+    SrTextStyle style = style_for(32, 100, 50);
+    SrTextLayout layout;
+    char err[256] = "";
+    style.line_height = 1e308; /* line advance overflows to infinity */
+    CHECK(t, sr_text_layout(font, "a\nb", &style, &layout, err, sizeof(err)) ==
+             SR_ERR_ARGUMENT);
+    style.line_height = 1e300;
+    style.letter_spacing = 1e307;
+    float *coverage = calloc(100 * 50, sizeof(float));
+    if (coverage && layout_ok(t, font, "abcdefghijklmnopqrstuvwxyz\nabc", &style, &layout)) {
+        CHECK(t, sr_text_rasterize(font, &layout, style.size, 100, 50, coverage) == SR_OK);
+        sr_text_layout_free(&layout);
+    }
+    style = style_for(32, 100, 50);
+    if (coverage && layout_ok(t, font, "A", &style, &layout)) {
+        const double values[] = {NAN, HUGE_VAL, -HUGE_VAL, 1e300, -1e300,
+                                 -9.3e18, 9.3e18, -2.3058430092136940e18};
+        SrTextGlyph glyphs[8 * 8];
+        for (size_t i = 0; i < 8; ++i)
+            for (size_t k = 0; k < 8; ++k) {
+                glyphs[i * 8 + k] = layout.glyphs[0];
+                glyphs[i * 8 + k].x = values[i];
+                glyphs[i * 8 + k].y = values[k];
+            }
+        SrTextLayout extreme = {.glyphs = glyphs, .glyph_count = 64};
+        memset(coverage, 0, 100 * 50 * sizeof(float));
+        CHECK(t, sr_text_rasterize(font, &extreme, 32, 100, 50, coverage) == SR_OK);
+        double ink = 0.0;
+        for (size_t i = 0; i < 100 * 50; ++i) ink += coverage[i];
+        CHECK(t, ink == 0.0);
+        sr_text_layout_free(&layout);
+    }
+    free(coverage);
+    sr_font_close(font);
+}
+
+#define TEXT_HEAD "<scene version=\"1.0\"><project width=\"64\" height=\"64\" " \
+                  "fps=\"10\" duration=\"1\"/><assets>"
+#define TEXT_TAIL "</assets><composition/></scene>"
+
+/* Loads one <text> element with `attributes`; expects `needle` in the
+ * diagnostics on failure, or success when needle is NULL. */
+static void expect_text_xml(sr_test_ctx *t, const char *attributes, const char *needle)
+{
+    size_t size = strlen(TEXT_HEAD TEXT_TAIL) + strlen(attributes) + 128;
+    char *xml = malloc(size);
+    CHECK(t, xml != NULL);
+    if (!xml) return;
+    snprintf(xml, size, "%s<text id=\"t\" width=\"10\" height=\"10\" %s/>%s",
+             TEXT_HEAD, attributes, TEXT_TAIL);
+    SrScene scene;
+    char *message = NULL;
+    SrStatus status = st_load(t, "text-bounds.xml", xml, &scene, &message);
+    if (needle) {
+        if (status == SR_OK) {
+            SR_FAIL(t, "accepted: %.80s", attributes);
+            sr_scene_free(&scene);
+        } else {
+            CHECK_CONTAINS(t, message ? message : "", needle);
+        }
+    } else {
+        if (status != SR_OK) SR_FAIL(t, "rejected: %.80s: %s", attributes, message ? message : "");
+        else sr_scene_free(&scene);
+    }
+    free(message);
+    free(xml);
+}
+
+static void test_xml_bounds(sr_test_ctx *t)
+{
+    expect_text_xml(t, "text=\"x\" size=\"4096\" lineHeight=\"10\" letterSpacing=\"-4096\"", NULL);
+    expect_text_xml(t, "text=\"x\" size=\"40\" lineHeight=\"0.1\" letterSpacing=\"160\"", NULL);
+    expect_text_xml(t, "text=\"x\" size=\"4096.5\"", "size");
+    expect_text_xml(t, "text=\"x\" size=\"0\"", "size");
+    expect_text_xml(t, "text=\"x\" size=\"32\" lineHeight=\"1e308\"", "lineHeight");
+    expect_text_xml(t, "text=\"x\" size=\"32\" lineHeight=\"10.01\"", "lineHeight");
+    expect_text_xml(t, "text=\"x\" size=\"32\" lineHeight=\"0.09\"", "lineHeight");
+    expect_text_xml(t, "text=\"x\" size=\"40\" letterSpacing=\"-40.5\"", "letterSpacing");
+    expect_text_xml(t, "text=\"x\" size=\"40\" letterSpacing=\"160.5\"", "letterSpacing");
+    expect_text_xml(t, "text=\"x\" size=\"40\" letterSpacing=\"1e300\"", "letterSpacing");
+    size_t limit = (size_t)1 << 20;
+    char *attributes = malloc(limit + 64);
+    CHECK(t, attributes != NULL);
+    if (attributes) {
+        for (size_t extra = 0; extra < 2; ++extra) {
+            memcpy(attributes, "size=\"8\" text=\"", 15);
+            memset(attributes + 15, 'a', limit + extra);
+            strcpy(attributes + 15 + limit + extra, "\"");
+            expect_text_xml(t, attributes, extra ? "text" : NULL);
+        }
+        free(attributes);
+    }
+    static const char *const good[] = {"en", "en-US", "sr-Latn", "zh-Hant-TW",
+                                       "abcdefgh-abcdefgh-abcdefgh-abcdefgh"};
+    static const char *const bad[] = {"e", "en-", "-en", "1en", "toolongtag",
+                                      "en--US", "en-abcdefghi", "en_US",
+                                      "abcdefgh-abcdefgh-abcdefgh-abcdefgh-a"};
+    char buffer[128];
+    for (size_t i = 0; i < sizeof(good) / sizeof(good[0]); ++i) {
+        CHECK(t, sr_text_language_valid(good[i]));
+        snprintf(buffer, sizeof(buffer), "text=\"x\" size=\"8\" language=\"%s\"", good[i]);
+        expect_text_xml(t, buffer, NULL);
+    }
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        CHECK(t, !sr_text_language_valid(bad[i]));
+        snprintf(buffer, sizeof(buffer), "text=\"x\" size=\"8\" language=\"%s\"", bad[i]);
+        expect_text_xml(t, buffer, "language");
+    }
+    /* The layout API rejects malformed tags too. */
+    SrFont *font = open_inter(t);
+    if (font) {
+        SrTextStyle style = style_for(20, 100, 40);
+        style.language = "en-";
+        SrTextLayout layout;
+        char err[256] = "";
+        CHECK(t, sr_text_layout(font, "x", &style, &layout, err, sizeof(err)) ==
+                 SR_ERR_ARGUMENT);
+        sr_font_close(font);
+    }
+}
+
 const sr_test_case sr_tests_text[] = {
     {"kerning", test_kerning},
     {"ligature", test_ligature},
@@ -448,5 +771,12 @@ const sr_test_case sr_tests_text[] = {
     {"rasterize_deterministic", test_rasterize_deterministic},
     {"render_thread_invariant", test_render_thread_invariant},
     {"missing_fonts", test_missing_fonts},
+    {"shaping_failures", test_shaping_failures},
+    {"breaks_at_cluster_starts", test_breaks_at_cluster_starts},
+    {"lines_shaped_alone", test_lines_shaped_alone},
+    {"reshaped_lines_fit", test_reshaped_lines_fit},
+    {"bidi_line_end_whitespace", test_bidi_line_end_whitespace},
+    {"extreme_values", test_extreme_values},
+    {"xml_bounds", test_xml_bounds},
     {NULL, NULL},
 };
