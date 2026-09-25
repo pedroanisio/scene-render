@@ -24,6 +24,9 @@ struct SrEncoder {
     AVCodecContext *video;
     AVStream *vstream;
     struct SwsContext *sws;
+    AVFrame *src;           /* threaded scaler: view of the caller's RGBA */
+    enum AVPixelFormat src_format;
+    bool sws_threaded;      /* slice-threaded scaler (sws_scale_frame) */
     AVFrame *frame;
     int64_t next_pts;
     unsigned bits;
@@ -162,6 +165,41 @@ static void color_tags(SrColorSpace space, AVCodecContext *c, int *sws_matrix) {
     }
 }
 
+/* The RGB -> Y'CbCr scaler. With several threads swscale converts
+ * horizontal slices of the output in parallel, each slice context reading
+ * the whole source, so every output row is computed exactly as by one
+ * thread: the bytes do not depend on the thread count (verified for 8- and
+ * 16-bit input, 4:2:0/4:2:2/4:4:4 output, odd sizes, both ranges). */
+static int open_scaler(SrEncoder *e, const AVCodecContext *c, unsigned threads) {
+    const int flags = SWS_BICUBIC | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT |
+                      SWS_BITEXACT;
+    if (threads <= 1) {
+        e->sws = sws_getContext(c->width, c->height, e->src_format, c->width,
+                                c->height, c->pix_fmt, flags, NULL, NULL, NULL);
+        return e->sws ? 0 : AVERROR(EINVAL);
+    }
+    e->sws = sws_alloc_context();
+    if (!e->sws) return AVERROR(ENOMEM);
+    e->sws_threaded = true;
+    int rc = av_opt_set_int(e->sws, "srcw", c->width, 0);
+    if (rc >= 0) rc = av_opt_set_int(e->sws, "srch", c->height, 0);
+    if (rc >= 0) rc = av_opt_set_int(e->sws, "src_format", e->src_format, 0);
+    if (rc >= 0) rc = av_opt_set_int(e->sws, "dstw", c->width, 0);
+    if (rc >= 0) rc = av_opt_set_int(e->sws, "dsth", c->height, 0);
+    if (rc >= 0) rc = av_opt_set_int(e->sws, "dst_format", c->pix_fmt, 0);
+    if (rc >= 0) rc = av_opt_set_int(e->sws, "sws_flags", flags, 0);
+    if (rc >= 0) rc = av_opt_set_int(e->sws, "threads", (int64_t)threads, 0);
+    if (rc >= 0) rc = sws_init_context(e->sws, NULL, NULL);
+    if (rc >= 0) {
+        e->src = av_frame_alloc();
+        if (!e->src) return AVERROR(ENOMEM);
+        e->src->format = e->src_format;
+        e->src->width = c->width;
+        e->src->height = c->height;
+    }
+    return rc;
+}
+
 static SrStatus open_video(SrEncoder *e, const SrScene *scene, unsigned threads,
                            SrDiagnostics *diag) {
     const SrOutput *output = &scene->output;
@@ -229,13 +267,9 @@ static SrStatus open_video(SrEncoder *e, const SrScene *scene, unsigned threads,
         snprintf(what, sizeof(what), "cannot open video encoder '%s'", name);
         return av_fail(diag, rc, what);
     }
-    e->sws = sws_getContext(c->width, c->height,
-                            e->bits == 16 ? AV_PIX_FMT_RGBA64 : AV_PIX_FMT_RGBA,
-                            c->width, c->height, c->pix_fmt,
-                            SWS_BICUBIC | SWS_ACCURATE_RND |
-                                SWS_FULL_CHR_H_INT | SWS_BITEXACT,
-                            NULL, NULL, NULL);
-    if (!e->sws) return av_fail(diag, 0, "cannot set up RGB to Y'CbCr conversion");
+    e->src_format = e->bits == 16 ? AV_PIX_FMT_RGBA64 : AV_PIX_FMT_RGBA;
+    rc = open_scaler(e, c, threads);
+    if (rc < 0) return av_fail(diag, rc, "cannot set up RGB to Y'CbCr conversion");
     const int *coefficients = sws_getCoefficients(matrix);
     /* Source is full-range RGB; the destination range follows colorRange. */
     if (sws_setColorspaceDetails(e->sws, coefficients, 1, coefficients,
@@ -724,16 +758,41 @@ static int drain(SrEncoder *e, AVCodecContext *codec, AVStream *stream) {
     }
 }
 
+static void borrowed_free(void *opaque, uint8_t *data) {
+    (void)opaque;
+    (void)data;
+}
+
 SrStatus sr_encoder_write_video(SrEncoder *e, const void *rgba,
                                 SrDiagnostics *diag) {
     if (!e || e->closing || !rgba || !e->video) return SR_ERR_ARGUMENT;
     double start = sr_monotonic_seconds();
     int rc = av_frame_make_writable(e->frame);
     if (rc < 0) return av_fail(diag, rc, "cannot prepare video frame");
-    const uint8_t *source[4] = {rgba, NULL, NULL, NULL};
-    const int stride[4] = {(int)(e->width * 4 * (e->bits / 8)), 0, 0, 0};
-    rc = sws_scale(e->sws, source, stride, 0, (int)e->height, e->frame->data,
-                   e->frame->linesize);
+    int stride = (int)(e->width * 4 * (e->bits / 8));
+    if (e->sws_threaded) {
+        /* A borrowed view of the caller's pixels: a buffer reference whose
+         * free does nothing, so swscale references it instead of copying. */
+        e->src->buf[0] = av_buffer_create((uint8_t *)rgba,
+                                          (size_t)stride * e->height,
+                                          borrowed_free, NULL,
+                                          AV_BUFFER_FLAG_READONLY);
+        if (!e->src->buf[0]) {
+            e->seconds += sr_monotonic_seconds() - start;
+            return av_fail(diag, AVERROR(ENOMEM), "cannot prepare video frame");
+        }
+        e->src->data[0] = (uint8_t *)rgba;
+        e->src->linesize[0] = stride;
+        rc = sws_scale_frame(e->sws, e->frame, e->src);
+        av_buffer_unref(&e->src->buf[0]);
+        e->src->data[0] = NULL;
+        if (rc == 0) rc = 1;    /* success: 0 or more */
+    } else {
+        const uint8_t *source[4] = {rgba, NULL, NULL, NULL};
+        const int strides[4] = {stride, 0, 0, 0};
+        rc = sws_scale(e->sws, source, strides, 0, (int)e->height, e->frame->data,
+                       e->frame->linesize);   /* success: rows written */
+    }
     if (rc <= 0) {
         e->seconds += sr_monotonic_seconds() - start;
         return av_fail(diag, rc < 0 ? rc : 0, "RGB to Y'CbCr conversion failed");
@@ -847,6 +906,7 @@ void sr_encoder_destroy(SrEncoder *e) {
     sws_freeContext(e->sws);
     swr_free(&e->swr);
     av_frame_free(&e->frame);
+    av_frame_free(&e->src);
     av_frame_free(&e->aframe);
     av_packet_free(&e->pkt);
     avcodec_parameters_free(&e->copy_par);
