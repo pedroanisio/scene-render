@@ -42,9 +42,15 @@ as a child process.
   `sr_scene_free` releases it.
 - Layer instances reference shared assets. A still/text/vector asset holds one
   cached blend-space image. A video asset owns one open demuxer/decoder and
-  an LRU of converted frames keyed by source-frame index (256 MiB per asset,
-  at least two frames), each converted to blend space once when decoded;
-  request/hit/decode/seek counts are reported by `--metrics`.
+  an LRU of converted frames keyed by source-frame index (256 MiB per asset),
+  each converted to blend space once when decoded; request/hit/decode/seek
+  counts are reported by `--metrics`. The budget always yields to one frame
+  (the one just returned): a single frame larger than the budget is kept
+  regardless (7680×4320 float RGBA is about 506 MiB), and asset loading
+  warns once when the frames all sources keep together exceed the budget.
+  Frame `i` shows the latest source frame presented at or before `i / fps`
+  on the file's timeline, whose origin (the container start, audio codec
+  priming excluded) the asset's soundtrack shares.
 - A mesh asset owns one parsed vertex/normal/triangle set reused by every mesh
   object instance.
 - Each audio asset is decoded once, in memory, to the mix format and shared by

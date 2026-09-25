@@ -52,7 +52,8 @@ TEST_WRAPS := avformat_alloc_output_context2 avcodec_find_encoder_by_name \
 	avformat_find_stream_info av_find_best_stream avcodec_find_decoder \
 	avcodec_parameters_to_context av_read_frame avformat_seek_file \
 	avcodec_send_packet avcodec_receive_frame av_frame_ref \
-	swr_alloc_set_opts2 swr_init swr_convert swr_get_out_samples
+	swr_alloc_set_opts2 swr_init swr_convert swr_get_out_samples \
+	sws_setColorspaceDetails sws_scale
 TEST_LDFLAGS := $(foreach fn,$(TEST_WRAPS),-Wl,--wrap=$(fn))
 
 CORE_SOURCES := src/common.c src/parallel.c src/color.c src/raster.c src/vector_path.c src/mesh.c src/gpu.c src/spatial.c src/diagnostics.c src/timeline.c src/scene.c \

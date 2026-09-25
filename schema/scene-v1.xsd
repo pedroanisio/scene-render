@@ -423,17 +423,23 @@
     <xs:attribute name="cache" type="xs:anyURI"/>
   </xs:complexType>
 
+  <!-- Audio track times and fades in seconds: at most 1e7. -->
+  <xs:simpleType name="audioSecondsType">
+    <xs:restriction base="xs:double">
+      <xs:maxInclusive value="1e7"/>
+    </xs:restriction>
+  </xs:simpleType>
   <xs:complexType name="audioTrackType">
     <xs:attribute name="id" type="xs:ID" use="required"/>
     <xs:attribute name="asset" type="xs:IDREF" use="required"/>
-    <xs:attribute name="start" type="xs:double" default="0"/>
-    <xs:attribute name="clipIn" type="xs:double" default="0"/>
-    <xs:attribute name="clipOut" type="xs:double"/>
+    <xs:attribute name="start" type="audioSecondsType" default="0"/>
+    <xs:attribute name="clipIn" type="audioSecondsType" default="0"/>
+    <xs:attribute name="clipOut" type="audioSecondsType"/>
     <xs:attribute name="loop" type="xs:nonNegativeInteger" default="0"/>
     <xs:attribute name="volume" type="unitDecimal" default="1"/>
     <xs:attribute name="pan" type="xs:double" default="0"/>
-    <xs:attribute name="fadeIn" type="xs:double" default="0"/>
-    <xs:attribute name="fadeOut" type="xs:double" default="0"/>
+    <xs:attribute name="fadeIn" type="audioSecondsType" default="0"/>
+    <xs:attribute name="fadeOut" type="audioSecondsType" default="0"/>
     <xs:attribute name="speed" type="xs:double" default="1"/>
     <xs:attribute name="reverse" type="xs:boolean" default="false"/>
   </xs:complexType>

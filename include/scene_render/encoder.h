@@ -39,9 +39,17 @@ SrStatus sr_encoder_write_video(SrEncoder *encoder, const void *rgba,
  * outside [-1,1] are clipped. */
 SrStatus sr_encoder_write_audio(SrEncoder *encoder, const float *pcm,
                                 size_t samples, SrDiagnostics *diag);
-/* Flushes both encoders and writes the trailer. Only once. */
+/* Flushes both encoders, writes the trailer and closes the file. When a
+ * flush step fails the remaining steps still run (the trailer is written,
+ * so an MP4 keeps its moov box) and the first failure is returned. After
+ * the first call, writes are refused; a second call returns
+ * SR_ERR_ARGUMENT after success and SR_ERR_ENCODER after a failure. The
+ * audio padding of a fixed-frame codec's last frame is marked for discard
+ * (Matroska DiscardPadding; MP4 uses the last packet's duration). */
 SrStatus sr_encoder_finish(SrEncoder *encoder, SrDiagnostics *diag);
-/* Releases everything; safe on NULL and on unfinished encoders. */
+/* Releases everything; safe on NULL and on unfinished encoders. When the
+ * header was written but not the trailer, the trailer is written first so
+ * the partial file stays readable. */
 void sr_encoder_destroy(SrEncoder *encoder);
 /* Seconds spent inside write/finish calls (colour conversion + encode). */
 double sr_encoder_seconds(const SrEncoder *encoder);

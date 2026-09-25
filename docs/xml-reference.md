@@ -65,19 +65,28 @@ reported when the encoder opens, before the first frame renders.
 | `mesh` | `id`, `src` | — |
 
 Declared video geometry/FPS/duration make frame indexing explicit and
-deterministic. The engine does not silently derive timeline metadata: a
-decoded frame's index is its presentation timestamp, rebased to the first
-frame, at the declared `fps`. A stream whose frame rate or length differs from
+deterministic. The engine does not silently derive timeline metadata: frame
+index `i` at the declared `fps` shows the latest decoded frame whose
+presentation time is at most `i / fps` (within 10⁻⁶ of a frame, or half a
+timestamp tick of the container when that is coarser), never a later frame.
+Time zero is the container's start time with audio codec priming excluded,
+the same origin the asset's soundtrack uses, so the video and audio of one
+file stay in sync. A stream whose frame rate or length differs from
 the declaration produces a warning (the declared values still apply); a
-stream whose dimensions differ is an error. An index with no frame of its own
-(variable-rate gaps) shows the latest earlier frame, and indices past the last
-frame show the last one. Each video asset keeps one decoder open for the whole
-render; sequential access decodes forward, backward or far jumps seek to the
-nearest earlier keyframe, and converted frames are kept in a 256 MiB LRU per
-asset (at least two frames), so every layer sharing the asset shares its
-frames. Y'CbCr is converted with the stream's own matrix and range (BT.709,
-BT.601 or BT.2020; untagged streams use BT.709 from 720 lines up and BT.601
-below). Images are decoded in-process too, from any format libavformat reads
+stream whose dimensions differ is an error. Indices before the first frame
+show the first frame, indices with no frame of their own (variable-rate gaps)
+show the latest earlier frame, and indices past the last frame show the last
+one. A stream without timestamps counts one frame per packet from the start
+of the file and is never seeked (going backward reopens it). Each video asset
+keeps one decoder open for the whole render; sequential access decodes
+forward, backward or far jumps seek to the latest keyframe at or before the
+target time (both choose the same frame), and converted frames are kept in a
+256 MiB LRU per asset, so every layer sharing the asset shares its frames;
+the frame just returned is always kept, even when it alone exceeds the
+budget. Y'CbCr is converted with the stream's own matrix and range (BT.709,
+BT.601, SMPTE 240M, FCC or BT.2020; BT.2020 constant luminance uses the
+non-constant-luminance matrix, with a warning; untagged streams use BT.709
+from 720 lines up and BT.601 below). Images are decoded in-process too, from any format libavformat reads
 (PNG, JPEG, PPM, WebP, ...); PPM/PNM files must match the declared size,
 other formats are resampled to it (Lanczos). Image
 and video pixels are converted from their declared source color space to the
@@ -258,9 +267,16 @@ asset whose best audio stream is used), and accepts:
 | `speed` | 1 | `(0,100]` source seconds per output second (varispeed) |
 | `reverse` | false | each play runs from `clipOut` back to `clipIn` |
 
+`start`, `clipIn`, `clipOut`, `fadeIn` and `fadeOut` are at most `1e7`
+seconds; larger values are rejected with a diagnostic.
+
 Every asset is decoded once, in memory, with libswresample to the mix rate and
 channel count (clips longer than 4 hours are rejected), and shared by all its
-tracks. All times convert to samples with `round(t × rate)`, and the mixer is
+tracks. Decoded samples follow the file's timestamps on the same timeline as
+its video (time zero is the container start, codec priming excluded): a late
+start and any timestamp gap longer than 20 ms become silence, an overlap
+longer than 20 ms drops the overlapping start of the later audio, and
+smaller jitter is ignored. All times convert to samples with `round(t × rate)`, and the mixer is
 sample-exact: video frame `n` covers samples
 `[floor(n × rate × fps_den / fps_num), floor((n+1) × rate × fps_den / fps_num))`
 (exact integer arithmetic), so a range render's audio track has exactly the

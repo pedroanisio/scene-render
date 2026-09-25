@@ -84,10 +84,39 @@ WRAP(int, av_find_best_stream,
 WRAP(const AVCodec *, avcodec_find_decoder, (enum AVCodecID id), (id), NULL)
 WRAP(int, avcodec_parameters_to_context,
      (AVCodecContext *c, const AVCodecParameters *p), (c, p), AVERROR(EINVAL))
-WRAP(int, av_read_frame, (AVFormatContext *s, AVPacket *p), (s, p), AVERROR(EIO))
-WRAP(int, avformat_seek_file,
-     (AVFormatContext *s, int i, int64_t a, int64_t b, int64_t c, int f),
-     (s, i, a, b, c, f), AVERROR(EIO))
+WRAP(int, sws_setColorspaceDetails,
+     (struct SwsContext *c, const int inv[4], int sr, const int tab[4], int dr,
+      int b, int ct, int sa),
+     (c, inv, sr, tab, dr, b, ct, sa), -1)
+WRAP(int, sws_scale,
+     (struct SwsContext *c, const uint8_t *const src[], const int ss[], int y,
+      int h, uint8_t *const dst[], const int ds[]),
+     (c, src, ss, y, h, dst, ds), AVERROR(EINVAL))
+
+/* av_read_frame can also drop every timestamp (a stream without any), and
+ * seeks are counted. */
+static bool g_strip_timestamps;
+static int g_seek_calls;
+
+int __real_av_read_frame(AVFormatContext *s, AVPacket *p);
+int __wrap_av_read_frame(AVFormatContext *s, AVPacket *p);
+int __wrap_av_read_frame(AVFormatContext *s, AVPacket *p) {
+    if (inject("av_read_frame")) return AVERROR(EIO);
+    int rc = __real_av_read_frame(s, p);
+    if (rc >= 0 && g_strip_timestamps) p->pts = p->dts = AV_NOPTS_VALUE;
+    return rc;
+}
+
+int __real_avformat_seek_file(AVFormatContext *s, int i, int64_t a, int64_t b,
+                              int64_t c, int f);
+int __wrap_avformat_seek_file(AVFormatContext *s, int i, int64_t a, int64_t b,
+                              int64_t c, int f);
+int __wrap_avformat_seek_file(AVFormatContext *s, int i, int64_t a, int64_t b,
+                              int64_t c, int f) {
+    ++g_seek_calls;
+    if (inject("avformat_seek_file")) return AVERROR(EIO);
+    return __real_avformat_seek_file(s, i, a, b, c, f);
+}
 WRAP(int, avcodec_send_packet, (AVCodecContext *c, const AVPacket *p), (c, p),
      AVERROR_INVALIDDATA)
 WRAP(int, av_frame_ref, (AVFrame *d, const AVFrame *s), (d, s), AVERROR(ENOMEM))
@@ -162,6 +191,7 @@ static void open_faults(sr_test_ctx *t) {
         {"avcodec_parameters_from_context", 0, false, SR_ERR_ENCODER},
         {"avio_open", 0, false, SR_ERR_IO},
         {"avformat_write_header", 0, false, SR_ERR_ENCODER},
+        {"sws_setColorspaceDetails", 0, false, SR_ERR_ENCODER},
         /* The video half opens first, so skip 1 targets the audio call. */
         {"avcodec_find_encoder_by_name", 1, true, SR_ERR_ENCODER},
         {"avcodec_alloc_context3", 1, true, SR_ERR_MEMORY},
@@ -204,6 +234,7 @@ static void write_and_finish_faults(sr_test_ctx *t) {
         SrStatus want;
     } rows[] = {
         {"av_frame_make_writable", 0, 0, 0, SR_ERR_MEMORY},
+        {"sws_scale", 0, 0, 0, SR_ERR_ENCODER},
         {"avcodec_send_frame", 0, 0, 0, SR_ERR_ENCODER},
         {"avcodec_receive_packet", 0, 0, 0, SR_ERR_ENCODER},
         {"av_interleaved_write_frame", 0, 0, 0, SR_ERR_ENCODER},
@@ -339,7 +370,8 @@ static void video_frame_faults(sr_test_ctx *t) {
         {"av_read_frame", 0, 0, SR_ERR_ASSET},
         {"avcodec_send_packet", 0, 0, SR_ERR_ASSET},
         {"sws_getContext", 0, 0, SR_ERR_ASSET},
-        {"av_frame_ref", 0, 0, SR_ERR_MEMORY},
+        {"sws_setColorspaceDetails", 0, 0, SR_ERR_ASSET},
+        {"sws_scale", 0, 0, SR_ERR_ASSET},
     };
     const char *path = video_fixture();
     SrProject project = fault_project();
@@ -449,7 +481,7 @@ static void image_decoder_faults(sr_test_ctx *t) {
         "avformat_open_input", "avformat_find_stream_info", "av_find_best_stream",
         "avcodec_find_decoder", "avcodec_open2", "av_packet_alloc",
         "av_read_frame", "avcodec_send_packet", "avcodec_receive_frame",
-        "sws_getContext",
+        "sws_getContext", "sws_setColorspaceDetails", "sws_scale",
     };
     const char *path = sr_test_data_path("examples/assets/checker.ppm");
     for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); ++i) {
@@ -467,6 +499,93 @@ static void image_decoder_faults(sr_test_ctx *t) {
     }
 }
 
+/* A failure while flushing the final audio frame (allocation, as in
+ * av_frame_make_writable) is reported, but the trailer is still written:
+ * the MP4 keeps its moov box and opens with both streams. An encoder
+ * destroyed without finish writes the trailer too. */
+static void finish_failure_keeps_moov(sr_test_ctx *t) {
+    for (int destroy_only = 0; destroy_only < 2; ++destroy_only) {
+        SrScene scene;
+        fault_scene(&scene);
+        scene.output.codec = SR_CODEC_H264;
+        SrDiagnostics diag = sink_diag();
+        SrEncoderAudio audio = {48000, 2};
+        SrEncoder *e = NULL;
+        char path[1024];
+        snprintf(path, sizeof(path), "%s", sr_test_tmp_path("fault-moov.mp4"));
+        remove(path);
+        if (sr_encoder_open(&e, &scene, path, 1, &audio, &diag) != SR_OK) {
+            SR_FAIL(t, "open failed");
+            sr_scene_free(&scene);
+            continue;
+        }
+        uint8_t rgba[16 * 16 * 4];
+        memset(rgba, 90, sizeof(rgba));
+        static float pcm[3000 * 2];
+        for (int i = 0; i < 3; ++i) CHECK_INT(t, sr_encoder_write_video(e, rgba, &diag), SR_OK);
+        CHECK_INT(t, sr_encoder_write_audio(e, pcm, 3000, &diag), SR_OK);
+        if (!destroy_only) {
+            arm("av_frame_make_writable", 0);   /* the staged audio tail */
+            CHECK_INT(t, sr_encoder_finish(e, &diag), SR_ERR_MEMORY);
+            CHECK(t, g_fault == NULL);
+            disarm();
+            CHECK(t, diag.errors > 0);
+            /* Finished with an error: no retry, no more writes. */
+            CHECK_INT(t, sr_encoder_finish(e, &diag), SR_ERR_ENCODER);
+            CHECK_INT(t, sr_encoder_write_video(e, rgba, &diag), SR_ERR_ARGUMENT);
+        }
+        sr_encoder_destroy(e);
+        AVFormatContext *fmt = NULL;
+        int rc = avformat_open_input(&fmt, path, NULL, NULL);
+        if (rc >= 0) rc = avformat_find_stream_info(fmt, NULL);
+        if (rc < 0) SR_FAIL(t, "%s (destroy_only %d) is unreadable", path, destroy_only);
+        /* Destroyed unflushed, x264 has not output a packet yet, so only
+         * the audio track has samples (the empty video track is dropped). */
+        else if (fmt->nb_streams != (destroy_only ? 1u : 2u))
+            SR_FAIL(t, "destroy_only %d: %u streams", destroy_only, fmt->nb_streams);
+        avformat_close_input(&fmt);
+        sr_scene_free(&scene);
+    }
+}
+
+/* A stream without packet timestamps (every timestamp dropped on read):
+ * frames are numbered from the file start, the demuxer is never seeked
+ * (going backward reopens it), and every access order returns the same
+ * frames as the timestamped stream. */
+static void stream_without_timestamps(sr_test_ctx *t) {
+    const char *path = video_fixture();
+    SrProject project = fault_project();
+    SrVideoSource *ref = NULL, *bare = NULL;
+    CHECK_INT(t, sr_video_open(path, &project, SR_COLOR_SRGB, 24, 1, 0, &ref, NULL, 0),
+              SR_OK);
+    float expected[12];
+    for (int i = 0; ref && i < 12; ++i) {
+        const SrImage *image = NULL;
+        CHECK_INT(t, sr_video_frame(ref, i, &image, NULL, 0), SR_OK);
+        expected[i] = image ? image->px[0] : -1.0f;
+    }
+    sr_video_close(ref);
+    g_strip_timestamps = true;
+    char err[256] = "";
+    CHECK_INT(t, sr_video_open(path, &project, SR_COLOR_SRGB, 24, 1, 0, &bare, err,
+                               sizeof(err)), SR_OK);
+    g_seek_calls = 0;
+    static const int order[] = {5, 2, 9, 0, 11, 11, 3, 10, 1};
+    for (size_t k = 0; bare && k < sizeof(order) / sizeof(order[0]); ++k) {
+        const SrImage *image = NULL;
+        CHECK_INT(t, sr_video_frame(bare, order[k], &image, NULL, 0), SR_OK);
+        if (!image || image->px[0] != expected[order[k]])
+            SR_FAIL(t, "frame %d differs without timestamps", order[k]);
+    }
+    g_strip_timestamps = false;
+    if (bare) {
+        CHECK_INT(t, sr_video_info(bare)->frame_count, 12);
+        CHECK_INT(t, g_seek_calls, 0);
+        CHECK(t, sr_video_stats(bare)->seeks >= 4);   /* reopens */
+    }
+    sr_video_close(bare);
+}
+
 const sr_test_case sr_tests_encode_faults[] = {
     {"open_faults", open_faults},
     {"write_and_finish_faults", write_and_finish_faults},
@@ -474,5 +593,7 @@ const sr_test_case sr_tests_encode_faults[] = {
     {"video_frame_faults", video_frame_faults},
     {"audio_decoder_faults", audio_decoder_faults},
     {"image_decoder_faults", image_decoder_faults},
+    {"finish_failure_keeps_moov", finish_failure_keeps_moov},
+    {"stream_without_timestamps", stream_without_timestamps},
     {NULL, NULL},
 };

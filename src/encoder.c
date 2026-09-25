@@ -5,6 +5,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/intreadwrite.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/spherical.h>
@@ -38,8 +39,12 @@ struct SrEncoder {
     int stage_capacity;
     int64_t next_apts;
     uint32_t channels;
+    int audio_frame_size;   /* fixed codec frame (padded tail); 0 = none */
+    bool matroska;
     bool header_written;
-    bool finished;
+    bool trailer_written;
+    bool closing;           /* sr_encoder_finish has started */
+    bool finished;          /* sr_encoder_finish succeeded */
     double seconds;
 };
 
@@ -228,11 +233,11 @@ static SrStatus open_video(SrEncoder *e, const SrScene *scene, unsigned threads,
                             NULL, NULL, NULL);
     if (!e->sws) return av_fail(diag, 0, "cannot set up RGB to Y'CbCr conversion");
     const int *coefficients = sws_getCoefficients(matrix);
-    /* Source is full-range RGB; the destination range follows colorRange.
-     * The return value only reports "not a YUV destination", harmless. */
-    (void)sws_setColorspaceDetails(e->sws, coefficients, 1, coefficients,
-                                   output->full_range ? 1 : 0, 0, 1 << 16,
-                                   1 << 16);
+    /* Source is full-range RGB; the destination range follows colorRange. */
+    if (sws_setColorspaceDetails(e->sws, coefficients, 1, coefficients,
+                                 output->full_range ? 1 : 0, 0, 1 << 16,
+                                 1 << 16) < 0)
+        return av_fail(diag, 0, "cannot configure RGB to Y'CbCr conversion");
     e->frame = av_frame_alloc();
     if (!e->frame) return av_fail(diag, AVERROR(ENOMEM), "cannot allocate frame");
     e->frame->format = c->pix_fmt;
@@ -298,9 +303,10 @@ static SrStatus open_audio(SrEncoder *e, const SrScene *scene,
         return av_fail(diag, rc, what);
     }
     e->channels = audio->channels;
-    e->stage_capacity = a->frame_size > 0 &&
-                        !(codec->capabilities & AV_CODEC_CAP_VARIABLE_FRAME_SIZE)
-                            ? a->frame_size : 1024;
+    bool fixed_frames = a->frame_size > 0 &&
+                        !(codec->capabilities & AV_CODEC_CAP_VARIABLE_FRAME_SIZE);
+    e->stage_capacity = fixed_frames ? a->frame_size : 1024;
+    e->audio_frame_size = fixed_frames ? a->frame_size : 0;
     rc = swr_alloc_set_opts2(&e->swr, &a->ch_layout, a->sample_fmt,
                              a->sample_rate, &a->ch_layout, AV_SAMPLE_FMT_FLT,
                              a->sample_rate, 0, NULL);
@@ -416,6 +422,7 @@ SrStatus sr_encoder_open(SrEncoder **out, const SrScene *scene,
     if (!e) return SR_ERR_MEMORY;
     e->width = scene->project.width;
     e->height = scene->project.height;
+    e->matroska = strcmp(container, "matroska") == 0;
     SrStatus status = SR_OK;
     int rc = avformat_alloc_output_context2(&e->fmt, NULL, container, path);
     if (rc < 0 || !e->fmt)
@@ -453,14 +460,46 @@ const char *sr_encoder_name(const SrEncoder *encoder) {
                ? encoder->video->codec->name : "none";
 }
 
+/* A fixed-frame audio codec pads the last frame to a whole frame. Matroska
+ * only drops that padding on playback when the block carries DiscardPadding,
+ * which the muxer writes from skip-samples side data: every packet whose
+ * nominal frame [pts, pts + frame_size) extends past the last real sample
+ * (e->next_apts, in 1/sample_rate) says how much of its end to discard.
+ * MP4 needs nothing: the packet duration the encoder set (kept by the
+ * rescale below) ends the track at the last real sample. */
+static int mark_audio_padding(SrEncoder *e, AVPacket *pkt) {
+    if (!e->matroska || !e->audio_frame_size || pkt->pts == AV_NOPTS_VALUE)
+        return 0;
+    int64_t end = pkt->pts + e->audio_frame_size;
+    if (end <= e->next_apts) return 0;
+    int64_t discard = end - e->next_apts;
+    if (discard > e->audio_frame_size) discard = e->audio_frame_size;
+    uint8_t *side = av_packet_new_side_data(pkt, AV_PKT_DATA_SKIP_SAMPLES, 10);
+    if (!side) return AVERROR(ENOMEM);
+    AV_WL32(side, 0);
+    AV_WL32(side + 4, (uint32_t)discard);
+    side[8] = side[9] = 0;
+    return 0;
+}
+
 /* Writes every packet the codec has ready. Video packets last one frame:
- * encoders leave the duration unset, and muxers then shorten the last one. */
+ * encoders leave the duration unset, and muxers then shorten the last one.
+ * Audio packets keep the duration the encoder gave them (the last one is
+ * short when the final frame was). */
 static int drain(SrEncoder *e, AVCodecContext *codec, AVStream *stream) {
     for (;;) {
         int rc = avcodec_receive_packet(codec, e->pkt);
         if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF) return 0;
         if (rc < 0) return rc;
-        if (codec == e->video) e->pkt->duration = 1;
+        if (codec == e->video) {
+            e->pkt->duration = 1;
+        } else if (e->closing) {
+            rc = mark_audio_padding(e, e->pkt);
+            if (rc < 0) {
+                av_packet_unref(e->pkt);
+                return rc;
+            }
+        }
         av_packet_rescale_ts(e->pkt, codec->time_base, stream->time_base);
         e->pkt->stream_index = stream->index;
         rc = av_interleaved_write_frame(e->fmt, e->pkt);
@@ -470,14 +509,18 @@ static int drain(SrEncoder *e, AVCodecContext *codec, AVStream *stream) {
 
 SrStatus sr_encoder_write_video(SrEncoder *e, const void *rgba,
                                 SrDiagnostics *diag) {
-    if (!e || e->finished || !rgba) return SR_ERR_ARGUMENT;
+    if (!e || e->closing || !rgba) return SR_ERR_ARGUMENT;
     double start = sr_monotonic_seconds();
     int rc = av_frame_make_writable(e->frame);
     if (rc < 0) return av_fail(diag, rc, "cannot prepare video frame");
     const uint8_t *source[4] = {rgba, NULL, NULL, NULL};
     const int stride[4] = {(int)(e->width * 4 * (e->bits / 8)), 0, 0, 0};
-    sws_scale(e->sws, source, stride, 0, (int)e->height, e->frame->data,
-              e->frame->linesize);
+    rc = sws_scale(e->sws, source, stride, 0, (int)e->height, e->frame->data,
+                   e->frame->linesize);
+    if (rc <= 0) {
+        e->seconds += sr_monotonic_seconds() - start;
+        return av_fail(diag, rc < 0 ? rc : 0, "RGB to Y'CbCr conversion failed");
+    }
     e->frame->pts = e->next_pts++;
     rc = avcodec_send_frame(e->video, e->frame);
     if (rc >= 0) rc = drain(e, e->video, e->vstream);
@@ -502,7 +545,7 @@ static int flush_stage(SrEncoder *e) {
 
 SrStatus sr_encoder_write_audio(SrEncoder *e, const float *pcm, size_t samples,
                                 SrDiagnostics *diag) {
-    if (!e || e->finished || !e->audio || (!pcm && samples)) return SR_ERR_ARGUMENT;
+    if (!e || e->closing || !e->audio || (!pcm && samples)) return SR_ERR_ARGUMENT;
     double start = sr_monotonic_seconds();
     size_t channels = e->channels;
     for (size_t i = 0; i < samples;) {
@@ -526,32 +569,57 @@ SrStatus sr_encoder_write_audio(SrEncoder *e, const float *pcm, size_t samples,
     return SR_OK;
 }
 
+/* Writes the trailer once (MP4 needs it for its moov box). */
+static int write_trailer(SrEncoder *e) {
+    if (!e->header_written || e->trailer_written) return 0;
+    e->trailer_written = true;
+    return av_write_trailer(e->fmt);
+}
+
 SrStatus sr_encoder_finish(SrEncoder *e, SrDiagnostics *diag) {
     if (!e || e->finished) return SR_ERR_ARGUMENT;
+    if (e->closing) {
+        sr_diag_error(diag, 0, NULL, NULL,
+                      "encoder cannot be finished again after a failed finish");
+        return SR_ERR_ENCODER;
+    }
     double start = sr_monotonic_seconds();
-    e->finished = true;
+    e->closing = true;
+    /* Every step runs even after an earlier one failed, so the container
+     * is still closed properly; the first failure is the one returned. */
+    SrStatus status = SR_OK;
     int rc = avcodec_send_frame(e->video, NULL);
     if (rc >= 0) rc = drain(e, e->video, e->vstream);
-    if (rc < 0) return av_fail(diag, rc, "cannot flush video encoder");
+    if (rc < 0) status = av_fail(diag, rc, "cannot flush video encoder");
     if (e->audio) {
-        if (e->staged > 0) rc = flush_stage(e);
+        rc = e->staged > 0 ? flush_stage(e) : 0;
         if (rc >= 0) rc = avcodec_send_frame(e->audio, NULL);
         if (rc >= 0) rc = drain(e, e->audio, e->astream);
-        if (rc < 0) return av_fail(diag, rc, "cannot flush audio encoder");
+        if (rc < 0) {
+            SrStatus audio = av_fail(diag, rc, "cannot flush audio encoder");
+            if (status == SR_OK) status = audio;
+        }
     }
-    rc = av_write_trailer(e->fmt);
-    if (rc < 0) return av_fail(diag, rc, "cannot finish container");
-    rc = avio_closep(&e->fmt->pb);
+    rc = write_trailer(e);
+    if (rc < 0) {
+        SrStatus trailer = av_fail(diag, rc, "cannot finish container");
+        if (status == SR_OK) status = trailer;
+    }
+    rc = e->fmt->pb ? avio_closep(&e->fmt->pb) : 0;
     e->seconds += sr_monotonic_seconds() - start;
     if (rc < 0) {
         av_fail(diag, rc, "cannot close output file");
-        return SR_ERR_IO;
+        if (status == SR_OK) status = SR_ERR_IO;
     }
-    return SR_OK;
+    if (status == SR_OK) e->finished = true;
+    return status;
 }
 
 void sr_encoder_destroy(SrEncoder *e) {
     if (!e) return;
+    /* An unfinished file still gets its trailer (an MP4 without moov is
+     * unreadable); errors here have nowhere to go. */
+    if (e->fmt && e->fmt->pb) (void)write_trailer(e);
     if (e->fmt && e->fmt->pb) avio_closep(&e->fmt->pb);
     avformat_free_context(e->fmt);
     avcodec_free_context(&e->video);

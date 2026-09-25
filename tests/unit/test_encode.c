@@ -12,6 +12,7 @@
 
 #include "harness.h"
 #include "scene_render/encoder.h"
+#include "../../src/spatial_internal.h"
 
 typedef struct {
     int frames, width, height;
@@ -405,6 +406,150 @@ static void finish_once_and_destroy_unfinished(sr_test_ctx *t) {
     sr_scene_free(&scene);
 }
 
+/* ---- spatial metadata: chunk-offset rewrite ---------------------------- */
+
+typedef struct {
+    uint8_t data[1024];
+    size_t size;
+    size_t open[8];
+    int depth;
+} BoxBuilder;
+
+static void bb_u32(BoxBuilder *b, uint32_t v) {
+    for (int k = 3; k >= 0; --k) b->data[b->size++] = (uint8_t)(v >> (8 * k));
+}
+
+static void bb_u64(BoxBuilder *b, uint64_t v) {
+    bb_u32(b, (uint32_t)(v >> 32));
+    bb_u32(b, (uint32_t)v);
+}
+
+static void bb_open(BoxBuilder *b, const char *type) {
+    b->open[b->depth++] = b->size;
+    bb_u32(b, 0);
+    memcpy(b->data + b->size, type, 4);
+    b->size += 4;
+}
+
+static void bb_close(BoxBuilder *b) {
+    size_t at = b->open[--b->depth];
+    uint32_t size = (uint32_t)(b->size - at);
+    for (int k = 0; k < 4; ++k) b->data[at + k] = (uint8_t)(size >> (8 * (3 - k)));
+}
+
+/* trak > mdia > minf > stbl > stco|co64 with the given entries. */
+static void bb_track(BoxBuilder *b, bool wide, const uint64_t *entries, uint32_t count) {
+    bb_open(b, "trak");
+    bb_open(b, "mdia");
+    bb_open(b, "minf");
+    bb_open(b, "stbl");
+    bb_open(b, wide ? "co64" : "stco");
+    bb_u32(b, 0);            /* version, flags */
+    bb_u32(b, count);
+    for (uint32_t i = 0; i < count; ++i) {
+        if (wide) bb_u64(b, entries[i]);
+        else bb_u32(b, (uint32_t)entries[i]);
+    }
+    bb_close(b); bb_close(b); bb_close(b); bb_close(b); bb_close(b);
+}
+
+static uint32_t be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+/* The n-th chunk-offset table in buffer order: its type and entries. */
+static bool find_table(const uint8_t *data, size_t size, int n, char type[5],
+                       uint64_t *entries, uint32_t *count) {
+    for (size_t at = 4; at + 12 <= size; ++at) {
+        if (memcmp(data + at, "stco", 4) && memcmp(data + at, "co64", 4)) continue;
+        if (n-- > 0) continue;
+        memcpy(type, data + at, 4);
+        type[4] = '\0';
+        bool wide = type[0] == 'c';
+        *count = be32(data + at + 8);
+        const uint8_t *p = data + at + 12;
+        for (uint32_t i = 0; i < *count; ++i, p += wide ? 8 : 4)
+            entries[i] = wide ? ((uint64_t)be32(p) << 32) | be32(p + 4) : be32(p);
+        return true;
+    }
+    return false;
+}
+
+/* Box sizes along trak/mdia/minf/stbl/table of track `n` all fit their
+ * parents: the walk from moov visits every byte exactly. */
+static bool boxes_consistent(const uint8_t *data, size_t begin, size_t end) {
+    size_t at = begin;
+    while (at < end) {
+        if (end - at < 8) return false;
+        uint32_t size = be32(data + at);
+        if (size < 8 || size > end - at) return false;
+        const uint8_t *type = data + at + 4;
+        bool container = !memcmp(type, "trak", 4) || !memcmp(type, "mdia", 4) ||
+                         !memcmp(type, "minf", 4) || !memcmp(type, "stbl", 4);
+        if (container && !boxes_consistent(data, at + 8, at + size)) return false;
+        at += size;
+    }
+    return at == end;
+}
+
+/* Shifting chunk offsets past UINT32_MAX promotes those stco tables to co64,
+ * and the promotions' own growth joins the shift, which can push another
+ * table over the limit (iterated until stable). */
+static void spatial_offsets_promote_to_co64(sr_test_ctx *t) {
+    const uint64_t max = UINT32_MAX, threshold = 64, extra = 100;
+    static BoxBuilder b;
+    memset(&b, 0, sizeof(b));
+    bb_open(&b, "moov");
+    bb_open(&b, "mvhd");
+    bb_u32(&b, 0);
+    bb_close(&b);
+    const uint64_t a[] = {100, max - 10};               /* crosses at +100 */
+    const uint64_t c[] = {200, max - 105, 50};          /* crosses at +108 */
+    const uint64_t w[] = {(uint64_t)1 << 32};           /* already co64 */
+    const uint64_t n[] = {300};                         /* never crosses */
+    bb_track(&b, false, a, 2);
+    bb_track(&b, false, c, 3);
+    bb_track(&b, true, w, 1);
+    bb_track(&b, false, n, 1);
+    bb_close(&b);
+    size_t size = b.size;
+    uint8_t *moov = malloc(size);
+    memcpy(moov, b.data, size);
+    CHECK(t, sr_spatial_shift_offsets(&moov, &size, threshold, extra));
+    const uint64_t shift = extra + 2 * 4 + 3 * 4;
+    CHECK_INT(t, size, b.size + 2 * 4 + 3 * 4);
+    CHECK_INT(t, be32(moov), size);
+    CHECK(t, boxes_consistent(moov, 8, size));
+    char type[5];
+    uint64_t got[4];
+    uint32_t count = 0;
+    CHECK(t, find_table(moov, size, 0, type, got, &count));
+    CHECK_STR(t, type, "co64");
+    CHECK_INT(t, count, 2);
+    CHECK(t, got[0] == 100 + shift && got[1] == max - 10 + shift);
+    CHECK(t, find_table(moov, size, 1, type, got, &count));
+    CHECK_STR(t, type, "co64");
+    CHECK(t, count == 3 && got[0] == 200 + shift && got[1] == max - 105 + shift &&
+             got[2] == 50);
+    CHECK(t, find_table(moov, size, 2, type, got, &count));
+    CHECK_STR(t, type, "co64");
+    CHECK(t, got[0] == ((uint64_t)1 << 32) + shift);
+    CHECK(t, find_table(moov, size, 3, type, got, &count));
+    CHECK_STR(t, type, "stco");
+    CHECK(t, got[0] == 300 + shift);
+    free(moov);
+    /* Nothing crosses: tables stay 32-bit and the size is unchanged. */
+    size = b.size;
+    moov = malloc(size);
+    memcpy(moov, b.data, size);
+    CHECK(t, sr_spatial_shift_offsets(&moov, &size, max, extra));
+    CHECK_INT(t, size, b.size);
+    CHECK(t, find_table(moov, size, 0, type, got, &count));
+    CHECK_STR(t, type, "stco");
+    CHECK(t, got[0] == 100 && got[1] == max - 10);
+    free(moov);
+}
+
 const sr_test_case sr_tests_encode[] = {
     {"h264_mp4_round_trip", h264_mp4_round_trip},
     {"h265_mp4_round_trip", h265_mp4_round_trip},
@@ -415,5 +560,6 @@ const sr_test_case sr_tests_encode[] = {
     {"spherical_side_data", spherical_side_data},
     {"open_rejects_bad_configuration", open_rejects_bad_configuration},
     {"finish_once_and_destroy_unfinished", finish_once_and_destroy_unfinished},
+    {"spatial_offsets_promote_to_co64", spatial_offsets_promote_to_co64},
     {NULL, NULL},
 };

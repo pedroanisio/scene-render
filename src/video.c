@@ -2,11 +2,15 @@
 #include "scene_render/video.h"
 #include "scene_render/color.h"
 
+#include "media_internal.h"
+#include "video_internal.h"
+
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +18,8 @@
 /* Decoding forward is cheaper than seeking for short gaps; beyond this many
  * frames the source seeks to the nearest earlier keyframe instead. */
 enum { FORWARD_DECODE_LIMIT = 48 };
+
+__extension__ typedef __int128 SrI128;
 
 typedef struct {
     int64_t index;        /* -1 = empty */
@@ -25,18 +31,30 @@ struct SrVideoSource {
     AVFormatContext *fmt;
     AVCodecContext *dec;
     AVPacket *pkt;
-    AVFrame *frame;
-    AVFrame *prev;        /* latest decoded frame before the target */
+    AVFrame *frame;       /* decoder output */
+    AVFrame *prev;        /* latest decoded frame shown at or before the target */
+    AVFrame *ahead;       /* decoded frame first shown after the target */
+    int64_t prev_index;   /* first output index of prev / ahead */
+    int64_t ahead_index;
     struct SwsContext *sws;
-    int sws_format, sws_range, sws_space, sws_width, sws_height;
+    int sws_key[5];
     uint8_t *rgba;        /* width * height * 4 conversion buffer */
     const SrProject *project;
     SrColorSpace source_space;
+    char *path;           /* reopened to rewind a stream without timestamps */
+    const char *failure;  /* stage of the last frame failure, or NULL */
     int stream;
     AVRational tb;        /* stream time base */
     AVRational frame_tb;  /* 1 / declared fps */
-    int64_t start_pts;    /* pts of frame 0 */
-    int64_t next_index;   /* index the decoder produces next; -1 unknown */
+    int64_t origin;       /* timeline origin in tb (media_internal.h) */
+    int64_t first_pts;    /* earliest frame pts */
+    SrI128 eps_num;       /* selection tolerance, in frames */
+    SrI128 eps_den;
+    int64_t counted;      /* frames decoded since the start (no timestamps) */
+    bool no_timestamps;   /* no packet timestamps: count frames, never seek */
+    bool positioned;      /* decoder position follows prev/ahead */
+    bool at_start;        /* decoding began at the first frame */
+    bool matrix_warned;
     CacheSlot *slots;
     size_t slot_count;
     uint64_t clock;
@@ -67,31 +85,48 @@ static enum AVPixelFormat plain_format(enum AVPixelFormat format, bool *full) {
     }
 }
 
+int sr_video_sws_matrix(int colorspace, int height, bool *approximated) {
+    if (approximated) *approximated = false;
+    switch (colorspace) {
+    case AVCOL_SPC_BT709: return SWS_CS_ITU709;
+    case AVCOL_SPC_UNSPECIFIED: return height >= 720 ? SWS_CS_ITU709 : SWS_CS_ITU601;
+    case AVCOL_SPC_SMPTE240M: return SWS_CS_SMPTE240M;
+    case AVCOL_SPC_FCC: return SWS_CS_FCC;
+    case AVCOL_SPC_BT2020_NCL: return SWS_CS_BT2020;
+    case AVCOL_SPC_BT2020_CL:
+        /* swscale has no constant-luminance path: the non-constant matrix
+         * is the closest it offers. */
+        if (approximated) *approximated = true;
+        return SWS_CS_BT2020;
+    default: return SWS_CS_DEFAULT;   /* BT.601 (BT.470BG, SMPTE 170M) */
+    }
+}
+
 /* Builds (or reuses) a scaler from frame f to width x height RGBA using the
  * frame's own matrix and range. Untagged streams follow the usual
  * convention: BT.709 from 720 lines up, BT.601 below. */
 static int build_scaler(struct SwsContext **sws, int *cached, const AVFrame *f,
-                        int width, int height, int flags) {
+                        int width, int height, int flags, bool *approximated) {
     bool full = f->color_range == AVCOL_RANGE_JPEG;
     enum AVPixelFormat format = plain_format((enum AVPixelFormat)f->format, &full);
     int space = f->colorspace;
+    int matrix = sr_video_sws_matrix(space, f->height, approximated);
     int key[5] = {format, full, space, f->width, f->height};
     if (*sws && !memcmp(cached, key, sizeof(key))) return 0;
     sws_freeContext(*sws);
+    memset(cached, 0, sizeof(key));
     *sws = sws_getContext(f->width, f->height, format, width, height,
                           AV_PIX_FMT_RGBA, flags | SWS_ACCURATE_RND |
                               SWS_FULL_CHR_H_INT | SWS_BITEXACT,
                           NULL, NULL, NULL);
     if (!*sws) return AVERROR(EINVAL);
-    int matrix = space == AVCOL_SPC_BT709 ? SWS_CS_ITU709
-               : space == AVCOL_SPC_UNSPECIFIED
-                   ? (f->height >= 720 ? SWS_CS_ITU709 : SWS_CS_ITU601)
-                   : SWS_CS_DEFAULT;
-    if (space == AVCOL_SPC_BT2020_NCL || space == AVCOL_SPC_BT2020_CL)
-        matrix = SWS_CS_BT2020;
     const int *coefficients = sws_getCoefficients(matrix);
-    (void)sws_setColorspaceDetails(*sws, coefficients, full ? 1 : 0,
-                                   coefficients, 1, 0, 1 << 16, 1 << 16);
+    if (sws_setColorspaceDetails(*sws, coefficients, full ? 1 : 0,
+                                 coefficients, 1, 0, 1 << 16, 1 << 16) < 0) {
+        sws_freeContext(*sws);
+        *sws = NULL;
+        return AVERROR(EINVAL);
+    }
     memcpy(cached, key, sizeof(key));
     return 0;
 }
@@ -105,40 +140,101 @@ static int open_decoder(AVFormatContext *fmt, int stream, AVCodecContext **out) 
     *out = dec;
     int rc = avcodec_parameters_to_context(dec, st->codecpar);
     if (rc < 0) return rc;
+    dec->pkt_timebase = st->time_base;
     /* One thread: frame threading changes nothing in the output but adds
      * latency frames that complicate exact seeking. */
     dec->thread_count = 1;
     return avcodec_open2(dec, codec, NULL);
 }
 
+/* First output index that shows a frame with this pts: the smallest i with
+ * t <= i / fps + eps, where t is the pts relative to the origin in seconds
+ * and eps is 1e-6 of a frame, or half a stream tick when that is larger
+ * (timestamps are rounded to ticks: a 30 fps frame at 66.67 ms is stored
+ * as 67 ms in Matroska), at most half a frame. Exact in 128 bits. */
+static int64_t first_index(const SrVideoSource *v, int64_t pts) {
+    SrI128 n = ((SrI128)pts - v->origin) * v->tb.num * v->frame_tb.den;
+    SrI128 d = (SrI128)v->tb.den * v->frame_tb.num;
+    SrI128 q = n / d, r = n % d;
+    if (r < 0) {
+        q -= 1;
+        r += d;
+    }
+    /* ceil(q + r/d - eps) for 0 < eps <= 1/2. */
+    if (r * v->eps_den > v->eps_num * d) q += 1;
+    return q > INT64_MAX ? INT64_MAX : q < INT64_MIN ? INT64_MIN : (int64_t)q;
+}
+
+static void set_tolerance(SrVideoSource *v) {
+    SrI128 d = (SrI128)v->tb.den * v->frame_tb.num;
+    v->eps_num = (SrI128)v->tb.num * v->frame_tb.den;   /* half a tick */
+    v->eps_den = 2 * d;
+    if (2 * v->eps_num > v->eps_den) {
+        v->eps_num = 1;
+        v->eps_den = 2;
+    }
+    if (v->eps_num * 1000000 < v->eps_den) {
+        v->eps_num = 1;
+        v->eps_den = 1000000;
+    }
+}
+
+/* Closes and reopens the demuxer: the only way back to the first frame of
+ * a stream without timestamps, which demuxers cannot seek. */
+static int reopen(SrVideoSource *v) {
+    avformat_close_input(&v->fmt);
+    int rc = avformat_open_input(&v->fmt, v->path, NULL, NULL);
+    if (rc >= 0) rc = avformat_find_stream_info(v->fmt, NULL);
+    if (rc >= 0 && (v->stream >= (int)v->fmt->nb_streams ||
+                    v->fmt->streams[v->stream]->codecpar->codec_type !=
+                        AVMEDIA_TYPE_VIDEO))
+        rc = AVERROR_INVALIDDATA;
+    if (rc < 0) avformat_close_input(&v->fmt);
+    return rc;
+}
+
 /* Demuxes every packet once to find the pts of the first and last frames in
- * presentation order, which container metadata does not reliably give. */
+ * presentation order, which container metadata does not reliably give, and
+ * the timeline origin (media_internal.h). */
 static int scan(SrVideoSource *v) {
     int64_t packets = 0, first = INT64_MAX, last = INT64_MIN;
+    int64_t origin_us = sr_media_origin_us(v->fmt);
+    int audio = -1;
+    if (origin_us == AV_NOPTS_VALUE)
+        audio = av_find_best_stream(v->fmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    int64_t fallback = AV_NOPTS_VALUE;
     int rc;
     while ((rc = av_read_frame(v->fmt, v->pkt)) >= 0) {
-        if (v->pkt->stream_index == v->stream) {
+        int s = v->pkt->stream_index;
+        int64_t ts = v->pkt->pts != AV_NOPTS_VALUE ? v->pkt->pts : v->pkt->dts;
+        if (s == v->stream) {
             ++packets;
-            int64_t ts = v->pkt->pts != AV_NOPTS_VALUE ? v->pkt->pts : v->pkt->dts;
             if (ts != AV_NOPTS_VALUE) {
                 first = ts < first ? ts : first;
                 last = ts > last ? ts : last;
             }
+        }
+        if (origin_us == AV_NOPTS_VALUE && (s == v->stream || (audio >= 0 && s == audio))) {
+            int64_t us = sr_media_start_us(v->fmt->streams[s], ts);
+            if (us != AV_NOPTS_VALUE && (fallback == AV_NOPTS_VALUE || us < fallback))
+                fallback = us;
         }
         av_packet_unref(v->pkt);
     }
     if (rc != AVERROR_EOF) return rc;
     if (packets == 0) return AVERROR_INVALIDDATA;
     if (first == INT64_MAX) {
-        v->start_pts = 0;   /* no timestamps: one frame per packet */
+        /* No timestamps: one frame per packet, counted from the start. */
+        v->no_timestamps = true;
         v->info.frame_count = packets;
-    } else {
-        v->start_pts = first;
-        v->info.frame_count = 1 + av_rescale_q_rnd(last - first, v->tb, v->frame_tb,
-                                                   AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+        return reopen(v);
     }
-    return avformat_seek_file(v->fmt, v->stream, INT64_MIN, v->start_pts,
-                              v->start_pts, 0);
+    if (origin_us == AV_NOPTS_VALUE) origin_us = fallback != AV_NOPTS_VALUE ? fallback : 0;
+    v->origin = sr_media_origin_in(v->fmt->streams[v->stream], origin_us);
+    v->first_pts = first;
+    int64_t last_index = first_index(v, last);
+    v->info.frame_count = last_index < 0 ? 1 : last_index + 1;
+    return avformat_seek_file(v->fmt, v->stream, INT64_MIN, first, first, 0);
 }
 
 static int alloc_cache(SrVideoSource *v, size_t cache_bytes) {
@@ -168,10 +264,14 @@ SrStatus sr_video_open(const char *path, const SrProject *project,
     if (!v) return SR_ERR_MEMORY;
     v->project = project;
     v->source_space = source_space;
-    v->next_index = -1;
     v->frame_tb = (AVRational){(int)fps_den, (int)fps_num};
-    const char *stage = "cannot open file";
-    int rc = avformat_open_input(&v->fmt, path, NULL, NULL);
+    v->path = sr_strdup(path);
+    const char *stage = "out of memory";
+    int rc = v->path ? 0 : AVERROR(ENOMEM);
+    if (rc >= 0) {
+        stage = "cannot open file";
+        rc = avformat_open_input(&v->fmt, path, NULL, NULL);
+    }
     if (rc >= 0) {
         stage = "cannot read stream information";
         rc = avformat_find_stream_info(v->fmt, NULL);
@@ -192,6 +292,9 @@ SrStatus sr_video_open(const char *path, const SrProject *project,
                                                      : st->r_frame_rate;
         v->info.rate_num = rate.num;
         v->info.rate_den = rate.den;
+        v->info.matrix_approximated =
+            st->codecpar->color_space == AVCOL_SPC_BT2020_CL;
+        v->matrix_warned = v->info.matrix_approximated;   /* caller reports it */
         v->tb = st->time_base;
         if (v->dec->width <= 0 || v->dec->height <= 0 || v->dec->width > 16384 ||
             v->dec->height > 16384 || v->tb.num <= 0 || v->tb.den <= 0)
@@ -200,11 +303,13 @@ SrStatus sr_video_open(const char *path, const SrProject *project,
         v->info.height = (uint32_t)(v->dec->height > 0 ? v->dec->height : 0);
     }
     if (rc >= 0) {
+        set_tolerance(v);
         stage = "out of memory";
         v->pkt = av_packet_alloc();
         v->frame = av_frame_alloc();
         v->prev = av_frame_alloc();
-        if (!v->pkt || !v->frame || !v->prev) rc = AVERROR(ENOMEM);
+        v->ahead = av_frame_alloc();
+        if (!v->pkt || !v->frame || !v->prev || !v->ahead) rc = AVERROR(ENOMEM);
     }
     if (rc >= 0) {
         stage = "cannot index frames";
@@ -228,9 +333,11 @@ void sr_video_close(SrVideoSource *v) {
     for (size_t i = 0; i < v->slot_count; ++i) free(v->slots[i].image.px);
     free(v->slots);
     free(v->rgba);
+    free(v->path);
     sws_freeContext(v->sws);
     av_frame_free(&v->frame);
     av_frame_free(&v->prev);
+    av_frame_free(&v->ahead);
     av_packet_free(&v->pkt);
     avcodec_free_context(&v->dec);
     avformat_close_input(&v->fmt);
@@ -240,16 +347,34 @@ void sr_video_close(SrVideoSource *v) {
 const SrVideoInfo *sr_video_info(const SrVideoSource *v) { return &v->info; }
 const SrVideoStats *sr_video_stats(const SrVideoSource *v) { return &v->stats; }
 
-static int64_t frame_index_of(const SrVideoSource *v, const AVFrame *f) {
+size_t sr_video_minimum_bytes(const SrVideoSource *v) {
+    if (!v) return 0;
+    return (size_t)v->info.width * v->info.height * 4 * sizeof(float) *
+           SR_VIDEO_CACHE_MIN_FRAMES;
+}
+
+size_t sr_video_scene_minimum_bytes(const SrScene *scene) {
+    size_t total = 0;
+    for (size_t i = 0; scene && i < scene->asset_count; ++i) {
+        size_t bytes = sr_video_minimum_bytes(scene->assets[i].video);
+        total = bytes > SIZE_MAX - total ? SIZE_MAX : total + bytes;
+    }
+    return total;
+}
+
+/* First output index of decoded frame f. */
+static int64_t frame_index(SrVideoSource *v, const AVFrame *f) {
+    if (v->no_timestamps) return v->counted++;
     int64_t pts = f->best_effort_timestamp != AV_NOPTS_VALUE
                       ? f->best_effort_timestamp : f->pts;
-    if (pts == AV_NOPTS_VALUE) return v->next_index >= 0 ? v->next_index : 0;
-    return av_rescale_q_rnd(pts - v->start_pts, v->tb, v->frame_tb,
-                            AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+    if (pts == AV_NOPTS_VALUE)   /* a lone untimed frame follows the last */
+        return v->prev->buf[0] ? v->prev_index + 1 : 0;
+    return first_index(v, pts);
 }
 
 /* Next decoded frame into v->frame: 0, AVERROR_EOF at the end, or error. */
 static int decode_next(SrVideoSource *v) {
+    if (!v->fmt) return AVERROR(EINVAL);
     for (;;) {
         int rc = avcodec_receive_frame(v->dec, v->frame);
         if (rc == 0) {
@@ -270,14 +395,30 @@ static int decode_next(SrVideoSource *v) {
     }
 }
 
-static int seek_to(SrVideoSource *v, int64_t index) {
-    int64_t target = v->start_pts + av_rescale_q(index, v->frame_tb, v->tb);
-    int rc = avformat_seek_file(v->fmt, v->stream, INT64_MIN, target, target, 0);
+/* Positions the decoder so that decoding forward reaches the frame shown
+ * at `index`: a seek to the latest keyframe at or before its time, or to
+ * the first frame; a stream without timestamps is reopened instead. */
+static int reposition(SrVideoSource *v, int64_t index) {
+    av_frame_unref(v->prev);
+    av_frame_unref(v->ahead);
+    v->positioned = false;
+    v->stats.seeks++;
+    int rc;
+    if (v->no_timestamps) {
+        rc = reopen(v);
+        v->at_start = true;
+        v->counted = 0;
+    } else {
+        int64_t offset = av_rescale_q_rnd(index, v->frame_tb, v->tb,
+                                          AV_ROUND_DOWN | AV_ROUND_PASS_MINMAX);
+        int64_t target = offset > INT64_MAX - v->origin ? INT64_MAX : v->origin + offset;
+        v->at_start = index <= 0 || target <= v->first_pts;
+        if (v->at_start) target = v->first_pts;
+        rc = avformat_seek_file(v->fmt, v->stream, INT64_MIN, target, target, 0);
+    }
     if (rc < 0) return rc;
     avcodec_flush_buffers(v->dec);
-    av_frame_unref(v->prev);
-    v->next_index = -1;
-    v->stats.seeks++;
+    v->positioned = true;
     return 0;
 }
 
@@ -300,17 +441,27 @@ static CacheSlot *cache_victim(SrVideoSource *v) {
 /* Converts f to blend space and stores it in the cache as `index`. */
 static int convert(SrVideoSource *v, const AVFrame *f, int64_t index,
                    CacheSlot **out) {
-    int key[5] = {v->sws_format, v->sws_range, v->sws_space, v->sws_width,
-                  v->sws_height};
-    int rc = build_scaler(&v->sws, key, f, (int)v->info.width,
-                          (int)v->info.height, SWS_BICUBIC);
-    v->sws_format = key[0]; v->sws_range = key[1]; v->sws_space = key[2];
-    v->sws_width = key[3]; v->sws_height = key[4];
-    if (rc < 0) return rc;
+    bool approximated = false;
+    int rc = build_scaler(&v->sws, v->sws_key, f, (int)v->info.width,
+                          (int)v->info.height, SWS_BICUBIC, &approximated);
+    if (rc < 0) {
+        v->failure = "cannot set up color conversion";
+        return rc;
+    }
+    if (approximated && !v->matrix_warned) {
+        v->matrix_warned = true;
+        av_log(NULL, AV_LOG_WARNING,
+               "%s: BT.2020 constant-luminance frames are decoded with the "
+               "non-constant-luminance matrix (approximation)\n", v->path);
+    }
     uint8_t *dst[4] = {v->rgba, NULL, NULL, NULL};
     int dst_stride[4] = {(int)v->info.width * 4, 0, 0, 0};
-    sws_scale(v->sws, (const uint8_t *const *)f->data, f->linesize, 0,
-              f->height, dst, dst_stride);
+    rc = sws_scale(v->sws, (const uint8_t *const *)f->data, f->linesize, 0,
+                   f->height, dst, dst_stride);
+    if (rc <= 0) {
+        v->failure = "color conversion failed";
+        return rc < 0 ? rc : AVERROR_EXTERNAL;
+    }
     CacheSlot *slot = cache_victim(v);
     free(slot->image.px);
     slot->image = (SrImage){0};
@@ -324,46 +475,47 @@ static int convert(SrVideoSource *v, const AVFrame *f, int64_t index,
     return 0;
 }
 
-static int keep_as_prev(SrVideoSource *v) {
-    av_frame_unref(v->prev);
-    return av_frame_ref(v->prev, v->frame);
-}
-
-/* Decodes until the frame shown at `index` is known and converts it. */
+/* Decodes until the frame shown at `index` is known and converts it. The
+ * shown frame is the latest one whose first index (first_index) is at most
+ * `index`, never a later one; forward decoding and seeking agree because
+ * a seek lands on a keyframe at or before that frame. */
 static int produce(SrVideoSource *v, int64_t index, CacheSlot **out) {
-    bool from_start = false;
-    if (v->next_index < 0 || index < v->next_index ||
-        index - v->next_index > FORWARD_DECODE_LIMIT) {
-        int rc = seek_to(v, index);
-        if (rc < 0) return rc;
+    bool forward = v->positioned &&
+                   (v->prev->buf[0] ? v->prev_index <= index : v->at_start);
+    if (forward && !v->no_timestamps) {
+        int64_t reached = v->ahead->buf[0] ? v->ahead_index
+                        : v->prev->buf[0] ? v->prev_index : 0;
+        if (index - reached > FORWARD_DECODE_LIMIT) forward = false;
     }
+    int rc;
+    if (!forward && (rc = reposition(v, index)) < 0) return rc;
+    bool restarted = false;
     for (;;) {
-        int rc = decode_next(v);
-        if (rc == AVERROR_EOF) {
-            /* Past the last frame: hold the latest one decoded. */
-            return v->prev->buf[0] ? convert(v, v->prev, index, out)
-                                   : AVERROR_INVALIDDATA;
-        }
-        if (rc < 0) return rc;
-        int64_t got = frame_index_of(v, v->frame);
-        v->next_index = got + 1;
-        if (got < index) {
-            rc = keep_as_prev(v);
+        while (!v->ahead->buf[0] || v->ahead_index <= index) {
+            if (v->ahead->buf[0]) {
+                av_frame_unref(v->prev);
+                av_frame_move_ref(v->prev, v->ahead);
+                v->prev_index = v->ahead_index;
+                continue;
+            }
+            rc = decode_next(v);
+            if (rc == AVERROR_EOF) break;    /* past the last frame: hold it */
             if (rc < 0) return rc;
-            continue;
+            v->ahead_index = frame_index(v, v->frame);
+            av_frame_move_ref(v->ahead, v->frame);
         }
-        if (got > index && !v->prev->buf[0] && !from_start && index > 0) {
-            /* The seek landed after the target: restart from frame 0. */
-            from_start = true;
-            rc = seek_to(v, 0);
-            if (rc < 0) return rc;
-            continue;
+        const AVFrame *shown = v->prev->buf[0] ? v->prev : NULL;
+        if (!shown && v->ahead->buf[0]) {
+            if (!v->at_start && !restarted) {
+                /* The seek landed after the target: start from frame 0. */
+                restarted = true;
+                if ((rc = reposition(v, 0)) < 0) return rc;
+                continue;
+            }
+            shown = v->ahead;   /* before the first frame: the first frame */
         }
-        /* got == index shows this frame; a gap shows the one before it. */
-        const AVFrame *shown = got > index && v->prev->buf[0] ? v->prev : v->frame;
-        rc = convert(v, shown, index, out);
-        if (rc == 0) rc = keep_as_prev(v);
-        return rc;
+        if (!shown) return AVERROR_INVALIDDATA;
+        return convert(v, shown, index, out);
     }
 }
 
@@ -378,11 +530,12 @@ SrStatus sr_video_frame(SrVideoSource *v, int64_t index, const SrImage **out,
     if (slot) {
         v->stats.cache_hits++;
     } else {
+        v->failure = NULL;
         int rc = produce(v, index, &slot);
         if (rc < 0) {
-            /* Unknown decoder position: the next request seeks. */
-            v->next_index = -1;
-            set_err(err, errlen, "cannot decode frame", rc);
+            /* Unknown decoder position: the next request repositions. */
+            v->positioned = false;
+            set_err(err, errlen, v->failure ? v->failure : "cannot decode frame", rc);
             return averr_status(rc);
         }
     }
@@ -464,9 +617,15 @@ SrStatus sr_image_decode_rgba8(const char *path, uint32_t width,
             stage = NULL;
         } else {
             int key[5] = {0};
+            bool approximated = false;
             stage = "cannot set up color conversion";
             rc = build_scaler(&sws, key, frame, (int)width, (int)height,
-                              SWS_LANCZOS);
+                              SWS_LANCZOS, &approximated);
+            static atomic_flag warned = ATOMIC_FLAG_INIT;
+            if (rc >= 0 && approximated && !atomic_flag_test_and_set(&warned))
+                av_log(NULL, AV_LOG_WARNING,
+                       "%s: BT.2020 constant-luminance image decoded with the "
+                       "non-constant-luminance matrix (approximation)\n", path);
         }
     }
     if (got && rc >= 0) {
@@ -477,8 +636,10 @@ SrStatus sr_image_decode_rgba8(const char *path, uint32_t width,
         } else {
             uint8_t *dst[4] = {pixels, NULL, NULL, NULL};
             int dst_stride[4] = {(int)width * 4, 0, 0, 0};
-            sws_scale(sws, (const uint8_t *const *)frame->data, frame->linesize,
-                      0, frame->height, dst, dst_stride);
+            stage = "color conversion failed";
+            rc = sws_scale(sws, (const uint8_t *const *)frame->data,
+                           frame->linesize, 0, frame->height, dst, dst_stride);
+            if (rc == 0) rc = AVERROR_EXTERNAL;
         }
     }
     sws_freeContext(sws);

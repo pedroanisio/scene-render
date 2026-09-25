@@ -6,9 +6,12 @@
 #include <stdlib.h>
 
 #include "harness.h"
+#include "media_synth.h"
 #include "scene_render/audio.h"
+#include "scene_render/encoder.h"
 #include "scene_render/renderer.h"
 #include "scene_render/xml.h"
+#include "../../src/audio_internal.h"
 
 static void frame_to_sample_is_exact(sr_test_ctx *t) {
     /* 30000/1001 at 48 kHz: floor(f * 48048000 / 30000), which fits in 64
@@ -194,63 +197,187 @@ static void reverse_and_speed_positions(sr_test_ctx *t) {
     sr_scene_free(&scene);
 }
 
-/* Audio samples in the file's audio stream: last packet end minus first
- * packet pts, in 1/rate units. */
-static int64_t audio_track_samples(const char *path, int *rate) {
-    AVFormatContext *fmt = NULL;
-    if (avformat_open_input(&fmt, path, NULL, NULL) < 0) return -1;
-    avformat_find_stream_info(fmt, NULL);
-    int si = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
-    if (si < 0) {
-        avformat_close_input(&fmt);
+/* Samples of the file's soundtrack as the core decodes it (default libav
+ * decoding, so skip-samples and discard-padding side data are honoured). */
+static int64_t decoded_samples(const char *path) {
+    float *pcm = NULL;
+    uint64_t samples = 0;
+    char err[256] = "";
+    if (sr_audio_decode_file(path, 48000, 2, 60.0, &pcm, &samples, err,
+                             sizeof(err)) != SR_OK) {
+        fprintf(stderr, "  decode %s: %s\n", path, err);
         return -1;
     }
-    AVStream *st = fmt->streams[si];
-    *rate = st->codecpar->sample_rate;
-    AVPacket *pkt = av_packet_alloc();
-    int64_t first = INT64_MAX, end = INT64_MIN;
-    while (av_read_frame(fmt, pkt) >= 0) {
-        if (pkt->stream_index == si && pkt->pts != AV_NOPTS_VALUE) {
-            if (pkt->pts < first) first = pkt->pts;
-            if (pkt->pts + pkt->duration > end) end = pkt->pts + pkt->duration;
-        }
-        av_packet_unref(pkt);
-    }
-    av_packet_free(&pkt);
-    int64_t samples = av_rescale_q(end - first, st->time_base,
-                                   (AVRational){1, *rate});
-    avformat_close_input(&fmt);
-    return samples;
+    free(pcm);
+    return (int64_t)samples;
 }
 
 /* A range render at 30000/1001 hands the encoder exactly S(end) - S(first)
- * samples, and the AAC track in the file agrees within one AAC frame. */
+ * samples. Decoded back, the Matroska track has exactly that many (the
+ * padded tail of the last AAC frame carries DiscardPadding); libavformat's
+ * MP4 demuxer does not trim a track's end, so the MP4 track may keep the
+ * rest of the last AAC frame (fewer than 1024 extra samples). */
 static void range_render_sample_count(sr_test_ctx *t) {
     FILE *sink = fopen("/dev/null", "w");
+    static const char *const names[] = {"audio-range.mkv", "audio-range.mp4"};
+    for (int k = 0; k < 2; ++k) {
+        SrDiagnostics diag;
+        sr_diag_init(&diag, "audio-range", sink ? sink : stderr);
+        SrScene scene;
+        CHECK_INT(t, sr_scene_load_xml(sr_test_data_path("tests/data-media.xml"),
+                                       &scene, &diag), SR_OK);
+        scene.project.fps_num = 30000;
+        scene.project.fps_den = 1001;
+        char path[1024];
+        snprintf(path, sizeof(path), "%s", sr_test_tmp_path(names[k]));
+        SrRenderOptions options = {.has_range = true, .first_frame = 10,
+                                   .end_frame = 25, .output_override = path,
+                                   .encoder_threads = 1};
+        SrRenderMetrics metrics;
+        CHECK_INT(t, sr_render(&scene, &options, &metrics, &diag), SR_OK);
+        uint64_t expected = sr_frame_to_sample(25, 48000, 30000, 1001) -
+                            sr_frame_to_sample(10, 48000, 30000, 1001);
+        CHECK_INT(t, expected, 24024);
+        CHECK_INT(t, metrics.audio_samples, expected);
+        CHECK_INT(t, metrics.frames, 15);
+        int64_t in_file = decoded_samples(path);
+        if (k == 0) {
+            CHECK_INT(t, in_file, expected);
+        } else if (in_file < (int64_t)expected || in_file >= (int64_t)expected + 1024) {
+            SR_FAIL(t, "mp4 decodes %lld samples, expected %llu (+ < 1024 tail)",
+                    (long long)in_file, (unsigned long long)expected);
+        }
+        sr_scene_free(&scene);
+    }
+    if (sink) fclose(sink);
+}
+
+/* AAC priming in MP4 is signalled as skip samples; the decoder drops it
+ * once (it needs pkt_timebase to move the frame timestamp past it), and
+ * the core must not trim it again: a tone starting at 0.5 s decodes at
+ * 0.5 s and the clip keeps its whole length. */
+static void mp4_priming_trimmed_once(sr_test_ctx *t) {
+    FILE *sink = fopen("/dev/null", "w");
     SrDiagnostics diag;
-    sr_diag_init(&diag, "audio-range", sink ? sink : stderr);
+    sr_diag_init(&diag, "priming", sink ? sink : stderr);
     SrScene scene;
-    CHECK_INT(t, sr_scene_load_xml(sr_test_data_path("tests/data-media.xml"),
-                                   &scene, &diag), SR_OK);
-    scene.project.fps_num = 30000;
-    scene.project.fps_den = 1001;
+    sr_scene_init(&scene);
+    scene.project.width = 16;
+    scene.project.height = 16;
+    scene.project.fps_num = 1;
+    scene.project.fps_den = 1;
     char path[1024];
-    snprintf(path, sizeof(path), "%s", sr_test_tmp_path("audio-range.mp4"));
-    SrRenderOptions options = {.has_range = true, .first_frame = 10,
-                               .end_frame = 25, .output_override = path,
-                               .encoder_threads = 1};
-    SrRenderMetrics metrics;
-    CHECK_INT(t, sr_render(&scene, &options, &metrics, &diag), SR_OK);
-    uint64_t expected = sr_frame_to_sample(25, 48000, 30000, 1001) -
-                        sr_frame_to_sample(10, 48000, 30000, 1001);
-    CHECK_INT(t, expected, 24024);
-    CHECK_INT(t, metrics.audio_samples, expected);
-    CHECK_INT(t, metrics.frames, 15);
-    int rate = 0;
-    int64_t in_file = audio_track_samples(path, &rate);
-    CHECK_INT(t, rate, 48000);
-    CHECK(t, llabs(in_file - (int64_t)expected) <= 1024);
+    snprintf(path, sizeof(path), "%s", sr_test_tmp_path("priming.mp4"));
+    SrEncoderAudio audio = {48000, 2};
+    SrEncoder *e = NULL;
+    CHECK_INT(t, sr_encoder_open(&e, &scene, path, 1, &audio, &diag), SR_OK);
+    enum { N = 48000, ONSET = 24000 };
+    float *pcm = calloc((size_t)N * 2, sizeof(float));
+    uint8_t rgba[16 * 16 * 4] = {0};
+    if (e && pcm) {
+        for (int i = ONSET; i < N; ++i)
+            pcm[2 * i] = pcm[2 * i + 1] = (float)(0.5 * sin(2.0 * SR_PI * 1000.0 * i / 48000.0));
+        CHECK_INT(t, sr_encoder_write_video(e, rgba, &diag), SR_OK);
+        CHECK_INT(t, sr_encoder_write_audio(e, pcm, N, &diag), SR_OK);
+        CHECK_INT(t, sr_encoder_finish(e, &diag), SR_OK);
+    }
+    sr_encoder_destroy(e);
+    free(pcm);
+    pcm = NULL;
+    uint64_t samples = 0;
+    CHECK_INT(t, sr_audio_decode_file(path, 48000, 2, 60.0, &pcm, &samples, NULL, 0),
+              SR_OK);
+    CHECK(t, samples >= N && samples < N + 1024);
+    int64_t onset = -1;
+    for (uint64_t i = 0; pcm && i < samples && onset < 0; ++i)
+        if (fabsf(pcm[2 * i]) > 0.1f) onset = (int64_t)i;
+    if (llabs(onset - ONSET) > 64)
+        SR_FAIL(t, "tone decoded from sample %lld, expected %d", (long long)onset, ONSET);
+    free(pcm);
     sr_scene_free(&scene);
+    if (sink) fclose(sink);
+}
+
+/* One second of audio, a one-second timestamp gap, one more second: the
+ * gap becomes silence and the second part plays at 2 s. */
+static void timestamp_gap_is_silence(sr_test_ctx *t) {
+    enum { PACKETS = 200, PER = 480 };
+    int64_t pts[PACKETS];
+    int counts[PACKETS];
+    int16_t values[PACKETS];
+    for (int k = 0; k < PACKETS; ++k) {
+        pts[k] = k < 100 ? 10 * k : 2000 + 10 * (k - 100);   /* ms */
+        counts[k] = PER;
+        values[k] = k < 100 ? 8000 : -8000;
+    }
+    SynthMedia m = {.format = "matroska", .audio_tb = {1, 1000},
+                    .audio_rate = 48000, .audio_pts = pts,
+                    .audio_samples = counts, .audio_value = values,
+                    .audio_packets = PACKETS};
+    char path[1024];
+    snprintf(path, sizeof(path), "%s", sr_test_tmp_path("audio-gap.mkv"));
+    CHECK(t, synth_media(path, &m));
+    float *pcm = NULL;
+    uint64_t samples = 0;
+    char err[256] = "";
+    CHECK_INT(t, sr_audio_decode_file(path, 48000, 1, 60.0, &pcm, &samples, err,
+                                      sizeof(err)), SR_OK);
+    CHECK_INT(t, samples, 3 * 48000);
+    if (pcm && samples == 3 * 48000) {
+        const float high = 8000.0f / 32768.0f;
+        CHECK_NEAR(t, pcm[100], high, 1e-4);
+        CHECK_NEAR(t, pcm[47999], high, 1e-4);
+        CHECK(t, pcm[48000] == 0.0f && pcm[72000] == 0.0f && pcm[95999] == 0.0f);
+        CHECK_NEAR(t, pcm[96000 + 100], -high, 1e-4);
+        CHECK_NEAR(t, pcm[3 * 48000 - 1], -high, 1e-4);
+    }
+    free(pcm);
+}
+
+/* Seconds -> samples saturates before llround; XML bounds track times. */
+static void seconds_to_samples_saturates(sr_test_ctx *t) {
+    CHECK(t, sr_audio_seconds_to_samples(2.5, 48000) == 120000);
+    CHECK(t, sr_audio_seconds_to_samples(0x1p62, 1) == ((uint64_t)1 << 62));
+    CHECK(t, sr_audio_seconds_to_samples(1e19, 1) == UINT64_MAX);
+    CHECK(t, sr_audio_seconds_to_samples(1e15, 48000) == UINT64_MAX);
+    CHECK(t, sr_audio_seconds_to_samples(0x1p63, 1) == UINT64_MAX);
+    CHECK(t, sr_audio_seconds_to_samples(-1.0, 48000) == 0);
+    CHECK(t, sr_audio_seconds_to_samples(NAN, 48000) == 0);
+    static const char *const attrs[] = {"start", "clipIn", "clipOut", "fadeIn",
+                                        "fadeOut"};
+    FILE *sink = fopen("/dev/null", "w");
+    for (int k = 0; k < 5; ++k) {
+        for (int over = 0; over < 2; ++over) {
+            char path[1024];
+            snprintf(path, sizeof(path), "%s", sr_test_tmp_path("audio-limit.xml"));
+            FILE *f = fopen(path, "w");
+            if (!f) {
+                SR_FAIL(t, "cannot write %s", path);
+                continue;
+            }
+            fprintf(f,
+                    "<?xml version=\"1.0\"?>\n<scene version=\"1.0\">\n"
+                    "<project width=\"16\" height=\"16\" fps=\"1\" duration=\"1\"/>\n"
+                    "<output path=\"out.mp4\" codec=\"h264\"/>\n"
+                    "<assets><audio id=\"a\" src=\"a.wav\"/></assets>\n"
+                    "<composition/>\n<audioMix>"
+                    "<audioTrack id=\"t\" asset=\"a\" %s=\"%s\"/>"
+                    "</audioMix>\n</scene>\n",
+                    attrs[k], over ? "1.5e7" : "1e7");
+            fclose(f);
+            SrDiagnostics diag;
+            sr_diag_init(&diag, "audio-limit", sink ? sink : stderr);
+            SrScene scene;
+            SrStatus st = sr_scene_load_xml(path, &scene, &diag);
+            if (over) {
+                if (st == SR_OK) SR_FAIL(t, "%s=1.5e7 accepted", attrs[k]);
+                CHECK(t, diag.errors > 0);
+            } else if (st != SR_OK) {
+                SR_FAIL(t, "%s=1e7 rejected", attrs[k]);
+            }
+            if (st == SR_OK) sr_scene_free(&scene);
+        }
+    }
     if (sink) fclose(sink);
 }
 
@@ -259,5 +386,8 @@ const sr_test_case sr_tests_audio[] = {
     {"two_tracks_with_pan_and_fades", two_tracks_with_pan_and_fades},
     {"reverse_and_speed_positions", reverse_and_speed_positions},
     {"range_render_sample_count", range_render_sample_count},
+    {"mp4_priming_trimmed_once", mp4_priming_trimmed_once},
+    {"timestamp_gap_is_silence", timestamp_gap_is_silence},
+    {"seconds_to_samples_saturates", seconds_to_samples_saturates},
     {NULL, NULL},
 };
