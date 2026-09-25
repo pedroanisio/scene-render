@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- In-process text layout: wrapping, alignment, justification, line
+     height, letter spacing, explicit line breaks (&#10;), bidirectional
+     paragraphs and vertical alignment inside the asset box. -->
+<scene version="1.0">
+  <project width="1280" height="720" fps="30" duration="4" seed="3"
+           linearLight="true" background="#0E1320FF"/>
+  <output path="../build/text-layout.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="medium" crf="18"/>
+  <assets>
+    <text id="heading" text="Text layout" width="560" height="70" size="52"
+          color="#F4F7FFFF" letterSpacing="2"
+          fontFile="../assets/third-party/inter/Inter-SemiBold.ttf"/>
+    <text id="body" width="560" height="260" size="24" lineHeight="1.35"
+          align="justify" color="#C9D6EEFF"
+          fontFile="../assets/third-party/inter/Inter-Regular.ttf"
+          text="Paragraphs wrap at spaces and after hyphens to the width of the asset box; a word wider than the box breaks between clusters. Justified lines fill the width, except the last line of each paragraph.&#10;Explicit line breaks start a new paragraph."/>
+    <text id="centered" text="centered&#10;in the middle of its box" width="560"
+          height="160" size="30" align="center" verticalAlign="middle"
+          color="#FFD48AFF"
+          fontFile="../assets/third-party/inter/Inter-Medium.ttf"/>
+    <text id="rtl" text="שלום עולם — abc 123" width="560" height="60" size="32"
+          color="#9FE8C8FF" font="DejaVu Sans" language="he"/>
+    <text id="arabic" text="مرحبا بالعالم" width="560" height="60" size="32"
+          align="end" color="#9FD8FFFF" font="DejaVu Sans" language="ar"/>
+  </assets>
+  <composition>
+    <shape id="bodyBox" shape="rect" width="560" height="260" x="60" y="140"
+           fill="#FFFFFF10"/>
+    <layer id="headingLayer" asset="heading" x="60" y="50"/>
+    <layer id="bodyLayer" asset="body" x="60" y="140"/>
+    <shape id="centerBox" shape="rect" width="560" height="160" x="660" y="140"
+           fill="#FFFFFF10"/>
+    <layer id="centeredLayer" asset="centered" x="660" y="140"/>
+    <layer id="rtlLayer" asset="rtl" x="660" y="340"/>
+    <layer id="arabicLayer" asset="arabic" x="660" y="420"/>
+  </composition>
+</scene>

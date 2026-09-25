@@ -1,4 +1,5 @@
 #include "scene_render/scene.h"
+#include "scene_render/text.h"
 #include "scene_render/video.h"
 
 #include <math.h>
@@ -62,6 +63,7 @@ static void asset_free(SrAsset *asset) {
     free(asset->text);
     free(asset->font_family);
     free(asset->font_file);
+    free(asset->text_language);
     free(asset->vector_path);
     free(asset->audio_pcm);
     if (asset->mesh) {
@@ -124,6 +126,7 @@ void sr_scene_free(SrScene *scene) {
     free(scene->source_path); free(scene->base_dir); free(scene->output.path);
     free(scene->output.pixel_format); free(scene->output.preset);
     free(scene->output.audio_codec);
+    sr_font_cache_free(scene->font_cache);
     *scene = (SrScene){0};
 }
 

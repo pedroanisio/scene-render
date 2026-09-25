@@ -37,10 +37,60 @@ static bool font_name_valid(const char *name) {
     return true;
 }
 
+static bool keyword(const char *text, const char *const *names, size_t count,
+                    int *value) {
+    for (size_t i = 0; i < count; ++i)
+        if (strcmp(text, names[i]) == 0) {
+            *value = (int)i;
+            return true;
+        }
+    return false;
+}
+
+/* align, lineHeight, letterSpacing, direction, language, verticalAlign. */
+static void text_layout_attributes(ParseContext *ctx, const XML_Char **attrs,
+                                   SrAsset *asset) {
+    static const char *const aligns[] = {"start", "center", "end", "justify"};
+    static const char *const directions[] = {"auto", "ltr", "rtl"};
+    static const char *const valigns[] = {"top", "middle", "bottom"};
+    int value = 0;
+    const char *text = sr_xml_attr(attrs, "align");
+    if (text && !keyword(text, aligns, 4, &value))
+        SR_XML_FAIL_RETURN(ctx, "text", "align", "expected start, center, end or justify");
+    asset->text_align = (SrTextAlign)value;
+    value = 0;
+    text = sr_xml_attr(attrs, "direction");
+    if (text && !keyword(text, directions, 3, &value))
+        SR_XML_FAIL_RETURN(ctx, "text", "direction", "expected auto, ltr or rtl");
+    asset->text_direction = (SrTextDirection)value;
+    value = 0;
+    text = sr_xml_attr(attrs, "verticalAlign");
+    if (text && !keyword(text, valigns, 3, &value))
+        SR_XML_FAIL_RETURN(ctx, "text", "verticalAlign", "expected top, middle or bottom");
+    asset->text_valign = (SrTextVAlign)value;
+    asset->text_line_height = 1.2;
+    if (!decimal(ctx, "text", attrs, "lineHeight", &asset->text_line_height)) return;
+    if (asset->text_line_height <= 0.0)
+        SR_XML_FAIL_RETURN(ctx, "text", "lineHeight", "expected a positive multiple of size");
+    if (!decimal(ctx, "text", attrs, "letterSpacing", &asset->text_letter_spacing)) return;
+    text = sr_xml_attr(attrs, "language");
+    if (text) {
+        bool valid = *text && isalpha((unsigned char)*text);
+        for (const unsigned char *p = (const unsigned char *)text; valid && *p; ++p)
+            valid = isalnum(*p) || *p == '-';
+        if (!valid)
+            SR_XML_FAIL_RETURN(ctx, "text", "language", "expected a BCP 47 language tag");
+        asset->text_language = sr_strdup(text);
+        if (!asset->text_language) SR_XML_FAIL_RETURN(ctx, "text", "language", "out of memory");
+    }
+}
+
 void sr_xml_start_text(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"id", "text", "width", "height", "size",
-                                    "color", "font", "fontFile"};
-    if (!sr_xml_attrs_allowed(ctx, "text", attrs, allowed, 8)) return;
+                                    "color", "font", "fontFile", "align",
+                                    "lineHeight", "letterSpacing", "direction",
+                                    "language", "verticalAlign"};
+    if (!sr_xml_attrs_allowed(ctx, "text", attrs, allowed, 14)) return;
     const char *id = sr_xml_required(ctx, "text", attrs, "id");
     const char *content = sr_xml_required(ctx, "text", attrs, "text");
     const char *width = sr_xml_required(ctx, "text", attrs, "width");
@@ -70,6 +120,7 @@ void sr_xml_start_text(ParseContext *ctx, const XML_Char **attrs) {
     if(font_file)asset->font_file=sr_strdup(font_file);
     if(!asset->font_family||(font_file&&!asset->font_file))
         SR_XML_FAIL_RETURN(ctx,"text",font_file?"fontFile":"font","out of memory");
+    text_layout_attributes(ctx, attrs, asset);
 }
 
 void sr_xml_start_vector(ParseContext *ctx, const XML_Char **attrs) {

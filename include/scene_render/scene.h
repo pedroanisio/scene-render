@@ -49,6 +49,13 @@ typedef enum { SR_COLOR_SRGB, SR_COLOR_DISPLAY_P3,
                SR_COLOR_REC2020, SR_COLOR_REC709 } SrColorSpace;
 typedef enum { SR_EFFECT_GLOW, SR_EFFECT_BLOOM, SR_EFFECT_BLUR, SR_EFFECT_COLOR_GRADE,
                SR_EFFECT_VIGNETTE, SR_EFFECT_LENS_FLARE } SrEffectType;
+/* Text asset layout (see docs/xml-reference.md). start/end resolve by the
+ * paragraph direction. */
+typedef enum { SR_TEXT_ALIGN_START, SR_TEXT_ALIGN_CENTER, SR_TEXT_ALIGN_END,
+               SR_TEXT_ALIGN_JUSTIFY } SrTextAlign;
+typedef enum { SR_TEXT_DIR_AUTO, SR_TEXT_DIR_LTR, SR_TEXT_DIR_RTL } SrTextDirection;
+typedef enum { SR_TEXT_VALIGN_TOP, SR_TEXT_VALIGN_MIDDLE,
+               SR_TEXT_VALIGN_BOTTOM } SrTextVAlign;
 
 /* Float premultiplied RGBA in the project blend space: 4 floats per pixel,
  * row-major and tightly packed. See docs/architecture.md. */
@@ -70,6 +77,7 @@ typedef struct {
 } SrMesh;
 
 struct SrVideoSource;
+struct SrFontCache;
 
 typedef struct {
     SrAssetType type;
@@ -88,6 +96,12 @@ typedef struct {
     char *font_family;
     char *font_file;
     double text_size;
+    SrTextAlign text_align;
+    SrTextDirection text_direction;
+    SrTextVAlign text_valign;
+    double text_line_height;    /* baseline distance as a multiple of size */
+    double text_letter_spacing; /* px added after each cluster */
+    char *text_language;        /* BCP-47 tag or NULL */
     SrColor color;
     SrShapeType vector_shape;
     char *vector_path;
@@ -398,6 +412,7 @@ typedef struct {
     size_t effect_count;
     size_t effect_capacity;
     SrPhysicsWorld physics;
+    struct SrFontCache *font_cache; /* text fonts opened while loading assets */
 } SrScene;
 
 void sr_scene_init(SrScene *scene);

@@ -40,8 +40,14 @@ LIBAV_LIBS := $(shell $(PKG_CONFIG) --libs $(LIBAV_MODULES))
 ifeq ($(LIBAV_LIBS),)
 $(error libav development files not found: need $(LIBAV_MODULES))
 endif
-CPPFLAGS += $(LIBAV_CFLAGS)
-LDLIBS += $(LIBAV_LIBS) -lexpat -lm -pthread -ldl
+TEXT_MODULES := freetype2 'harfbuzz >= 2.8.2' 'fribidi >= 1.0' 'fontconfig >= 2.13'
+TEXT_CFLAGS := $(shell $(PKG_CONFIG) --cflags $(TEXT_MODULES))
+TEXT_LIBS := $(shell $(PKG_CONFIG) --libs $(TEXT_MODULES))
+ifeq ($(TEXT_LIBS),)
+$(error text development files not found: need $(TEXT_MODULES))
+endif
+CPPFLAGS += $(LIBAV_CFLAGS) $(TEXT_CFLAGS)
+LDLIBS += $(LIBAV_LIBS) $(TEXT_LIBS) -lexpat -lm -pthread -ldl
 # libav fault injection for tests/unit/test_encode_faults.c.
 TEST_WRAPS := avformat_alloc_output_context2 avcodec_find_encoder_by_name \
 	avcodec_alloc_context3 avcodec_open2 avformat_new_stream \
@@ -56,7 +62,7 @@ TEST_WRAPS := avformat_alloc_output_context2 avcodec_find_encoder_by_name \
 TEST_LDFLAGS := $(foreach fn,$(TEST_WRAPS),-Wl,--wrap=$(fn))
 
 CORE_SOURCES := src/common.c src/parallel.c src/color.c src/raster.c src/vector_path.c src/mesh.c src/gpu.c src/spatial.c src/diagnostics.c src/timeline.c src/scene.c \
-	src/assets.c src/procedural.c src/audio.c src/compositor.c src/camera.c \
+	src/assets.c src/text.c src/procedural.c src/audio.c src/compositor.c src/camera.c \
 	src/lighting.c src/effects.c src/physics.c src/encoder.c src/video.c \
 	src/renderer.c \
 	src/resume.c src/xml.c \
@@ -70,7 +76,7 @@ TEST_SOURCES := $(sort $(wildcard tests/unit/*.c))
 TEST_OBJECTS := $(TEST_SOURCES:tests/unit/%.c=$(BUILD)/unit/%.o)
 UNIT_SUITES := timeline geometry compositor color vector mesh scene xml \
 	camera physics blend group raster mask path image encode encode_faults \
-	audio video
+	audio video text
 TEST_CPPFLAGS := -DSR_TEST_DATA_DIR='"$(CURDIR)"' \
 	-DSR_TEST_TMP_DIR='"$(CURDIR)/$(BUILD)/test_tmp"'
 DEPS := $(CORE_OBJECTS:.o=.d) $(APP_OBJECT:.o=.d) $(TEST_OBJECTS:.o=.d)

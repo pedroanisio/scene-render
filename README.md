@@ -23,8 +23,10 @@ listed in [`docs/dependencies.md`](docs/dependencies.md). Building requires
 libavcodec ≥ 60, libavutil ≥ 58, libswscale ≥ 7, libswresample ≥ 4; e.g.
 Debian/Ubuntu `libavformat-dev libavcodec-dev libavutil-dev libswscale-dev
 libswresample-dev`) with the libx264/libx265/FFV1/AAC encoders you intend to
-use. Encoding and media decoding run in-process; the `ffmpeg` executable is
-needed at runtime only for text assets (drawtext). Production codecs are
+use, plus FreeType, HarfBuzz (≥ 2.8.2), FriBidi and Fontconfig development
+files for text (Debian/Ubuntu `libfreetype-dev libharfbuzz-dev libfribidi-dev
+libfontconfig-dev`). Encoding, media decoding and text rendering all run
+in-process; no `ffmpeg` executable is needed. Production codecs are
 deliberately not reimplemented. The tests build `sr-probe`, which replaces
 `ffprobe` in the integration script.
 
@@ -42,8 +44,8 @@ make test
 ```
 
 Both builds select C17 and compile project sources with
-`-Wall -Wextra -Wpedantic -Werror`. POSIX clocks, files, pthreads (and one
-child process for drawtext text) are the documented platform layer.
+`-Wall -Wextra -Wpedantic -Werror`. POSIX clocks, files and pthreads are the
+documented platform layer.
 
 ## Commands
 

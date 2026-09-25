@@ -5,10 +5,10 @@
 The application is C17 with a narrow POSIX platform layer. There is no global
 mutable engine state: scenes, diagnostics, render options, frames, caches, and
 encoders have explicit owners and lifetimes. Dynamically sized arrays impose no
-artificial layer limit. Production codecs and shaped-text rasterization remain
-in mature external components rather than being reimplemented: codecs are the
-FFmpeg libraries linked in-process; text still runs FFmpeg's drawtext filter
-as a child process.
+artificial layer limit. Production codecs and text shaping remain in mature
+external components rather than being reimplemented, all linked in-process:
+codecs are the FFmpeg libraries; text uses Fontconfig, FriBidi, HarfBuzz and
+FreeType. The engine starts no child processes.
 
 ## Modules
 
@@ -19,6 +19,7 @@ as a child process.
 | `xml*` | Expat callbacks, dynamic element stack, typed attributes, semantic/reference validation |
 | `timeline` | stable key ordering and six interpolation curves |
 | `assets`, `procedural` | shared still/text/vector cache; video assets own a persistent decoder |
+| `text` | Fontconfig family lookup, per-scene font cache, FriBidi (UAX #9) paragraph levels and per-line run reordering, HarfBuzz shaping per bidi/script run, line breaking and alignment in the asset box, FreeType rasterization to coverage |
 | `video` | in-process libav image decode and per-asset video decoder with keyframe seeking and a byte-bounded frame LRU |
 | `vector_path`, `mesh` | exact-area SVG-style path fill/stroke coverage and Wavefront OBJ loading |
 | `parallel`, `color` | deterministic row jobs; 8-bit input to blend space and blend space to 8- or 16-bit output conversion |
@@ -45,6 +46,15 @@ as a child process.
   an LRU of converted frames keyed by source-frame index (256 MiB per asset,
   at least two frames), each converted to blend space once when decoded;
   request/hit/decode/seek counts are reported by `--metrics`.
+- Text assets are rendered once while assets load. Fonts are opened through a
+  per-scene cache keyed by (resolved path, face index) and owned by `SrScene`
+  (freed by `sr_assets_unload`/`sr_scene_free`); each font owns its FreeType
+  library and HarfBuzz face, so fonts share no mutable state. Layout uses
+  unhinted HarfBuzz positions (26.6); glyph origins are quantized to 1/4 px
+  and rendered as unhinted 8-bit anti-aliased FreeType outlines, accumulated
+  with a saturating add into a float coverage buffer, then multiplied by the
+  premultiplied blend-space text color. Output depends only on the inputs
+  and the library versions.
 - A mesh asset owns one parsed vertex/normal/triangle set reused by every mesh
   object instance.
 - Each audio asset is decoded once, in memory, to the mix format and shared by
@@ -89,9 +99,10 @@ animation takes precedence.
 All compositing happens in the *blend space*: the project working gamut,
 linear light when `linearLight="true"`, otherwise the working space's
 transfer-encoded values, stored as float premultiplied RGBA. Decoded 8-bit
-image/video/text/vector pixels are converted once (per cached video frame)
+image/video/vector pixels are converted once (per cached video frame)
 through a 256-entry transfer-decode table, the source-to-working gamut
-matrix, a re-encode when not linear, and premultiplication. XML colors are
+matrix, a re-encode when not linear, and premultiplication. XML colors
+(including text colors, which multiply the float glyph coverage directly) are
 working-space values and are converted the same way.
 
 Blending uses the W3C Compositing Level 1 separable formula on premultiplied
