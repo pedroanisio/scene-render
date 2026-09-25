@@ -47,7 +47,7 @@ ifeq ($(TEXT_LIBS),)
 $(error text development files not found: need $(TEXT_MODULES))
 endif
 # Runtime XSD validation of scene documents (src/xml_schema.c).
-XML2_MODULES := 'libxml-2.0 >= 2.9.1'
+XML2_MODULES := 'libxml-2.0 >= 2.9.14'
 XML2_CFLAGS := $(shell $(PKG_CONFIG) --cflags $(XML2_MODULES))
 XML2_LIBS := $(shell $(PKG_CONFIG) --libs $(XML2_MODULES))
 ifeq ($(XML2_LIBS),)
@@ -85,8 +85,8 @@ TEST_SOURCES := $(sort $(wildcard tests/unit/*.c))
 TEST_OBJECTS := $(TEST_SOURCES:tests/unit/%.c=$(BUILD)/unit/%.o)
 UNIT_SUITES := timeline geometry compositor color vector mesh scene xml \
 	camera physics blend group raster mask path image encode encode_faults \
-	audio video fx anim_color particles deform shadow text args
-TEST_CPPFLAGS := -DSR_TEST_DATA_DIR='"$(CURDIR)"' \
+	audio video fx anim_color particles deform shadow text args resume
+TEST_CPPFLAGS := -Isrc -DSR_TEST_DATA_DIR='"$(CURDIR)"' \
 	-DSR_TEST_TMP_DIR='"$(CURDIR)/$(BUILD)/test_tmp"'
 DEPS := $(CORE_OBJECTS:.o=.d) $(APP_OBJECT:.o=.d) $(TEST_OBJECTS:.o=.d)
 

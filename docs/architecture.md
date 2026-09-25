@@ -16,7 +16,7 @@ FreeType. The engine starts no child processes.
 |---|---|
 | `common`, `diagnostics` | checked allocation/parsing/path helpers and contextual messages |
 | `scene` | owned scene graph and typed resources |
-| `xml_schema` | libxml2 validation against the XSD embedded at build time (`cmake/schema_data.c.in` or the Makefile's od/sed recipe) |
+| `xml_schema` | libxml2 (≥ 2.9.14) validation, from the loader's in-memory buffer with a refusing external entity loader, against the XSD embedded at build time (`cmake/schema_data.c.in` or the Makefile's od/sed recipe) |
 | `xml*` | Expat callbacks, dynamic element stack, typed attributes, semantic/reference validation |
 | `timeline` | stable key ordering and six interpolation curves |
 | `assets`, `procedural` | shared still/text/vector cache; video assets own a persistent decoder |
@@ -217,24 +217,47 @@ and uses the CPU path without changing scene semantics.
 
 `--resume` splits the range into segments of `--segment-frames` frames
 (default 150). Segment `k` is encoded by its own video-only encoder (no
-audio, no spherical metadata) to `OUTPUT.parts/seg-KKKKKK.part.<ext>` (mkv
-for FFV1, mp4 otherwise) and committed by renaming it to
-`seg-KKKKKK.<ext>`, so only complete segments carry the final name; stale
-`.part` files are deleted on the next run. `OUTPUT.parts/manifest` is a text
-fingerprint: engine version, FNV-1a hash of the scene file, size + mtime +
-first-MiB hash of every asset and `fontFile`, frame range, segment size, the
-effective project and video output settings (after CLI overrides), thread
-count, renderer backend and encoder bit depth. Any difference discards all
-segments. When every segment exists, a pass-through encoder takes the video
-stream parameters from segment 0, copies each segment's packets with
-timestamps moved to frame units, shifted by the segment's first frame and
-rescaled to the output stream, and meanwhile mixes and encodes the audio
-of the whole range once, exactly as a normal render does; spherical side
-data and the MP4 UUID are applied to the final file. Because every segment
-begins with a keyframe, the video bitstream differs from a render without
-`--resume`; a resumed render is byte-identical to an uninterrupted
-`--resume` render of the same command. `SR_TEST_ABORT_AFTER_SEGMENTS=N`
-(tests only) kills the process after it has committed N segments.
+audio, no spherical metadata) to a unique temporary file
+`OUTPUT.parts/seg-KKKKKK.part.<pid>.<n>.<ext>` (mkv for FFV1, mp4
+otherwise), created with `O_CREAT|O_EXCL|O_NOFOLLOW`, fsynced and committed
+by `renameat` to `seg-KKKKKK.<ext>` with the directory fsynced after, so only
+complete segments carry the final name; stale `.part.*` and `manifest.tmp*`
+files are deleted on the next run. `OUTPUT.parts` must be a real directory
+owned by the current user; after `lstat` it is opened with `O_NOFOLLOW` and
+every later access goes through that descriptor (`openat`, `fstatat`,
+`renameat`, `unlinkat`), never following a link inside, and cleanup unlinks
+only names matching the segment/manifest/lock patterns. An exclusive
+`flock` on `OUTPUT.parts/lock` is held for the whole run; a second run
+fails with exit 7. `OUTPUT.parts/manifest` (at most 1 MiB; larger is stale)
+is a text fingerprint: engine version, FNV-1a hash of the scene bytes the
+loader parsed (`SrScene.source_hash`: the file is read once, both parsers
+and the hash use the same buffer), size + mtime + full-content hash of
+every asset, `fontFile` and family-resolved font file
+(`sr_font_cache_path`), frame range, segment size, the effective project
+and video output settings (after CLI overrides), the resolved thread
+count, the encoder bit depth and the colour-conversion backend actually
+used (`cpu` or `opencl:<device>`). Input files are hashed through one
+descriptor before loading and re-stat'ed (size, mtime ns, device, inode)
+after loading and before each commit; a change is `SR_ERR_ASSET`. If the
+GPU falls back to the CPU mid-run, the manifest is rewritten and every
+segment re-rendered, so kept segments always match the recorded backend.
+Any manifest difference discards all segments. A kept segment is reused
+only when it demuxes as one video stream with the expected codec, size and
+pixel format, the expected packet count and a leading keyframe; otherwise
+it is deleted and re-rendered. When every segment exists, a pass-through
+encoder writes a unique temporary file beside `OUTPUT` (same extension),
+takes the video stream parameters from segment 0, copies each segment's
+packets with timestamps moved to frame units, shifted by the segment's
+first frame and rescaled to the output stream, and meanwhile mixes and
+encodes the audio of the whole range once, exactly as a normal render does;
+spherical side data and the MP4 UUID are applied to the temporary file,
+which is fsynced and renamed over `OUTPUT` (directory fsynced). Because
+every segment begins with a keyframe, the video bitstream differs from a
+render without `--resume`; a resumed render is byte-identical to an
+uninterrupted `--resume` render of the same command.
+`SR_TEST_ABORT_AFTER_SEGMENTS=N` kills the process after it has committed N
+segments; it exists only in the `scene-render-testhooks` test executable
+(compiled with `-DSR_TEST_HOOKS`), never in the shipped `scene-render`.
 
 Missing assets, codecs, OpenCL, memory, segment writes, and libav failures
 produce contextual diagnostics and a nonzero exit instead of partial

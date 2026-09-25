@@ -118,26 +118,52 @@ orchestrates.
 | `--metrics`, `--metrics-trace FILE` | Metrics on stderr; per-frame stage timings as JSON Lines |
 | `--verbose`, `--version`, `--help` | Verbose diagnostics; `scene-render VERSION`; usage |
 
+Each option may be given once (repeating one, or its alias, is a usage
+error naming it). A valued option's value may not be empty and may not begin
+with `--` (`--scene --validate` is a missing value, not a file named
+`--validate`). Numbers are unsigned decimal digits only: signs, whitespace
+and trailing characters are rejected.
+
 Exit status is a stable contract: `0` success, `2` usage or argument error
 (unknown option, frame out of range, bad override), `3` XML/XSD/semantic
-error, `4` asset error, `5` render error, `6` encoder error, `7` I/O error,
-`8` out of memory.
+error, `4` asset error, `5` render error, `6` encoder error, `7` I/O error
+(including standard output that cannot be written, e.g. `>/dev/full`), `8`
+out of memory.
 
-Every scene is validated against the embedded XSD with libxml2 before the
-Expat loader applies its semantic checks; each schema error is reported as
-`FILE:LINE: error: <element> @attribute: message` and exits with 3.
+The scene file is read once into memory (at most 64 MiB, else exit 3
+"scene file too large"); both parsers and the resume fingerprint use those
+bytes, decoded as UTF-8. A DOCTYPE (or any other markup declaration) in the
+prolog is rejected before either parser runs. Every scene is then validated
+against the embedded XSD with libxml2 (≥ 2.9.14; an external entity loader
+that refuses every load is installed for the whole pass) before the Expat
+loader applies its semantic checks; each schema error is reported as
+`FILE:LINE: error: <element> @attribute: message` and exits with 3. Element
+nesting is limited to 256 levels.
 
 `--resume` renders the range in segments of `--segment-frames` frames, each an
 independently encoded video-only file with its own keyframe in
-`OUTPUT.parts/` (committed by atomic rename), next to a `manifest` that
-records the scene file's hash, every asset file's size, mtime and first-MiB
-hash, the range, the segment size, all effective video/render settings and
-the engine version. A rerun with any difference discards the old segments;
-otherwise only missing segments are rendered. The output is then muxed by
-copying the segments' video packets (timestamps shifted per segment) while
-the audio of the whole range is mixed and encoded once; spherical metadata
-is applied as for a normal render. `OUTPUT.parts/` is removed afterwards
-unless `--keep-parts` is given. A resumed render is byte-identical to an
+`OUTPUT.parts/` (written under a unique temporary name, fsynced, committed by
+atomic rename), next to a `manifest` that records the hash of the scene
+bytes that were parsed, every input file's size, mtime and full-content hash
+(assets, `fontFile` fonts and the files font families resolved to), the
+range, the segment size, all effective video settings, the resolved thread
+count, the colour-conversion backend actually used and the engine version.
+Input files are hashed before they are loaded and re-checked (size, mtime,
+inode) after loading and before every segment commit; a change is exit 4
+"changed while loading/rendering". A rerun with any manifest difference
+discards the old segments; otherwise only missing segments are rendered,
+and a kept segment that no longer demuxes as expected (stream parameters,
+frame count, leading keyframe) is deleted and rendered again. The output is
+then muxed into a temporary file beside `OUTPUT` by copying the segments'
+video packets (timestamps shifted per segment) while the audio of the whole
+range is mixed and encoded once; spherical metadata is applied to that file,
+which then replaces `OUTPUT` by rename, so a failed assembly leaves the
+previous `OUTPUT` untouched. `OUTPUT.parts/` must be a real directory owned
+by the invoking user (a symbolic link is refused); nothing inside it is
+followed, and only segment/manifest/lock names are ever deleted. A run holds
+an exclusive lock on `OUTPUT.parts/lock`: a concurrent `--resume` on the same
+`OUTPUT` exits 7 "another render is using". `OUTPUT.parts/` is removed
+afterwards unless `--keep-parts` is given. A resumed render is byte-identical to an
 uninterrupted `--resume` render of the same command, but not to a render
 without `--resume`: every segment starts with a keyframe, so the video
 bitstream differs (frames decode to the same pictures within codec loss).
@@ -278,8 +304,8 @@ when exposed by FFmpeg. CMake/CTest and sanitizer results are recorded in
   converted frames; `--metrics` shows cache hits and seeks.
 - Resume disk use: `OUTPUT.parts/` holds one encoded segment per
   `--segment-frames` frames until the render completes (`--keep-parts` keeps
-  it); delete it to force a full re-render. Fonts found through Fontconfig
-  families are not fingerprinted; `fontFile` fonts are.
+  it); delete it to force a full re-render. Every input file is hashed in
+  full on each `--resume` run, which costs one read of each asset.
 - OpenCL warning: no usable GPU was found; the deterministic CPU reference was
   selected automatically.
 

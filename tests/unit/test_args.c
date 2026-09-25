@@ -114,6 +114,29 @@ static void rejects_invalid_values(sr_test_ctx *t)
         {"--fps", "abc", "--fps"},
         {"--segment-frames", "0", "--segment-frames"},
         {"--physics-cache", "", "--physics-cache"},
+        /* Empty paths never reach the filesystem code. */
+        {"--output", "", "--output expects a non-empty value"},
+        {"--preview-out", "", "--preview-out expects a non-empty value"},
+        {"--metrics-trace", "", "--metrics-trace expects a non-empty value"},
+        /* Digits only: no sign, no whitespace, no trailing characters. */
+        {"--frame", "+5", "--frame expects"},
+        {"--frame", " 5", "--frame expects"},
+        {"--frame", "5 ", "--frame expects"},
+        {"--frame", "5\n", "--frame expects"},
+        {"--frame-range", "0: -1", "--frame-range"},
+        {"--frame-range", "0:-1", "--frame-range"},
+        {"--frame-range", "-0:4", "--frame-range"},
+        {"--frame-range", "0:+4", "--frame-range"},
+        {"--frame-range", "1 :4", "--frame-range"},
+        {"--threads", " 2", "--threads"},
+        {"--threads", "2x", "--threads"},
+        {"--segment-frames", "+4", "--segment-frames"},
+        {"--segment-frames", "-4", "--segment-frames"},
+        {"--resolution", "16x-9", "--resolution"},
+        {"--fps", "30/ 1", "--fps"},
+        /* A following option is a missing value, not the value. */
+        {"--output", "--hash", "--output requires a value"},
+        {"--frame", "--hash", "--frame requires a value"},
         {"--bogus", "1", "unknown option '--bogus'"},
     };
     for (size_t i = 0; i < sizeof rows / sizeof rows[0]; ++i) {
@@ -132,6 +155,24 @@ static void rejects_structural_errors(sr_test_ctx *t)
     char e[256] = "";
     CHECK(t, PARSE(&o, e, "--scene") == SR_ERR_ARGUMENT);
     CHECK_CONTAINS(t, e, "--scene requires a value");
+    CHECK(t, PARSE(&o, e, "--scene", "--validate") == SR_ERR_ARGUMENT);
+    CHECK_CONTAINS(t, e, "--scene requires a value");
+    CHECK(t, PARSE(&o, e, "--scene", "") == SR_ERR_ARGUMENT);
+    CHECK_CONTAINS(t, e, "--scene expects a non-empty value");
+    /* Duplicates are errors naming the option (aliases included). */
+    CHECK(t, PARSE(&o, e, "--scene", "a", "--scene", "b") == SR_ERR_ARGUMENT);
+    CHECK_CONTAINS(t, e, "--scene given more than once");
+    CHECK(t, PARSE(&o, e, "--scene", "a", "--output", "x.mp4", "--output",
+                   "y.mp4") == SR_ERR_ARGUMENT);
+    CHECK_CONTAINS(t, e, "--output given more than once");
+    CHECK(t, PARSE(&o, e, "--scene", "a", "--frame", "1", "--preview-frame",
+                   "2") == SR_ERR_ARGUMENT);
+    CHECK_CONTAINS(t, e, "--preview-frame given more than once");
+    CHECK(t, PARSE(&o, e, "--scene", "a", "--hash", "--hash") == SR_ERR_ARGUMENT);
+    CHECK_CONTAINS(t, e, "--hash given more than once");
+    /* A single dash is an ordinary value (a relative path, say). */
+    CHECK(t, PARSE(&o, e, "--scene", "-scene.xml") == SR_OK);
+    CHECK_STR(t, o.scene_path, "-scene.xml");
     CHECK(t, PARSE(&o, e, "--hash") == SR_ERR_ARGUMENT);
     CHECK_CONTAINS(t, e, "--scene is required");
     CHECK(t, PARSE(&o, e, "--frobnicate") == SR_ERR_ARGUMENT);
@@ -167,10 +208,42 @@ static void usage_lists_every_option(sr_test_ctx *t)
         CHECK_CONTAINS(t, usage, opts[i]);
 }
 
+/* The shared unsigned parsers (XML attributes use them too). */
+static void unsigned_parsers_are_strict(sr_test_ctx *t)
+{
+    uint64_t v = 7;
+    uint32_t w = 7;
+    CHECK(t, sr_parse_u64("0", &v) && v == 0);
+    CHECK(t, sr_parse_u64("18446744073709551615", &v) && v == UINT64_MAX);
+    CHECK(t, !sr_parse_u64("18446744073709551616", &v));
+    const char *bad[] = {"", "-1", "+1", " 1", "1 ", "\t1", "1\n", "1-", "1 2",
+                         "0x10", "1e3", "- 1"};
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; ++i) {
+        if (sr_parse_u64(bad[i], &v)) SR_FAIL(t, "u64 accepted '%s'", bad[i]);
+        if (sr_parse_u32(bad[i], &w)) SR_FAIL(t, "u32 accepted '%s'", bad[i]);
+    }
+    CHECK(t, sr_parse_u32("4294967295", &w) && w == UINT32_MAX);
+    CHECK(t, !sr_parse_u32("4294967296", &w));
+}
+
+/* Empty output paths are refused before any directory is created. */
+static void empty_path_is_guarded(sr_test_ctx *t)
+{
+    uint8_t pixel[4] = {0};
+    FILE *sink = tmpfile();
+    SrDiagnostics diag;
+    sr_diag_init(&diag, "args", sink ? sink : stderr);
+    CHECK_INT(t, sr_write_ppm("", 1, 1, pixel, &diag), SR_ERR_ARGUMENT);
+    CHECK_INT(t, sr_write_png("", 1, 1, pixel, &diag), SR_ERR_ARGUMENT);
+    if (sink) fclose(sink);
+}
+
 const sr_test_case sr_tests_args[] = {
     {"defaults_and_every_option", defaults_and_every_option},
     {"rejects_invalid_values", rejects_invalid_values},
     {"rejects_structural_errors", rejects_structural_errors},
     {"usage_lists_every_option", usage_lists_every_option},
+    {"unsigned_parsers_are_strict", unsigned_parsers_are_strict},
+    {"empty_path_is_guarded", empty_path_is_guarded},
     {NULL, NULL},
 };

@@ -601,6 +601,68 @@ SrStatus sr_encoder_copy_video(SrEncoder *e, const char *segment_path,
     return status;
 }
 
+SrStatus sr_encoder_check_segment(const SrScene *scene, const char *path,
+                                  uint64_t frame_count, char *why,
+                                  size_t why_size) {
+    if (why && why_size) why[0] = '\0';
+    if (!scene || !path) return SR_ERR_ARGUMENT;
+    const AVCodec *codec =
+        avcodec_find_encoder_by_name(video_encoder_name(scene->output.codec));
+    enum AVPixelFormat format = scene->output.pixel_format
+        ? av_get_pix_fmt(scene->output.pixel_format) : AV_PIX_FMT_NONE;
+    AVFormatContext *in = NULL;
+    AVPacket *pkt = NULL;
+    int rc = avformat_open_input(&in, path, NULL, NULL);
+    if (rc >= 0) rc = avformat_find_stream_info(in, NULL);
+    SrStatus status = SR_OK;
+    if (rc < 0) {
+        char message[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(rc, message, sizeof(message));
+        snprintf(why, why_size, "cannot be read: %s", message);
+        status = rc == AVERROR(ENOMEM) ? SR_ERR_MEMORY : SR_ERR_ENCODER;
+    } else if (in->nb_streams != 1 ||
+               in->streams[0]->codecpar->codec_type != AVMEDIA_TYPE_VIDEO) {
+        snprintf(why, why_size, "does not hold exactly one video stream");
+        status = SR_ERR_ENCODER;
+    } else {
+        const AVCodecParameters *par = in->streams[0]->codecpar;
+        if (!codec || par->codec_id != codec->id ||
+            par->width != (int)scene->project.width ||
+            par->height != (int)scene->project.height || par->format != format) {
+            snprintf(why, why_size, "stream parameters differ from the output "
+                     "settings");
+            status = SR_ERR_ENCODER;
+        }
+    }
+    if (status == SR_OK) {
+        pkt = av_packet_alloc();
+        if (!pkt) status = SR_ERR_MEMORY;
+    }
+    uint64_t packets = 0;
+    while (status == SR_OK && (rc = av_read_frame(in, pkt)) >= 0) {
+        if (packets == 0 && !(pkt->flags & AV_PKT_FLAG_KEY)) {
+            snprintf(why, why_size, "does not start with a keyframe");
+            status = SR_ERR_ENCODER;
+        }
+        ++packets;
+        av_packet_unref(pkt);
+    }
+    if (status == SR_OK && rc != AVERROR_EOF) {
+        char message[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(rc, message, sizeof(message));
+        snprintf(why, why_size, "cannot be read to the end: %s", message);
+        status = rc == AVERROR(ENOMEM) ? SR_ERR_MEMORY : SR_ERR_ENCODER;
+    }
+    if (status == SR_OK && packets != frame_count) {
+        snprintf(why, why_size, "holds %llu frames, expected %llu",
+                 (unsigned long long)packets, (unsigned long long)frame_count);
+        status = SR_ERR_ENCODER;
+    }
+    av_packet_free(&pkt);
+    avformat_close_input(&in);
+    return status;
+}
+
 unsigned sr_encoder_bits(const SrEncoder *encoder) {
     return encoder ? encoder->bits : 8;
 }

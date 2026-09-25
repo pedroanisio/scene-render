@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Segmented --resume: an interrupted run (SR_TEST_ABORT_AFTER_SEGMENTS kills
-# the process after its first committed segment) is completed by a rerun
+# the process after its first committed segment; only HOOKS, the
+# scene-render-testhooks build, honours it) is completed by a rerun
 # that renders only the missing segments, and the result is byte-identical
 # to an uninterrupted --resume render. Editing the scene, touching an asset
 # or changing a setting discards every kept segment.
@@ -47,7 +48,7 @@ endif()
 # Interrupted after the first segment.
 set(out ${WORK}/out.mp4)
 execute_process(COMMAND ${CMAKE_COMMAND} -E env SR_TEST_ABORT_AFTER_SEGMENTS=1
-                ${CMD} --scene ${WORK}/scene.xml --output ${out} --resume
+                ${HOOKS} --scene ${WORK}/scene.xml --output ${out} --resume
                 --segment-frames 5 --threads 2 RESULT_VARIABLE rc)
 if(rc STREQUAL "0")
   message(FATAL_ERROR "the interrupted run succeeded")
@@ -71,6 +72,27 @@ endif()
 render(${out} 0 --keep-parts)
 expect_segments(0 3)
 same(${out} ${WORK}/ref.mp4)
+# A corrupted committed segment fails validation, is deleted and rendered
+# again instead of breaking every later assembly.
+file(WRITE "${out}.parts/seg-000001.mp4" "corrupted")
+render(${out} 0 --keep-parts)
+expect_segments(1 2)
+if(NOT log MATCHES "seg-000001.mp4' [^\n]*; rendering it again")
+  message(FATAL_ERROR "no invalid-segment diagnostic:\n${log}")
+endif()
+same(${out} ${WORK}/ref.mp4)
+# The shipped binary ignores the hook variable entirely.
+set(ENV_PREFIX SR_TEST_ABORT_AFTER_SEGMENTS=1)
+file(REMOVE "${out}.parts/seg-000002.mp4")
+render(${out} 0 --keep-parts)
+expect_segments(1 2)
+same(${out} ${WORK}/ref.mp4)
+set(ENV_PREFIX)
+file(GLOB leftovers "${WORK}/*.tmp.mp4" "${WORK}/.*.tmp.mp4" "${out}.parts/*.part.*"
+     "${out}.parts/manifest.tmp*")
+if(leftovers)
+  message(FATAL_ERROR "temporary files left behind: ${leftovers}")
+endif()
 
 # Editing the scene discards every segment.
 string(REPLACE "seed=\"7\"" "seed=\"8\"" edited "${xml}")

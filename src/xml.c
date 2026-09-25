@@ -70,12 +70,14 @@ void sr_xml_push(ParseContext *ctx, ParseFrame frame, const char *element) {
         size_t capacity = ctx->stack_capacity ? ctx->stack_capacity * 2 : 16;
         if (capacity < ctx->stack_capacity ||
             capacity > SIZE_MAX / sizeof(*ctx->stack)) {
+            ctx->out_of_memory = true;
             sr_xml_fail(ctx, element, NULL, "XML nesting exceeds available memory");
             return;
         }
         ParseFrame *stack = sr_realloc(ctx->stack,
                                        capacity * sizeof(*stack));
         if (!stack) {
+            ctx->out_of_memory = true;
             sr_xml_fail(ctx, element, NULL, "out of memory while nesting XML");
             return;
         }
@@ -88,7 +90,14 @@ void sr_xml_push(ParseContext *ctx, ParseFrame frame, const char *element) {
 static void XMLCALL on_start(void *user, const XML_Char *name,
                              const XML_Char **attrs) {
     ParseContext *ctx = user;
+    ++ctx->element_depth;
     if (ctx->failed) return;
+    if (ctx->element_depth > SR_XML_MAX_DEPTH) {
+        char message[96];
+        snprintf(message, sizeof(message), "element nesting exceeds %d levels",
+                 SR_XML_MAX_DEPTH);
+        SR_XML_FAIL_RETURN(ctx, name, NULL, message);
+    }
     ParseFrame *p = sr_xml_parent(ctx);
     if (!p) {
         const char *const allowed[] = {"version"};
@@ -310,6 +319,7 @@ static void XMLCALL on_start(void *user, const XML_Char *name,
 static void XMLCALL on_end(void *user, const XML_Char *name) {
     ParseContext *ctx = user;
     (void)name;
+    if (ctx->element_depth) --ctx->element_depth;
     if (ctx->failed || ctx->depth == 0) return;
     ParseFrame *frame = &ctx->stack[ctx->depth - 1];
     if (frame->kind == E_ANIMATE && frame->color_anim) {
@@ -350,6 +360,97 @@ static void XMLCALL on_doctype(void *user, const XML_Char *name,
     sr_xml_fail(ctx, "DOCTYPE", NULL, "document type declarations are not allowed");
 }
 
+/* Reads the whole file (at most SR_XML_MAX_BYTES) into *data. */
+static SrStatus read_scene_file(const char *path, char **data, size_t *size,
+                                SrDiagnostics *diag) {
+    *data = NULL;
+    *size = 0;
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        sr_diag_error(diag, 0, NULL, NULL, "cannot open XML scene: %s",
+                      strerror(errno));
+        return SR_ERR_IO;
+    }
+    size_t capacity = 0, used = 0;
+    char *buffer = NULL;
+    SrStatus status = SR_OK;
+    for (;;) {
+        if (used == capacity) {
+            if (capacity > SR_XML_MAX_BYTES) break;  /* over the limit */
+            size_t grown = capacity ? capacity * 2 : 65536;
+            if (grown > SR_XML_MAX_BYTES + 1) grown = SR_XML_MAX_BYTES + 1;
+            char *next = sr_realloc(buffer, grown);
+            if (!next) {
+                status = SR_ERR_MEMORY;
+                break;
+            }
+            buffer = next;
+            capacity = grown;
+        }
+        size_t want = capacity - used;
+        size_t count = fread(buffer + used, 1, want, file);
+        used += count;
+        if (count < want) {
+            if (ferror(file)) {
+                sr_diag_error(diag, 0, NULL, NULL, "I/O error while reading XML");
+                status = SR_ERR_IO;
+            }
+            break;
+        }
+    }
+    if (status == SR_OK && used > SR_XML_MAX_BYTES) {
+        sr_diag_error(diag, 0, NULL, NULL, "scene file too large (limit %zu MiB)",
+                      SR_XML_MAX_BYTES >> 20);
+        status = SR_ERR_XML;
+    }
+    fclose(file);
+    if (status != SR_OK) {
+        free(buffer);
+        return status;
+    }
+    *data = buffer;
+    *size = used;
+    return SR_OK;
+}
+
+static bool starts_with(const char *at, const char *end, const char *prefix) {
+    size_t length = strlen(prefix);
+    return (size_t)(end - at) >= length && memcmp(at, prefix, length) == 0;
+}
+
+/* Scans the prolog (BOM, XML declaration, comments, processing
+ * instructions, whitespace) up to the root element; any markup declaration
+ * there ("<!DOCTYPE", or any other "<!" that is not a comment) is rejected
+ * before a parser sees the document. Both parsers decode the bytes as
+ * UTF-8, so a byte scan cannot be fooled by another encoding. Returns the
+ * line of the declaration, or 0 when there is none. */
+static size_t find_declaration(const char *data, size_t size) {
+    const char *at = data, *end = data + size;
+    size_t line = 1;
+    if (starts_with(at, end, "\xEF\xBB\xBF")) at += 3;
+    while (at < end) {
+        if (*at == '\n') {
+            ++line;
+            ++at;
+        } else if (*at == ' ' || *at == '\t' || *at == '\r') {
+            ++at;
+        } else if (starts_with(at, end, "<!--")) {
+            for (at += 4; at < end && !starts_with(at, end, "-->"); ++at)
+                if (*at == '\n') ++line;
+            at = at < end ? at + 3 : end;
+        } else if (starts_with(at, end, "<?")) {
+            for (at += 2; at < end && !starts_with(at, end, "?>"); ++at)
+                if (*at == '\n') ++line;
+            at = at < end ? at + 2 : end;
+        } else if (starts_with(at, end, "<!")) {
+            return line;
+        } else {
+            break;  /* root element or not well-formed: the parsers decide */
+        }
+    }
+    return 0;
+}
+
 SrStatus sr_scene_load_xml(const char *path, SrScene *scene,
                            SrDiagnostics *diag) {
     if (!path || !scene || !diag) return SR_ERR_ARGUMENT;
@@ -362,23 +463,33 @@ SrStatus sr_scene_load_xml(const char *path, SrScene *scene,
         sr_scene_free(scene);
         return SR_ERR_MEMORY;
     }
-    FILE *file = fopen(path, "rb");
-    if (!file) {
-        sr_diag_error(diag, 0, NULL, NULL, "cannot open XML scene: %s",
-                      strerror(errno));
+    /* Read once: both parsers and the resume fingerprint see these bytes. */
+    char *data = NULL;
+    size_t size = 0;
+    SrStatus status = read_scene_file(path, &data, &size, diag);
+    if (status != SR_OK) {
         sr_scene_free(scene);
-        return SR_ERR_IO;
+        return status;
+    }
+    scene->source_hash = sr_fnv1a64(SR_FNV_OFFSET, data, size);
+    size_t declaration = find_declaration(data, size);
+    if (declaration) {
+        sr_diag_error(diag, declaration, "DOCTYPE", NULL,
+                      "document type declarations are not allowed");
+        free(data);
+        sr_scene_free(scene);
+        return SR_ERR_XML;
     }
     SrSchemaDeferral deferral;
-    SrStatus schema = sr_xml_schema_check(path, diag, &deferral);
-    if (schema != SR_OK) {
-        fclose(file);
+    status = sr_xml_schema_check(data, size, path, diag, &deferral);
+    if (status != SR_OK) {
+        free(data);
         sr_scene_free(scene);
-        return schema;
+        return status;
     }
-    XML_Parser parser = XML_ParserCreate(NULL);
+    XML_Parser parser = XML_ParserCreate("UTF-8");
     if (!parser) {
-        fclose(file);
+        free(data);
         sr_scene_free(scene);
         return SR_ERR_MEMORY;
     }
@@ -387,24 +498,29 @@ SrStatus sr_scene_load_xml(const char *path, SrScene *scene,
     XML_SetElementHandler(parser, on_start, on_end);
     XML_SetCharacterDataHandler(parser, on_text);
     XML_SetStartDoctypeDeclHandler(parser, on_doctype);
-    char buffer[16384];
-    bool done = false;
-    while (!done && !ctx.failed) {
-        size_t count = fread(buffer, 1, sizeof(buffer), file);
-        done = count < sizeof(buffer);
-        if (ferror(file)) {
-            sr_xml_fail(&ctx, NULL, NULL, "I/O error while reading XML");
-            break;
-        }
-        if (XML_Parse(parser, buffer, (int)count, done) == XML_STATUS_ERROR &&
+    /* Fed in chunks: XML_Parse takes an int length. */
+    const size_t chunk = 1u << 20;
+    for (size_t offset = 0; !ctx.failed;) {
+        size_t count = size - offset < chunk ? size - offset : chunk;
+        bool last = offset + count == size;
+        if (XML_Parse(parser, data + offset, (int)count, last) == XML_STATUS_ERROR &&
             !ctx.failed) {
+            enum XML_Error code = XML_GetErrorCode(parser);
+            if (code == XML_ERROR_NO_MEMORY) {
+                XML_ParserFree(parser);
+                free(ctx.stack);
+                free(data);
+                sr_scene_free(scene);
+                return SR_ERR_MEMORY;
+            }
             sr_diag_error(diag, (size_t)XML_GetCurrentLineNumber(parser), NULL,
-                          NULL, "XML syntax: %s",
-                          XML_ErrorString(XML_GetErrorCode(parser)));
+                          NULL, "XML syntax: %s", XML_ErrorString(code));
             ctx.failed = true;
         }
+        offset += count;
+        if (last) break;
     }
-    fclose(file);
+    free(data);
     XML_ParserFree(parser);
     if (!ctx.failed && deferral.deferred) {
         sr_diag_error(diag, deferral.line, NULL, NULL, "%s", deferral.message);
@@ -419,7 +535,7 @@ SrStatus sr_scene_load_xml(const char *path, SrScene *scene,
     free(ctx.stack);
     if (ctx.failed) {
         sr_scene_free(scene);
-        return SR_ERR_XML;
+        return ctx.out_of_memory ? SR_ERR_MEMORY : SR_ERR_XML;
     }
     return SR_OK;
 }

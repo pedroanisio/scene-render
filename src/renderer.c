@@ -10,6 +10,7 @@
 #include "scene_render/effects.h"
 #include "scene_render/gpu.h"
 #include "scene_render/lighting.h"
+#include "scene_render/parallel.h"
 #include "scene_render/physics.h"
 #include "scene_render/resume.h"
 #include "scene_render/spatial.h"
@@ -120,6 +121,10 @@ static double sr_timeval_seconds(struct timeval value) {
 }
 
 static SrStatus sr_make_parent_dirs(const char *path, SrDiagnostics *diag) {
+    if (!path || !*path) {
+        sr_diag_error(diag, 0, NULL, NULL, "empty output path");
+        return SR_ERR_ARGUMENT;
+    }
     char *copy = sr_strdup(path);
     if (!copy) {
         return SR_ERR_MEMORY;
@@ -310,6 +315,7 @@ typedef struct {
     SrMixer *mixer;         /* NULL: the scene has no audio */
     float *audio;           /* one frame's mixed block */
     uint32_t channels;
+    const SrResumeInputs *inputs;   /* --resume: fingerprinted input files */
 } SrRun;
 
 static SrStatus sr_run_audio_open(SrRun *run) {
@@ -384,7 +390,7 @@ static SrStatus sr_run_hash(SrRun *run, uint64_t first, uint64_t end) {
     }
     if (status == SR_OK && run->mixer)
         fprintf(out, "audio %016llx\n", (unsigned long long)audio_hash);
-    if (fflush(out) != 0 && status == SR_OK) {
+    if ((fflush(out) != 0 || ferror(out)) && status == SR_OK) {
         sr_diag_error(run->diag, 0, NULL, NULL, "cannot write hashes: %s",
                       strerror(errno));
         status = SR_ERR_IO;
@@ -434,8 +440,10 @@ static SrStatus sr_run_encode(SrRun *run, const char *path, uint64_t first,
     return status;
 }
 
-/* Test hook: SR_TEST_ABORT_AFTER_SEGMENTS=N kills the process (SIGKILL,
- * like an interruption) once this run has committed N segments. */
+#ifdef SR_TEST_HOOKS
+/* Test hook, compiled only into scene-render-testhooks:
+ * SR_TEST_ABORT_AFTER_SEGMENTS=N kills the process (SIGKILL, like an
+ * interruption) once this run has committed N segments. */
 static void sr_run_maybe_abort(uint64_t committed) {
     const char *value = getenv("SR_TEST_ABORT_AFTER_SEGMENTS");
     uint64_t limit;
@@ -444,16 +452,34 @@ static void sr_run_maybe_abort(uint64_t committed) {
         raise(SIGKILL);
     }
 }
+#else
+static void sr_run_maybe_abort(uint64_t committed) {
+    (void)committed;
+}
+#endif
 
-static SrStatus sr_run_segment(SrRun *run, const SrResume *resume, uint64_t k) {
+/* The colour-conversion backend frames are actually converted with. */
+static void sr_run_backend(const SrRun *run, char *out, size_t size) {
+    if (run->state->bits == 8 && run->gpu && run->gpu->implementation)
+        snprintf(out, size, "opencl:%s", sr_gpu_device_name(run->gpu));
+    else
+        snprintf(out, size, "cpu");
+}
+
+/* Renders segment k into a fresh temporary file and commits it, unless the
+ * inputs changed (SR_ERR_ASSET) or the backend no longer matches
+ * `backend` (*backend_changed; nothing committed). */
+static SrStatus sr_run_segment(SrRun *run, SrResume *resume, uint64_t k,
+                               const char *backend, bool *backend_changed) {
+    *backend_changed = false;
     uint64_t from, to;
     sr_resume_segment_range(resume, k, &from, &to);
-    char *partial = sr_resume_segment_path(resume, k, true);
-    if (!partial) return SR_ERR_MEMORY;
+    char *partial = NULL;
+    SrStatus status = sr_resume_segment_begin(resume, k, &partial, run->diag);
+    if (status != SR_OK) return status;
     SrEncoder *encoder = NULL;
-    SrStatus status = sr_encoder_open_segment(&encoder, run->scene, partial,
-                                              run->options->encoder_threads,
-                                              run->diag);
+    status = sr_encoder_open_segment(&encoder, run->scene, partial,
+                                     run->options->encoder_threads, run->diag);
     if (status == SR_OK) {
         status = sr_run_frames(run, encoder, from, to, resume->end - resume->first,
                                false);
@@ -462,8 +488,17 @@ static SrStatus sr_run_segment(SrRun *run, const SrResume *resume, uint64_t k) {
     }
     run->metrics->encode_seconds += sr_encoder_seconds(encoder);
     sr_encoder_destroy(encoder);
-    if (status == SR_OK) status = sr_resume_commit(resume, k, run->diag);
-    if (status != SR_OK) unlink(partial);
+    if (status == SR_OK)
+        status = sr_resume_inputs_verify(run->inputs, "rendering", run->diag);
+    if (status == SR_OK) {
+        char now[160];
+        sr_run_backend(run, now, sizeof(now));
+        *backend_changed = strcmp(now, backend) != 0;
+    }
+    if (status == SR_OK && !*backend_changed)
+        status = sr_resume_segment_commit(resume, k, partial, run->diag);
+    else
+        sr_resume_segment_abandon(resume, partial);
     free(partial);
     return status;
 }
@@ -472,7 +507,7 @@ static SrStatus sr_run_segment(SrRun *run, const SrResume *resume, uint64_t k) {
  * of the whole range once. */
 static SrStatus sr_run_assemble(SrRun *run, const SrResume *resume,
                                 const char *path) {
-    char *template_path = sr_resume_segment_path(resume, 0, false);
+    char *template_path = sr_resume_segment_path(resume, 0);
     if (!template_path) return SR_ERR_MEMORY;
     SrEncoderAudio audio = sr_run_audio_format(run);
     SrEncoder *encoder = NULL;
@@ -482,7 +517,7 @@ static SrStatus sr_run_assemble(SrRun *run, const SrResume *resume,
     for (uint64_t k = 0; status == SR_OK && k < resume->segment_count; ++k) {
         uint64_t from, to;
         sr_resume_segment_range(resume, k, &from, &to);
-        char *segment = sr_resume_segment_path(resume, k, false);
+        char *segment = sr_resume_segment_path(resume, k);
         status = segment ? sr_encoder_copy_video(encoder, segment,
                                                  from - resume->first, to - from,
                                                  run->diag)
@@ -503,35 +538,100 @@ static SrStatus sr_run_assemble(SrRun *run, const SrResume *resume,
     return status;
 }
 
+static bool sr_wants_spherical(const SrScene *scene, const char *path) {
+    return scene->project.mode == SR_MODE_EQUIRECTANGULAR &&
+           scene->output.spherical_metadata && sr_spatial_is_mp4(path);
+}
+
+/* A committed segment is reused only when it demuxes as expected;
+ * otherwise it is deleted and rendered again. */
+static SrStatus sr_run_check_segment(SrRun *run, SrResume *resume, uint64_t k,
+                                     bool *valid) {
+    *valid = false;
+    if (!sr_resume_segment_done(resume, k)) return SR_OK;
+    uint64_t from, to;
+    sr_resume_segment_range(resume, k, &from, &to);
+    char *path = sr_resume_segment_path(resume, k);
+    if (!path) return SR_ERR_MEMORY;
+    char why[256];
+    SrStatus status = sr_encoder_check_segment(run->scene, path, to - from, why,
+                                               sizeof(why));
+    if (status == SR_OK) {
+        *valid = true;
+    } else if (status == SR_ERR_ENCODER) {
+        sr_diag_warning(run->diag, 0, NULL, NULL,
+                        "segment '%s' %s; rendering it again", path, why);
+        status = sr_resume_segment_discard(resume, k, run->diag);
+    }
+    free(path);
+    return status;
+}
+
 static SrStatus sr_run_resume(SrRun *run, const char *path, uint64_t first,
                               uint64_t end) {
     const SrRenderOptions *options = run->options;
-    SrResumeSettings settings = {options->encoder_threads, options->request_gpu,
-                                 run->state->bits};
+    /* Everything loaded (audio included) must still be what was hashed. */
+    SrStatus status = sr_resume_inputs_verify(run->inputs, "loading", run->diag);
+    if (status != SR_OK) return status;
+    char backend[160];
+    sr_run_backend(run, backend, sizeof(backend));
+    SrResumeSettings settings = {
+        options->encoder_threads ? options->encoder_threads
+                                 : sr_parallel_thread_count(0, SIZE_MAX),
+        run->state->bits, backend};
     uint32_t segment_frames = options->segment_frames
                                   ? options->segment_frames
                                   : SR_RESUME_DEFAULT_SEGMENT_FRAMES;
     SrResume resume;
-    SrStatus status = sr_resume_prepare(&resume, run->scene, path, first, end,
-                                        segment_frames, &settings, run->diag);
+    status = sr_resume_prepare(&resume, run->scene, path, first, end,
+                               segment_frames, run->inputs, &settings, run->diag);
     if (status != SR_OK) return status;
     uint64_t committed = 0;
     for (uint64_t k = 0; status == SR_OK && k < resume.segment_count; ++k) {
-        if (sr_resume_segment_done(&resume, k)) {
+        bool valid = false;
+        status = sr_run_check_segment(run, &resume, k, &valid);
+        if (status != SR_OK) break;
+        if (valid) {
             ++run->metrics->segments_reused;
             continue;
         }
-        status = sr_run_segment(run, &resume, k);
+        bool changed = false;
+        status = sr_run_segment(run, &resume, k, backend, &changed);
+        if (status == SR_OK && changed) {
+            /* The GPU fell back to the CPU: the manifest must name the
+             * backend every kept segment was converted with, so start
+             * over under a new manifest (this happens at most once). */
+            sr_run_backend(run, backend, sizeof(backend));
+            sr_diag_warning(run->diag, 0, NULL, NULL,
+                            "colour conversion backend changed to %s; "
+                            "re-rendering every segment", backend);
+            status = sr_resume_sync(&resume, run->scene, run->inputs, &settings,
+                                    run->diag);
+            run->metrics->segments_reused = 0;
+            k = (uint64_t)-1;   /* ++k: segment 0 */
+            continue;
+        }
         if (status == SR_OK) {
             ++run->metrics->segments_rendered;
             sr_run_maybe_abort(++committed);
         }
     }
+    /* The previous OUTPUT stays until the new one is complete. */
+    char *temporary = NULL;
+    if (status == SR_OK) status = sr_output_temp_create(path, &temporary, run->diag);
     if (status == SR_OK) {
         SrStageMark mark = sr_stage_begin();
-        status = sr_run_assemble(run, &resume, path);
+        status = sr_run_assemble(run, &resume, temporary);
+        if (status == SR_OK && sr_wants_spherical(run->scene, path))
+            status = sr_spatial_inject_mp4(temporary, run->scene->project.width,
+                                           run->scene->project.height, run->diag);
+        if (status == SR_OK)
+            status = sr_output_temp_commit(temporary, path, run->diag);
+        else
+            unlink(temporary);
         sr_stage_end(&run->metrics->stages, SR_STAGE_RESUME, mark);
     }
+    free(temporary);
     if (status == SR_OK && !options->keep_parts)
         status = sr_resume_remove(&resume, run->diag);
     sr_diag_info(run->diag, "resume: %llu segment(s) rendered, %llu reused",
@@ -573,13 +673,22 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
             sr_diag_warning(diag, 0, NULL, NULL,
                             "no usable OpenCL GPU; using deterministic CPU fallback");
     }
-    SrStatus status = sr_assets_load(scene, diag);
+    /* --resume fingerprints every input file before it is loaded, so the
+     * manifest describes the bytes the frames were rendered from. */
+    SrResumeInputs inputs = {0};
+    SrStatus status = options->resume && !options->hash && !options->preview
+                          ? sr_resume_inputs_capture(&inputs, scene, diag)
+                          : SR_OK;
+    if (status == SR_OK) status = sr_assets_load(scene, diag);
+    if (status == SR_OK && options->resume && !options->hash && !options->preview)
+        status = sr_resume_inputs_add_fonts(&inputs, scene, diag);
     if (status == SR_OK) status = sr_physics_prepare(scene, diag);
     metrics->physics_steps = scene->physics.steps_simulated;
     metrics->physics_cache_hit = scene->physics.cache_hit;
     metrics->setup_wall_seconds = sr_monotonic_seconds() - setup.wall;
     metrics->setup_cpu_seconds = sr_process_cpu_seconds() - setup.cpu;
     if (status != SR_OK) {
+        sr_resume_inputs_free(&inputs);
         sr_gpu_close(&gpu);
         sr_trace_summary(trace, metrics, status);
         if (trace) fclose(trace);
@@ -596,6 +705,7 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
     if (status != SR_OK) {
         sr_diag_error(diag, 0, NULL, NULL, "cannot allocate %ux%u float RGBA frame",
                       canvas_width, canvas_height);
+        sr_resume_inputs_free(&inputs);
         sr_gpu_close(&gpu);
         if (trace) fclose(trace);
         return status;
@@ -671,7 +781,7 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
         goto cleanup;
     }
     SrRun run = {scene, options, metrics, diag, &state, &composition, frame,
-                 &gpu, trace, frame_bytes, NULL, NULL, 0};
+                 &gpu, trace, frame_bytes, NULL, NULL, 0, &inputs};
     status = sr_run_audio_open(&run);
     if (status == SR_OK) {
         if (options->hash) {
@@ -684,8 +794,9 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
             if (status == SR_OK)
                 status = options->resume ? sr_run_resume(&run, path, first, end)
                                          : sr_run_encode(&run, path, first, end);
-            if (status == SR_OK && scene->project.mode == SR_MODE_EQUIRECTANGULAR &&
-                scene->output.spherical_metadata && sr_spatial_is_mp4(path))
+            /* --resume injects into its temporary file before the rename. */
+            if (status == SR_OK && !options->resume &&
+                sr_wants_spherical(scene, path))
                 status = sr_spatial_inject_mp4(path, scene->project.width,
                                                scene->project.height, diag);
             free(path);
@@ -695,6 +806,7 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
     free(run.audio);
 
 cleanup:
+    sr_resume_inputs_free(&inputs);
     sr_assets_video_stats(scene, &metrics->video_sources, video_totals);
     metrics->video_requests = video_totals[0];
     metrics->video_cache_hits = video_totals[1];
