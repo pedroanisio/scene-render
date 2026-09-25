@@ -78,6 +78,8 @@ void sr_xml_start_rigid_body(ParseContext *ctx,const XML_Char **attrs){
        !decimal(ctx,"rigidBody",attrs,"radius",&body->radius))return;
     if(body->mass<=0||body->friction<0||body->friction>1||body->restitution<0||body->restitution>1)
         SR_XML_FAIL_RETURN(ctx,"rigidBody","mass/friction/restitution","invalid rigid body values");
+    if(body->linear_damping<0||body->angular_damping<0)
+        SR_XML_FAIL_RETURN(ctx,"rigidBody","linearDamping/angularDamping","expected non-negative damping");
     sr_xml_push(ctx,(ParseFrame){.kind=E_RIGID_BODY,.node=parent->node},"rigidBody");
 }
 

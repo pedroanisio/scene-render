@@ -14,6 +14,10 @@ typedef struct {
     double inverse_mass;
 } BodyState;
 
+/* Bump whenever the integrator changes so caches written by an older
+ * simulation are re-simulated instead of replayed (2: exponential damping). */
+#define PHYSICS_CACHE_VERSION 2u
+
 typedef struct {
     char magic[8];
     uint32_t version;
@@ -113,7 +117,7 @@ static bool load_cache(SrScene *scene, BodyState *states, size_t count,
     if (!file) return false;
     CacheHeader header;
     bool ok = fread(&header, sizeof(header), 1, file) == 1 &&
-        memcmp(header.magic, "SRPHYS1", 8) == 0 && header.version == 1 &&
+        memcmp(header.magic, "SRPHYS1", 8) == 0 && header.version == PHYSICS_CACHE_VERSION &&
         header.body_count == count && header.sample_count == samples &&
         header.signature == expected && header.fixed_step == scene->physics.fixed_step;
     for (size_t i = 0; ok && i < count; ++i) {
@@ -146,7 +150,7 @@ static void save_cache(const SrScene *scene, BodyState *states, size_t count,
     snprintf(temporary,length,"%s.tmp-XXXXXX",path);int fd=mkstemp(temporary);
     FILE *file=fd>=0?fdopen(fd,"wb"):NULL;
     if(!file){if(fd>=0)close(fd);free(temporary);free(path);return;}
-    CacheHeader header = {{'S','R','P','H','Y','S','1','\0'}, 1, (uint32_t)count,
+    CacheHeader header = {{'S','R','P','H','Y','S','1','\0'}, PHYSICS_CACHE_VERSION, (uint32_t)count,
                           samples, hash, scene->physics.fixed_step};
     bool ok = fwrite(&header, sizeof(header), 1, file) == 1;
     for (size_t i = 0; ok && i < count; ++i) for (uint64_t s = 0; s < samples; ++s) {
@@ -239,9 +243,13 @@ static void simulate_step(SrScene *scene, BodyState *states, size_t count) {
         for(size_t f=0;f<scene->physics.field_count;++f){SrForceField *field=&scene->physics.fields[f];
             if(field->radial){double dx=field->x-state->x,dy=field->y-state->y,d=hypot(dx,dy);if(d>1e-9){double scale=field->strength/pow(1+d,fmax(0.0,field->falloff));ax+=dx/d*scale;ay+=dy/d*scale;}}
             else{ax+=field->force_x;ay+=field->force_y;}}
-        state->vx=(state->vx+ax*dt)*fmax(0.0,1-state->node->body.linear_damping*dt);
-        state->vy=(state->vy+ay*dt)*fmax(0.0,1-state->node->body.linear_damping*dt);
-        state->angular_velocity*=fmax(0.0,1-state->node->body.angular_damping*dt);
+        /* Exact solution of dv/dt = -damping*v over one step: the factor
+         * stays in (0,1] for any damping*dt >= 0, so velocity decays but
+         * never flips sign or snaps to zero. */
+        double linear=exp(-state->node->body.linear_damping*dt);
+        state->vx=(state->vx+ax*dt)*linear;
+        state->vy=(state->vy+ay*dt)*linear;
+        state->angular_velocity*=exp(-state->node->body.angular_damping*dt);
         state->x+=state->vx*dt;state->y+=state->vy*dt;state->angle+=state->angular_velocity*dt;}
     for(size_t iteration=0;iteration<3;++iteration)for(size_t i=0;i<count;++i)for(size_t j=i+1;j<count;++j)collide(&states[i],&states[j]);
 }

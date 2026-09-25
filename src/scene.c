@@ -236,7 +236,10 @@ static int node_compare(const void *left, const void *right) {
 
 void sr_node_sort_children(SrNode *node) {
     if (!node || node->type != SR_NODE_GROUP) return;
-    qsort(node->children, node->child_count, sizeof(*node->children), node_compare);
+    /* qsort's base must be non-null even for zero elements (C17 7.1.4). */
+    if (node->child_count > 1)
+        qsort(node->children, node->child_count, sizeof(*node->children),
+              node_compare);
     for (size_t i = 0; i < node->child_count; ++i)
         sr_node_sort_children(node->children[i]);
 }

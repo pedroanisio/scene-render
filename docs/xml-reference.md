@@ -125,6 +125,21 @@ perspective output.
 `near`, and `far`. Spherical viewports use orientation and FOV; standard 3D
 primitives additionally use translation and projection.
 
+Viewport orientation conventions (all angles in degrees):
+
+- `fov` is the **vertical** field of view; the horizontal extent follows from
+  the output aspect ratio. Animated values must stay within (1, 179).
+- `yaw="0" pitch="0"` looks at the center of the panorama (longitude 0).
+  Positive `yaw` turns right, toward larger panorama x.
+- Positive `pitch` looks **down** (toward the bottom rows of the panorama);
+  negative `pitch` looks up.
+- Positive `roll` rotates the camera counter-clockwise about its forward
+  axis, so the horizon appears rotated clockwise in the output.
+- Rotations compose as roll, then pitch, then yaw (yaw is outermost).
+- Panorama pixel (i, j) is centred at (i + 0.5, j + 0.5); lookups are
+  bilinear between pixel centres, wrap horizontally across the 360° seam, and
+  clamp vertically at the poles.
+
 For equirectangular MP4/MOV output with `sphericalMetadata="true"`, the final
 file receives the Google Spatial Media v1 spherical UUID box. Matroska keeps
 the projection stream tags written by FFmpeg. Metadata injection is atomic and
@@ -167,7 +182,9 @@ ignored by a particular effect.
 
 A drawable node may contain `rigidBody` with static/kinematic/dynamic type,
 box/circle shape, mass, friction, restitution, linear/angular damping, initial
-velocities, angular velocity, and radius. `softBody` accepts mass, stiffness,
+velocities, angular velocity, and radius. Damping (per second, default
+0.01) scales velocity by `exp(-damping * fixedStep)` each step, so it decays
+smoothly and never reverses direction. `softBody` accepts mass, stiffness,
 damping, and pressure and produces a documented procedural approximation.
 
 `deform` contains ordered `modifier` elements of type `bend`, `twist`, `wave`,

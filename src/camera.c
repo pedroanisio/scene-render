@@ -33,7 +33,13 @@ static const SrCamera *active_camera(const SrScene *scene) {
     return NULL;
 }
 
+/* Bilinear lookup in continuous panorama coordinates where pixel (i, j)
+ * covers [i, i+1) x [j, j+1), so its center sits at (i + 0.5, j + 0.5).
+ * Shift by half a pixel so integer coordinates address centers, then wrap
+ * x around the 360-degree seam and clamp y at the poles. */
 static void sample_wrap(const SrFrame *image, double x, double y, uint8_t out[4]) {
+    x -= 0.5;
+    y -= 0.5;
     x = fmod(x, image->width);
     if (x < 0.0) x += image->width;
     y = fmax(0.0, fmin((double)image->height - 1.0, y));
