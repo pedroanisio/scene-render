@@ -1,44 +1,98 @@
 # Feature matrix
 
-| Area | v1.1.0 status | Boundary |
-|---|---|---|
-| XML + XSD | Implemented | Expat syntax plus engine semantic checks; contextual line/element/attribute diagnostics; DOCTYPE rejected |
-| UHD 3840×2160 | Implemented | Any positive CLI/XML resolution is accepted within memory limits |
-| 360 equirectangular | Implemented | Configurable mono 2:1 canvas; MP4 Spatial Media v1 UUID/XML; Matroska stream tags |
-| Animated 360 viewport | Implemented | Perspective yaw/pitch/roll/FOV; panorama translation is intentionally irrelevant |
-| Image decode | Implemented | PPM in C; other formats through supervised FFmpeg |
-| Video decode/cache | Implemented | Four decoded RGBA frames per shared source; FFmpeg process per cache miss |
-| Audio decode/mix/sync | Implemented | Mono/stereo float mix, trim, finite loop, volume, pan; exact selected-interval duration |
-| Text | Implemented | FFmpeg drawtext with FreeType/Fontconfig/FriBidi/HarfBuzz shaping; UTF-8 and explicit font family/file |
-| Vector assets | Implemented | Rect, ellipse, and antialiased filled paths using M/L/H/V/C/Q/Z (absolute or relative) |
-| 2D shapes | Implemented | Rectangles/ellipses, fill/stroke, transforms, animation, physics, deformation |
-| 3D objects | Implemented visual renderer | Lit sphere/box/plane plus triangulated Wavefront OBJ with vertex normals or generated face normals |
-| 3D visibility | Implemented | CPU depth buffer across imported meshes and primitives |
-| Nested layers | Implemented | Dynamic arrays and dynamic XML nesting; memory-limited rather than fixed layer count |
-| Masks/clipping | Implemented | Rect, ellipse, rounded rectangle, inversion, nested group transforms |
-| Blend/alpha | Implemented | Normal/add/multiply/screen/overlay/difference with straight alpha |
-| Color management | Implemented named spaces | Separate sRGB and Rec.709 transfers, Display P3, Rec.2020 matrices/transfers; per-media source, project working, output tags |
-| Linear-light compositing | Implemented | Uses the active working-space transfer; selectable per project |
-| Keyframes | Implemented | Step, linear, ease-in, ease-out, ease-in-out, cubic Bézier |
-| Media time | Implemented | Trim, finite loop, reverse, speed, stretch, explicit source-time remap |
-| Camera | Implemented | Perspective/orthographic 3D and spherical viewport motion |
-| Lights/materials | Implemented visual model | Ambient/directional/point/spot; base/emissive/metallic/roughness controls; animation |
-| Shadows | Implemented approximation | Screen-space ground shadow plus bounding-volume inter-object occlusion |
-| Effects | Implemented | Glow, bloom, sliding box blur, grade, vignette, lens-flare-style |
-| Particles | Implemented | Stateless deterministic smoke/sparks/dust/rain presets; animated rate/lifetime/speed/spread/size |
-| Rigid bodies | Implemented visual solver | Fixed-step circle and AABB contacts; mixed pairs use bounding circles; explicitly not physically certified |
-| Forces/constraints | Implemented | Gravity, directional/radial fields, springs/distance, drag/damping, friction/restitution |
-| Soft bodies | Visual approximation | Damped procedural displacement, not FEM/volumetric physics |
-| Deformation | Implemented approximation | Bend, twist, wave, squash, stretch inverse warps |
-| Physics cache | Implemented | Atomic, version/signature-checked binary poses; fields/constraints/geometry invalidate correctly |
-| H.264/H.265/FFV1 | Implemented when exposed by FFmpeg | Encoder is preflighted; availability/legal terms depend on installed FFmpeg |
-| MP4/Matroska | Implemented | Container inferred from path; color/range metadata emitted |
-| Resume | Implemented | Atomic raw post-color RGBA cache; output container is rebuilt |
-| Multithreading | Implemented where deterministic | Viewport rows, effects, blur, and CPU color conversion use disjoint partitions |
-| GPU | Optional OpenCL 1.2 hybrid | GPU final color conversion; CPU reference raster/compositor; automatic deterministic fallback |
-| Metrics | Implemented | Render, encoder write/wait, wall, FPS, self/child RSS and conservative sum |
+Each feature maps to the module that implements it and to the tests that
+verify it. Test names are `suite.case` of `sr-unit-tests` (CTest entry
+`unit.<suite>`), `golden.<case>` (reference images in
+`tests/golden/expected/`, see `tests/golden/README.md`), `oom.<case>`
+(allocation-failure injection), `cli.<name>` CTest entries, or
+`integration` (`tests/run-integration.sh`, whose `golden NAME` checks use
+`tests/golden.sha256`). Module names are files under `src/`.
 
-“Approximation” is intentional and user-visible. The project does not claim
-physically accurate rigid/soft-body simulation, PBR materials, ray-traced
-shadows, optical lens flare, or identical floating-point output across GPU
-vendors. The CPU path is the byte-exact regression reference.
+## Scene description and validation
+
+| Feature | Implementation | Verified by |
+|---|---|---|
+| XSD validation with file:line/element/attribute diagnostics | `xml_schema` (libxml2, embedded `schema/scene-v1.xsd`) | `cli.validate_error`, `cli.invalid_scene_exit`, `cli.print_schema`, `xml.invalid_reports_line`, `integration` (xmllint cross-check of every example) |
+| Expat loader, semantic checks, unique ids, reference resolution | `xml`, `xml_elements`, `xml_nodes`, `xml_visual`, `xml_camera`, `xml_audio`, `xml_physics`, `xml_resolve` | `xml.load_basic_multilayer`, `xml.duplicate_id_rejected`, `xml.doctype_rejected`, `xml.deep_group_nesting`, `fx.unknown_effect_id`, `text.xml_bounds`, `deform.point_validation`, `physics.soft_body_substeps_validated`, `cli.validate_ok` |
+| Scene graph, `(z, XML order)` sorting, dynamic nesting | `scene` | `scene.sort_orders_by_z_then_order`, `scene.sort_empty_group`, `xml.deep_group_nesting` |
+| Keyframes: step, linear, ease-in/out, ease-in-out, cubic Bézier | `timeline` | `timeline.curves`, `timeline.duplicate_key_rejected`, `golden.composite_blend_modes` (cubic-bezier key), `integration` (`golden keyframe`) |
+| Color keyframes in linear light | `color`, `timeline` | `anim_color.*` (5 cases), `golden.effects_stack`, `golden.composite_blend_modes` |
+| Integer frame time (`N × fps_den / fps_num`) | `renderer` | `particles.frame_independent`, `physics.softbody_deterministic`, `cli.hash_threads` |
+
+## Assets and media
+
+| Feature | Implementation | Verified by |
+|---|---|---|
+| Still images (PNG, JPEG, PPM, ... via libav; exact-size PPM/PNM, Lanczos otherwise) | `video` (`sr_image_decode_rgba8`), `assets`, `color` | `video.still_images`, `image.*` (3 cases), `golden.image_magnification` |
+| Image sampling and magnified edges | `compositor`, `raster` | `image.magnified_edge`, `image.half_pixel_translation`, `image.identity_reproduces_pixels`, `golden.image_magnification`, `golden.deformers_mesh_warp` |
+| Video decode: persistent decoder, keyframe seeking, 256 MiB per-asset frame LRU, stream matrices | `video`, `assets` | `video.sequential_matches_seeking`, `video.asset_frames_through_scene`, `video.declared_dimensions_must_match`, `video.vfr_never_shows_future_frames`, `video.input_matrices`, `encode_faults.video_open_faults`, `encode_faults.video_frame_faults` |
+| Clip reuse, trim, loop, reverse, speed, stretch, `source.time` remap | `compositor` (media time), `assets` | `golden.video_time_remap`, `video.video_and_audio_share_origin`, `integration` (`examples/video-audio-remap.xml` validation) |
+| Text: Fontconfig/`fontFile`, FriBidi, HarfBuzz shaping, wrap, justify, align, letter spacing, vertical alignment, FreeType raster | `text` | `text.*` (17 cases), `golden.text_layout_inter` (vendored Inter), `golden.text_scripts_fontconfig` (Hebrew/Arabic, skipped unless Fontconfig `sans` is the reference font) |
+| Vector assets: rect, ellipse, SVG-subset paths, fill rules, strokes | `vector_path`, `procedural` | `path.*` (6 cases), `vector.triangle_coverage`, `vector.invalid_path_reports_error`, `golden.vector_paths` |
+| Wavefront OBJ meshes | `mesh` | `mesh.load_octahedron_obj`, `golden.scene3d_shadows_mesh` |
+| Audio decode (libav + swresample, in memory), timestamps, gaps | `audio` | `audio.mp4_priming_trimmed_once`, `audio.timestamp_gap_is_silence`, `encode_faults.audio_decoder_faults` |
+| Audio mix: start, trim, loop, volume, equal-power pan, fades, speed, reverse; sample-exact frame blocks | `audio` | `audio.frame_to_sample_is_exact`, `audio.two_tracks_with_pan_and_fades`, `audio.reverse_and_speed_positions`, `audio.range_render_sample_count`, `audio.seconds_to_samples_saturates`, `integration` (A/V duration check) |
+
+## Compositing and color
+
+| Feature | Implementation | Verified by |
+|---|---|---|
+| Blend modes normal/add/multiply/screen/overlay/difference (W3C, premultiplied) | `raster`, `compositor` | `blend.*` (11 cases), `golden.composite_blend_modes`, `golden.groups_and_masks` |
+| Shapes with anti-aliased fill and centred stroke | `raster`, `compositor` | `raster.*` (4 cases), `golden.composite_blend_modes`, `golden.vector_paths` |
+| Isolated and pass-through groups, buffer pool | `compositor` | `group.*` (5 cases), `golden.groups_and_masks` |
+| Masks: rect, ellipse, rounded-rect, inverted, several per node, animated | `compositor`, `raster` | `mask.*` (5 cases), `golden.groups_and_masks` |
+| Working spaces sRGB/Rec.709/Display-P3/Rec.2020, linear light, output conversion (8/16-bit) | `color` | `color.*` (7 cases), `encode.yuv420p10le_path`, `encode.color_tags_follow_output`, `integration` (color tags, `golden production`) |
+| Deterministic row-parallel work | `parallel`, `compositor`, `color`, `camera`, `effects` | `compositor.thread_invariant`, `color.convert_frame_thread_invariant`, `particles.thread_invariant`, `text.render_thread_invariant`, every `golden.*` case (1 and 4 threads), `cli.hash_threads`, `integration` (1 vs 4 thread `cmp`) |
+
+## Effects, particles, 3D, physics, deformation
+
+| Feature | Implementation | Verified by |
+|---|---|---|
+| Whole-frame effects: glow, bloom, box blur, color grade, vignette, lens flare | `effects` | `fx.unreferenced_effect_whole_frame`, `fx.blur_dirty_rect_expansion`, `fx.animated_effect_param`, `golden.effects_stack` |
+| Group effects, drop shadow, masks after effects | `effects`, `compositor` | `fx.group_effect_only_inside_group`, `fx.drop_shadow_offset_colour`, `fx.group_mask_after_effects`, `fx.huge_shadow_offset_defined`, `golden.effects_stack` |
+| 2D lighting effect: falloffs, spot cone, relief | `effects` | `fx.falloff_curves`, `fx.point_light_falloff_values`, `fx.relief_brightens_lit_side`, `fx.huge_light_stays_finite`, `fx.light_and_effect_bounds`, `golden.effects_stack` |
+| Parametric particles, presets, animated emission, cap | `particles`, `compositor` | `particles.*` (8 cases), `golden.particle_emitters`, `golden.equirect_canvas` |
+| 3D: sphere/box/plane sprites, OBJ triangles, depth buffer, materials, lights | `lighting`, `mesh` | `golden.scene3d_shadows_mesh`, `integration` (`golden production`, `golden advanced`) |
+| Shadow maps (directional, spot), PCF, supersampling `antialias3d` | `lighting` | `shadow.*` (5 cases), `golden.scene3d_shadows_mesh` |
+| Rigid bodies: OBB/circle contacts, friction, restitution, damping | `physics` | `physics.circle_box_contact`, `physics.heavy_damping_never_flips_sign`, `physics.divergence_is_an_error`, `golden.physics_rigid_soft` |
+| Force fields (directional, radial, vortex), springs, distance and pin constraints | `physics` | `physics.vortex_tangential`, `physics.pin_holds_anchor`, `golden.physics_rigid_soft` |
+| Soft bodies (mass-spring grid, pressure, pins, substeps) | `physics`, `deform` | `physics.softbody_pinned_top_sags_and_rests`, `physics.softbody_deterministic`, `physics.soft_body_substeps_validated`, `golden.physics_rigid_soft` |
+| Physics cache (versioned, signature-checked, atomic) and `--physics-cache` | `physics` | `physics.softbody_cache_round_trip`, `physics.cache_payload_validated`, `cli.physics_cache`, `integration` (`golden advanced`) |
+| Deformers: bend, twist, wave, squash, stretch, mesh-warp | `compositor`, `deform` | `deform.*` (7 cases), `golden.deformers_mesh_warp` |
+
+## 360 and cameras
+
+| Feature | Implementation | Verified by |
+|---|---|---|
+| Equirectangular canvas, horizontal wrap | `renderer`, `compositor` | `golden.equirect_canvas`, `integration` (`tests/data-equirect.xml` dimensions) |
+| Perspective viewport from a panorama: yaw, pitch, roll, vertical FOV | `camera` | `camera.pixel_center_is_exact`, `camera.positive_pitch_looks_down`, `golden.viewport_extraction`, `integration` (`golden viewport`) |
+| Spherical metadata: MP4 `sv3d`/`st3d` and Spatial Media v1 UUID, Matroska projection | `encoder`, `spatial` | `encode.spherical_side_data`, `encode.spatial_offsets_promote_to_co64`, `integration` (UUID and `sv3d` check, resume keeps metadata) |
+
+## Output, CLI and robustness
+
+| Feature | Implementation | Verified by |
+|---|---|---|
+| In-process encode: H.264, H.265, FFV1; MP4/MOV/Matroska; AAC audio; bit-exact output | `encoder` | `encode.h264_mp4_round_trip`, `encode.h265_mp4_round_trip`, `encode.ffv1_mkv_round_trip`, `encode.bitexact_output`, `encode.open_rejects_bad_configuration`, `encode.finish_once_and_destroy_unfinished`, `integration` |
+| libav failure handling | `encoder`, `video`, `audio` | `encode_faults.*` (every wrapped libav call), `encode_faults.finish_failure_keeps_moov` |
+| Allocation-failure handling (every core allocation during load, asset load, one frame, encode) | all modules | `oom.*` (6 cases) |
+| Preview PNG/PPM and FNV-1a preview hash | `renderer` | `cli.preview_png`, `cli.preview_default_name`, every `golden.*` case, `integration` (PNG previews) |
+| `--hash` per-frame hashes, thread invariant | `renderer` | `cli.hash_threads`, `cli.hash_with_resume` |
+| Segmented `--resume` with manifest, reuse and packet-copy mux | `resume`, `renderer`, `encoder` | `cli.resume`, `integration` (resume byte-identity) |
+| CLI parsing, exit codes, usage | `cli_args`, `main` | `args.*` (4 cases), `cli.help`, `cli.version`, `cli.unknown_option`, `cli.frame_out_of_range`, `cli.missing_asset_exit` |
+| Optional OpenCL color conversion with CPU fallback | `gpu`, `renderer` | `integration` (`--renderer gpu` preview equals the CPU one) |
+| Metrics and per-frame JSON Lines trace | `renderer`, `main` | exercised by `docs/benchmark.md` measurements; no automated check |
+
+## Deliberate limits
+
+- The 2D solver and the soft bodies are deterministic visual behavior, not
+  verified physical simulation. Spheres, boxes and planes are camera-facing
+  sprites; there are no PBR materials or ray-traced shadows; the lens flare
+  is not optical.
+- Characters missing from the chosen font render as its missing-glyph box;
+  there is no font fallback.
+- Frames are bit-identical for one compiler, C library, architecture and set
+  of library versions; the golden references are regenerated and reviewed
+  when those change (`tests/golden/README.md`). The OpenCL conversion is not
+  claimed identical across GPU vendors; the CPU path is the reference.
+- Allocation-failure injection covers allocations made by the engine's own
+  code; allocations inside the shared libraries are not intercepted.

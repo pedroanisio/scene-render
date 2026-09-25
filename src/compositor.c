@@ -543,10 +543,13 @@ static SrStatus sr_draw_image(SrDrawContext *context, const SrNode *node,
                               SrMat3 world, SrMat3 inverse, double opacity,
                               SrClip clip, const SrTarget *target,
                               const SrMaskLink *masks) {
-    const SrImage *image = sr_asset_get_frame(
+    SrStatus frame_status = SR_OK;
+    const SrImage *image = sr_asset_get_frame_status(
         context->scene, node->asset, sr_media_time(node, context->time),
-        context->diag);
-    if (!image) return SR_OK;  /* reported through diagnostics */
+        context->diag, &frame_status);
+    /* Decoding errors are reported through diagnostics (the render then
+     * fails with SR_ERR_ASSET); running out of memory stops it at once. */
+    if (!image) return frame_status == SR_ERR_MEMORY ? SR_ERR_MEMORY : SR_OK;
     SrDeformState deform;
     SrStatus status = sr_deform_prepare(context->scene, node, context->time,
                                         &deform);

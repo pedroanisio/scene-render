@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Golden: group effects (drop shadow with animated offset and color,
+     color grade), 2D lighting with relief and moving point light, a
+     blurred group, and whole-frame glow, bloom, lens flare and vignette. -->
+<scene version="1.0">
+  <project width="320" height="180" fps="12" duration="2" seed="21"
+           linearLight="true" background="#141A28FF"/>
+  <composition>
+    <group id="card" x="20" y="16" effects="cardShadow cardGrade">
+      <shape id="face" shape="rect" width="100" height="60" fill="#F4F1DEFF"
+             stroke="#E07A5FFF" strokeWidth="3">
+        <animate property="fill" defaultInterpolation="ease-in-out">
+          <key time="0" value="#F4F1DE"/><key time="2" value="#81B29A"/>
+        </animate>
+      </shape>
+      <shape id="dot" shape="ellipse" width="24" height="24" x="66" y="18" fill="#E07A5FFF"/>
+    </group>
+    <group id="panel" effects="panelLight">
+      <shape id="knobA" shape="ellipse" width="50" height="50" x="20" y="105" fill="#E8E8E8FF"/>
+      <shape id="knobB" shape="ellipse" width="50" height="50" x="80" y="105" fill="#E8E8E8FF"/>
+      <shape id="knobC" shape="rect" width="50" height="50" x="140" y="105" fill="#E8E8E8FF"/>
+    </group>
+    <group id="soft" x="200" y="20" effects="soften">
+      <shape id="bar" shape="rect" width="90" height="16" y="10" fill="#60A0FFFF"/>
+      <shape id="bar2" shape="rect" width="16" height="70" x="37" fill="#FF6080FF"/>
+    </group>
+    <shape id="hot" shape="ellipse" width="30" height="30" x="240" y="115" fill="#FFF0C0FF"/>
+  </composition>
+  <lights>
+    <light id="fill2d" type="ambient" color="#8090B0FF" intensity="0.2"/>
+    <light id="lamp2d" type="point" x="60" y="100" z="60" range="160" intensity="1.4">
+      <animate property="position.x" defaultInterpolation="ease-in-out">
+        <key time="0" value="20"/><key time="2" value="190"/>
+      </animate>
+      <animate property="color">
+        <key time="0" value="#FFD08A"/><key time="2" value="#8AD0FF"/>
+      </animate>
+    </light>
+    <light id="beam2d" type="spot" x="5" y="175" z="30" yaw="-30" spotAngle="40"
+           range="260" intensity="0.6" color="#FF6FA0FF"/>
+  </lights>
+  <effects>
+    <effect id="cardShadow" type="drop-shadow" offsetY="8" radius="5" intensity="0.7">
+      <animate property="offsetX">
+        <key time="0" value="3"/><key time="2" value="12.5"/>
+      </animate>
+      <animate property="color">
+        <key time="0" value="#000000"/><key time="2" value="#102A60"/>
+      </animate>
+    </effect>
+    <effect id="cardGrade" type="color-grade" saturation="1.2" contrast="1.1" brightness="0.03"/>
+    <effect id="panelLight" type="lighting" lights="fill2d lamp2d beam2d"
+            falloff="smooth" relief="4"/>
+    <effect id="soften" type="blur">
+      <animate property="radius">
+        <key time="0" value="0.5"/><key time="2" value="5"/>
+      </animate>
+    </effect>
+    <effect id="frameGlow" type="glow" intensity="0.4" radius="3" threshold="0.75"/>
+    <effect id="frameBloom" type="bloom" intensity="0.3" radius="4" threshold="0.7"/>
+    <effect id="flare" type="lens-flare" intensity="0.5"/>
+    <effect id="frameVignette" type="vignette" intensity="0.45"/>
+  </effects>
+</scene>

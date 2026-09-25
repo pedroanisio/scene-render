@@ -56,7 +56,15 @@ void sr_scene_init(SrScene *scene) {
     scene->physics.fixed_step = 1.0 / 120.0;
     scene->physics.gravity_y = 980.665;
     scene->root = sr_node_create(scene, SR_NODE_GROUP);
-    if (scene->root) scene->root->id = sr_strdup("__root__");
+    if (scene->root) {
+        scene->root->id = sr_strdup("__root__");
+        /* A root without its id is an allocation failure too: callers
+         * check scene->root. */
+        if (!scene->root->id) {
+            sr_node_free(scene->root);
+            scene->root = NULL;
+        }
+    }
 }
 
 static void asset_free(SrAsset *asset) {

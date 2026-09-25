@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Golden: one decoded clip shared by four layers: plain, looped at
+     speed 2, reversed, and remapped with an animated source.time track. -->
+<scene version="1.0">
+  <project width="320" height="180" fps="12" duration="2" seed="15"
+           background="#000000FF"/>
+  <assets>
+    <video id="clip" src="../../examples/assets/clip.mp4" width="160" height="90"
+           fps="12" duration="2"/>
+  </assets>
+  <composition>
+    <layer id="plain" asset="clip"/>
+    <layer id="fast" asset="clip" x="160" speed="2" loop="2"/>
+    <layer id="reversed" asset="clip" y="90" reverse="true"/>
+    <layer id="remapped" asset="clip" x="160" y="90">
+      <animate property="source.time">
+        <key time="0" value="1.5"/><key time="1" value="0.25"/><key time="2" value="1.9"/>
+      </animate>
+    </layer>
+  </composition>
+</scene>

@@ -59,45 +59,53 @@ static bool flatten_quadratic(Contour *contour,Point start,Point control,Point e
         if(!add_point(contour,p))return false;}return true;
 }
 
-static bool parse_path(const char *text,Path *path) {
+/* SR_OK, SR_ERR_ASSET for malformed path data, SR_ERR_MEMORY when a point
+ * or contour cannot be stored. */
+static SrStatus parse_path(const char *text,Path *path) {
     const char *cursor=text;char command=0;Contour *contour=NULL;Point current={0},first={0};
     while(1){separators(&cursor);if(!*cursor)break;
         if(isalpha((unsigned char)*cursor))command=*cursor++;
-        else if(!command)return false;
+        else if(!command)return SR_ERR_ASSET;
         bool relative=islower((unsigned char)command)!=0;char op=(char)toupper((unsigned char)command);
         if(op=='Z'){if(contour&&contour->count&&
-            (current.x!=first.x||current.y!=first.y)&&!add_point(contour,first))return false;
+            (current.x!=first.x||current.y!=first.y)&&!add_point(contour,first))return SR_ERR_MEMORY;
             if(contour)contour->closed=true;
             current=first;command=0;continue;}
-        if(op=='M'||op=='L'){double x,y;if(!pair(&cursor,&x,&y))return false;
+        if(op=='M'||op=='L'){double x,y;if(!pair(&cursor,&x,&y))return SR_ERR_ASSET;
             if(relative){x+=current.x;y+=current.y;}current=(Point){x,y};
-            if(op=='M'){contour=add_contour(path);if(!contour)return false;first=current;
+            if(op=='M'){contour=add_contour(path);if(!contour)return SR_ERR_MEMORY;first=current;
                 command=relative?'l':'L';}
-            if(!contour||!add_point(contour,current))return false;
+            if(!contour)return SR_ERR_ASSET;
+            if(!add_point(contour,current))return SR_ERR_MEMORY;
             continue;}
-        if(!contour||!contour->count)return false;
-        if(op=='H'){double x;if(!number(&cursor,&x))return false;if(relative)x+=current.x;
-            current.x=x;if(!add_point(contour,current))return false;continue;}
-        if(op=='V'){double y;if(!number(&cursor,&y))return false;if(relative)y+=current.y;
-            current.y=y;if(!add_point(contour,current))return false;continue;}
-        if(op=='C'){double ax,ay,bx,by,x,y;if(!pair(&cursor,&ax,&ay)||!pair(&cursor,&bx,&by)||!pair(&cursor,&x,&y))return false;
+        if(!contour||!contour->count)return SR_ERR_ASSET;
+        if(op=='H'){double x;if(!number(&cursor,&x))return SR_ERR_ASSET;if(relative)x+=current.x;
+            current.x=x;if(!add_point(contour,current))return SR_ERR_MEMORY;continue;}
+        if(op=='V'){double y;if(!number(&cursor,&y))return SR_ERR_ASSET;if(relative)y+=current.y;
+            current.y=y;if(!add_point(contour,current))return SR_ERR_MEMORY;continue;}
+        if(op=='C'){double ax,ay,bx,by,x,y;if(!pair(&cursor,&ax,&ay)||!pair(&cursor,&bx,&by)||!pair(&cursor,&x,&y))return SR_ERR_ASSET;
             if(relative){ax+=current.x;ay+=current.y;bx+=current.x;by+=current.y;x+=current.x;y+=current.y;}
-            Point end={x,y};if(!flatten_cubic(contour,current,(Point){ax,ay},(Point){bx,by},end))return false;current=end;continue;}
-        if(op=='Q'){double cx,cy,x,y;if(!pair(&cursor,&cx,&cy)||!pair(&cursor,&x,&y))return false;
+            Point end={x,y};if(!flatten_cubic(contour,current,(Point){ax,ay},(Point){bx,by},end))return SR_ERR_MEMORY;current=end;continue;}
+        if(op=='Q'){double cx,cy,x,y;if(!pair(&cursor,&cx,&cy)||!pair(&cursor,&x,&y))return SR_ERR_ASSET;
             if(relative){cx+=current.x;cy+=current.y;x+=current.x;y+=current.y;}
-            Point end={x,y};if(!flatten_quadratic(contour,current,(Point){cx,cy},end))return false;current=end;continue;}
-        return false;
+            Point end={x,y};if(!flatten_quadratic(contour,current,(Point){cx,cy},end))return SR_ERR_MEMORY;current=end;continue;}
+        return SR_ERR_ASSET;
     }
-    if(!path->count)return false;
-    for(size_t i=0;i<path->count;++i)if(path->items[i].count<2)return false;
-    return true;
+    if(!path->count)return SR_ERR_ASSET;
+    for(size_t i=0;i<path->count;++i)if(path->items[i].count<2)return SR_ERR_ASSET;
+    return SR_OK;
+}
+
+SrStatus sr_vector_path_check(const char *text) {
+    if (!text) return SR_ERR_ASSET;
+    Path path={0};
+    SrStatus status=parse_path(text,&path);
+    path_free(&path);
+    return status;
 }
 
 bool sr_vector_path_valid(const char *text) {
-    Path path={0};
-    bool valid=text&&parse_path(text,&path);
-    path_free(&path);
-    return valid;
+    return sr_vector_path_check(text)==SR_OK;
 }
 
 /* Signed-area accumulation (as in font-rs): each edge adds, to the cells it
@@ -265,9 +273,10 @@ SrStatus sr_vector_path_coverage(const char *text, SrFillRule rule,
         (size_t)height > SIZE_MAX / sizeof(float) / ((size_t)width + 2))
         return SR_ERR_ARGUMENT;
     Path path = {0};
-    if (!parse_path(text, &path)) {
+    SrStatus parsed = parse_path(text, &path);
+    if (parsed != SR_OK) {
         path_free(&path);
-        return SR_ERR_ASSET;
+        return parsed;
     }
     size_t cells = ((size_t)width + 2) * height;
     Accumulator acc = {sr_alloc(cells * sizeof(float)), (int)width + 2,

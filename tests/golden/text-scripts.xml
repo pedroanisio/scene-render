@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Golden: Hebrew and Arabic (shaping, joining, UAX #9) through the
+     Fontconfig generic family "sans". Only deterministic where "sans"
+     resolves to the same font file as when the reference was made; the
+     golden suite skips this scene otherwise (see README.md). -->
+<scene version="1.0">
+  <project width="320" height="120" fps="12" duration="1" seed="17"
+           linearLight="true" background="#101010FF"/>
+  <assets>
+    <text id="he" text="שלום עולם — abc 123" width="300" height="40" size="22"
+          color="#9FE8C8FF" font="sans" language="he"/>
+    <text id="ar" text="مرحبا بالعالم 2026" width="300" height="40" size="22"
+          align="end" color="#9FD8FFFF" font="sans" language="ar"/>
+  </assets>
+  <composition>
+    <layer id="heLayer" asset="he" x="10" y="10"/>
+    <layer id="arLayer" asset="ar" x="10" y="65"/>
+  </composition>
+</scene>

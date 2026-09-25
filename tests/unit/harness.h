@@ -94,5 +94,8 @@ extern const sr_test_case sr_tests_deform[];
 extern const sr_test_case sr_tests_shadow[];
 extern const sr_test_case sr_tests_text[];
 extern const sr_test_case sr_tests_args[];
+/* Verification depth (P7): golden images and allocation-failure injection. */
+extern const sr_test_case sr_tests_golden[];
+extern const sr_test_case sr_tests_oom[];
 
 #endif

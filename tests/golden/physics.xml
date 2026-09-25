@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Golden: rigid bodies (static floor and tilted platform, bouncing
+     circles, a spinning box, a pinned pendulum, a spring pair), an
+     animated vortex and directional wind, and a soft body pinned at its top
+     plus a free soft body landing on the floor. -->
+<scene version="1.0">
+  <project width="320" height="180" fps="12" duration="2" seed="23"
+           background="#101820FF"/>
+  <composition>
+    <shape id="floor" shape="rect" width="320" height="12" x="160" y="174"
+           anchorX="160" anchorY="6" fill="#243B55FF">
+      <rigidBody type="static" friction="0.8"/>
+    </shape>
+    <shape id="platform" shape="rect" width="90" height="10" x="120" y="120"
+           anchorX="45" anchorY="5" rotation="12" fill="#3D5A80FF">
+      <rigidBody type="static" friction="0.6"/>
+    </shape>
+    <shape id="ball" shape="ellipse" width="16" height="16" x="140" y="40"
+           anchorX="8" anchorY="8" fill="#EE6C4DFF">
+      <rigidBody shape="circle" radius="8" restitution="0.5" friction="0.3"/>
+    </shape>
+    <shape id="ball2" shape="ellipse" width="12" height="12" x="60" y="20"
+           anchorX="6" anchorY="6" fill="#F2CC8FFF">
+      <rigidBody shape="circle" radius="6" restitution="0.7" velocityX="40"/>
+    </shape>
+    <shape id="spinner" shape="rect" width="14" height="14" x="250" y="60"
+           anchorX="7" anchorY="7" fill="#C77DFFFF">
+      <rigidBody linearDamping="0.2" angularVelocity="120" mass="2"/>
+    </shape>
+    <shape id="bob" shape="ellipse" width="14" height="14" x="300" y="40"
+           anchorX="7" anchorY="7" fill="#98C1D9FF">
+      <rigidBody shape="circle" radius="7" linearDamping="0"/>
+    </shape>
+    <shape id="left" shape="ellipse" width="10" height="10" x="30" y="90"
+           anchorX="5" anchorY="5" fill="#81B29AFF">
+      <rigidBody shape="circle" radius="5"/>
+    </shape>
+    <shape id="right" shape="ellipse" width="10" height="10" x="70" y="80"
+           anchorX="5" anchorY="5" fill="#81B29AFF">
+      <rigidBody shape="circle" radius="5"/>
+    </shape>
+    <shape id="banner" shape="rect" width="60" height="40" x="180" y="10"
+           fill="#F4F1DEFF" stroke="#3D405BFF" strokeWidth="2">
+      <softBody mass="2" stiffness="7" damping="0.25" pressure="2" rows="4" cols="5"
+                pin="top"/>
+    </shape>
+    <shape id="jelly" shape="rect" width="30" height="24" x="20" y="120"
+           fill="#E07A5FFF">
+      <softBody mass="1" stiffness="12" damping="0.3" pressure="3" rows="3" cols="3"/>
+    </shape>
+  </composition>
+  <physics fixedStep="0.008333333333333333" gravityY="320">
+    <forceField id="swirl" type="vortex" x="250" y="90" falloff="1.2">
+      <animate property="strength">
+        <key time="0" value="0"/><key time="1" value="6000"/><key time="2" value="6000"/>
+      </animate>
+    </forceField>
+    <forceField id="breeze" type="directional">
+      <animate property="forceX">
+        <key time="0" value="0"/><key time="1" value="60"/><key time="2" value="-40"/>
+      </animate>
+    </forceField>
+    <constraint id="hinge" type="pin" a="bob" x="270" y="40"/>
+    <constraint id="pair" type="spring" a="left" b="right" restLength="30"
+                stiffness="40" damping="0.5"/>
+  </physics>
+</scene>

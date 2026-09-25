@@ -149,3 +149,89 @@ boundaries are the four-frame FFmpeg-process video LRU, OBJ-only imported mesh
 format, mono equirectangular projection, approximate physical/lighting models,
 and the lack of a full GPU raster backend. None is represented as a completed
 capability beyond the scope documented in `feature-matrix.md`.
+
+## Port to an in-process engine (P0–P7)
+
+The phases above describe the v1.1 engine as first delivered: FFmpeg ran as
+a supervised child process for decoding, encoding and text (`drawtext`),
+video frames were cached four at a time, and resume kept raw RGBA frames on
+disk. The port below replaced those parts, one phase per branch, each merged
+after an independent review of its diff and a round of fixes for the
+review's findings. Verification throughout used the Freedesktop SDK 25.08
+(GCC 15.2.0, glibc 2.42, x86-64). The statements in the earlier sections
+that describe the process-based design are kept as history; README.md and
+the other documents describe the current code.
+
+**P0 — build and test scaffolding.** CMake and Make gained `SR_WERROR`,
+`SR_SANITIZE` and `SR_COVERAGE`, stricter warnings, and
+`-ffp-contract=off -fno-fast-math` on every target, so compilers cannot fuse
+multiply-adds and change rounding. The single test program became
+`tests/unit/` with one CTest entry per suite, and the integration script
+writes only to a work directory. The new UBSan runs found a `qsort` on
+empty groups, a half-texel offset in panorama sampling and non-exponential
+velocity damping, which were fixed (physics cache format 2). Verified by
+Release and ASan/UBSan CTest runs.
+
+**P4 — float premultiplied render core.** Frames and cached images became
+float premultiplied RGBA in a blend space (working gamut, linear light when
+requested), with one input conversion for 8-bit sources and one output
+conversion to 8- or 16-bit straight RGBA. Shapes, masks and image edges got
+signed-distance coverage at the pixel footprint; isolated groups draw into
+pooled buffers with dirty rectangles. The goal was correct linear-light
+blending and a single, exact color path. Verified by new blend, raster,
+mask, group, image and path suites, 1- vs 7-thread preview equality, and
+regenerated integration hashes.
+
+**P1+P2 — in-process libav encode and decode.** The FFmpeg child processes
+were replaced by libavformat/libavcodec/libswscale/libswresample: an
+encoder writing H.264/H.265/FFV1 and AAC into MP4/QuickTime/Matroska with
+bit-exact flags, color tags and spherical side data; a persistent decoder
+per video asset with keyframe seeking and a 256 MiB frame LRU; audio decoded
+once in memory and mixed per frame straight into the encoder. This removed
+process start-up per cache miss, temporary files and pipe framing. Verified
+by encode round trips, seeking-vs-sequential equality, A/V origin and
+timestamp-gap tests, and `unit.encode_faults`, which fails each libav call
+in turn through `--wrap` link options.
+
+**P5 — feature parity.** Group effects, animatable effect and color
+parameters, drop shadow and 2D lighting effects, parametric particles,
+mesh-warp, mass-spring soft bodies, oriented-box contacts, vortex fields and
+pins, shadow maps for directional and spot lights, and 3D supersampling were
+added to match the reference implementation. Verified by the fx,
+anim_color, particles, deform, physics and shadow suites and example
+previews; the review round bounded particle integration, integer
+conversions of large coordinates, soft-body substeps and cache payloads.
+
+**P3 — in-process text.** The `drawtext` path was replaced by
+FreeType/HarfBuzz/FriBidi/Fontconfig: per-line shaping, UAX #9 reordering,
+wrapping at grapheme clusters, alignment including justify, letter spacing
+and vertical alignment, with fonts from `fontFile` or a Fontconfig family
+that must exist. It was the last use of an external process. Verified by
+the text suite (kerning, ligatures, bidi order, wrapping, overflow, thread
+invariance, failure injection of shaping) and example previews.
+
+**P6 — CLI, runtime XSD validation, segmented resume, hashing.** Argument
+parsing moved to a pure `cli_args` module; the XSD is embedded at build time
+and every scene is validated with libxml2 before loading; `--hash` prints
+per-frame hashes of the encoder input; `--resume` renders independently
+encoded segments with a manifest and assembles them by packet copy (this
+replaced the raw-frame resume cache); `--physics-cache` names a cache
+directory. Verified by `unit.args` and the `cli.*` CTest entries (exit
+codes, schema errors, preview names, thread-invariant hashes, interrupted
+and resumed renders, physics cache reuse).
+
+**P7 — verification depth and documentation.** Added `unit.golden`: 14
+scenes under `tests/golden/` rendered at 2–3 frames with 1 and 4 threads and
+compared byte for byte with reviewed PNG references
+(`SR_UPDATE_GOLDEN=1` regenerates them). Added `unit.oom`: the unit binary
+wraps `malloc`/`calloc`/`realloc`/`free`, and every engine allocation of a
+scene load, an asset load, a one-frame render (1 and 3 threads) and an
+encoder open/frame/finish is failed in turn, checking the status, the
+diagnostics and that nothing leaks. It found allocation failures that were
+swallowed or misreported (scene root id, soft-body step scratch, video
+frame conversion during drawing, path and OBJ parsing, `fps` parsing,
+node attachment), and a mesh leak when assets were loaded twice; these were
+fixed. Added `tools/coverage.py` (gcov line and branch totals for `src/`)
+and `tools/coverage-gate.sh` (fails 2 points below the measured 90.30% of
+lines and 71.29% of branches). The documentation was checked against the
+code. Verified by Release, ASan/UBSan and coverage CTest runs (45 tests).

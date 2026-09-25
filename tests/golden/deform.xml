@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Golden: mesh-warp with animated control points on a magnified
+     checker, and ordered bend, twist, wave, squash and stretch modifiers on
+     shapes and a vector (bend in pixels, twist in degrees). -->
+<scene version="1.0">
+  <project width="320" height="180" fps="12" duration="2" seed="24"
+           background="#0C1018FF"/>
+  <assets>
+    <image id="checker" src="../../examples/assets/checker.ppm" width="8" height="8"/>
+    <vector id="panel" shape="rect" width="80" height="50" fill="#4070C0FF"
+            stroke="#FFFFFFFF" strokeWidth="3"/>
+  </assets>
+  <composition>
+    <layer id="tile" asset="checker" x="10" y="10" scaleX="10" scaleY="10">
+      <deform>
+        <modifier type="mesh-warp" rows="3" cols="3">
+          <point row="1" col="1" x="0" y="0">
+            <animate property="x" defaultInterpolation="ease-in-out">
+              <key time="0" value="-1.5"/><key time="2" value="1.5"/>
+            </animate>
+            <animate property="y">
+              <key time="0" value="0"/><key time="2" value="-1"/>
+            </animate>
+          </point>
+          <point row="0" col="2" x="0.9" y="-0.5"/>
+          <point row="2" col="0" x="-0.6" y="0.4"/>
+        </modifier>
+      </deform>
+    </layer>
+    <layer id="bent" asset="panel" x="110" y="15">
+      <deform>
+        <modifier type="bend" amount="10" axis="y">
+          <animate property="amount">
+            <key time="0" value="0"/><key time="2" value="60"/>
+          </animate>
+        </modifier>
+        <modifier type="wave" amount="4" frequency="2" phase="0" axis="y">
+          <animate property="phase">
+            <key time="0" value="0"/><key time="2" value="6.283185307"/>
+          </animate>
+        </modifier>
+      </deform>
+    </layer>
+    <shape id="twisted" shape="rect" width="70" height="70" x="215" y="10"
+           fill="#E0A040FF" stroke="#202020FF" strokeWidth="2">
+      <deform>
+        <modifier type="twist" amount="30">
+          <animate property="amount">
+            <key time="0" value="20"/><key time="2" value="140"/>
+          </animate>
+        </modifier>
+      </deform>
+    </shape>
+    <shape id="squashed" shape="ellipse" width="60" height="60" x="120" y="105"
+           fill="#60D090FF">
+      <deform>
+        <modifier type="squash" amount="0.3" frequency="1.5"/>
+      </deform>
+    </shape>
+    <shape id="stretched" shape="rect" width="60" height="40" x="220" y="115"
+           fill="#D060A0FF">
+      <deform>
+        <modifier type="stretch" amount="0.25" axis="y"/>
+      </deform>
+    </shape>
+  </composition>
+</scene>

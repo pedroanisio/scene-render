@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Golden: perspective viewport extracted from a 256x128 panorama with
+     animated yaw, pitch, roll and fov (the view crosses the seam). -->
+<scene version="1.0">
+  <project width="320" height="180" fps="12" duration="2" seed="19"
+           mode="viewport" background="#001020FF"/>
+  <assets>
+    <image id="tile" src="../../examples/assets/checker.ppm" width="8" height="8"/>
+  </assets>
+  <scene360 layout="equirectangular" width="256" height="128" viewportCamera="cam"/>
+  <composition>
+    <layer id="pano" asset="tile" scaleX="32" scaleY="16"/>
+    <shape id="marker" shape="ellipse" width="30" height="30" x="110" y="50"
+           fill="#FFCC00FF"/>
+    <shape id="seam" shape="rect" width="12" height="128" x="250" fill="#FF3060FF"/>
+    <camera id="cam" yaw="-60" pitch="-10" roll="0" fov="80">
+      <animate property="yaw">
+        <key time="0" value="-60"/><key time="2" value="170"/>
+      </animate>
+      <animate property="pitch" defaultInterpolation="ease-in-out">
+        <key time="0" value="-10"/><key time="2" value="25"/>
+      </animate>
+      <animate property="roll">
+        <key time="0" value="0"/><key time="2" value="15"/>
+      </animate>
+      <animate property="fov">
+        <key time="0" value="80"/><key time="2" value="50"/>
+      </animate>
+    </camera>
+  </composition>
+</scene>
