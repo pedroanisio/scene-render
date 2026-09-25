@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene version="1.0">
+  <project width="1280" height="720" fps="30" duration="4"
+           seed="7" linearLight="false" background="#F4F1EAFF"/>
+  <output path="../build/keyframe-curves.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="veryfast" crf="21"/>
+  <assets>
+    <image id="tile" src="assets/checker.ppm" width="8" height="8"/>
+  </assets>
+  <composition>
+    <layer id="step" asset="tile" x="80" y="80" scaleX="12" scaleY="12">
+      <animate property="position.x" defaultInterpolation="step">
+        <key time="0" value="80"/><key time="2" value="1080"/><key time="4" value="80"/>
+      </animate>
+    </layer>
+    <layer id="linear" asset="tile" x="80" y="200" scaleX="12" scaleY="12">
+      <animate property="position.x" defaultInterpolation="linear">
+        <key time="0" value="80"/><key time="2" value="1080"/><key time="4" value="80"/>
+      </animate>
+    </layer>
+    <layer id="ease-in" asset="tile" x="80" y="320" scaleX="12" scaleY="12">
+      <animate property="position.x" defaultInterpolation="ease-in">
+        <key time="0" value="80"/><key time="2" value="1080"/><key time="4" value="80"/>
+      </animate>
+    </layer>
+    <layer id="ease-out" asset="tile" x="80" y="440" scaleX="12" scaleY="12">
+      <animate property="position.x" defaultInterpolation="ease-out">
+        <key time="0" value="80"/><key time="2" value="1080"/><key time="4" value="80"/>
+      </animate>
+    </layer>
+    <layer id="bezier" asset="tile" x="80" y="560" scaleX="12" scaleY="12">
+      <animate property="position.x" defaultInterpolation="cubic-bezier">
+        <key time="0" value="80" bezier="0.42,0,0.58,1"/>
+        <key time="2" value="1080" bezier="0.42,0,0.58,1"/>
+        <key time="4" value="80" bezier="0.42,0,0.58,1"/>
+      </animate>
+    </layer>
+  </composition>
+</scene>

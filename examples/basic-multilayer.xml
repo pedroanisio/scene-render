@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene version="1.0">
+  <project width="3840" height="2160" fps="24" duration="10"
+           seed="20260925" linearLight="true" background="#111827FF"/>
+  <output path="../build/basic-multilayer.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="medium" crf="18"/>
+  <assets>
+    <image id="checker" src="assets/checker.ppm" width="8" height="8"/>
+  </assets>
+  <composition>
+    <group id="hero" x="1920" y="1080" rotation="-8">
+      <layer id="base" asset="checker" z="0" x="0" y="0" scaleX="180"
+             scaleY="180" anchorX="4" anchorY="4" blend="normal"/>
+      <layer id="screen" asset="checker" z="1" x="420" y="-180"
+             scaleX="80" scaleY="80" anchorX="4" anchorY="4"
+             opacity="0.72" blend="screen">
+        <animate property="rotation" defaultInterpolation="ease-in-out">
+          <key time="0" value="0"/>
+          <key time="10" value="360"/>
+        </animate>
+      </layer>
+      <layer id="difference" asset="checker" z="2" x="-460" y="220"
+             scaleX="90" scaleY="90" anchorX="4" anchorY="4"
+             opacity="0.80" blend="difference">
+        <mask type="rect" x="1" y="1" width="6" height="6"/>
+      </layer>
+    </group>
+  </composition>
+</scene>

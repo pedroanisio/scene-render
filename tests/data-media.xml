@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<scene version="1.0">
+  <project width="160" height="90" fps="12" duration="1" seed="7"
+           background="#000000FF"/>
+  <output path="../build/test-artifacts/media.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="ultrafast" crf="30"
+          audioCodec="aac" audioBitrate="96000"/>
+  <assets>
+    <video id="clip" src="../examples/assets/clip.mp4" width="160" height="90"
+           fps="12" duration="2"/>
+    <audio id="tone" src="../examples/assets/tone.wav"/>
+  </assets>
+  <composition>
+    <layer id="forward" asset="clip" clipIn="0" clipOut="1" loop="1"/>
+    <layer id="duplicate" asset="clip" opacity="0.35" blend="screen"
+           clipIn="0" clipOut="1" loop="1" reverse="true"/>
+  </composition>
+  <audioMix sampleRate="48000" channels="2">
+    <audioTrack id="toneTrack" asset="tone" clipIn="0" clipOut="1"
+                loop="1" volume="0.25" pan="0"/>
+  </audioMix>
+</scene>

@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<scene version="1.0">
+  <project width="3840" height="1920" fps="30" duration="10" seed="361"
+           linearLight="true" background="#10182AFF" mode="equirectangular"/>
+  <output path="../build/equirectangular-360.mp4" codec="h265"
+          pixelFormat="yuv420p" preset="medium" crf="20"/>
+  <assets>
+    <image id="checker360" src="assets/checker.ppm" width="8" height="8"/>
+  </assets>
+  <scene360 layout="equirectangular" width="3840" height="1920"/>
+  <composition>
+    <layer id="panorama" asset="checker360" scaleX="480" scaleY="240"/>
+    <particleEmitter id="stars" preset="dust" x="1920" y="960"
+                     rate="80" lifetime="10" speed="500" spread="360"
+                     size="5" color="#BBDDFFFF" blend="screen"/>
+  </composition>
+</scene>

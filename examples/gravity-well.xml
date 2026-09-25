@@ -1,0 +1,131 @@
+<?xml version="1.0"?>
+<!-- Bodies orbiting a radial attractor. With falloff="1" the field's
+     acceleration is ~strength/d, so circular orbit speed is sqrt(strength)
+     = 500 px/s at every radius; off-speed launches trace ellipses. -->
+<scene version="1.0">
+  <project width="1920" height="1080" fps="30" duration="12" seed="7719"
+           linearLight="true" background="#050814FF" mode="standard"/>
+  <output path="../build/gravity-well.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="medium" crf="18"/>
+  <assets>
+    <text id="line1" text="GRAVITY" width="620" height="100" size="84"
+          color="#EAF4FFFF"/>
+    <text id="line2" text="WELL" width="620" height="100" size="84"
+          color="#FFC857FF"/>
+    <text id="caption" text="SCENE RENDER 1 0" width="620" height="40"
+          size="28" color="#8FA8C8FF"/>
+  </assets>
+  <materials>
+    <material id="sun" baseColor="#FFB23EFF" metallic="0.2"
+              roughness="0.3" emissive="#A04A00FF"/>
+  </materials>
+  <composition>
+    <!-- Orbit guides -->
+    <group id="guides" opacity="0">
+      <animate property="opacity" defaultInterpolation="ease-out">
+        <key time="0.5" value="0"/><key time="2.5" value="0.35"/>
+      </animate>
+      <shape id="ring1" shape="ellipse" width="440" height="440"
+             x="1240" y="560" anchorX="220" anchorY="220"
+             fill="#00000000" stroke="#3A5A8AFF" strokeWidth="2"/>
+      <shape id="ring2" shape="ellipse" width="680" height="680"
+             x="1240" y="560" anchorX="340" anchorY="340"
+             fill="#00000000" stroke="#3A5A8AFF" strokeWidth="2"/>
+      <shape id="ring3" shape="ellipse" width="900" height="900"
+             x="1240" y="560" anchorX="450" anchorY="450"
+             fill="#00000000" stroke="#3A5A8AFF" strokeWidth="2"/>
+    </group>
+
+    <particleEmitter id="corona" preset="sparks" x="1240" y="560"
+                     rate="120" lifetime="1.4" speed="260" spread="360"
+                     size="4" color="#FFB86BDD" blend="add"/>
+    <particleEmitter id="haze" preset="dust" x="1240" y="560"
+                     rate="40" lifetime="5" speed="120" spread="360"
+                     size="3" color="#7FA7FF66" blend="screen"/>
+
+    <object3D id="star" primitive="sphere" material="sun"
+              x="1240" y="560" z="0" radius="70" castShadow="false"/>
+
+    <!-- Orbiting bodies -->
+    <shape id="planetA" shape="ellipse" width="56" height="56"
+           x="1460" y="560" anchorX="28" anchorY="28"
+           fill="#38BDF8FF" stroke="#E0F4FFFF" strokeWidth="4">
+      <rigidBody type="dynamic" shape="circle" radius="28" mass="1"
+                 restitution="0.9" friction="0.1" velocityY="-500"/>
+    </shape>
+    <shape id="planetB" shape="ellipse" width="84" height="84"
+           x="900" y="560" anchorX="42" anchorY="42"
+           fill="#FF5A7AFF" stroke="#FFE3EAFF" strokeWidth="4">
+      <rigidBody type="dynamic" shape="circle" radius="42" mass="2"
+                 restitution="0.9" friction="0.1" velocityY="500"/>
+    </shape>
+    <shape id="planetC" shape="ellipse" width="70" height="70"
+           x="1240" y="110" anchorX="35" anchorY="35"
+           fill="#7EE787FF" stroke="#E6FFE9FF" strokeWidth="4">
+      <rigidBody type="dynamic" shape="circle" radius="35" mass="1.5"
+                 restitution="0.9" friction="0.1" velocityX="-500"/>
+      <deform>
+        <modifier type="wave" amount="6" frequency="3" axis="x"/>
+      </deform>
+    </shape>
+    <shape id="comet" shape="rect" width="40" height="40"
+           x="1240" y="880" anchorX="20" anchorY="20"
+           fill="#FFC857FF" stroke="#FFFFFFFF" strokeWidth="3">
+      <rigidBody type="dynamic" shape="box" mass="0.6" restitution="0.8"
+                 friction="0.2" velocityX="620" angularVelocity="90"/>
+    </shape>
+    <shape id="moon" shape="ellipse" width="30" height="30"
+           x="1580" y="560" anchorX="15" anchorY="15"
+           fill="#C4B5FDFF" stroke="#FFFFFFFF" strokeWidth="3">
+      <rigidBody type="dynamic" shape="circle" radius="15" mass="0.4"
+                 restitution="0.9" friction="0.1" velocityY="-430"/>
+    </shape>
+
+    <!-- Title -->
+    <group id="title" opacity="0">
+      <animate property="opacity" defaultInterpolation="ease-out">
+        <key time="0.3" value="0"/><key time="1.8" value="1"/>
+      </animate>
+      <animate property="position.y" defaultInterpolation="ease-out">
+        <key time="0.3" value="60"/><key time="1.8" value="0"/>
+      </animate>
+      <layer id="t1" asset="line1" x="110" y="380"/>
+      <layer id="t2" asset="line2" x="110" y="490" blend="screen"/>
+    </group>
+    <layer id="cap" asset="caption" x="114" y="620" opacity="0">
+      <animate property="opacity" defaultInterpolation="ease-in-out">
+        <key time="2.2" value="0"/><key time="3.4" value="1"/>
+      </animate>
+    </layer>
+
+    <!-- Fade to black -->
+    <shape id="fadeout" z="100" shape="rect" width="1920" height="1080"
+           x="0" y="0" fill="#000000FF" opacity="0">
+      <animate property="opacity" defaultInterpolation="ease-in">
+        <key time="10.8" value="0"/><key time="12" value="1"/>
+      </animate>
+    </shape>
+  </composition>
+  <lights>
+    <light id="ambient" type="ambient" color="#A8C4FFFF" intensity="0.25"/>
+    <light id="core" type="point" color="#FFD9A0FF" intensity="2.2"
+           x="1240" y="560" z="400" range="1400" falloff="1.2">
+      <animate property="intensity" defaultInterpolation="ease-in-out">
+        <key time="0" value="1.6"/><key time="3" value="2.6"/>
+        <key time="6" value="1.8"/><key time="9" value="2.8"/>
+        <key time="12" value="2.0"/>
+      </animate>
+    </light>
+  </lights>
+  <effects>
+    <effect id="bloom" type="bloom" intensity="0.7" radius="12"
+            threshold="0.6"/>
+    <effect id="grade" type="color-grade" intensity="0.8"
+            saturation="1.15" contrast="1.08" brightness="0.0"/>
+    <effect id="vignette" type="vignette" intensity="0.65" radius="1"/>
+  </effects>
+  <physics fixedStep="0.004166666666666667" gravityX="0" gravityY="0">
+    <forceField id="well" type="radial" x="1240" y="560"
+                strength="250000" falloff="1"/>
+  </physics>
+</scene>

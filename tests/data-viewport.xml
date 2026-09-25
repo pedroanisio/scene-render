@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<scene version="1.0">
+  <project width="320" height="180" fps="6" duration="1" seed="99"
+           mode="viewport" background="#001020FF"/>
+  <output path="../build/test-artifacts/viewport.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="ultrafast" crf="30"/>
+  <assets>
+    <image id="tile" src="../examples/assets/checker.ppm" width="8" height="8"/>
+  </assets>
+  <scene360 layout="equirectangular" width="256" height="128"
+            viewportCamera="camera"/>
+  <composition>
+    <layer id="pano" asset="tile" scaleX="32" scaleY="16"/>
+    <shape id="marker" shape="ellipse" width="30" height="30"
+           x="110" y="50" fill="#FFCC00FF"/>
+    <camera id="camera" yaw="-60" pitch="-10" roll="0" fov="80">
+      <animate property="yaw" defaultInterpolation="linear">
+        <key time="0" value="-60"/><key time="1" value="60"/>
+      </animate>
+      <animate property="pitch" defaultInterpolation="ease-in-out">
+        <key time="0" value="-10"/><key time="1" value="20"/>
+      </animate>
+    </camera>
+  </composition>
+</scene>

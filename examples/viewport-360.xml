@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<scene version="1.0">
+  <project width="3840" height="2160" fps="30" duration="10" seed="360"
+           linearLight="true" background="#10182AFF" mode="viewport"/>
+  <output path="../build/viewport-360.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="medium" crf="18"/>
+  <assets>
+    <image id="checker360" src="assets/checker.ppm" width="8" height="8"/>
+    <text id="title360" text="360 VIEWPORT" width="900" height="120"
+          size="84" color="#FFFFFFFF"/>
+  </assets>
+  <scene360 layout="equirectangular" width="3840" height="1920"
+            viewportCamera="tour"/>
+  <composition>
+    <layer id="panorama" asset="checker360" scaleX="480" scaleY="240"/>
+    <layer id="label" asset="title360" x="1470" y="900" blend="screen"/>
+    <shape id="sun" shape="ellipse" width="240" height="240"
+           x="600" y="300" fill="#FFD45CFF" blend="add"/>
+    <camera id="tour" projection="perspective" yaw="-120" pitch="-15"
+            roll="0" fov="85">
+      <animate property="yaw" defaultInterpolation="ease-in-out">
+        <key time="0" value="-120"/>
+        <key time="5" value="0"/>
+        <key time="10" value="120"/>
+      </animate>
+      <animate property="pitch" defaultInterpolation="cubic-bezier">
+        <key time="0" value="-15" bezier="0.42,0,0.58,1"/>
+        <key time="5" value="20" bezier="0.42,0,0.58,1"/>
+        <key time="10" value="-15" bezier="0.42,0,0.58,1"/>
+      </animate>
+      <animate property="roll" defaultInterpolation="linear">
+        <key time="0" value="0"/>
+        <key time="10" value="12"/>
+      </animate>
+      <animate property="fov" defaultInterpolation="ease-in-out">
+        <key time="0" value="85"/>
+        <key time="5" value="60"/>
+        <key time="10" value="85"/>
+      </animate>
+    </camera>
+  </composition>
+</scene>

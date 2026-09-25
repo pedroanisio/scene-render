@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<scene version="1.0">
+  <project width="3840" height="2160" fps="30" duration="10" seed="2026"
+           linearLight="true" background="#050914FF" mode="standard"/>
+  <output path="../build/video-audio-remap.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="medium" crf="18"
+          audioCodec="aac" audioBitrate="192000"/>
+  <assets>
+    <video id="sharedClip" src="assets/clip.mp4" width="160" height="90"
+           fps="12" duration="2"/>
+    <audio id="tone" src="assets/tone.wav"/>
+  </assets>
+  <composition>
+    <layer id="looped" asset="sharedClip" x="160" y="240"
+           scaleX="10" scaleY="10" clipIn="0" clipOut="2" loop="5"/>
+    <layer id="reversedDuplicate" asset="sharedClip" x="2080" y="240"
+           scaleX="10" scaleY="10" clipIn="0" clipOut="2" loop="5"
+           reverse="true" opacity="0.75" blend="screen"/>
+    <layer id="remappedDuplicate" asset="sharedClip" x="1440" y="1320"
+           scaleX="6" scaleY="6" blend="overlay">
+      <animate property="source.time" defaultInterpolation="linear">
+        <key time="0" value="0"/>
+        <key time="5" value="1.9"/>
+        <key time="10" value="0"/>
+      </animate>
+    </layer>
+  </composition>
+  <audioMix sampleRate="48000" channels="2">
+    <audioTrack id="music" asset="tone" start="0" clipIn="0" clipOut="2"
+                loop="5" volume="0.35" pan="0"/>
+  </audioMix>
+</scene>

@@ -1,0 +1,111 @@
+<?xml version="1.0"?>
+<scene version="1.0">
+  <project width="3840" height="2160" fps="30" duration="10" seed="424242"
+           linearLight="true" background="#08101FFF" mode="standard"/>
+  <output path="../build/lighting-physics-deformation.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="medium" crf="18"/>
+  <assets>
+    <text id="heading" text="PHYSICS + LIGHT" width="1500" height="150"
+          size="105" color="#EAF4FFFF"/>
+    <vector id="badge" shape="ellipse" width="320" height="320"
+            fill="#38BDF8CC"/>
+  </assets>
+  <materials>
+    <material id="gold" baseColor="#E9A52AFF" metallic="0.65"
+              roughness="0.25" emissive="#120600FF"/>
+    <material id="blue" baseColor="#3182CEFF" metallic="0.15"
+              roughness="0.4" emissive="#00020AFF"/>
+  </materials>
+  <composition>
+    <layer id="title" asset="heading" x="1170" y="100" blend="screen"/>
+    <shape id="ground" shape="rect" width="3600" height="140"
+           x="1920" y="1990" anchorX="1800" anchorY="70"
+           fill="#26364FFF" stroke="#70A0CFFF" strokeWidth="8">
+      <rigidBody type="static" shape="box" mass="1" friction="0.8"
+                 restitution="0.15"/>
+    </shape>
+    <shape id="fallingBall" shape="ellipse" width="260" height="260"
+           x="1550" y="460" anchorX="130" anchorY="130"
+           fill="#FF5A7AFF" stroke="#FFFFFFFF" strokeWidth="8">
+      <rigidBody type="dynamic" shape="circle" radius="130" mass="2"
+                 friction="0.45" restitution="0.72" linearDamping="0.03"
+                 velocityX="190" angularVelocity="40"/>
+      <softBody mass="1" stiffness="18" damping="0.35" pressure="4"/>
+      <deform>
+        <modifier type="wave" amount="18" frequency="2" phase="0" axis="x">
+          <animate property="amount" defaultInterpolation="ease-in-out">
+            <key time="0" value="6"/>
+            <key time="5" value="24"/>
+            <key time="10" value="6"/>
+          </animate>
+        </modifier>
+        <modifier type="squash" amount="0.08"/>
+      </deform>
+    </shape>
+    <shape id="springBall" shape="rect" width="220" height="220"
+           x="2300" y="600" anchorX="110" anchorY="110"
+           fill="#7EE787FF" stroke="#FFFFFFFF" strokeWidth="8">
+      <rigidBody type="dynamic" shape="box" mass="1.5" friction="0.5"
+                 restitution="0.45" linearDamping="0.08" velocityX="-80"/>
+      <deform>
+        <modifier type="bend" amount="60" axis="x"/>
+        <modifier type="twist" amount="35"/>
+      </deform>
+    </shape>
+    <layer id="deformedBadge" asset="badge" x="2800" y="500">
+      <deform>
+        <modifier type="stretch" amount="0.25"/>
+        <modifier type="wave" amount="20" frequency="3" axis="y"/>
+      </deform>
+    </layer>
+    <particleEmitter id="sparks" preset="sparks" x="1920" y="1180"
+                     rate="90" lifetime="2.2" speed="650" spread="100"
+                     size="8" color="#FFCC66EE" blend="add"/>
+    <particleEmitter id="smoke" preset="smoke" x="900" y="1700"
+                     rate="30" lifetime="4" speed="100" spread="50"
+                     size="22" color="#9FB3C888" blend="screen"/>
+    <object3D id="orb" primitive="sphere" material="gold"
+              x="650" y="750" z="0" radius="220" castShadow="true">
+      <animate property="position.y" defaultInterpolation="ease-in-out">
+        <key time="0" value="750"/>
+        <key time="5" value="1050"/>
+        <key time="10" value="750"/>
+      </animate>
+    </object3D>
+    <object3D id="cube" primitive="box" material="blue"
+              x="3200" y="1200" z="0" rotation="18" radius="180"
+              castShadow="true"/>
+  </composition>
+  <lights>
+    <light id="ambient" type="ambient" color="#B7D7FFFF" intensity="0.22"/>
+    <light id="key" type="directional" color="#FFF0D2FF" intensity="1.2"
+           yaw="-35" pitch="-25" castShadow="true">
+      <animate property="intensity" defaultInterpolation="ease-in-out">
+        <key time="0" value="0.8"/><key time="5" value="1.5"/>
+        <key time="10" value="0.8"/>
+      </animate>
+    </light>
+    <light id="fill" type="point" color="#56CCFFFF" intensity="2.0"
+           x="3000" y="500" z="600" range="2600" falloff="1.5"/>
+    <light id="spot" type="spot" color="#FF66CCFF" intensity="2.5"
+           x="500" y="500" z="800" yaw="25" pitch="20" range="3000"
+           falloff="1.2" spotAngle="50"/>
+  </lights>
+  <effects>
+    <effect id="bloom" type="bloom" intensity="0.55" radius="14"
+            threshold="0.68"/>
+    <effect id="grade" type="color-grade" intensity="0.8"
+            saturation="1.12" contrast="1.08" brightness="0.01"/>
+    <effect id="vignette" type="vignette" intensity="0.7" radius="1"/>
+    <effect id="flare" type="lens-flare" intensity="0.8" radius="70"
+            color="#FFE0A0FF"/>
+  </effects>
+  <physics fixedStep="0.008333333333333333" gravityX="0" gravityY="980.665"
+           cache="../build/lighting-physics.cache">
+    <forceField id="wind" type="directional" forceX="35" forceY="0"/>
+    <forceField id="attractor" type="radial" x="1920" y="900"
+                strength="1200" falloff="0.7"/>
+    <constraint id="spring" type="spring" a="fallingBall" b="springBall"
+                restLength="800" stiffness="8" damping="2"/>
+  </physics>
+</scene>

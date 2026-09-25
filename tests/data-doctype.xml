@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!DOCTYPE scene [<!ENTITY forbidden "1">]>
+<scene version="1.0">
+  <project width="64" height="64" fps="1" duration="1"/>
+  <composition/>
+</scene>

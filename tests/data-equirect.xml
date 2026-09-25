@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<scene version="1.0">
+  <project width="256" height="128" fps="6" duration="1" seed="100"
+           mode="equirectangular" background="#001020FF"/>
+  <output path="../build/test-artifacts/equirect.mkv" codec="ffv1"
+          pixelFormat="yuv444p"/>
+  <assets>
+    <image id="tile" src="../examples/assets/checker.ppm" width="8" height="8"/>
+  </assets>
+  <scene360 layout="equirectangular" width="256" height="128"/>
+  <composition>
+    <layer id="pano" asset="tile" scaleX="32" scaleY="16"/>
+    <particleEmitter id="stars" preset="dust" x="128" y="64" rate="12"
+                     lifetime="1" speed="40" spread="360" size="2"
+                     color="#FFFFFFFF" blend="screen"/>
+  </composition>
+</scene>

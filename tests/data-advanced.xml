@@ -1,0 +1,59 @@
+<?xml version="1.0"?>
+<scene version="1.0">
+  <project width="320" height="180" fps="12" duration="1" seed="12345"
+           background="#07101FFF"/>
+  <output path="../build/test-artifacts/advanced.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="ultrafast" crf="30"/>
+  <materials>
+    <material id="red" baseColor="#FF5544FF" metallic="0.2" roughness="0.4"/>
+  </materials>
+  <composition>
+    <shape id="floor" shape="rect" width="300" height="20" x="160" y="165"
+           anchorX="150" anchorY="10" fill="#405070FF">
+      <rigidBody type="static" shape="box" mass="1" friction="0.8" restitution="0.2"/>
+    </shape>
+    <shape id="ball" shape="ellipse" width="30" height="30" x="110" y="40"
+           anchorX="15" anchorY="15" fill="#44DD88FF">
+      <rigidBody type="dynamic" shape="circle" radius="15" mass="1"
+                 friction="0.4" restitution="0.7" velocityX="35"/>
+      <softBody mass="1" stiffness="16" damping="0.2" pressure="1"/>
+      <deform>
+        <modifier type="wave" amount="3" frequency="2" axis="x"/>
+        <modifier type="bend" amount="5" axis="y"/>
+      </deform>
+    </shape>
+    <shape id="box" shape="rect" width="28" height="28" x="210" y="45"
+           anchorX="14" anchorY="14" fill="#6688FFFF">
+      <rigidBody type="dynamic" shape="box" mass="1" friction="0.5"
+                 restitution="0.4" velocityX="-20"/>
+      <deform><modifier type="twist" amount="20"/></deform>
+    </shape>
+    <particleEmitter id="dust" preset="dust" x="160" y="100" rate="25"
+                     lifetime="1" speed="80" spread="360" size="2"
+                     color="#FFFFFFFF" blend="screen"/>
+    <object3D id="orb" primitive="sphere" material="red" x="270" y="55"
+              radius="24" castShadow="true"/>
+  </composition>
+  <lights>
+    <light id="ambient" type="ambient" intensity="0.25" color="#AACCFFFF"/>
+    <light id="key" type="directional" intensity="1.2" color="#FFFFFFFF"
+           yaw="-25" pitch="-30" castShadow="true"/>
+    <light id="point" type="point" intensity="1.5" color="#55AAFFFF"
+           x="250" y="20" z="100" range="400" falloff="1.2"/>
+    <light id="spot" type="spot" intensity="1" color="#FF66AAFF"
+           x="20" y="20" z="100" yaw="30" pitch="20" range="500"
+           falloff="1" spotAngle="60"/>
+  </lights>
+  <effects>
+    <effect id="glow" type="glow" intensity="0.25" radius="2" threshold="0.65"/>
+    <effect id="grade" type="color-grade" intensity="0.5" saturation="1.1"
+            contrast="1.05" brightness="0.01"/>
+    <effect id="vignette" type="vignette" intensity="0.5" radius="1"/>
+  </effects>
+  <physics fixedStep="0.008333333333333333" gravityX="0" gravityY="420"
+           cache="../build/test-artifacts/advanced.physics">
+    <forceField id="wind" type="directional" forceX="6" forceY="0"/>
+    <constraint id="spring" type="spring" a="ball" b="box" restLength="90"
+                stiffness="4" damping="1"/>
+  </physics>
+</scene>

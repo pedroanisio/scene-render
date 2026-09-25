@@ -1,0 +1,5 @@
+/build/
+*.o
+*.d
+*.mp4.tmp
+*.mkv.tmp

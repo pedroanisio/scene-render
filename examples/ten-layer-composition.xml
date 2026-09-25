@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene version="1.0">
+  <project width="3840" height="2160" fps="30" duration="10"
+           seed="42" linearLight="true" background="#090D18FF"/>
+  <output path="../build/ten-layer-composition.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="veryfast" crf="20"/>
+  <assets>
+    <image id="tile" src="assets/checker.ppm" width="8" height="8"/>
+  </assets>
+  <composition>
+    <group id="stage" x="240" y="320">
+      <mask type="rect" x="0" y="0" width="3360" height="1520"/>
+      <layer id="l01" asset="tile" z="1" x="0" y="0" scaleX="40" scaleY="40" blend="normal"/>
+      <layer id="l02" asset="tile" z="2" x="620" y="0" scaleX="40" scaleY="40" opacity="0.85" blend="add"/>
+      <layer id="l03" asset="tile" z="3" x="1240" y="0" scaleX="40" scaleY="40" opacity="0.85" blend="multiply"/>
+      <layer id="l04" asset="tile" z="4" x="1860" y="0" scaleX="40" scaleY="40" opacity="0.85" blend="screen"/>
+      <layer id="l05" asset="tile" z="5" x="2480" y="0" scaleX="40" scaleY="40" opacity="0.85" blend="overlay"/>
+      <layer id="l06" asset="tile" z="6" x="0" y="760" scaleX="40" scaleY="40" opacity="0.85" blend="difference"/>
+      <layer id="l07" asset="tile" z="7" x="620" y="760" scaleX="40" scaleY="40" blend="normal"/>
+      <layer id="l08" asset="tile" z="8" x="1240" y="760" scaleX="40" scaleY="40" opacity="0.75" blend="add"/>
+      <layer id="l09" asset="tile" z="9" x="1860" y="760" scaleX="40" scaleY="40" opacity="0.75" blend="screen"/>
+      <layer id="l10" asset="tile" z="10" x="2480" y="760" scaleX="40" scaleY="40" opacity="0.75" blend="difference">
+        <animate property="rotation" defaultInterpolation="linear">
+          <key time="0" value="0"/>
+          <key time="10" value="360"/>
+        </animate>
+      </layer>
+    </group>
+  </composition>
+</scene>

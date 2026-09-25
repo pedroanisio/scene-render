@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<scene version="1.0">
+  <project width="64" height="64" fps="1" duration="1"/>
+  <assets>
+    <image id="duplicate" src="../examples/assets/checker.ppm" width="8" height="8"/>
+  </assets>
+  <composition>
+    <shape id="duplicate" shape="rect" width="10" height="10"/>
+  </composition>
+</scene>
