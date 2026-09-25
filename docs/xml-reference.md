@@ -30,32 +30,48 @@ are relative to the current working directory.
 ## Project and output
 
 `project` requires positive `width`, `height`, `duration`, and `fps` (`N` or
-`N/D`). Optional fields are `seed`, `linearLight`, `background`, and `mode`:
-`standard`, `equirectangular`, or `viewport`.
+`N/D`). Optional fields are `seed`, `linearLight`, `background`,
+`workingColorSpace="srgb|rec709|display-p3|rec2020"`, and `mode`: `standard`,
+`equirectangular`, or `viewport`.
 
 `output` requires `path` and `codec` (`h264`, `h265`, or `ffv1`). It accepts
-`pixelFormat`, `preset`, mutually usable `crf`/`bitrate`, `audioCodec`, and
-`audioBitrate`. Availability is checked by the FFmpeg child process.
+`pixelFormat`, `preset`, mutually usable `crf`/`bitrate`, `audioCodec`,
+`audioBitrate`, `colorSpace="srgb|rec709|display-p3|rec2020"`,
+`colorRange="limited|full"`, and `sphericalMetadata`. The engine preflights
+the requested FFmpeg video and audio encoders and reports unavailable codecs
+before rendering.
 
 ## Assets
 
 | Element | Required attributes | Optional |
 |---|---|---|
-| `image` | `id`, `src`, `width`, `height` | — |
-| `video` | `id`, `src`, `width`, `height`, `fps`, `duration` | — |
+| `image` | `id`, `src`, `width`, `height` | `colorSpace` |
+| `video` | `id`, `src`, `width`, `height`, `fps`, `duration` | `colorSpace` |
 | `audio` | `id`, `src` | — |
-| `text` | `id`, `text`, `width`, `height`, `size` | `color` |
-| `vector` | `id`, `shape`, `width`, `height` | `fill` |
+| `text` | `id`, `text`, `width`, `height`, `size` | `color`, `font`, `fontFile` |
+| `vector` | `id`, `shape`, `width`, `height` | `fill`, `path` |
+| `mesh` | `id`, `src` | — |
 
 Declared video geometry/FPS/duration make frame indexing explicit and
-deterministic. The engine does not silently derive timeline metadata.
+deterministic. The engine does not silently derive timeline metadata. Image
+and video pixels are converted from their declared source color space to the
+project working space. Text is shaped and rasterized by FFmpeg's drawtext
+stack (FreeType, Fontconfig, FriBidi, and HarfBuzz in the verified build), so
+UTF-8 and bidirectional scripts are supported. `fontFile` paths are resolved
+relative to the XML file.
+
+Vectors use `shape="rect|ellipse|path"`. Path data supports absolute and
+relative `M`, `L`, `H`, `V`, `C`, `Q`, and `Z` commands with deterministic
+2x2 antialiasing and even-odd filling. Meshes load Wavefront OBJ vertices,
+normals, and polygonal faces; faces are fan-triangulated and missing normals
+are generated.
 
 ## Composition nodes
 
 Groups and drawable 2D nodes accept `id`, `z`, `visible`, `opacity`, `start`,
-`end`, `x`, `y`, `zPosition`, `rotation`, `rotationX`, `rotationY`, `scaleX`,
-`scaleY`, `scaleZ`, `anchorX`, and `anchorY`. Lower `z` draws first; equal `z`
-retains XML order. A group applies its transform and opacity recursively.
+`end`, `x`, `y`, `rotation`, `scaleX`, `scaleY`, `anchorX`, and `anchorY`.
+Lower `z` draws first; equal `z` retains XML order. A group applies its
+transform and opacity recursively.
 
 `layer` additionally requires `asset` and accepts `blend`, `clipIn`, `clipOut`,
 `loop`, `reverse`, `speed`, and `timeStretch`. `loop="0"` means one play;
@@ -67,10 +83,13 @@ implicit clip/speed mapping.
 
 `particleEmitter` requires `preset="smoke|sparks|dust|rain"`; it accepts
 `rate`, `lifetime`, `speed`, `spread` in degrees, `size`, `color`, and `blend`.
+The numeric emitter controls `rate`, `lifetime`, `speed`, `spread`, and `size`
+are animatable.
 
-`mask` supports `type="rect"`, `x`, `y`, `width`, `height`, and `invert`.
-Inverted masks are supported on drawable nodes; inverted group masks are
-rejected because a bounded inverse compositing surface is not allocated.
+`mask` supports `type="rect|ellipse|rounded-rect"`, `x`, `y`, `width`,
+`height`, `radius`, and `invert`. Masks may be placed on drawable nodes or
+groups. Group masks compose through nested world transforms, including
+inverted masks.
 
 ## Animation
 
@@ -86,10 +105,11 @@ Interpolation names are `step`, `linear`, `ease-in`, `ease-out`,
 `bezier="x1,y1,x2,y2"`, with both X controls in `[0,1]`. Keys may appear out of
 order but times must be unique after sorting.
 
-Node properties include `opacity`, `position.x/y/z`, `rotation`, `scale.x/y`,
+Node properties include `opacity`, `position.x/y`, `rotation`, `scale.x/y`,
 `anchor.x/y`, and `source.time`. Camera properties are `position.x/y/z`, `yaw`,
 `pitch`, `roll`, and `fov`. Light properties include `intensity`, position,
 `yaw`, and `pitch`. Effect properties include `intensity` and `radius`.
+Particle properties are `rate`, `lifetime`, `speed`, `spread`, and `size`.
 Modifier properties are `amount`, `frequency`, and `phase`. 3D object transform
 properties include position, rotation, and scale axes.
 
@@ -105,14 +125,22 @@ perspective output.
 `near`, and `far`. Spherical viewports use orientation and FOV; standard 3D
 primitives additionally use translation and projection.
 
+For equirectangular MP4/MOV output with `sphericalMetadata="true"`, the final
+file receives the Google Spatial Media v1 spherical UUID box. Matroska keeps
+the projection stream tags written by FFmpeg. Metadata injection is atomic and
+only occurs after a successful encode.
+
 ## Materials, 3D, and lights
 
 `material` requires `id` and accepts `baseColor`, `metallic`, `roughness`, and
 `emissive`.
 
-`object3D` requires `id` and `primitive="sphere|box|plane"`; it accepts
-`material`, position, three rotations, three scales, `radius`, `castShadow`, and
-`receiveShadow`. Transform animations may be nested.
+`object3D` requires `id` and `primitive="sphere|box|plane|mesh"`; it accepts
+`mesh` (required for `primitive="mesh"`), `material`, position, three rotations, three
+scales, `radius`, `castShadow`, and `receiveShadow`. Transform animations may
+be nested. Meshes are triangle-rasterized with a shared depth buffer. Shadow
+occlusion is a deterministic bounding-volume/screen-space approximation, not
+a physically based ray tracer.
 
 Top-level `lights` contains `light` entries. Each requires `id` and
 `type="ambient|directional|point|spot"`, and accepts color, intensity, position,
@@ -154,6 +182,10 @@ damping, and pressure and produces a documented procedural approximation.
 
 ## Colors and time
 
-Colors are `#RRGGBB`, `#RRGGBBAA`, or normalized `r,g,b[,a]`. Times and
-durations are decimal seconds. Frames are selected on a half-open interval;
-frame N occurs exactly at `N × fps_den / fps_num`.
+Colors are `#RRGGBB`, `#RRGGBBAA`, or normalized `r,g,b[,a]`. Named color
+spaces are sRGB, Rec.709, Display-P3, and Rec.2020. Assets are decoded from their source
+space into the project working space, blending optionally uses decoded linear
+light, and the final frame is converted to the output space with matching
+FFmpeg primaries/transfer/matrix/range tags. Times and durations are decimal
+seconds. Frames are selected on a half-open interval; frame N occurs exactly
+at `N × fps_den / fps_num`.

@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene version="1.0">
+  <project width="640" height="360" fps="30" duration="3" seed="1701"
+           linearLight="true" workingColorSpace="display-p3"
+           background="#091426FF" mode="standard"/>
+  <output path="../build/production-features.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="medium" crf="18"
+          colorSpace="srgb" colorRange="limited"/>
+  <assets>
+    <text id="unicodeTitle" text="C17 • مرحبا • OpenCL" width="560" height="72"
+          size="42" color="#F7FAFFFF" font="DejaVu Sans"/>
+    <vector id="ribbon" shape="path" width="260" height="180"
+            path="M 15 90 C 55 5 110 5 130 68 C 150 5 205 5 245 90 C 205 165 155 165 130 112 C 105 165 55 165 15 90 Z"
+            fill="#FF4D8DDE"/>
+    <mesh id="gemMesh" src="assets/octahedron.obj"/>
+  </assets>
+  <materials>
+    <material id="gem" baseColor="#5DE4FFFF" metallic="0.45"
+              roughness="0.2" emissive="#031322FF"/>
+  </materials>
+  <composition>
+    <camera id="mainCamera" projection="perspective" x="0" y="0" z="0"
+            yaw="0" pitch="0" roll="0" fov="55" near="1" far="2000"/>
+    <object3D id="gemObject" primitive="mesh" mesh="gemMesh" material="gem"
+              x="0" y="0" z="520" radius="145" rotationX="-18"
+              rotationY="25" castShadow="true">
+      <animate property="rotation.y" defaultInterpolation="linear">
+        <key time="0" value="25"/><key time="3" value="385"/>
+      </animate>
+    </object3D>
+    <group id="maskedArt" x="36" y="128" z="5">
+      <mask type="rounded-rect" x="0" y="0" width="260" height="180"
+            radius="36"/>
+      <layer id="heart" asset="ribbon" x="0" y="0" blend="screen">
+        <deform>
+          <modifier type="wave" amount="8" frequency="2" phase="0" axis="y">
+            <animate property="phase" defaultInterpolation="linear">
+              <key time="0" value="0"/><key time="3" value="6.283185307"/>
+            </animate>
+          </modifier>
+        </deform>
+      </layer>
+      <group id="cutout" z="6">
+        <mask type="ellipse" x="82" y="42" width="96" height="96" invert="true"/>
+        <shape id="maskedGlow" shape="rect" width="260" height="180"
+               fill="#48BB7866" blend="add"/>
+      </group>
+    </group>
+    <layer id="title" asset="unicodeTitle" x="40" y="24" z="20"
+           blend="screen"/>
+    <particleEmitter id="dust" preset="dust" x="320" y="250" z="15"
+                     rate="35" lifetime="2" speed="45" spread="260"
+                     size="3" color="#FFF4C2AA" blend="screen">
+      <animate property="rate" defaultInterpolation="ease-in-out">
+        <key time="0" value="18"/><key time="1" value="35"/>
+        <key time="3" value="18"/>
+      </animate>
+      <animate property="size" defaultInterpolation="ease-in-out">
+        <key time="0" value="2"/><key time="1" value="3"/>
+        <key time="3" value="2"/>
+      </animate>
+    </particleEmitter>
+  </composition>
+  <lights>
+    <light id="ambient" type="ambient" color="#B4CEFFFF" intensity="0.16"/>
+    <light id="key" type="directional" color="#FFFFFFFF" intensity="1.4"
+           yaw="-35" pitch="-20" castShadow="true"/>
+    <light id="rim" type="point" color="#FF4DB8FF" intensity="2.2"
+           x="220" y="-100" z="260" range="700" falloff="1.5"/>
+  </lights>
+  <effects>
+    <effect id="bloom" type="bloom" intensity="0.35" radius="5"
+            threshold="0.72">
+      <animate property="intensity" defaultInterpolation="ease-in-out">
+        <key time="0" value="0.2"/><key time="1" value="0.35"/>
+        <key time="3" value="0.2"/>
+      </animate>
+      <animate property="radius" defaultInterpolation="ease-in-out">
+        <key time="0" value="3"/><key time="1" value="5"/>
+        <key time="3" value="3"/>
+      </animate>
+    </effect>
+    <effect id="grade" type="color-grade" intensity="0.7"
+            saturation="1.08" contrast="1.05" brightness="0.01"/>
+    <effect id="vignette" type="vignette" intensity="0.45" radius="1"/>
+  </effects>
+</scene>

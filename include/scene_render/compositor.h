@@ -17,5 +17,8 @@ SrStatus sr_composite_scene(SrScene *scene, double time, SrFrame *frame,
                             SrDiagnostics *diag);
 SrColor sr_blend_pixel(SrColor backdrop, SrColor source, double opacity,
                        SrBlendMode mode, bool linear_light);
+SrColor sr_blend_pixel_space(SrColor backdrop, SrColor source, double opacity,
+                             SrBlendMode mode, bool linear_light,
+                             SrColorSpace color_space);
 
 #endif

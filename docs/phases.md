@@ -1,135 +1,151 @@
 # Incremental delivery report
 
-All measurements below were produced in the supplied Ubuntu 24.04 x86-64
-container with GCC 13.3.0, Expat 2.6.1, and FFmpeg 6.1.1. Small phase artifacts
-are committed under `artifacts/`; SHA-256 values are in `artifacts/SHA256SUMS`.
+All measurements were produced in the supplied Ubuntu 24.04 x86-64 container
+with GCC 13.3.0, Expat 2.6.1, and FFmpeg 6.1.1. Verification artifacts live in
+`artifacts/`; published hashes are in `artifacts/SHA256SUMS`.
 
-## Phase 1 — XML, timeline, image layers, 4K output
+## Phase 1 — XML, timeline, image layers, and 4K output
 
-Architecture: Expat callbacks build an owned scene graph; the absolute-frame
-timeline evaluates six curve types; a scalar CPU compositor performs nested
-transforms, rectangular masks, alpha, six blends, and optional linear-light
-math; raw frames stream to FFmpeg.
+Architecture and dependencies: Expat callbacks build an owned scene graph;
+the master timeline evaluates directly from an integer frame number; a C
+compositor applies stable z-order, hierarchy, transforms, alpha, masks, and six
+blend equations. One RGBA frame at a time is piped to supervised FFmpeg.
 
-Verified:
+Implemented and verified:
 
-- strict C17 build and semantic XML diagnostics;
-- image source sharing, stable z-order, groups, masks, and 10 simultaneous
-  layers;
-- H.264/H.265/FFV1 output and a full 300-frame 3840×2160 render;
-- deterministic golden frame.
+- strict C17 build, formal XSD, semantic/reference checks, and contextual
+  line/element/attribute diagnostics;
+- dynamically sized layer trees, shared image records, nested transforms,
+  shaped and inverted masks, and linear-light compositing;
+- all six interpolation curves and all required blend modes;
+- H.264/H.265/FFV1 output and 300-frame 3840×2160 rendering;
+- exact golden output and a ten-simultaneous-layer scene.
 
 Artifacts: `phase1-verification.mp4`, `phase1-4k-frame.png`, and
-`phase1-10s-4k.mp4`. The measured 10-second result is detailed in
-`benchmark.md`.
+`phase1-10s-4k.mp4`. The lighter historical 10-layer baseline measured
+135.138 s wall time and 2.220 FPS. Layer count is memory-limited; the CPU
+compositor is deterministic, not real-time.
 
-Boundary at delivery: image-only timeline; later phases retained the same
-scene/compositor contracts.
+## Phase 2 — video, audio, time manipulation, and resume
 
-## Phase 2 — video, audio, time manipulation, resume
+Architecture and dependencies: video frames are indexed by declared rational
+FPS and decoded lazily through FFmpeg into a four-frame shared LRU. Audio
+decodes to temporary float streams and is mixed by C in 4096-frame blocks.
+Atomic post-color RGBA files provide content-signature-based resume.
 
-Architecture: video frames are indexed by declared rational FPS and decoded
-lazily into a four-frame per-source LRU. Audio decodes to temporary float disk
-streams and mixes in 4096-frame blocks. A content signature namespaces atomic
-raw-frame resume entries.
+Implemented and verified:
 
-Verified:
-
-- three independently timed instances share one video asset;
+- multiple independently timed instances of one video asset without duplicate
+  decoded-media ownership;
 - trim, finite loop, reverse, speed/stretch, and explicit source-time remap;
-- stereo volume/pan mix and synchronized H.264/AAC streams, both exactly
-  1.000 seconds in the verification file;
-- resume rerun reuses all selected cached frames.
+- mono/stereo volume and pan mixing, exact selected-range sample count, AAC
+  encode, and 10.000000 s video/audio duration equality in the final render;
+- interrupted-render reuse with versioned manifests and atomic frame writes;
+- encoder availability preflight and nonzero failures for unavailable codecs.
 
-Artifact: `phase2-media-audio.mp4` (160×90, 12 frames, H.264 + AAC). Measured
-wall time: 1.793 s; peak self/child RSS: 47,388 KiB.
+Artifact: `phase2-media-audio.mp4`. Its 160×90 verification run contains H.264
+and AAC streams. A cache miss starts a supervised FFmpeg decode process; this
+keeps the C dependency surface small but divergent remaps can thrash the
+four-frame LRU.
 
-Boundary: each LRU miss starts a supervised FFmpeg decode process, favoring a
-small C dependency surface over high-throughput decode. Widely divergent
-remaps can thrash the four-frame cache.
+## Phase 3 — 360°, camera motion, and viewport extraction
 
-## Phase 3 — 360° and camera
+Architecture and dependencies: a perspective ray is rotated by animated roll,
+pitch, and yaw, then bilinearly samples a wrapped equirectangular canvas.
+Deterministic workers own disjoint row intervals. A C MP4 parser can atomically
+inject the Google Spatial Media v1 UUID/XML after successful muxing.
 
-Architecture: the panorama remains equirectangular; perspective rays apply
-animated roll, pitch, and yaw, then bilinearly sample longitude with seam wrap
-and clamped latitude. POSIX workers render disjoint row ranges.
+Implemented and verified:
 
-Verified:
-
-- FFV1 equirectangular output;
-- animated viewport orientation and FOV;
-- byte-identical viewport golden output at one and four threads;
-- standard perspective/orthographic projection for built-in 3D objects.
+- configurable mono 2:1 equirectangular output, including 3840×1920;
+- animated perspective viewport extraction at 3840×2160;
+- byte-identical viewport frames at one and four threads;
+- standard perspective/orthographic 3D camera projection;
+- MP4 spherical UUID metadata, Matroska projection tags, and tagged color
+  metadata checked by integration tests.
 
 Artifacts: `phase3-equirect.mkv`, `phase3-viewport.png`, and its lossless PPM.
-The viewport preview measured 0.0237 s; six equirectangular frames measured
-0.1181 s.
+The supplied model is mono equirectangular. Translation intentionally has no
+effect for an infinitely distant panorama; stereo/cubemap formats are outside
+the declared schema.
 
-Boundary: mono 2:1 equirectangular scenes only. Translation is intentionally
-irrelevant for an infinitely distant panorama.
+## Phase 4 — lighting, particles, and post-processing
 
-## Phase 4 — lighting, particles, post-processing
+Architecture and dependencies: deterministic CPU rasterization shades built-in
+primitives and Wavefront OBJ triangles against animated ambient, directional,
+point, and spot lights. Stateless seeded particle hashes avoid mutable random
+streams. Post effects use deterministic row jobs and sliding-window blur.
 
-Architecture: a CPU primitive renderer shades material colors with ambient,
-directional, point, and spot lights. The compositor generates particles from
-stateless integer hashes. Effects run in declared order after projection.
+Implemented and verified:
 
-Verified:
+- material-controlled spheres, boxes, planes, and triangulated OBJ meshes with
+  generated normals and a shared depth buffer;
+- four light families, range/falloff/spot controls, animated parameters, and
+  screen-space/bounding-volume shadow approximations;
+- deterministic smoke, sparks, dust, and rain with animated emitter controls;
+- glow, bloom, blur, grade, vignette, and lens-flare-style effects;
+- shaped UTF-8/bidirectional text through FFmpeg's mature text stack and
+  antialiased filled M/L/H/V/C/Q/Z vector paths.
 
-- four animated-capable light families with range/falloff/spot parameters;
-- deterministic smoke, sparks, dust, and rain presets;
-- glow, bloom, blur, color grade, vignette, and lens-flare-style effects;
-- material-controlled spheres, boxes, and planes plus screen-space shadows.
+Artifacts: `phase4-lighting-particles.png` and lossless PPM; the v1.1
+inspection frame additionally demonstrates the OBJ, shaped text, and path
+pipeline. Lighting, metallic/roughness response, shadows, and flare are visual
+models, not PBR, ray tracing, or optical simulation.
 
-Artifact: `phase4-lighting-particles.png` and lossless PPM. The 320×180 preview
-measured 0.0087 s.
+## Phase 5 — physics, constraints, and deformation
 
-Boundary: 3D primitives, shadows, and flare are visual approximations, not a
-general mesh/PBR renderer.
+Architecture and dependencies: bodies simulate once at an XML fixed timestep
+independent of output FPS. Render poses interpolate adjacent samples. A
+version/signature-checked binary cache includes geometry, forces, constraints,
+seed, timestep, duration, and engine version and is committed by atomic rename.
+Deformation is an inverse sample warp.
 
-## Phase 5 — physics and deformation
+Implemented and verified:
 
-Architecture: dynamic bodies are simulated at a fixed XML timestep, cached as
-absolute poses, and interpolated at frame time. Deformation uses deterministic
-inverse warps during sampling.
+- gravity, directional/radial force fields, damping/drag, springs/distance
+  constraints, friction, restitution, and circle/AABB collision behavior;
+- cache save/reload with byte-identical rendered output;
+- bend, twist, wave, squash, and stretch modifiers;
+- damped soft-body-style surface displacement;
+- collision, gravity, a spring, and four modifiers in the 10-second showcase.
 
-Verified:
+Artifacts: `phase5-physics-deformation.png` and lossless PPM. Rigid-body and
+soft-body behavior is explicitly a deterministic visual approximation and has
+not been certified as physically accurate. Mixed circle/box collision uses
+bounding circles.
 
-- gravity, radial/directional fields, damping/drag, springs, constraints,
-  circle/AABB collision, friction, and restitution;
-- physics cache save and byte-identical reload;
-- bend, twist, wave, squash, and stretch;
-- damped soft-body-style surface motion.
+## Phase 6 — optimization, regression, documentation, and benchmark
 
-Artifacts: `phase5-physics-deformation.png` and lossless PPM, plus the complete
-`v1.0-feature-showcase-4k.mp4` render and its 5-second inspection frame. The
-showcase contains 300 H.264 frames at 3840×2160 and 30 fps. It measured
-1086.223 s rendering, 20.146 s encoding, 1106.377 s wall time, 0.271 fps, and
-2,591,484 KiB peak RSS on the verification host. The cached 320×180 preview
-measured 0.0097 s.
+Architecture and dependencies: named sRGB, Rec.709, Display-P3, and Rec.2020
+transfers/matrices separate source, working, and output color. The optional
+OpenCL 1.2 module is dynamically loaded through a stable C boundary and
+offloads final color conversion; CPU rasterization remains the reference.
+Parallel allocation/device failures fall back to deterministic CPU execution.
 
-Boundary: the solver and soft body are visual simulations. They are explicitly
-not claimed to be physically accurate.
+Implemented and verified:
 
-## Phase 6 — optimization, regression, documentation
+- strict Make build plus unit/integration suite passed;
+- fresh CMake 3.30.5 Release build and CTest: 2/2 tests passed (7.69 s);
+- AddressSanitizer + UndefinedBehaviorSanitizer unit suite and the production
+  feature preview passed; LeakSanitizer was disabled under the supervisor;
+- XSD validation for every example, dynamic 160-level nesting, precise XML
+  failure text, goldens, one/four-thread equality, GPU fallback, physics cache,
+  resume, A/V sync, H.264/H.265/FFV1, Rec.709/sRGB tags, and spherical metadata;
+- all C implementation files remain below 500 lines;
+- exact dependency/license inventory, architecture/XML references,
+  troubleshooting, feature matrix, benchmark, Apache-2.0 license, and examples.
 
-Architecture: deterministic viewport row partitioning, media/GPU capability
-fallbacks, atomic resume files, and phase-specific regression scenes were added
-without changing frame order or timeline math.
+The final `v1.1-feature-showcase-4k.mp4` is 3840×2160, 30 FPS, 300 frames, and
+10.000000 s with 10.000000 s stereo AAC. It measured 793.400 s rendering,
+12.555 s encoder writes/final wait, 806.785 s wall time, 0.372 FPS, 104,048 KiB
+engine peak RSS, and a conservative 2,264,136 KiB self-plus-child peak. A full
+decode reported no errors. Its SHA-256 is
+`f3723d3ca936cdfefe3e47d1bf99182d9a46c28a5dfbfe6c43560f6a714f7807`.
 
-Verified:
-
-- clean strict rebuild;
-- AddressSanitizer and UndefinedBehaviorSanitizer unit pass (LeakSanitizer is
-  unavailable under the container's ptrace supervisor);
-- unit suite plus end-to-end XSD, media, A/V, 360, physics, effect, resume,
-  codec, and golden-frame tests;
-- exact frame equality across thread counts and repeated executions;
-- wall/render/encode time, FPS, and peak self/child RSS reporting;
-- complete XSD, examples, Apache-2.0 license, dependency licenses,
-  troubleshooting, and benchmark documentation.
-
-The full clean `make test` run completed successfully in 7.6 seconds in the
-verification container. The remaining boundaries are product scope items in
-`feature-matrix.md`, chiefly GPU acceleration, arbitrary 3D meshes, complex
-vector paths/text shaping, and a high-throughput in-process libav decoder.
+The verification host exposed an OpenCL loader but no usable GPU device, so
+the real-device kernel path could not be benchmarked there; capability
+detection and exact CPU fallback were exercised. Other explicit product
+boundaries are the four-frame FFmpeg-process video LRU, OBJ-only imported mesh
+format, mono equirectangular projection, approximate physical/lighting models,
+and the lack of a full GPU raster backend. None is represented as a completed
+capability beyond the scope documented in `feature-matrix.md`.

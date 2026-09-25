@@ -24,7 +24,8 @@ typedef enum {
     SR_ASSET_VIDEO,
     SR_ASSET_AUDIO,
     SR_ASSET_TEXT,
-    SR_ASSET_VECTOR
+    SR_ASSET_VECTOR,
+    SR_ASSET_MESH
 } SrAssetType;
 
 typedef enum {
@@ -34,12 +35,16 @@ typedef enum {
     SR_NODE_PARTICLES
 } SrNodeType;
 
-typedef enum { SR_SHAPE_RECT, SR_SHAPE_ELLIPSE } SrShapeType;
+typedef enum { SR_SHAPE_RECT, SR_SHAPE_ELLIPSE, SR_SHAPE_PATH } SrShapeType;
+typedef enum { SR_MASK_RECT, SR_MASK_ELLIPSE, SR_MASK_ROUNDED_RECT } SrMaskType;
 typedef enum { SR_BODY_NONE, SR_BODY_STATIC, SR_BODY_KINEMATIC, SR_BODY_DYNAMIC } SrBodyType;
 typedef enum { SR_COLLIDER_BOX, SR_COLLIDER_CIRCLE } SrColliderType;
 typedef enum { SR_MOD_BEND, SR_MOD_TWIST, SR_MOD_WAVE, SR_MOD_SQUASH, SR_MOD_STRETCH } SrModifierType;
 typedef enum { SR_LIGHT_AMBIENT, SR_LIGHT_DIRECTIONAL, SR_LIGHT_POINT, SR_LIGHT_SPOT } SrLightType;
-typedef enum { SR_OBJECT_SPHERE, SR_OBJECT_BOX, SR_OBJECT_PLANE } SrPrimitive3D;
+typedef enum { SR_OBJECT_SPHERE, SR_OBJECT_BOX, SR_OBJECT_PLANE,
+               SR_OBJECT_MESH } SrPrimitive3D;
+typedef enum { SR_COLOR_SRGB, SR_COLOR_DISPLAY_P3,
+               SR_COLOR_REC2020, SR_COLOR_REC709 } SrColorSpace;
 typedef enum { SR_EFFECT_GLOW, SR_EFFECT_BLOOM, SR_EFFECT_BLUR, SR_EFFECT_COLOR_GRADE,
                SR_EFFECT_VIGNETTE, SR_EFFECT_LENS_FLARE } SrEffectType;
 
@@ -48,6 +53,17 @@ typedef struct SrImage {
     uint32_t height;
     uint8_t *rgba;
 } SrImage;
+
+typedef struct {
+    double position[3][3];
+    double normal[3][3];
+} SrMeshTriangle;
+
+typedef struct {
+    SrMeshTriangle *triangles;
+    size_t triangle_count;
+    size_t triangle_capacity;
+} SrMesh;
 
 typedef struct {
     int64_t frame_index;
@@ -64,14 +80,19 @@ typedef struct {
     uint32_t fps_num;
     uint32_t fps_den;
     double duration;
+    SrColorSpace source_color_space;
     size_t source_line;
     SrImage *decoded;
     SrVideoCacheEntry video_cache[4];
     uint64_t cache_clock;
     char *text;
+    char *font_family;
+    char *font_file;
     double text_size;
     SrColor color;
     SrShapeType vector_shape;
+    char *vector_path;
+    SrMesh *mesh;
     char *audio_cache_path;
     uint64_t audio_frames;
 } SrAsset;
@@ -93,10 +114,12 @@ typedef struct {
 typedef struct {
     bool enabled;
     bool invert;
+    SrMaskType type;
     double x;
     double y;
     double width;
     double height;
+    double radius;
 } SrMask;
 
 typedef struct {
@@ -165,11 +188,11 @@ typedef struct SrNode {
     SrColor stroke;
     double stroke_width;
     char *particle_preset;
-    double particle_rate;
-    double particle_lifetime;
-    double particle_speed;
-    double particle_spread;
-    double particle_size;
+    SrAnimValue particle_rate;
+    SrAnimValue particle_lifetime;
+    SrAnimValue particle_speed;
+    SrAnimValue particle_spread;
+    SrAnimValue particle_size;
     SrColor particle_color;
     SrModifier *modifiers;
     size_t modifier_count;
@@ -193,6 +216,7 @@ typedef struct {
     double duration;
     uint64_t seed;
     bool linear_light;
+    SrColorSpace working_color_space;
     SrColor background;
     SrRenderMode mode;
 } SrProject;
@@ -206,6 +230,10 @@ typedef struct {
     uint64_t bitrate;
     char *audio_codec;
     uint64_t audio_bitrate;
+    SrColorSpace color_space;
+    bool full_range;
+    bool spherical_metadata;
+    size_t source_line;
 } SrOutput;
 
 typedef struct {
@@ -234,6 +262,7 @@ typedef struct {
     uint32_t width;
     uint32_t height;
     char *viewport_camera_id;
+    size_t source_line;
 } SrScene360;
 
 typedef struct {
@@ -244,6 +273,7 @@ typedef struct {
     SrAnimValue yaw, pitch, roll, fov;
     double near_plane;
     double far_plane;
+    size_t source_line;
 } SrCamera;
 
 typedef struct {
@@ -272,10 +302,13 @@ typedef struct {
     SrPrimitive3D primitive;
     char *material_id;
     SrMaterial *material;
+    char *mesh_id;
+    SrAsset *mesh_asset;
     SrTransform transform;
     double radius;
     bool cast_shadow;
     bool receive_shadow;
+    size_t source_line;
 } SrObject3D;
 
 typedef struct {
@@ -300,6 +333,7 @@ typedef struct {
     double rest_length;
     double stiffness;
     double damping;
+    size_t source_line;
 } SrConstraint;
 
 typedef struct {

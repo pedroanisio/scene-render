@@ -3,9 +3,9 @@ AR ?= ar
 CFLAGS ?= -O2 -g
 CPPFLAGS += -D_POSIX_C_SOURCE=200809L -Iinclude
 CFLAGS += -std=c17 -Wall -Wextra -Wpedantic -Werror
-LDLIBS += -lexpat -lm -pthread
+LDLIBS += -lexpat -lm -pthread -ldl
 
-CORE_SOURCES := src/common.c src/diagnostics.c src/timeline.c src/scene.c \
+CORE_SOURCES := src/common.c src/parallel.c src/color.c src/vector_path.c src/mesh.c src/gpu.c src/spatial.c src/diagnostics.c src/timeline.c src/scene.c \
 	src/assets.c src/procedural.c src/audio.c src/compositor.c src/camera.c \
 	src/lighting.c src/effects.c src/physics.c src/encoder.c src/renderer.c \
 	src/resume.c src/xml.c \

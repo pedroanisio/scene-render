@@ -30,8 +30,12 @@ static void image_free(SrImage *image) {
 
 void sr_scene_init(SrScene *scene) {
     *scene = (SrScene){0};
-    scene->project = (SrProject){3840, 2160, 30, 1, 10.0, 0, true,
-                                 {0.0, 0.0, 0.0, 1.0}, SR_MODE_STANDARD};
+    scene->project = (SrProject){
+        .width = 3840, .height = 2160, .fps_num = 30, .fps_den = 1,
+        .duration = 10.0, .linear_light = true,
+        .working_color_space = SR_COLOR_SRGB,
+        .background = {0.0, 0.0, 0.0, 1.0}, .mode = SR_MODE_STANDARD
+    };
     scene->output.codec = SR_CODEC_H264;
     scene->output.path = sr_strdup("build/output.mp4");
     scene->output.pixel_format = sr_strdup("yuv420p");
@@ -39,6 +43,8 @@ void sr_scene_init(SrScene *scene) {
     scene->output.audio_codec = sr_strdup("aac");
     scene->output.crf = 18;
     scene->output.audio_bitrate = 192000;
+    scene->output.color_space = SR_COLOR_SRGB;
+    scene->output.spherical_metadata = true;
     scene->audio.sample_rate = 48000;
     scene->audio.channels = 2;
     scene->scene360.width = 3840;
@@ -53,7 +59,14 @@ static void asset_free(SrAsset *asset) {
     free(asset->id);
     free(asset->source);
     free(asset->text);
+    free(asset->font_family);
+    free(asset->font_file);
+    free(asset->vector_path);
     free(asset->audio_cache_path);
+    if (asset->mesh) {
+        free(asset->mesh->triangles);
+        free(asset->mesh);
+    }
     image_free(asset->decoded);
     for (size_t i = 0; i < 4; ++i) image_free(asset->video_cache[i].image);
 }
@@ -87,6 +100,7 @@ void sr_scene_free(SrScene *scene) {
     for (size_t i = 0; i < scene->object3d_count; ++i) {
         free(scene->objects3d[i].id);
         free(scene->objects3d[i].material_id);
+        free(scene->objects3d[i].mesh_id);
         transform_free(&scene->objects3d[i].transform);
     }
     for (size_t i = 0; i < scene->effect_count; ++i) {
@@ -154,10 +168,10 @@ SrNode *sr_node_create(SrScene *scene, SrNodeType type) {
     node->time_stretch = 1.0;
     node->fill = (SrColor){1, 1, 1, 1};
     node->stroke = (SrColor){0, 0, 0, 0};
-    node->particle_rate = 10.0;
-    node->particle_lifetime = 1.0;
-    node->particle_speed = 100.0;
-    node->particle_size = 4.0;
+    node->particle_rate.base = 10.0;
+    node->particle_lifetime.base = 1.0;
+    node->particle_speed.base = 100.0;
+    node->particle_size.base = 4.0;
     node->particle_color = (SrColor){1, 1, 1, 1};
     node->body.mass = 1.0;
     node->body.friction = 0.5;
@@ -206,6 +220,9 @@ void sr_node_free(SrNode *node) {
     free(node->children); free(node->modifiers); free(node->physics_samples);
     free(node->id); free(node->asset_id); free(node->particle_preset);
     anim_free(&node->opacity); anim_free(&node->source_time);
+    anim_free(&node->particle_rate); anim_free(&node->particle_lifetime);
+    anim_free(&node->particle_speed); anim_free(&node->particle_spread);
+    anim_free(&node->particle_size);
     transform_free(&node->transform);
     free(node);
 }
@@ -268,13 +285,19 @@ SrAnimValue *sr_node_property(SrNode *node, const char *name) {
     if (strcmp(name, "opacity") == 0) return &node->opacity;
     if (strcmp(name, "position.x") == 0) return &node->transform.x;
     if (strcmp(name, "position.y") == 0) return &node->transform.y;
-    if (strcmp(name, "position.z") == 0) return &node->transform.z;
     if (strcmp(name, "rotation") == 0) return &node->transform.rotation;
     if (strcmp(name, "scale.x") == 0) return &node->transform.scale_x;
     if (strcmp(name, "scale.y") == 0) return &node->transform.scale_y;
     if (strcmp(name, "anchor.x") == 0) return &node->transform.anchor_x;
     if (strcmp(name, "anchor.y") == 0) return &node->transform.anchor_y;
     if (strcmp(name, "source.time") == 0) return &node->source_time;
+    if (node->type == SR_NODE_PARTICLES) {
+        if (strcmp(name, "rate") == 0) return &node->particle_rate;
+        if (strcmp(name, "lifetime") == 0) return &node->particle_lifetime;
+        if (strcmp(name, "speed") == 0) return &node->particle_speed;
+        if (strcmp(name, "spread") == 0) return &node->particle_spread;
+        if (strcmp(name, "size") == 0) return &node->particle_size;
+    }
     return NULL;
 }
 

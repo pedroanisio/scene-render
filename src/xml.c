@@ -65,9 +65,21 @@ ParseFrame *sr_xml_parent(ParseContext *ctx) {
 }
 
 void sr_xml_push(ParseContext *ctx, ParseFrame frame, const char *element) {
-    if (ctx->depth >= sizeof(ctx->stack) / sizeof(ctx->stack[0])) {
-        sr_xml_fail(ctx, element, NULL, "XML nesting exceeds 96 elements");
-        return;
+    if (ctx->depth == ctx->stack_capacity) {
+        size_t capacity = ctx->stack_capacity ? ctx->stack_capacity * 2 : 16;
+        if (capacity < ctx->stack_capacity ||
+            capacity > SIZE_MAX / sizeof(*ctx->stack)) {
+            sr_xml_fail(ctx, element, NULL, "XML nesting exceeds available memory");
+            return;
+        }
+        ParseFrame *stack = sr_realloc(ctx->stack,
+                                       capacity * sizeof(*stack));
+        if (!stack) {
+            sr_xml_fail(ctx, element, NULL, "out of memory while nesting XML");
+            return;
+        }
+        ctx->stack = stack;
+        ctx->stack_capacity = capacity;
     }
     ctx->stack[ctx->depth++] = frame;
 }
@@ -134,6 +146,11 @@ static void XMLCALL on_start(void *user, const XML_Char *name,
     if (strcmp(name, "vector") == 0 && p->kind == E_ASSETS) {
         sr_xml_start_vector(ctx, attrs);
         if (!ctx->failed) sr_xml_push(ctx, (ParseFrame){.kind = E_VECTOR}, name);
+        return;
+    }
+    if (strcmp(name, "mesh") == 0 && p->kind == E_ASSETS) {
+        sr_xml_start_mesh(ctx, attrs);
+        if (!ctx->failed) sr_xml_push(ctx, (ParseFrame){.kind = E_MESH}, name);
         return;
     }
     if (strcmp(name, "materials") == 0 && p->kind == E_SCENE &&
@@ -327,7 +344,9 @@ SrStatus sr_scene_load_xml(const char *path, SrScene *scene,
     sr_scene_init(scene);
     scene->source_path = sr_strdup(path);
     scene->base_dir = sr_path_dirname(path);
-    if (!scene->source_path || !scene->base_dir || !scene->root) {
+    if (!scene->source_path || !scene->base_dir || !scene->root ||
+        !scene->output.path || !scene->output.pixel_format ||
+        !scene->output.preset || !scene->output.audio_codec) {
         sr_scene_free(scene);
         return SR_ERR_MEMORY;
     }
@@ -374,6 +393,7 @@ SrStatus sr_scene_load_xml(const char *path, SrScene *scene,
         ctx.failed = true;
     }
     if (!ctx.failed && !sr_xml_resolve_scene(&ctx)) ctx.failed = true;
+    free(ctx.stack);
     if (ctx.failed) {
         sr_scene_free(scene);
         return SR_ERR_XML;

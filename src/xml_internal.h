@@ -8,7 +8,7 @@
 
 typedef enum {
     E_SCENE, E_PROJECT, E_OUTPUT, E_ASSETS, E_IMAGE, E_VIDEO, E_AUDIO,
-    E_TEXT, E_VECTOR, E_COMPOSITION, E_GROUP, E_LAYER, E_MASK, E_ANIMATE,
+    E_TEXT, E_VECTOR, E_MESH, E_COMPOSITION, E_GROUP, E_LAYER, E_MASK, E_ANIMATE,
     E_KEY, E_AUDIO_MIX, E_AUDIO_TRACK, E_SCENE360, E_CAMERA, E_MATERIALS,
     E_MATERIAL, E_LIGHTS, E_LIGHT, E_EFFECTS, E_EFFECT, E_PHYSICS,
     E_FORCE_FIELD, E_CONSTRAINT, E_PARTICLES, E_RIGID_BODY, E_SOFT_BODY,
@@ -31,8 +31,9 @@ typedef struct {
     XML_Parser parser;
     SrScene *scene;
     SrDiagnostics *diag;
-    ParseFrame stack[96];
+    ParseFrame *stack;
     size_t depth;
+    size_t stack_capacity;
     bool failed;
     bool seen_project;
     bool seen_output;
@@ -75,6 +76,7 @@ void sr_xml_start_scene360(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_camera(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_text(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_vector(ParseContext *ctx, const XML_Char **attrs);
+void sr_xml_start_mesh(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_material(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_light(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_effect(ParseContext *ctx, const XML_Char **attrs);

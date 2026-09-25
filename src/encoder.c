@@ -2,6 +2,7 @@
 #include "scene_render/encoder.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,23 +22,59 @@ static const char *sr_codec_encoder(SrCodec codec) {
     }
 }
 
-/* Mirror execvp's PATH search so the check agrees with the later launch. */
-bool sr_encoder_available(const char *name) {
-    const char *path = getenv("PATH");
-    char candidate[4096];
-    if (!path || !*path) path = "/usr/bin:/bin";
-    while (*path) {
-        size_t len = strcspn(path, ":");
-        const char *dir = len ? path : ".";
-        int dir_len = len ? (int)len : 1;
-        int written = snprintf(candidate, sizeof candidate, "%.*s/%s",
-                               dir_len, dir, name);
-        if (written > 0 && (size_t)written < sizeof candidate &&
-            access(candidate, X_OK) == 0) return true;
-        path += len;
-        if (*path == ':') ++path;
+static void sr_color_tags(SrColorSpace space, const char **primaries,
+                          const char **transfer, const char **matrix) {
+    if (space == SR_COLOR_DISPLAY_P3) {
+        *primaries = "smpte432";
+        *transfer = "iec61966-2-1";
+        *matrix = "bt709";
+    } else if (space == SR_COLOR_REC2020) {
+        *primaries = "bt2020";
+        *transfer = "bt2020-10";
+        *matrix = "bt2020nc";
+    } else if (space == SR_COLOR_REC709) {
+        *primaries = "bt709";
+        *transfer = "bt709";
+        *matrix = "bt709";
+    } else {
+        *primaries = "bt709";
+        *transfer = "iec61966-2-1";
+        *matrix = "bt709";
     }
-    return false;
+}
+
+bool sr_encoder_available(const char *name) {
+    if (!name) return false;
+    int output[2];
+    if (pipe(output) != 0) return false;
+    pid_t pid = fork();
+    if (pid < 0) { close(output[0]); close(output[1]); return false; }
+    if (pid == 0) {
+        dup2(output[1], STDOUT_FILENO);
+        int null_fd = open("/dev/null", O_WRONLY);
+        if (null_fd >= 0) { dup2(null_fd, STDERR_FILENO); close(null_fd); }
+        close(output[0]); close(output[1]);
+        const char *argv[] = {"ffmpeg", "-hide_banner", "-loglevel", "error",
+                              "-encoders", NULL};
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    close(output[1]);
+    FILE *stream = fdopen(output[0], "r");
+    bool found = strcmp(name, "ffmpeg") == 0;
+    if (stream) {
+        char *line = NULL; size_t capacity = 0;
+        while (getline(&line, &capacity, stream) >= 0) {
+            char flags[32], encoder_name[128];
+            if (sscanf(line, " %31s %127s", flags, encoder_name) == 2 &&
+                strcmp(encoder_name, name) == 0) found = true;
+        }
+        free(line);
+        fclose(stream);
+    } else close(output[0]);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    return found && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
 SrStatus sr_encoder_open(SrEncoder *encoder, const SrScene *scene,
@@ -51,6 +88,18 @@ SrStatus sr_encoder_open(SrEncoder *encoder, const SrScene *scene,
     if (!sr_encoder_available("ffmpeg")) {
         sr_diag_error(diag, 0, NULL, NULL,
                       "FFmpeg executable is unavailable; video output cannot start");
+        return SR_ERR_ENCODER;
+    }
+    const char *video_encoder = sr_codec_encoder(scene->output.codec);
+    if (!sr_encoder_available(video_encoder)) {
+        sr_diag_error(diag, scene->output.source_line, "output", "codec",
+                      "FFmpeg encoder '%s' is unavailable", video_encoder);
+        return SR_ERR_ENCODER;
+    }
+    if (audio_path && !sr_encoder_available(scene->output.audio_codec)) {
+        sr_diag_error(diag, scene->output.source_line, "output", "audioCodec",
+                      "FFmpeg encoder '%s' is unavailable",
+                      scene->output.audio_codec);
         return SR_ERR_ENCODER;
     }
     int input[2];
@@ -71,7 +120,7 @@ SrStatus sr_encoder_open(SrEncoder *encoder, const SrScene *scene,
         close(input[1]);
         char size[64], rate[64], crf[32], bitrate[32], thread_count[32];
         char audio_rate[32], audio_channels[16], audio_bitrate[32];
-        char x265_params[64];
+        char x265_params[64], scale_filter[96];
         snprintf(size, sizeof(size), "%ux%u", scene->project.width,
                  scene->project.height);
         snprintf(rate, sizeof(rate), "%u/%u", scene->project.fps_num,
@@ -87,7 +136,12 @@ SrStatus sr_encoder_open(SrEncoder *encoder, const SrScene *scene,
                  (unsigned long long)scene->output.audio_bitrate);
         snprintf(x265_params, sizeof(x265_params), "pools=%u:frame-threads=1",
                  threads);
-        const char *argv[72];
+        snprintf(scale_filter, sizeof(scale_filter),
+                 "scale=in_range=pc:out_range=%s:flags=accurate_rnd+full_chroma_int",
+                 scene->output.full_range ? "pc" : "tv");
+        const char *primaries, *transfer, *matrix;
+        sr_color_tags(scene->output.color_space, &primaries, &transfer, &matrix);
+        const char *argv[88];
         size_t n = 0;
         argv[n++] = "ffmpeg";
         argv[n++] = "-nostdin";
@@ -132,14 +186,31 @@ SrStatus sr_encoder_open(SrEncoder *encoder, const SrScene *scene,
             argv[n++] = "-x265-params";
             argv[n++] = x265_params;
         }
+        argv[n++] = "-vf";
+        argv[n++] = scale_filter;
         argv[n++] = "-pix_fmt";
         argv[n++] = scene->output.pixel_format;
+        argv[n++] = "-color_primaries";
+        argv[n++] = primaries;
+        argv[n++] = "-color_trc";
+        argv[n++] = transfer;
+        argv[n++] = "-colorspace";
+        argv[n++] = matrix;
+        argv[n++] = "-color_range";
+        argv[n++] = scene->output.full_range ? "pc" : "tv";
         argv[n++] = "-threads";
         argv[n++] = thread_count;
         argv[n++] = "-fflags";
         argv[n++] = "+bitexact";
         argv[n++] = "-flags:v";
         argv[n++] = "+bitexact";
+        if (scene->project.mode == SR_MODE_EQUIRECTANGULAR &&
+            scene->output.spherical_metadata) {
+            argv[n++] = "-metadata:s:v:0";
+            argv[n++] = "projection=equirectangular";
+            argv[n++] = "-metadata:s:v:0";
+            argv[n++] = "spherical-video=true";
+        }
         if (audio_path) {
             argv[n++] = "-c:a";
             argv[n++] = scene->output.audio_codec;

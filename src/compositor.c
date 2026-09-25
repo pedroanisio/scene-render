@@ -1,5 +1,6 @@
 #include "scene_render/compositor.h"
 #include "scene_render/assets.h"
+#include "scene_render/color.h"
 #include "scene_render/physics.h"
 
 #include <float.h>
@@ -11,23 +12,18 @@ typedef struct {
     int x0, y0, x1, y1;
 } SrClip;
 
+typedef struct SrMaskLink {
+    const SrMask *mask;
+    SrMat3 inverse;
+    const struct SrMaskLink *parent;
+} SrMaskLink;
+
 static double sr_clamp(double value, double low, double high) {
     return value < low ? low : value > high ? high : value;
 }
 
 static uint8_t sr_byte(double value) {
     return (uint8_t)lrint(sr_clamp(value, 0.0, 1.0) * 255.0);
-}
-
-static double sr_to_linear(double value) {
-    return value <= 0.04045 ? value / 12.92
-                            : pow((value + 0.055) / 1.055, 2.4);
-}
-
-static double sr_from_linear(double value) {
-    value = sr_clamp(value, 0.0, 1.0);
-    return value <= 0.0031308 ? value * 12.92
-                              : 1.055 * pow(value, 1.0 / 2.4) - 0.055;
 }
 
 static double sr_blend_channel(double backdrop, double source,
@@ -50,8 +46,9 @@ static double sr_blend_channel(double backdrop, double source,
     }
 }
 
-SrColor sr_blend_pixel(SrColor backdrop, SrColor source, double opacity,
-                       SrBlendMode mode, bool linear_light) {
+SrColor sr_blend_pixel_space(SrColor backdrop, SrColor source, double opacity,
+                             SrBlendMode mode, bool linear_light,
+                             SrColorSpace color_space) {
     double ab = sr_clamp(backdrop.a, 0.0, 1.0);
     double as = sr_clamp(source.a * opacity, 0.0, 1.0);
     double ao = as + ab * (1.0 - as);
@@ -64,16 +61,22 @@ SrColor sr_blend_pixel(SrColor backdrop, SrColor source, double opacity,
     double *co[3] = {&out.r, &out.g, &out.b};
     for (size_t i = 0; i < 3; ++i) {
         if (linear_light) {
-            cb[i] = sr_to_linear(sr_clamp(cb[i], 0.0, 1.0));
-            cs[i] = sr_to_linear(sr_clamp(cs[i], 0.0, 1.0));
+            cb[i] = sr_color_decode(sr_clamp(cb[i], 0.0, 1.0), color_space);
+            cs[i] = sr_color_decode(sr_clamp(cs[i], 0.0, 1.0), color_space);
         }
         double blended = sr_blend_channel(cb[i], cs[i], mode);
         double premultiplied = as * (1.0 - ab) * cs[i] +
                                ab * (1.0 - as) * cb[i] + as * ab * blended;
         double straight = premultiplied / ao;
-        *co[i] = linear_light ? sr_from_linear(straight) : straight;
+        *co[i] = linear_light ? sr_color_encode(straight, color_space) : straight;
     }
     return out;
+}
+
+SrColor sr_blend_pixel(SrColor backdrop, SrColor source, double opacity,
+                       SrBlendMode mode, bool linear_light) {
+    return sr_blend_pixel_space(backdrop, source, opacity, mode, linear_light,
+                                SR_COLOR_SRGB);
 }
 
 SrStatus sr_frame_init(SrFrame *frame, uint32_t width, uint32_t height) {
@@ -226,28 +229,45 @@ static SrClip sr_bounds(SrMat3 matrix, double width, double height,
                     (int)fmin((double)frame->height, ceil(max_y))};
 }
 
-static bool sr_in_mask(const SrNode *node, SrVec2 local) {
-    if (!node->mask.enabled) {
-        return true;
+static bool sr_mask_contains(const SrMask *mask, SrVec2 point) {
+    if (!mask->enabled) return true;
+    double x = point.x - mask->x, y = point.y - mask->y;
+    bool inside = x >= 0.0 && y >= 0.0 && x < mask->width && y < mask->height;
+    if (inside && mask->type == SR_MASK_ELLIPSE) {
+        double nx = (x-mask->width*.5)/fmax(mask->width*.5, 1e-12);
+        double ny = (y-mask->height*.5)/fmax(mask->height*.5, 1e-12);
+        inside = nx*nx + ny*ny <= 1.0;
+    } else if (inside && mask->type == SR_MASK_ROUNDED_RECT) {
+        double radius = fmin(mask->radius, fmin(mask->width,mask->height)*.5);
+        double cx = sr_clamp(x, radius, mask->width-radius);
+        double cy = sr_clamp(y, radius, mask->height-radius);
+        double dx=x-cx, dy=y-cy;
+        inside = dx*dx + dy*dy <= radius*radius;
     }
-    bool inside = local.x >= node->mask.x && local.y >= node->mask.y &&
-                  local.x < node->mask.x + node->mask.width &&
-                  local.y < node->mask.y + node->mask.height;
-    return node->mask.invert ? !inside : inside;
+    return mask->invert ? !inside : inside;
+}
+
+static bool sr_group_masks_allow(const SrMaskLink *link, int x, int y) {
+    for (; link; link=link->parent) {
+        SrVec2 local=sr_mat_point(link->inverse,(SrVec2){x+.5,y+.5});
+        if (!sr_mask_contains(link->mask, local)) return false;
+    }
+    return true;
 }
 
 static void sr_put_pixel(const SrScene *scene, const SrNode *node,
                          SrFrame *frame, int x, int y, SrColor source,
-                         double opacity) {
+                         double opacity, const SrMaskLink *masks) {
     if (x < 0 || y < 0 || x >= (int)frame->width || y >= (int)frame->height)
         return;
+    if (!sr_group_masks_allow(masks,x,y)) return;
     size_t offset = ((size_t)y * frame->width + (size_t)x) * 4;
     SrColor backdrop = {frame->rgba[offset] / 255.0,
                         frame->rgba[offset + 1] / 255.0,
                         frame->rgba[offset + 2] / 255.0,
                         frame->rgba[offset + 3] / 255.0};
-    SrColor out = sr_blend_pixel(backdrop, source, opacity, node->blend,
-                                 scene->project.linear_light);
+    SrColor out = sr_blend_pixel_space(backdrop, source, opacity, node->blend,
+        scene->project.linear_light, scene->project.working_color_space);
     frame->rgba[offset] = sr_byte(out.r);
     frame->rgba[offset + 1] = sr_byte(out.g);
     frame->rgba[offset + 2] = sr_byte(out.b);
@@ -271,7 +291,8 @@ static double sr_media_time(const SrNode *node, double time) {
 
 static void sr_draw_image(SrScene *scene, const SrNode *node,
                           SrMat3 world, double opacity, SrClip clip,
-                          double time, SrFrame *frame, SrDiagnostics *diag) {
+                          double time, SrFrame *frame, SrDiagnostics *diag,
+                          const SrMaskLink *masks) {
     const SrImage *image = sr_asset_get_frame(scene, node->asset,
                                                sr_media_time(node, time), diag);
     if (!image) {
@@ -290,18 +311,19 @@ static void sr_draw_image(SrScene *scene, const SrNode *node,
                                       time);
             if (local.x < 0.0 || local.y < 0.0 ||
                 local.x >= image->width || local.y >= image->height ||
-                !sr_in_mask(node, local)) {
+                !sr_mask_contains(&node->mask, local)) {
                 continue;
             }
             SrColor source = sr_image_sample(image, local.x, local.y);
-            sr_put_pixel(scene, node, frame, x, y, source, opacity);
+            sr_put_pixel(scene, node, frame, x, y, source, opacity, masks);
         }
     }
 }
 
 static void sr_draw_shape(const SrScene *scene, const SrNode *node,
                           SrMat3 world, double opacity, SrClip clip,
-                          double time, SrFrame *frame) {
+                          double time, SrFrame *frame,
+                          const SrMaskLink *masks) {
     SrMat3 inverse;
     if (!sr_mat_inverse(world, &inverse)) return;
     SrClip bounds = sr_clip_intersect(
@@ -312,7 +334,7 @@ static void sr_draw_shape(const SrScene *scene, const SrNode *node,
             SrVec2 p = sr_mat_point(inverse, (SrVec2){x + 0.5, y + 0.5});
             p = sr_deform_inverse(node, p, node->shape_width,
                                   node->shape_height, time);
-            if (!sr_in_mask(node, p)) continue;
+            if (!sr_mask_contains(&node->mask, p)) continue;
             bool inside = p.x >= 0.0 && p.y >= 0.0 &&
                           p.x < node->shape_width && p.y < node->shape_height;
             bool edge = inside && (p.x < node->stroke_width ||
@@ -333,7 +355,7 @@ static void sr_draw_shape(const SrScene *scene, const SrNode *node,
             if (!inside) continue;
             SrColor color = edge && node->stroke_width > 0.0
                 ? node->stroke : node->fill;
-            sr_put_pixel(scene, node, frame, x, y, color, opacity);
+            sr_put_pixel(scene, node, frame, x, y, color, opacity, masks);
         }
     }
 }
@@ -351,22 +373,30 @@ static double sr_random_signed(uint64_t seed) {
 
 static void sr_draw_particles(const SrScene *scene, const SrNode *node,
                               SrMat3 world, double opacity, double time,
-                              SrClip clip, SrFrame *frame) {
+                              SrClip clip, SrFrame *frame,
+                              const SrMaskLink *masks) {
     double local_time = time - node->start_time;
-    uint64_t born = local_time > 0.0
-        ? (uint64_t)floor(local_time * node->particle_rate) : 0;
-    uint64_t active = (uint64_t)ceil(node->particle_lifetime *
-                                     node->particle_rate) + 1;
+    double rate = fmax(0.0, sr_anim_eval(&node->particle_rate, time));
+    double lifetime = fmax(1e-9, sr_anim_eval(&node->particle_lifetime, time));
+    double speed_value = sr_anim_eval(&node->particle_speed, time);
+    double spread = sr_anim_eval(&node->particle_spread, time);
+    double size = fmax(0.0, sr_anim_eval(&node->particle_size, time));
+    double born_value = local_time > 0.0 ? floor(local_time * rate) : 0.0;
+    uint64_t born = !isfinite(born_value) || born_value >= (double)(UINT64_MAX-1)
+        ? UINT64_MAX-1 : (uint64_t)born_value;
+    double active_value = ceil(lifetime * rate) + 1.0;
+    uint64_t active = !isfinite(active_value) || active_value > 1000001.0
+        ? 1000001 : (uint64_t)active_value;
     uint64_t first = born > active ? born - active : 0;
     if (born - first > 1000000) first = born - 1000000;
     for (uint64_t i = first; i <= born; ++i) {
-        double birth = node->particle_rate > 0.0 ? i / node->particle_rate : 0.0;
+        double birth = rate > 0.0 ? i / rate : 0.0;
         double age = local_time - birth;
-        if (age < 0.0 || age > node->particle_lifetime) continue;
+        if (age < 0.0 || age > lifetime) continue;
         uint64_t base = scene->project.seed ^ ((uint64_t)node->order << 32) ^ i;
         double jitter = sr_random_signed(base);
-        double angle = (node->particle_spread * jitter - 90.0) * SR_PI / 180.0;
-        double speed = node->particle_speed * (0.75 +
+        double angle = (spread * jitter - 90.0) * SR_PI / 180.0;
+        double speed = speed_value * (0.75 +
                        0.25 * sr_random_signed(base + 1));
         double px = cos(angle) * speed * age;
         double py = sin(angle) * speed * age;
@@ -379,13 +409,14 @@ static void sr_draw_particles(const SrScene *scene, const SrNode *node,
         } else {
             py += 200.0 * age * age;
         }
+        if (!sr_mask_contains(&node->mask, (SrVec2){px,py})) continue;
         SrVec2 center = sr_mat_point(world, (SrVec2){px, py});
-        double radius = node->particle_size *
+        double radius = size *
                         (strcmp(node->particle_preset, "smoke") == 0
                              ? 1.0 + age : 1.0);
         int x0 = (int)floor(center.x - radius), x1 = (int)ceil(center.x + radius);
         int y0 = (int)floor(center.y - radius), y1 = (int)ceil(center.y + radius);
-        double fade = 1.0 - age / node->particle_lifetime;
+        double fade = 1.0 - age / lifetime;
         SrColor color = node->particle_color;
         color.a *= fade;
         for (int y = y0; y <= y1; ++y) for (int x = x0; x <= x1; ++x) {
@@ -393,14 +424,15 @@ static void sr_draw_particles(const SrScene *scene, const SrNode *node,
                 continue;
             double dx = x + 0.5 - center.x, dy = y + 0.5 - center.y;
             if (dx * dx + dy * dy <= radius * radius)
-                sr_put_pixel(scene, node, frame, x, y, color, opacity);
+                sr_put_pixel(scene,node,frame,x,y,color,opacity,masks);
         }
     }
 }
 
 static void sr_draw_node(SrScene *scene, const SrNode *node,
                          SrMat3 parent, double parent_opacity, double time,
-                         SrClip clip, SrFrame *frame, SrDiagnostics *diag) {
+                         SrClip clip, SrFrame *frame, SrDiagnostics *diag,
+                         const SrMaskLink *masks) {
     if (!node->visible || time < node->start_time || time >= node->end_time) {
         return;
     }
@@ -411,16 +443,21 @@ static void sr_draw_node(SrScene *scene, const SrNode *node,
         return;
     }
     if (node->type == SR_NODE_MEDIA) {
-        sr_draw_image(scene, node, world, opacity, clip, time, frame, diag);
+        sr_draw_image(scene,node,world,opacity,clip,time,frame,diag,masks);
         return;
     }
     if (node->type == SR_NODE_SHAPE) {
-        sr_draw_shape(scene, node, world, opacity, clip, time, frame);
+        sr_draw_shape(scene,node,world,opacity,clip,time,frame,masks);
         return;
     }
     if (node->type == SR_NODE_PARTICLES) {
-        sr_draw_particles(scene, node, world, opacity, time, clip, frame);
+        sr_draw_particles(scene,node,world,opacity,time,clip,frame,masks);
         return;
+    }
+    SrMaskLink link;
+    if (node->mask.enabled) {
+        if (!sr_mat_inverse(world,&link.inverse)) return;
+        link.mask=&node->mask;link.parent=masks;masks=&link;
     }
     if (node->mask.enabled && !node->mask.invert) {
         SrMat3 mask_matrix = sr_mat_multiply(
@@ -430,8 +467,8 @@ static void sr_draw_node(SrScene *scene, const SrNode *node,
         clip = sr_clip_intersect(clip, mask_clip);
     }
     for (size_t i = 0; i < node->child_count; ++i) {
-        sr_draw_node(scene, node->children[i], world, opacity, time, clip, frame,
-                     diag);
+        sr_draw_node(scene,node->children[i],world,opacity,time,clip,frame,diag,
+                     masks);
     }
 }
 
@@ -442,7 +479,7 @@ SrStatus sr_composite_scene(SrScene *scene, double time, SrFrame *frame,
     }
     SrClip clip = {0, 0, (int)frame->width, (int)frame->height};
     size_t errors = diag ? diag->errors : 0;
-    sr_draw_node(scene, scene->root, sr_mat_identity(), 1.0, time, clip, frame,
-                 diag);
+    sr_draw_node(scene,scene->root,sr_mat_identity(),1.0,time,clip,frame,diag,
+                 NULL);
     return diag && diag->errors > errors ? SR_ERR_ASSET : SR_OK;
 }

@@ -14,6 +14,7 @@ typedef struct {
     uint64_t end_frame;
     const char *output_override;
     unsigned encoder_threads;
+    bool request_gpu;
     bool report_metrics;
     bool resume;
 } SrRenderOptions;
@@ -23,6 +24,8 @@ typedef struct {
     double render_seconds;
     double encode_seconds;
     double wall_seconds;
+    long peak_self_rss_kib;
+    long peak_child_rss_kib;
     long peak_rss_kib;
 } SrRenderMetrics;
 

@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene version="1.0">
+  <project width="3840" height="2160" fps="30" duration="10" seed="1102026"
+           linearLight="true" workingColorSpace="display-p3"
+           background="#07111FFF" mode="standard"/>
+  <output path="../artifacts/v1.1-feature-showcase-4k.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="medium" crf="18"
+          audioCodec="aac" audioBitrate="128000"
+          colorSpace="srgb" colorRange="limited"/>
+  <assets>
+    <image id="grid" src="assets/checker.ppm" width="8" height="8"
+           colorSpace="srgb"/>
+    <text id="titleText" text="C17 • مرحبا • DETERMINISTIC 4K"
+          width="2860" height="190" size="132" color="#F7FBFFFF"
+          font="DejaVu Sans"/>
+    <text id="captionText" text="MESH  PATH  MASKS  PHYSICS  PARTICLES  AUDIO"
+          width="2540" height="100" size="58" color="#9FD8FFFF"
+          font="DejaVu Sans"/>
+    <vector id="heartPath" shape="path" width="1000" height="700"
+            path="M 45 350 C 170 30 410 40 500 270 C 590 40 830 30 955 350 C 800 650 600 650 500 475 C 400 650 200 650 45 350 Z"
+            fill="#FF3D91E8"/>
+    <mesh id="gemMesh" src="assets/octahedron.obj"/>
+    <audio id="tone" src="assets/tone.wav"/>
+  </assets>
+  <materials>
+    <material id="gem" baseColor="#50E6FFFF" metallic="0.55"
+              roughness="0.18" emissive="#031A2AFF"/>
+    <material id="orbital" baseColor="#FFB547FF" metallic="0.3"
+              roughness="0.28" emissive="#160900FF"/>
+  </materials>
+  <composition>
+    <camera id="showcaseCamera" projection="perspective" x="0" y="0" z="0"
+            yaw="-3" pitch="0" roll="0" fov="55" near="1" far="4000">
+      <animate property="yaw" defaultInterpolation="ease-in-out">
+        <key time="0" value="-3"/><key time="5" value="3"/>
+        <key time="10" value="-3"/>
+      </animate>
+      <animate property="fov" defaultInterpolation="ease-in-out">
+        <key time="0" value="55"/><key time="5" value="61"/>
+        <key time="10" value="55"/>
+      </animate>
+    </camera>
+    <object3D id="showcaseGem" primitive="mesh" mesh="gemMesh" material="gem"
+              x="510" y="125" z="1280" radius="330" rotationX="-18"
+              rotationY="20" castShadow="true" receiveShadow="true">
+      <animate property="rotation.y" defaultInterpolation="linear">
+        <key time="0" value="20"/><key time="10" value="380"/>
+      </animate>
+      <animate property="rotation.x" defaultInterpolation="ease-in-out">
+        <key time="0" value="-18"/><key time="5" value="18"/>
+        <key time="10" value="-18"/>
+      </animate>
+    </object3D>
+    <object3D id="showcaseOrb" primitive="sphere" material="orbital"
+              x="-180" y="-250" z="1180" radius="170"
+              castShadow="true" receiveShadow="true">
+      <animate property="position.y" defaultInterpolation="ease-in-out">
+        <key time="0" value="-250"/><key time="5" value="-60"/>
+        <key time="10" value="-250"/>
+      </animate>
+    </object3D>
+    <group id="pathPanel" x="210" y="470" z="4">
+      <mask type="rounded-rect" x="0" y="0" width="1260" height="930"
+            radius="110"/>
+      <shape id="panelBase" shape="rect" width="1260" height="930"
+             fill="#0D805CBB" stroke="#54F2C8FF" strokeWidth="10"/>
+      <layer id="animatedPath" asset="heartPath" x="130" y="105" z="2"
+             blend="screen">
+        <deform>
+          <modifier type="wave" amount="34" frequency="2" phase="0" axis="y">
+            <animate property="phase" defaultInterpolation="linear">
+              <key time="0" value="0"/><key time="10" value="12.566370614"/>
+            </animate>
+          </modifier>
+          <modifier type="twist" amount="14">
+            <animate property="amount" defaultInterpolation="ease-in-out">
+              <key time="0" value="-14"/><key time="5" value="14"/>
+              <key time="10" value="-14"/>
+            </animate>
+          </modifier>
+        </deform>
+      </layer>
+      <group id="ellipticalCutout" z="3">
+        <mask type="ellipse" x="475" y="305" width="310" height="310"
+              invert="true"/>
+        <shape id="cutoutTint" shape="rect" width="1260" height="930"
+               fill="#2BC4FF33" blend="add"/>
+      </group>
+    </group>
+    <shape id="ground" shape="rect" width="3500" height="120"
+           x="1920" y="2040" anchorX="1750" anchorY="60" z="6"
+           fill="#243A58FF" stroke="#80B9EDFF" strokeWidth="8">
+      <rigidBody type="static" shape="box" mass="1" friction="0.78"
+                 restitution="0.2"/>
+    </shape>
+    <shape id="physicsBall" shape="ellipse" width="240" height="240"
+           x="1660" y="690" anchorX="120" anchorY="120" z="8"
+           fill="#FF557BFF" stroke="#FFFFFFFF" strokeWidth="8">
+      <rigidBody type="dynamic" shape="circle" radius="120" mass="1.8"
+                 friction="0.45" restitution="0.74" linearDamping="0.025"
+                 velocityX="170" angularVelocity="45"/>
+      <softBody mass="1" stiffness="20" damping="0.28" pressure="4"/>
+      <deform>
+        <modifier type="squash" amount="0.08"/>
+        <modifier type="wave" amount="14" frequency="2.5" axis="x"/>
+      </deform>
+    </shape>
+    <shape id="springBox" shape="rect" width="220" height="220"
+           x="2220" y="830" anchorX="110" anchorY="110" z="8"
+           fill="#7EE787FF" stroke="#FFFFFFFF" strokeWidth="8">
+      <rigidBody type="dynamic" shape="box" mass="1.4" friction="0.5"
+                 restitution="0.42" linearDamping="0.06" velocityX="-70"/>
+      <deform>
+        <modifier type="bend" amount="42" axis="x"/>
+        <modifier type="stretch" amount="0.12"/>
+      </deform>
+    </shape>
+    <particleEmitter id="sparks" preset="sparks" x="2020" y="1460" z="12"
+                     rate="75" lifetime="2.1" speed="570" spread="110"
+                     size="8" color="#FFD166EE" blend="add"/>
+    <particleEmitter id="smoke" preset="smoke" x="3150" y="1830" z="11"
+                     rate="24" lifetime="3.5" speed="105" spread="55"
+                     size="21" color="#AFC8DE77" blend="screen"/>
+    <layer id="title" asset="titleText" x="250" y="95" z="30"
+           blend="screen">
+      <animate property="opacity" defaultInterpolation="ease-in-out">
+        <key time="0" value="0"/><key time="1" value="1"/>
+        <key time="9" value="1"/><key time="10" value="0"/>
+      </animate>
+    </layer>
+    <layer id="caption" asset="captionText" x="650" y="1880" z="31"
+           blend="screen"/>
+  </composition>
+  <lights>
+    <light id="ambient" type="ambient" color="#B9D8FFFF" intensity="0.18"/>
+    <light id="key" type="directional" color="#FFF1D6FF" intensity="1.35"
+           yaw="-38" pitch="-22" castShadow="true">
+      <animate property="intensity" defaultInterpolation="ease-in-out">
+        <key time="0" value="1.0"/><key time="5" value="1.65"/>
+        <key time="10" value="1.0"/>
+      </animate>
+    </light>
+    <light id="rim" type="point" color="#FF4DB8FF" intensity="2.4"
+           x="850" y="-300" z="700" range="2200" falloff="1.4"
+           castShadow="true"/>
+    <light id="spot" type="spot" color="#55CCFFFF" intensity="2.0"
+           x="-900" y="200" z="700" yaw="-24" pitch="10"
+           range="2600" falloff="1.2" spotAngle="58"/>
+  </lights>
+  <effects>
+    <effect id="bloom" type="bloom" intensity="0.32" radius="8"
+            threshold="0.74"/>
+    <effect id="grade" type="color-grade" intensity="0.72"
+            saturation="1.1" contrast="1.06" brightness="0.008"/>
+    <effect id="vignette" type="vignette" intensity="0.5" radius="1"/>
+    <effect id="flare" type="lens-flare" intensity="0.45" radius="62"
+            color="#FFE5A8FF"/>
+  </effects>
+  <physics fixedStep="0.008333333333333333" gravityX="0" gravityY="980.665"
+           cache="../build/v1.1-showcase.physics">
+    <forceField id="wind" type="directional" forceX="28" forceY="0"/>
+    <forceField id="attractor" type="radial" x="1920" y="1120"
+                strength="900" falloff="0.75"/>
+    <constraint id="spring" type="spring" a="physicsBall" b="springBox"
+                restLength="610" stiffness="7" damping="2"/>
+  </physics>
+  <audioMix sampleRate="48000" channels="2">
+    <audioTrack id="soundtrack" asset="tone" start="0" clipIn="0" clipOut="2"
+                loop="5" volume="0.12" pan="0"/>
+  </audioMix>
+</scene>

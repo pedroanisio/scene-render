@@ -16,7 +16,8 @@ typedef struct {
     bool override_fps;
     uint32_t fps_num, fps_den;
     const char *quality;
-    bool requested_gpu;
+    bool override_mode;
+    SrRenderMode mode;
 } CliOptions;
 
 static void usage(FILE *stream) {
@@ -28,6 +29,8 @@ static void usage(FILE *stream) {
             "  --frame-range A:B        Render half-open frame range [A,B)\n"
             "  --preview-frame N        Write one deterministic PPM frame\n"
             "  --preview-out FILE       Preview path (default build/preview.ppm)\n"
+            "  --mode standard|equirectangular|viewport\n"
+            "                           Override project mode (360 modes need scene360)\n"
             "  --resolution WIDTHxHEIGHT\n"
             "  --fps N or N/D           Override frame rate\n"
             "  --quality low|medium|high\n"
@@ -117,6 +120,19 @@ static int parse_cli(int argc, char **argv, CliOptions *options) {
             options->render.preview = true;
         } else if (strcmp(argv[i], "--preview-out") == 0) {
             if (!require_value(argc, argv, &i, &options->render.preview_path)) return 2;
+        } else if (strcmp(argv[i], "--mode") == 0) {
+            if (!require_value(argc, argv, &i, &value)) return 2;
+            if (strcmp(value, "standard") == 0) {
+                options->mode = SR_MODE_STANDARD;
+            } else if (strcmp(value, "equirectangular") == 0) {
+                options->mode = SR_MODE_EQUIRECTANGULAR;
+            } else if (strcmp(value, "viewport") == 0) {
+                options->mode = SR_MODE_VIEWPORT;
+            } else {
+                fprintf(stderr, "error: --mode expects standard, equirectangular, or viewport\n");
+                return 2;
+            }
+            options->override_mode = true;
         } else if (strcmp(argv[i], "--resolution") == 0) {
             if (!require_value(argc, argv, &i, &value) ||
                 !parse_resolution(value, &options->width, &options->height)) {
@@ -148,7 +164,7 @@ static int parse_cli(int argc, char **argv, CliOptions *options) {
         } else if (strcmp(argv[i], "--renderer") == 0) {
             if (!require_value(argc, argv, &i, &value)) return 2;
             if (strcmp(value, "gpu") == 0) {
-                options->requested_gpu = true;
+                options->render.request_gpu = true;
             } else if (strcmp(value, "cpu") != 0) {
                 fprintf(stderr, "error: --renderer expects cpu or gpu\n");
                 return 2;
@@ -212,17 +228,36 @@ int main(int argc, char **argv) {
     SrDiagnostics diag;
     sr_diag_init(&diag, options.scene_path, stderr);
     diag.verbose = options.verbose;
-    if (options.requested_gpu)
-        sr_diag_warning(&diag, 0, NULL, NULL,
-                        "GPU backend unavailable; using deterministic CPU renderer");
     SrScene scene;
     SrStatus status = sr_scene_load_xml(options.scene_path, &scene, &diag);
     if (status != SR_OK) {
         return status;
     }
+    if (options.override_mode) {
+        if (options.mode != SR_MODE_STANDARD && !scene.scene360.enabled) {
+            fprintf(stderr, "error: --mode %s requires a scene360 element\n",
+                    options.mode == SR_MODE_VIEWPORT ? "viewport" : "equirectangular");
+            sr_scene_free(&scene);
+            return SR_ERR_ARGUMENT;
+        }
+        scene.project.mode = options.mode;
+        if (options.mode == SR_MODE_EQUIRECTANGULAR) {
+            scene.project.width = scene.scene360.width;
+            scene.project.height = scene.scene360.height;
+        }
+    }
     if (options.override_resolution) {
         scene.project.width = options.width;
         scene.project.height = options.height;
+        if (scene.project.mode == SR_MODE_EQUIRECTANGULAR) {
+            if ((uint64_t)options.width != (uint64_t)options.height * 2U) {
+                fprintf(stderr, "error: equirectangular --resolution must be 2:1\n");
+                sr_scene_free(&scene);
+                return SR_ERR_ARGUMENT;
+            }
+            scene.scene360.width = options.width;
+            scene.scene360.height = options.height;
+        }
     }
     if (options.override_fps) {
         scene.project.fps_num = options.fps_num;
@@ -245,10 +280,12 @@ int main(int argc, char **argv) {
                          : 0.0;
         fprintf(stderr,
                 "metrics: frames=%llu render_s=%.6f encode_s=%.6f "
-                "wall_s=%.6f fps=%.3f peak_rss_kib=%ld\n",
+                "wall_s=%.6f fps=%.3f peak_rss_kib=%ld "
+                "self_peak_rss_kib=%ld child_peak_rss_kib=%ld\n",
                 (unsigned long long)metrics.frames, metrics.render_seconds,
                 metrics.encode_seconds, metrics.wall_seconds, fps,
-                metrics.peak_rss_kib);
+                metrics.peak_rss_kib, metrics.peak_self_rss_kib,
+                metrics.peak_child_rss_kib);
     }
     sr_scene_free(&scene);
     return status;

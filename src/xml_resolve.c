@@ -52,7 +52,8 @@ static bool resolve_camera(ParseContext *ctx) {
     if (ctx->scene->project.mode == SR_MODE_EQUIRECTANGULAR) {
         if (ctx->scene->project.width != ctx->scene->scene360.width ||
             ctx->scene->project.height != ctx->scene->scene360.height) {
-            sr_diag_error(ctx->diag, 1, "scene360", "width/height",
+            sr_diag_error(ctx->diag, ctx->scene->scene360.source_line,
+                          "scene360", "width/height",
                           "equirectangular project and scene360 dimensions must match");
             return false;
         }
@@ -63,7 +64,8 @@ static bool resolve_camera(ParseContext *ctx) {
         if ((!wanted && ctx->scene->cameras[i].active) ||
             (wanted && strcmp(ctx->scene->cameras[i].id, wanted) == 0))
             return true;
-    sr_diag_error(ctx->diag, 1, "scene360", "viewportCamera",
+    sr_diag_error(ctx->diag, ctx->scene->scene360.source_line,
+                  "scene360", "viewportCamera",
                   "viewport camera was not found");
     return false;
 }
@@ -71,6 +73,14 @@ static bool resolve_camera(ParseContext *ctx) {
 static bool resolve_visual(ParseContext *ctx) {
     for (size_t i = 0; i < ctx->scene->object3d_count; ++i) {
         SrObject3D *object = &ctx->scene->objects3d[i];
+        if (object->primitive == SR_OBJECT_MESH) {
+            object->mesh_asset=sr_scene_find_asset(ctx->scene,object->mesh_id);
+            if(!object->mesh_asset||object->mesh_asset->type!=SR_ASSET_MESH){
+            sr_diag_error(ctx->diag,object->source_line,"object3D","mesh",
+                              "unknown mesh asset id '%s'",object->mesh_id);
+                return false;
+            }
+        }
         if (!object->material_id) continue;
         for (size_t j = 0; j < ctx->scene->material_count; ++j)
             if (strcmp(ctx->scene->materials[j].id, object->material_id) == 0) {
@@ -78,7 +88,7 @@ static bool resolve_visual(ParseContext *ctx) {
                 break;
             }
         if (!object->material) {
-            sr_diag_error(ctx->diag, 1, "object3D", "material",
+            sr_diag_error(ctx->diag, object->source_line, "object3D", "material",
                           "unknown material id '%s'", object->material_id);
             return false;
         }
@@ -94,7 +104,7 @@ static bool resolve_physics(ParseContext *ctx) {
         if (!constraint->a || !constraint->b ||
             constraint->a->body.type == SR_BODY_NONE ||
             constraint->b->body.type == SR_BODY_NONE) {
-            sr_diag_error(ctx->diag, 1, "constraint", "a/b",
+            sr_diag_error(ctx->diag, constraint->source_line, "constraint", "a/b",
                           "constraint '%s' requires two rigid-body node ids",
                           constraint->id);
             return false;

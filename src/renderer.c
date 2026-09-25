@@ -4,12 +4,15 @@
 #include "scene_render/assets.h"
 #include "scene_render/audio.h"
 #include "scene_render/camera.h"
+#include "scene_render/color.h"
 #include "scene_render/compositor.h"
 #include "scene_render/encoder.h"
 #include "scene_render/effects.h"
+#include "scene_render/gpu.h"
 #include "scene_render/lighting.h"
 #include "scene_render/physics.h"
 #include "scene_render/resume.h"
+#include "scene_render/spatial.h"
 
 #include <errno.h>
 #include <math.h>
@@ -75,7 +78,7 @@ SrStatus sr_write_ppm(const char *path, uint32_t width, uint32_t height,
 
 static SrStatus sr_render_frame(SrScene *scene, uint64_t index,
                                 SrFrame *composition, SrFrame *output,
-                                unsigned threads, double *seconds,
+                                unsigned threads, SrGpu *gpu, double *seconds,
                                 SrDiagnostics *diag) {
     double start = sr_monotonic_seconds();
     sr_frame_clear(composition, scene->project.background);
@@ -87,7 +90,25 @@ static SrStatus sr_render_frame(SrScene *scene, uint64_t index,
         status = sr_camera_extract_viewport(scene, time, composition, output,
                                             threads, diag);
     if (status == SR_OK)
-        status = sr_effects_apply(scene, time, output, diag);
+        status = sr_effects_apply(scene, time, output, threads, diag);
+    if (status == SR_OK) {
+        if (gpu && gpu->implementation) {
+            status = sr_gpu_convert_frame(gpu, output,
+                scene->project.working_color_space, scene->output.color_space,
+                diag);
+            if (status != SR_OK) {
+                sr_diag_warning(diag, 0, NULL, NULL,
+                                "OpenCL conversion failed; using CPU fallback");
+                sr_gpu_close(gpu);
+                status = sr_color_convert_frame(output,
+                    scene->project.working_color_space,
+                    scene->output.color_space, threads);
+            }
+        } else
+            status = sr_color_convert_frame(output,
+                scene->project.working_color_space, scene->output.color_space,
+                threads);
+    }
     *seconds += sr_monotonic_seconds() - start;
     return status;
 }
@@ -102,12 +123,25 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
         return SR_OK;
     }
     double wall_start = sr_monotonic_seconds();
+    SrGpu gpu = {0};
+    if (options->request_gpu) {
+        if (sr_gpu_open(&gpu, diag))
+            sr_diag_info(diag, "using OpenCL GPU device: %s",
+                         sr_gpu_device_name(&gpu));
+        else
+            sr_diag_warning(diag, 0, NULL, NULL,
+                            "no usable OpenCL GPU; using deterministic CPU fallback");
+    }
     SrStatus status = sr_assets_load(scene, diag);
     if (status != SR_OK) {
+        sr_gpu_close(&gpu);
         return status;
     }
     status = sr_physics_prepare(scene, diag);
-    if (status != SR_OK) return status;
+    if (status != SR_OK) {
+        sr_gpu_close(&gpu);
+        return status;
+    }
     uint32_t canvas_width = scene->project.mode == SR_MODE_VIEWPORT
         ? scene->scene360.width : scene->project.width;
     uint32_t canvas_height = scene->project.mode == SR_MODE_VIEWPORT
@@ -117,6 +151,7 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
     if (status != SR_OK) {
         sr_diag_error(diag, 0, NULL, NULL, "cannot allocate %ux%u RGBA frame",
                       canvas_width, canvas_height);
+        sr_gpu_close(&gpu);
         return status;
     }
     SrFrame *frame = &composition;
@@ -150,7 +185,7 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
             goto cleanup;
         }
         status = sr_render_frame(scene, options->preview_frame, &composition,
-                                 frame, options->encoder_threads,
+                                 frame, options->encoder_threads, &gpu,
                                  &metrics->render_seconds, diag);
         if (status == SR_OK) {
             status = sr_write_ppm(options->preview_path, frame->width,
@@ -184,7 +219,7 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
             bool reused = sr_resume_load(&resume, index, frame->rgba, diag);
             if (!reused)
                 status = sr_render_frame(scene, index, &composition, frame,
-                                         options->encoder_threads,
+                                         options->encoder_threads, &gpu,
                                          &metrics->render_seconds, diag);
             if (status == SR_OK && !reused)
                 status = sr_resume_store(&resume, index, frame->rgba, diag);
@@ -202,21 +237,27 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
     if (sr_encoder_close(&encoder, diag) != SR_OK && status == SR_OK) {
         status = SR_ERR_ENCODER;
     }
+    if (status == SR_OK && scene->project.mode == SR_MODE_EQUIRECTANGULAR &&
+        scene->output.spherical_metadata && sr_spatial_is_mp4(path))
+        status = sr_spatial_inject_mp4(path, scene->project.width,
+                                       scene->project.height, diag);
     metrics->encode_seconds = encoder.write_seconds;
     sr_audio_remove_temporary(scene, &audio_path);
     sr_resume_close(&resume);
     free(path);
 
 cleanup:
+    sr_gpu_close(&gpu);
     sr_frame_free(&viewport);
     sr_frame_free(&composition);
     metrics->wall_seconds = sr_monotonic_seconds() - wall_start;
     struct rusage usage;
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
-        metrics->peak_rss_kib = usage.ru_maxrss;
+        metrics->peak_self_rss_kib = usage.ru_maxrss;
     }
-    if (getrusage(RUSAGE_CHILDREN, &usage) == 0 &&
-        usage.ru_maxrss > metrics->peak_rss_kib)
-        metrics->peak_rss_kib = usage.ru_maxrss;
+    if (getrusage(RUSAGE_CHILDREN, &usage) == 0)
+        metrics->peak_child_rss_kib = usage.ru_maxrss;
+    metrics->peak_rss_kib = metrics->peak_self_rss_kib +
+                            metrics->peak_child_rss_kib;
     return status;
 }

@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SR_VERSION "1.0.0"
+#define SR_VERSION "1.1.0"
 #define SR_PI 3.14159265358979323846264338327950288
 
 typedef enum {

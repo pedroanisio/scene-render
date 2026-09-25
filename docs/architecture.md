@@ -3,115 +3,117 @@
 ## Design constraints
 
 The application is C17 with a narrow POSIX platform layer. There is no global
-mutable engine state: `SrScene`, diagnostics, render options, frames, caches,
-and encoder handles have explicit ownership and lifetimes. Dynamically sized
-arrays impose no artificial layer limit. Production media codecs remain in
-FFmpeg rather than being reimplemented.
+mutable engine state: scenes, diagnostics, render options, frames, caches, and
+encoders have explicit owners and lifetimes. Dynamically sized arrays impose no
+artificial layer limit. Production codecs and shaped-text rasterization remain
+in mature external components rather than being reimplemented.
 
 ## Modules
 
 | Module | Responsibility |
 |---|---|
-| `common` | checked allocation helpers, parsing, paths, matrices, monotonic clock |
-| `diagnostics` | contextual error/warning/info records |
+| `common`, `diagnostics` | checked allocation/parsing/path helpers and contextual messages |
+| `scene` | owned scene graph and typed resources |
+| `xml*` | Expat callbacks, dynamic element stack, typed attributes, semantic/reference validation |
 | `timeline` | stable key ordering and six interpolation curves |
-| `scene` | owned scene graph and all typed scene resources |
-| `xml*` | Expat callbacks, contextual grammar, typed attributes, reference resolution |
-| `assets`, `procedural` | shared still cache, lazy video LRU, built-in text/vector rasterization |
+| `assets`, `procedural` | shared still/text/vector cache and lazy video-frame LRU |
+| `vector_path`, `mesh` | SVG-style filled paths and Wavefront OBJ loading |
+| `parallel`, `color` | deterministic row jobs and sRGB/Display-P3/Rec.2020 conversion |
 | `audio` | FFmpeg decode to disk streams and bounded C mixer |
-| `physics` | fixed-step 2D solver, contact/constraint handling, cache serialization |
-| `lighting` | CPU lit primitive renderer and approximate shadows |
-| `compositor` | hierarchy, masks, deformation, sampling, blend/color equations, particles |
+| `physics` | fixed-step 2D solver, contacts, constraints, and atomic cache serialization |
+| `lighting` | CPU primitive/triangle rasterization, depth, material lighting, approximate shadows |
+| `compositor` | hierarchy, nested masks, deformation, sampling, blends, and particles |
 | `camera` | equirectangular viewport mapping and deterministic row workers |
-| `effects` | blur, glow/bloom, grade, vignette, and lens-flare approximation |
+| `effects` | parallel blur, glow/bloom, grade, vignette, and lens-flare approximation |
+| `gpu` | optional OpenCL 1.2 final color-conversion kernel and capability probe |
 | `resume` | content-signature directory and atomic raw-frame cache writes |
-| `encoder` | supervised FFmpeg pipe, codec selection, A/V muxing, exit handling |
-| `renderer` | phase ordering, absolute-frame loop, preview, range, metrics |
-| `main` | CLI parsing, overrides, quality policy, CPU fallback |
+| `encoder` | FFmpeg encoder preflight, supervised pipe, A/V muxing, and color tags |
+| `spatial` | atomic MP4 Spatial Media v1 spherical UUID injection |
+| `renderer` | phase ordering, absolute-frame loop, preview/range/resume, and metrics |
+| `main` | CLI parsing, overrides, quality policy, and documented fallbacks |
 
-## Ownership
+## Ownership and streaming
 
-- `sr_scene_load_xml` initializes and owns every allocation reachable from
-  `SrScene`; `sr_scene_free` releases it.
-- Layer nodes reference shared `SrAsset` entries. Instances never own decoded
-  buffers.
-- A still has one cached RGBA image. A video has four LRU entries keyed by
-  integer source-frame index.
-- Decoded audio and mixed audio are temporary disk streams. Cleanup happens
-  after FFmpeg exits, including error paths.
-- `SrFrame` owns exactly one RGBA allocation.
-- Encoder and resume handles are local to one `sr_render` call.
+- `sr_scene_load_xml` owns every allocation reachable from `SrScene`;
+  `sr_scene_free` releases it.
+- Layer instances reference shared assets. A still/text/vector asset holds one
+  cached RGBA image; a video has four LRU entries keyed by source-frame index.
+- A mesh asset owns one parsed vertex/normal/triangle set reused by every mesh
+  object instance.
+- Decoded and mixed audio use temporary disk streams, mixed in 4096-frame
+  blocks. Cleanup covers normal and error exits.
+- The renderer keeps current working/output surfaces, not the entire movie.
+- Each worker receives disjoint rows. No floating-point reduction depends on
+  scheduling, so CPU output is byte-identical across supported thread counts.
 
 ## Frame execution
 
 ```mermaid
 flowchart TD
-  A["XML + reference validation"] --> B["Shared asset setup"]
-  B --> C["Fixed-step physics or cache"]
-  C --> D["Absolute frame time"]
-  D --> E["Lighting + 3D primitives"]
-  E --> F["Ordered 2D composition"]
-  F --> G{"Viewport mode?"}
-  G -- Yes --> H["Parallel spherical projection"]
-  G -- No --> I["Output frame"]
-  H --> I
-  I --> J["Post effects"]
-  J --> K["Resume cache + FFmpeg"]
+  A["XML + semantic validation"] --> B["Assets + fixed-step physics"]
+  B --> C["Camera, lit 3D, layered 2D"]
+  C --> D["Viewport projection + effects"]
+  D --> E["Output color conversion"]
+  E --> F["Resume cache + FFmpeg mux"]
+  F --> G["Optional spherical metadata"]
 ```
 
-Audio is prepared once for the selected frame interval. Video frame zero and
-mixed audio sample zero both represent the selected interval start, so FFmpeg
-receives synchronized, zero-based streams.
+At absolute frame `N`, master time is calculated from the integer frame index
+and rational FPS. Audio sample zero and video frame zero both represent the
+selected range start. FFmpeg therefore receives synchronized, zero-based
+streams. A layer without `source.time` maps local time through speed,
+time-stretch, trim, finite loop count, and reverse; an explicit `source.time`
+animation takes precedence.
 
-## Timeline and media time
+## Color and compositing
 
-Master frame time is calculated directly from the integer frame index and the
-rational project FPS. A layer without `source.time` maps local time through
-`speed / timeStretch`, trim, finite play count, and optional reverse. A
-`source.time` track is an explicit time-remap and takes precedence. The same
-asset may therefore serve multiple independently timed instances.
+Decoded image/video assets are converted from their declared sRGB, Rec.709,
+Display-P3, or Rec.2020 source space into the selected working space. Straight-alpha
+source-over implements normal, add, multiply, screen, overlay, and difference.
+With `linearLight="true"`, blend operands are transfer-decoded and encoded in
+the working gamut. The final frame is converted to the output color space and
+FFmpeg receives matching primaries, transfer, matrix, and range flags.
 
-## Color and blending
+Group and drawable masks are evaluated in their inverse world transforms.
+Rectangular, elliptical, rounded-rect, inverted, and nested masks therefore
+remain stable under parent transformations. Deformation is an inverse sample
+warp, avoiding holes in the destination.
 
-Inputs are RGBA in sRGB encoding. The compositor implements straight-alpha
-source-over plus normal, add, multiply, screen, overlay, and difference blend
-functions. With linear-light mode enabled, RGB operands pass through exact sRGB
-transfer functions around the blend. FFmpeg performs final pixel-format and
-codec conversion.
+## 3D, lighting, and physical behavior
 
-## Physics
+Built-in spheres, boxes, planes, and OBJ triangles share a per-frame depth
+buffer. Perspective/orthographic cameras and ambient, directional, point, and
+spot lights feed deterministic CPU material shading. `castShadow` and
+`receiveShadow` use screen-space and bounding-volume occlusion approximations.
+They are useful visual behavior, not a claim of a physically based renderer.
 
-The solver samples at `fixedStep`, never output FPS. Dynamic bodies receive
-gravity, fields, spring forces, damping, integration, three deterministic
-contact iterations, and friction/restitution impulses. Static bodies have zero
-inverse mass; kinematic bodies follow prescribed velocity. Samples are
-linearly interpolated for render time.
+Physics samples at the XML `fixedStep`, independently of output FPS. Dynamic
+bodies receive gravity, force fields, springs, damping, contact iterations,
+friction, and restitution. Render poses interpolate adjacent fixed samples.
+The optional cache contains an engine/versioned scene signature (including
+geometry, forces, and constraints) and is committed by atomic rename. Soft
+bodies and bend/twist/wave/squash/stretch modifiers are deterministic visual
+approximations, not verified physically accurate simulation.
 
-The optional cache contains a versioned header, scene/physics signature, body
-count, step, and absolute poses. A mismatch causes deterministic resimulation.
-This is a visual rigid-body solver, not a verified physically accurate solver.
+## 360 and metadata
 
-## 360 and camera
-
-An equirectangular canvas maps longitude to X and latitude to Y. Viewport rays
+Equirectangular longitude wraps in X and latitude clamps in Y. Viewport rays
 use vertical FOV and output aspect, then apply roll, pitch, and yaw before
-bilinear wrapped sampling. Worker threads own disjoint row intervals and never
-reduce shared floating-point values, preserving exact output across thread
-counts. Camera translation has no effect for an infinitely distant panorama.
+bilinear panorama sampling. Translation is intentionally irrelevant to an
+infinitely distant panorama. Successful MP4/MOV equirectangular renders can be
+post-processed with the Google Spatial Media v1 spherical UUID; Matroska keeps
+FFmpeg projection tags.
 
-For standard scenes, an active camera applies perspective or orthographic
-projection to the built-in 3D primitives. Without a camera, primitive X/Y
-coordinates are interpreted as screen coordinates for convenient 2D/3D
-composites.
+## CPU/GPU, resume, and failures
 
-## Streaming, resume, and fallback
+CPU rasterization is the deterministic reference. `--renderer gpu` probes a
+real OpenCL GPU, compiles a kernel, and can offload final gamut/transfer
+conversion. Rasterization, masking, lighting, and effects remain on the CPU.
+If the OpenCL loader/device/kernel is unavailable, the engine logs a warning
+and uses the CPU path without changing scene semantics.
 
-Only the current render surfaces are retained. FFmpeg consumes raw RGBA over a
-pipe. Audio is mixed in 4096-frame blocks. Resume mode stores each completed
-RGBA frame atomically under `OUTPUT.resume/SIGNATURE`; a restarted run still
-rebuilds the output container but avoids rerendering cached frames.
-
-Codec/GPU capabilities are not assumed. Missing FFmpeg or encoder failures
-return nonzero diagnostics. A GPU request warns and falls back to CPU. Failed
-allocations, asset decodes, cache writes, pipes, or child exit statuses are
-propagated rather than ignored.
+Resume mode atomically stores completed RGBA output frames under
+`OUTPUT.resume/SIGNATURE`. Restarting still rebuilds the output container but
+skips cached frame rendering. Missing assets, codecs, FFmpeg/OpenCL, memory,
+cache writes, pipes, and child-process failures produce contextual diagnostics
+and a nonzero exit instead of partial success.

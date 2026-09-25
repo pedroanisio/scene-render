@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene version="1.0">
+  <project width="64" height="32" fps="1" duration="1" seed="709"
+           linearLight="true" workingColorSpace="rec709"
+           background="#18304AFF" mode="standard"/>
+  <output path="../build/test-artifacts/rec709.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="veryfast" crf="28"
+          colorSpace="rec709" colorRange="limited"/>
+  <composition>
+    <shape id="sample" shape="rect" width="32" height="16"
+           x="16" y="8" fill="#D06030FF"/>
+  </composition>
+</scene>

@@ -18,6 +18,7 @@ void sr_xml_start_scene360(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"layout", "width", "height",
                                     "viewportCamera"};
     if (!sr_xml_attrs_allowed(ctx, "scene360", attrs, allowed, 4)) return;
+    ctx->scene->scene360.source_line = sr_xml_line(ctx);
     const char *layout = sr_xml_attr(attrs, "layout");
     if (layout && strcmp(layout, "equirectangular") != 0)
         SR_XML_FAIL_RETURN(ctx, "scene360", "layout",
@@ -30,7 +31,8 @@ void sr_xml_start_scene360(ParseContext *ctx, const XML_Char **attrs) {
     if (value && (!sr_parse_u32(value, &ctx->scene->scene360.height) ||
                   !ctx->scene->scene360.height))
         SR_XML_FAIL_RETURN(ctx, "scene360", "height", "expected a positive integer");
-    if (ctx->scene->scene360.width != ctx->scene->scene360.height * 2)
+    if ((uint64_t)ctx->scene->scene360.width !=
+        (uint64_t)ctx->scene->scene360.height * 2U)
         SR_XML_FAIL_RETURN(ctx, "scene360", "width/height",
                            "equirectangular canvases must have a 2:1 aspect ratio");
     value = sr_xml_attr(attrs, "viewportCamera");
@@ -65,6 +67,7 @@ void sr_xml_start_camera(ParseContext *ctx, const XML_Char **attrs) {
         ctx->scene->camera_capacity = capacity;
     }
     SrCamera *camera = &ctx->scene->cameras[ctx->scene->camera_count++];
+    camera->source_line = sr_xml_line(ctx);
     camera->id = sr_strdup(id);
     camera->active = true;
     camera->fov.base = 90.0;

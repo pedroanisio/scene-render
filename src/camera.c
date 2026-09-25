@@ -93,7 +93,11 @@ SrStatus sr_camera_extract_viewport(const SrScene *scene, double time,
         return SR_ERR_XML;
     }
     double fov = sr_anim_eval(&camera->fov, time);
-    if (fov <= 1.0 || fov >= 179.0) return SR_ERR_ARGUMENT;
+    if (fov <= 1.0 || fov >= 179.0) {
+        sr_diag_error(diag, camera->source_line, "camera", "fov",
+                      "animated field of view must remain between 1 and 179 degrees");
+        return SR_ERR_ARGUMENT;
+    }
     if (!threads) {
         long detected = sysconf(_SC_NPROCESSORS_ONLN);
         threads = detected > 0 ? (unsigned)detected : 1;

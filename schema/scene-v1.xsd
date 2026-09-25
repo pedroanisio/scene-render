@@ -2,8 +2,8 @@
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
   <xs:annotation>
     <xs:documentation>
-      scene-render scene format 1.0. The schema is the complete v1 interchange
-      contract. Runtime support is phased; see docs/feature-matrix.md.
+      scene-render scene format 1.0. This schema is the implemented interchange
+      contract for the deterministic C17 renderer.
     </xs:documentation>
   </xs:annotation>
 
@@ -14,6 +14,9 @@
     <xs:restriction base="xs:double">
       <xs:minInclusive value="0"/><xs:maxInclusive value="1"/>
     </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="nonNegativeDecimal">
+    <xs:restriction base="xs:double"><xs:minInclusive value="0"/></xs:restriction>
   </xs:simpleType>
   <xs:simpleType name="fpsType">
     <xs:restriction base="xs:string"><xs:pattern value="[1-9][0-9]*(/[1-9][0-9]*)?"/></xs:restriction>
@@ -37,6 +40,12 @@
       <xs:enumeration value="ease-in-out"/><xs:enumeration value="cubic-bezier"/>
     </xs:restriction>
   </xs:simpleType>
+  <xs:simpleType name="colorSpaceType">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="srgb"/><xs:enumeration value="rec709"/>
+      <xs:enumeration value="display-p3"/><xs:enumeration value="rec2020"/>
+    </xs:restriction>
+  </xs:simpleType>
 
   <xs:complexType name="keyType">
     <xs:attribute name="time" type="xs:double" use="required"/>
@@ -52,26 +61,24 @@
   <xs:complexType name="maskType">
     <xs:attribute name="type" use="required">
       <xs:simpleType><xs:restriction base="xs:string">
-        <xs:enumeration value="rect"/>
+        <xs:enumeration value="rect"/><xs:enumeration value="ellipse"/>
+        <xs:enumeration value="rounded-rect"/>
       </xs:restriction></xs:simpleType>
     </xs:attribute>
     <xs:attribute name="x" type="xs:double" default="0"/>
     <xs:attribute name="y" type="xs:double" default="0"/>
     <xs:attribute name="width" type="positiveDecimal"/>
     <xs:attribute name="height" type="positiveDecimal"/>
+    <xs:attribute name="radius" type="nonNegativeDecimal" default="0"/>
     <xs:attribute name="invert" type="xs:boolean" default="false"/>
   </xs:complexType>
 
   <xs:attributeGroup name="transformAttributes">
     <xs:attribute name="x" type="xs:double" default="0"/>
     <xs:attribute name="y" type="xs:double" default="0"/>
-    <xs:attribute name="zPosition" type="xs:double" default="0"/>
     <xs:attribute name="rotation" type="xs:double" default="0"/>
-    <xs:attribute name="rotationX" type="xs:double" default="0"/>
-    <xs:attribute name="rotationY" type="xs:double" default="0"/>
     <xs:attribute name="scaleX" type="xs:double" default="1"/>
     <xs:attribute name="scaleY" type="xs:double" default="1"/>
-    <xs:attribute name="scaleZ" type="xs:double" default="1"/>
     <xs:attribute name="anchorX" type="xs:double" default="0"/>
     <xs:attribute name="anchorY" type="xs:double" default="0"/>
   </xs:attributeGroup>
@@ -90,6 +97,7 @@
     <xs:attribute name="src" type="xs:anyURI" use="required"/>
     <xs:attribute name="width" type="xs:positiveInteger" use="required"/>
     <xs:attribute name="height" type="xs:positiveInteger" use="required"/>
+    <xs:attribute name="colorSpace" type="colorSpaceType" default="srgb"/>
   </xs:complexType>
   <xs:complexType name="videoAssetType">
     <xs:attribute name="id" type="xs:ID" use="required"/>
@@ -98,6 +106,7 @@
     <xs:attribute name="height" type="xs:positiveInteger" use="required"/>
     <xs:attribute name="fps" type="fpsType" use="required"/>
     <xs:attribute name="duration" type="positiveDecimal" use="required"/>
+    <xs:attribute name="colorSpace" type="colorSpaceType" default="srgb"/>
   </xs:complexType>
   <xs:complexType name="audioAssetType">
     <xs:attribute name="id" type="xs:ID" use="required"/>
@@ -110,17 +119,25 @@
     <xs:attribute name="height" type="xs:positiveInteger" use="required"/>
     <xs:attribute name="size" type="positiveDecimal" use="required"/>
     <xs:attribute name="color" type="colorType" default="#FFFFFFFF"/>
+    <xs:attribute name="font" type="xs:string" default="Sans"/>
+    <xs:attribute name="fontFile" type="xs:anyURI"/>
   </xs:complexType>
   <xs:complexType name="vectorAssetType">
     <xs:attribute name="id" type="xs:ID" use="required"/>
     <xs:attribute name="shape" use="required">
       <xs:simpleType><xs:restriction base="xs:string">
         <xs:enumeration value="rect"/><xs:enumeration value="ellipse"/>
+        <xs:enumeration value="path"/>
       </xs:restriction></xs:simpleType>
     </xs:attribute>
     <xs:attribute name="width" type="xs:positiveInteger" use="required"/>
     <xs:attribute name="height" type="xs:positiveInteger" use="required"/>
     <xs:attribute name="fill" type="colorType" default="#FFFFFFFF"/>
+    <xs:attribute name="path" type="xs:string"/>
+  </xs:complexType>
+  <xs:complexType name="meshAssetType">
+    <xs:attribute name="id" type="xs:ID" use="required"/>
+    <xs:attribute name="src" type="xs:anyURI" use="required"/>
   </xs:complexType>
   <xs:complexType name="assetsType">
     <xs:choice minOccurs="0" maxOccurs="unbounded">
@@ -129,6 +146,7 @@
       <xs:element name="audio" type="audioAssetType"/>
       <xs:element name="text" type="textAssetType"/>
       <xs:element name="vector" type="vectorAssetType"/>
+      <xs:element name="mesh" type="meshAssetType"/>
     </xs:choice>
   </xs:complexType>
 
@@ -138,7 +156,6 @@
     <xs:attribute name="metallic" type="unitDecimal" default="0"/>
     <xs:attribute name="roughness" type="unitDecimal" default="0.5"/>
     <xs:attribute name="emissive" type="colorType" default="#000000FF"/>
-    <xs:attribute name="texture" type="xs:IDREF"/>
   </xs:complexType>
   <xs:complexType name="materialsType">
     <xs:sequence><xs:element name="material" type="materialType" maxOccurs="unbounded"/></xs:sequence>
@@ -179,7 +196,7 @@
     <xs:attribute name="velocityX" type="xs:double" default="0"/>
     <xs:attribute name="velocityY" type="xs:double" default="0"/>
     <xs:attribute name="angularVelocity" type="xs:double" default="0"/>
-    <xs:attribute name="radius" type="xs:nonNegativeInteger" default="0"/>
+    <xs:attribute name="radius" type="nonNegativeDecimal" default="0"/>
   </xs:complexType>
   <xs:complexType name="softBodyType">
     <xs:attribute name="mass" type="positiveDecimal" default="1"/>
@@ -287,7 +304,7 @@
     <xs:attribute name="height" type="positiveDecimal" use="required"/>
     <xs:attribute name="fill" type="colorType" default="#FFFFFFFF"/>
     <xs:attribute name="stroke" type="colorType" default="#00000000"/>
-    <xs:attribute name="strokeWidth" type="xs:nonNegativeInteger" default="0"/>
+    <xs:attribute name="strokeWidth" type="nonNegativeDecimal" default="0"/>
     <xs:attribute name="blend" type="blendType" default="normal"/>
   </xs:complexType>
   <xs:complexType name="object3DType">
@@ -296,10 +313,11 @@
     <xs:attribute name="primitive" use="required">
       <xs:simpleType><xs:restriction base="xs:string">
         <xs:enumeration value="sphere"/><xs:enumeration value="box"/>
-        <xs:enumeration value="plane"/>
+        <xs:enumeration value="plane"/><xs:enumeration value="mesh"/>
       </xs:restriction></xs:simpleType>
     </xs:attribute>
     <xs:attribute name="material" type="xs:IDREF"/>
+    <xs:attribute name="mesh" type="xs:IDREF"/>
     <xs:attribute name="x" type="xs:double" default="0"/>
     <xs:attribute name="y" type="xs:double" default="0"/>
     <xs:attribute name="z" type="xs:double" default="0"/>
@@ -419,6 +437,7 @@
     <xs:attribute name="duration" type="positiveDecimal" use="required"/>
     <xs:attribute name="seed" type="xs:unsignedLong" default="0"/>
     <xs:attribute name="linearLight" type="xs:boolean" default="true"/>
+    <xs:attribute name="workingColorSpace" type="colorSpaceType" default="srgb"/>
     <xs:attribute name="background" type="colorType" default="#000000FF"/>
     <xs:attribute name="mode" default="standard">
       <xs:simpleType><xs:restriction base="xs:string">
@@ -441,6 +460,13 @@
     <xs:attribute name="bitrate" type="xs:positiveInteger"/>
     <xs:attribute name="audioCodec" type="xs:string" default="aac"/>
     <xs:attribute name="audioBitrate" type="xs:positiveInteger" default="192000"/>
+    <xs:attribute name="colorSpace" type="colorSpaceType" default="srgb"/>
+    <xs:attribute name="colorRange" default="limited">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="limited"/><xs:enumeration value="full"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="sphericalMetadata" type="xs:boolean" default="true"/>
   </xs:complexType>
 
   <xs:element name="scene">

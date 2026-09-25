@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(scene_render VERSION 1.0.0 LANGUAGES C)
+project(scene_render VERSION 1.1.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -9,6 +9,12 @@ find_package(EXPAT 2.5 REQUIRED)
 
 set(SCENE_RENDER_SOURCES
     src/common.c
+    src/parallel.c
+    src/color.c
+    src/vector_path.c
+    src/mesh.c
+    src/gpu.c
+    src/spatial.c
     src/diagnostics.c
     src/timeline.c
     src/scene.c
@@ -38,7 +44,7 @@ target_compile_definitions(scene_render_core PUBLIC _POSIX_C_SOURCE=200809L)
 target_compile_options(scene_render_core PRIVATE
     $<$<COMPILE_LANG_AND_ID:C,GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Werror>)
 find_package(Threads REQUIRED)
-target_link_libraries(scene_render_core PUBLIC EXPAT::EXPAT m Threads::Threads)
+target_link_libraries(scene_render_core PUBLIC EXPAT::EXPAT m Threads::Threads ${CMAKE_DL_LIBS})
 
 add_executable(scene-render src/main.c)
 target_link_libraries(scene-render PRIVATE scene_render_core)

@@ -1,24 +1,25 @@
 # scene-render
 
-`scene-render` 1.0.0 is a modular C17/POSIX video-generation engine. It reads a
-validated XML scene, evaluates an absolute-frame timeline, simulates physics at
-a fixed timestep, renders one RGBA frame at a time, mixes audio in bounded
-blocks, and streams the result to FFmpeg. Original orchestration, scene,
-timeline, camera, renderer, compositor, lighting/effects, physics/deformation,
-audio mixer, diagnostics, cache, and CLI code is C.
+`scene-render` 1.1.0 is a modular C17/POSIX video-generation engine. It reads a
+validated XML scene, evaluates an absolute-frame timeline, simulates visual
+physics at a fixed timestep, renders one RGBA frame at a time, mixes bounded
+audio blocks, and streams synchronized media to FFmpeg. The scene model,
+validation, timeline, camera, renderer, compositor, lighting/effects, physics,
+deformation, audio mixer, caches, diagnostics, and CLI are implemented in C.
 
-The engine supports standard 3840×2160 output, 2:1 equirectangular 360° output,
-and animated perspective viewport extraction from a 360° canvas. It also
-supports shared image/video sources, text and vector assets, nested layers,
-masks, six blend modes, particles, simple lit 3D primitives, post-processing,
-fixed-step 2D rigid bodies, springs, force fields, and five deformation
-modifiers.
+The engine renders standard 3840×2160 video, configurable 2:1 equirectangular
+video (including 3840×1920), and animated 3840×2160 perspective viewports from
+360° scenes. It supports shared image/video/audio assets, shaped UTF-8 text,
+filled vector paths, imported Wavefront OBJ meshes, nested layer groups and
+masks, six blend modes, particles, animated lights/materials/cameras, fixed-step
+rigid bodies, visual soft bodies, five deformation modifiers, and ordered post
+effects.
 
 ## Build
 
-Dependencies and tested versions are in
-[`docs/dependencies.md`](docs/dependencies.md). FFmpeg must be available at run
-time; production codecs are not implemented by this project.
+Required and optional dependencies, exact verified versions, and licenses are
+listed in [`docs/dependencies.md`](docs/dependencies.md). FFmpeg is required at
+runtime; production codecs are deliberately not reimplemented.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -26,134 +27,153 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-The supplied environment was verified with the strict Makefile path:
+The strict Make path is equivalent:
 
 ```sh
 make -j
 make test
 ```
 
-Both paths select C17. The project is compiled with
-`-Wall -Wextra -Wpedantic -Werror`; POSIX `fork`, pipes, clocks, and pthreads are
-the deliberately documented platform layer.
+Both builds select C17 and compile project sources with
+`-Wall -Wextra -Wpedantic -Werror`. POSIX processes, pipes, clocks, temporary
+files, and pthreads are the documented platform layer.
 
 ## Commands
 
 ```sh
-# Validate only; no media is decoded.
+# Grammar and semantic validation without media decode or rendering.
 ./build/scene-render --scene examples/basic-multilayer.xml --validate
 
-# Ten-second 4K UHD render.
-./build/scene-render --scene examples/basic-multilayer.xml \
+# Ten-second 4K UHD render with metrics.
+./build/scene-render --scene examples/ten-layer-composition.xml \
   --output build/demo.mp4 --threads auto --quality high --metrics
 
-# 3840x1920 equirectangular render.
+# Configurable equirectangular output with Spatial Media metadata in MP4.
 ./build/scene-render --scene examples/equirectangular-360.xml \
   --output build/panorama.mp4 --quality high
 
-# Animated 3840x2160 viewport from a 3840x1920 panorama.
+# Animated 4K viewport from a 3840×1920 panorama.
 ./build/scene-render --scene examples/viewport-360.xml \
   --output build/viewport.mp4 --threads auto
 
-# One preview and a half-open frame range.
-./build/scene-render --scene examples/lighting-physics-deformation.xml \
-  --preview-frame 90 --preview-out build/frame-0090.ppm
+# One preview or a half-open frame range.
+./build/scene-render --scene examples/production-features.xml \
+  --preview-frame 30 --preview-out build/frame-0030.ppm
 ./build/scene-render --scene examples/video-audio-remap.xml \
   --frame-range 120:180 --output build/range.mp4
 
-# Preserve completed RGBA frames and reuse them after interruption.
+# Request the optional OpenCL path; unavailable hardware falls back safely.
+./build/scene-render --scene examples/production-features.xml \
+  --renderer gpu --threads auto --output build/gpu-request.mp4
+
+# Render a viewport-mode scene as its equirectangular 360 master.
+./build/scene-render --scene examples/archive-beacon.xml \
+  --mode equirectangular --output build/archive-beacon-360.mp4
+
+# Preserve completed post-color RGBA frames for an interrupted render.
 ./build/scene-render --scene examples/viewport-360.xml \
   --output build/viewport.mp4 --resume
 ```
 
-The complete CLI is available with `--help`. Important options are
-`--validate`, `--frame-range A:B`, `--preview-frame N`, `--preview-out FILE`,
-`--resolution WIDTHxHEIGHT`, `--fps N/D`, `--quality low|medium|high`,
+Run `scene-render --help` for the complete CLI. Options include `--validate`,
+`--frame-range A:B`, `--preview-frame N`, `--preview-out FILE`,
+`--mode standard|equirectangular|viewport`, `--resolution WIDTHxHEIGHT`,
+`--fps N/D`, `--quality low|medium|high`,
 `--threads auto|N`, `--renderer cpu|gpu`, `--resume`, `--verbose`, and
 `--metrics`.
 
-There is currently no GPU implementation. `--renderer gpu` emits a capability
-warning and uses the deterministic CPU backend. Viewport projection uses
-deterministic row partitions when multiple threads are requested; the scalar
-compositor remains the fallback everywhere.
+The GPU selection dynamically loads OpenCL 1.2 and executes final named-space
+color conversion on a GPU. Scene traversal and the reference rasterizer remain
+CPU-based. If the loader, device, or kernel is unavailable, the exact CPU path
+is selected with a warning. No OpenCL SDK is required to compile the project.
 
 ## Supplied scenes
 
 | Scene | Demonstrates |
 |---|---|
-| `basic-multilayer.xml` | 10-second 4K composition, groups, masks, blends |
-| `ten-layer-composition.xml` | Ten simultaneous alpha/blend layers |
-| `keyframe-curves.xml` | All six interpolation modes |
-| `video-audio-remap.xml` | Shared video instances, loop/reverse/remap, AAC audio |
-| `equirectangular-360.xml` | 3840×1920 360° output |
+| `basic-multilayer.xml` | 10-second 4K hierarchy, masks, transforms, blends |
+| `ten-layer-composition.xml` | Ten simultaneous transparent/blended instances |
+| `keyframe-curves.xml` | Step, linear, ease-in/out, ease-in-out, cubic Bézier |
+| `video-audio-remap.xml` | Shared video cache, loop/reverse/remap, mixed AAC audio |
+| `equirectangular-360.xml` | 3840×1920 equirectangular output |
 | `viewport-360.xml` | Animated yaw, pitch, roll, and FOV into 4K UHD |
-| `lighting-physics-deformation.xml` | Four lights, shadows, 3D, particles, effects, collision, spring, force fields, soft-body approximation, and all deformation families |
+| `lighting-physics-deformation.xml` | Lights, particles, effects, collision, constraints, soft-body approximation, five modifiers |
+| `production-features.xml` | UTF-8 shaping, path rasterization, shaped/inverted masks, OBJ mesh, P3→sRGB conversion |
+| `v1.1-feature-showcase.xml` | Ten-second 4K integration showcase with synchronized audio |
+| `archive-beacon.xml` | 30-second sci-fi sequence authored once in panorama space and rendered as both the UHD viewport cut and the 360 master: 3D station and planet, reused telemetry video, debris physics, shield deformation, beam, audio mix, end card. Generated by `scripts/archive-beacon/build_scene.py`; `scripts/archive-beacon/render.py` renders both with measured render times on the end card |
+| `gravity-well.xml` | 12-second 1080p orbit study around a radial force field |
 
-The small video and WAV in `examples/assets` are redistributable generated test
-signals created with FFmpeg's `testsrc2` and `sine` sources.
+Generated sample media under `examples/assets` contains only FFmpeg test
+signals. `octahedron.obj` is original project test geometry.
 
-The complete animated feature showcase is
-`artifacts/v1.0-feature-showcase-4k.mp4`: 10 seconds, 3840×2160, 30 fps,
-H.264, with lighting, particles, rigid-body physics, force fields, a spring,
-soft-body-style motion, deformation, shadows, and post-processing. A 5-second
-inspection frame is supplied as `artifacts/v1.0-feature-showcase-frame-5s.png`.
+The latest complete render is `artifacts/v1.1-feature-showcase-4k.mp4`; its
+5-second inspection frame and hashes are stored beside it. The verified file
+contains 300 3840×2160 H.264 frames and 10.000000 seconds of stereo AAC.
 
 ## Execution pipeline
 
-1. Expat tokenizes XML while engine-owned validators report source line,
-   element, attribute, and reason.
-2. References are resolved, layer order is stabilized by `(z, XML order)`, and
-   immutable sources are shared between instances.
-3. Media frames are decoded lazily into a four-frame per-source LRU. Still,
-   text, and vector sources are decoded or rasterized once.
-4. Rigid bodies are simulated at XML `fixedStep`, independent of output FPS.
-   Optional binary caches are loaded before simulation and written afterward.
-5. Each absolute frame time is evaluated directly. Lighting/3D, ordered 2D
-   compositing, 360 projection, and post-effects produce the output frame.
-6. Audio sources are decoded to temporary float streams and mixed in 4096-frame
-   blocks with trim, loops, volume, and pan.
-7. RGBA video and float audio stream to a supervised FFmpeg process with exact
-   rational frame rate and synchronized zero-based output timestamps.
+1. Expat tokenizes XML while engine-owned checks report source line, element,
+   attribute, and reason. DOCTYPE is rejected.
+2. References are resolved, child order is stabilized by `(z, XML order)`, and
+   layer instances point to shared immutable asset records.
+3. Still media is decoded once. Video is decoded lazily into a four-frame
+   per-source LRU. Declared source color spaces convert into the working space.
+4. Rigid bodies simulate at XML `fixedStep`, independent of output FPS.
+   Versioned/signature-checked pose caches can be reused across renders.
+5. Every frame time is calculated directly from its integer index. Lighting,
+   depth-tested primitives/meshes, ordered 2D compositing, optional viewport
+   extraction, effects, and output color conversion produce one RGBA frame.
+6. Audio sources decode to temporary float streams and mix in 4096-frame
+   blocks with trim, finite loops, volume, and pan.
+7. RGBA video and float audio stream to a supervised FFmpeg process at an exact
+   rational frame rate. MP4 equirectangular files receive Spatial Media v1 UUID
+   metadata; Matroska receives projection/spherical stream tags.
 
-See [`docs/architecture.md`](docs/architecture.md) for module ownership and
-failure behavior, and [`docs/xml-reference.md`](docs/xml-reference.md) plus
-[`schema/scene-v1.xsd`](schema/scene-v1.xsd) for the scene language.
+See [`docs/architecture.md`](docs/architecture.md),
+[`docs/xml-reference.md`](docs/xml-reference.md), and the normative
+[`schema/scene-v1.xsd`](schema/scene-v1.xsd).
 
 ## Determinism
 
-For identical XML bytes, assets, CLI overrides, engine/dependency versions,
+With identical XML, input assets, engine and dependency versions, font setup,
 platform floating-point behavior, and seed, CPU-rendered RGBA frames are
-byte-identical. Frame times are `frame_index × fps_den / fps_num`; no time is
-accumulated. Physics uses a fixed step, particles use stateless integer hashes,
-layer order is stable, and parallel viewport workers write disjoint rows.
+byte-identical. Frame times never accumulate. Physics has a fixed step,
+particles use stateless integer hashes, ordering is stable, and parallel jobs
+write disjoint output ranges. Tests compare one- and four-thread results.
 
-Encoded container bytes are not the determinism boundary because encoder
-implementations can change. Tests compare decoded/rendered frames exactly and
-pin SHA-256 golden values.
+Encoded container bytes are outside the frame determinism boundary because
+external encoder builds can change. Golden tests hash the lossless rendered
+PPM output. The optional GPU color kernel is not claimed byte-identical across
+different GPU vendors; CPU fallback remains the reference.
 
-## Color and memory
+## Color, streaming, and memory
 
-Decoded RGB is treated as sRGB. When `linearLight="true"`, blend operands are
-converted with the sRGB transfer function, blended in linear light, and
-converted back. Alpha uses straight-alpha source-over equations. FFmpeg handles
-the requested output pixel conversion.
+Projects select `srgb`, `rec709`, `display-p3`, or `rec2020` working space.
+Image and video assets declare their source space (sRGB by default). Linear
+light blending uses the active space's transfer function, final RGB conversion
+uses explicit matrices, and FFmpeg output receives primaries, transfer,
+matrix, and full/limited range tags.
 
-Video is never loaded in full. The working set is output/panorama frames,
-effect scratch buffers when needed, cached stills, four decoded frames per
-video source, physics samples, and bounded audio buffers. Resume caches use raw
-RGBA files and therefore trade disk space for recoverability.
+Input and output are streamed; entire videos are never retained. The principal
+working set is current render surfaces, effect scratch buffers, decoded stills,
+four frames per active video asset, physics poses, and bounded audio blocks.
+Metrics report render/write/wait/wall time, throughput, process RSS values, and
+a conservative self-plus-child peak upper bound.
 
 ## Physical and visual scope
 
-The 2D rigid-body solver is deterministic and useful for visual motion, but it
-is **not claimed to be physically accurate**. It uses semi-implicit Euler,
-simple circle/AABB contacts, impulse restitution/friction, and iterative spring
-constraints. Soft bodies, mesh-like deformation, 3D shadows, and lens flare
-are explicitly visual approximations. The built-in 3D backend renders spheres,
-boxes, and planes; it is not a general mesh renderer. The built-in text raster
-supports a compact ASCII glyph set, and vectors are rectangles or ellipses.
+The fixed-step 2D solver is deterministic visual behavior, **not verified
+physical simulation**. It uses semi-implicit Euler integration, circle and
+axis-aligned-box contacts (mixed pairs use bounding circles), restitution/friction
+impulses, force fields, damping, and iterative
+spring/distance constraints. Soft bodies, deformation, bounding-volume mesh
+shadows, screen-space ground shadows, and lens flare are visual approximations.
 
-These boundaries are listed in [`docs/feature-matrix.md`](docs/feature-matrix.md).
+The CPU 3D path supports lit sphere/box/plane primitives and triangulated
+Wavefront OBJ geometry with a depth buffer. It is not a general PBR engine,
+does not promise physically based energy conservation, and does not implement
+arbitrary material/shader graphs. These boundaries are explicit in
+[`docs/feature-matrix.md`](docs/feature-matrix.md).
 
 ## Verification
 
@@ -163,33 +183,35 @@ make integration
 make test
 ```
 
-Tests cover XML failures, DOCTYPE rejection, all interpolation/blend modes,
-shared assets, exact golden frames, deterministic 1-vs-4-thread viewport
-projection, physics cache replay, particles/effects/deformation, 360 output,
-resume reuse, H.264/H.265/FFV1 when installed, and synchronized H.264/AAC.
-Reports and artifact hashes are in [`docs/phases.md`](docs/phases.md),
-[`docs/benchmark.md`](docs/benchmark.md), and `artifacts/SHA256SUMS`.
+The suite covers contextual XML failures, deep dynamic layer nesting, all
+interpolation/blend modes, shared assets, vector paths, OBJ import, named color
+conversion, exact goldens, deterministic parallelism, shaped/inverted masks,
+physics cache replay, animated particles/effects/deformation, A/V duration equality,
+360 output, MP4 spherical UUID metadata, resume reuse, and H.264/H.265/FFV1
+when exposed by FFmpeg. CMake/CTest and sanitizer results are recorded in
+[`docs/phases.md`](docs/phases.md); the 4K measurement is in
+[`docs/benchmark.md`](docs/benchmark.md).
 
 ## Troubleshooting
 
 - `FFmpeg executable is unavailable`: install FFmpeg and inspect
-  `ffmpeg -encoders` for `libx264`, `libx265`, `ffv1`, and the requested audio
-  codec.
-- Encoder pipe failure: rerun with `--verbose`; validate codec/container and
-  pixel-format compatibility plus disk space.
-- A video frame cannot decode: confirm XML width, height, FPS, and duration
-  match the source. `ffprobe` is useful for inspection.
-- High memory use: blur/bloom needs two extra RGBA buffers; viewport mode also
-  retains its panorama and output frame.
-- Slow remapped video: widely separated instances can exceed the four-frame
-  LRU and cause extra FFmpeg decodes.
-- Resume consumes disk: remove the explicit `OUTPUT.resume` directory when it
-  is no longer needed. Cache signatures isolate changed scenes/assets.
-- GPU warning: this build has no GPU backend and has intentionally fallen back
-  to CPU.
+  `ffmpeg -encoders` for the requested video/audio encoders.
+- `FFmpeg encoder ... is unavailable`: choose a built encoder or install a
+  distribution package exposing libx264/libx265/FFV1/AAC as needed.
+- Encoder pipe failure: rerun with `--verbose`; check codec/container,
+  pixel-format compatibility, disk space, and output permissions.
+- Asset decode failure: verify path and declared width/height/FPS/duration.
+- Text failure: verify the requested Fontconfig family or `fontFile` path.
+- High memory use: bloom/blur uses two additional RGBA buffers; viewport mode
+  also retains panorama and viewport frames.
+- Slow divergent time remaps: more than four simultaneous source-frame indices
+  can evict the shared video LRU.
+- Resume disk use: `OUTPUT.resume` stores raw RGBA frames by content signature.
+- OpenCL warning: no usable GPU was found; the deterministic CPU reference was
+  selected automatically.
 
 ## License
 
 Original code is Apache-2.0; see [`LICENSE`](LICENSE). Third-party components
-are not vendored as source. Their exact tested versions and licenses are
-documented in [`docs/dependencies.md`](docs/dependencies.md).
+are not vendored as source. Exact verified versions and licenses are documented
+in [`docs/dependencies.md`](docs/dependencies.md).

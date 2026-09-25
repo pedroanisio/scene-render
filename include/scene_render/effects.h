@@ -4,6 +4,6 @@
 #include "scene_render/compositor.h"
 
 SrStatus sr_effects_apply(const SrScene *scene, double time, SrFrame *frame,
-                          SrDiagnostics *diag);
+                          unsigned threads, SrDiagnostics *diag);
 
 #endif

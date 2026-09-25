@@ -3,3 +3,5 @@
 *.d
 *.mp4.tmp
 *.mkv.tmp
+assets/generated/
+_tmp/

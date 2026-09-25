@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<scene version="1.0">
+  <project width="64" height="32" fps="2" duration="1" seed="360"
+           mode="equirectangular" background="#001020FF"/>
+  <output path="../build/test-artifacts/spatial.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="ultrafast" crf="30"
+          colorSpace="srgb" colorRange="limited" sphericalMetadata="true"/>
+  <assets>
+    <image id="tile" src="../examples/assets/checker.ppm" width="8" height="8"/>
+  </assets>
+  <scene360 layout="equirectangular" width="64" height="32"/>
+  <composition>
+    <layer id="pano" asset="tile" scaleX="8" scaleY="4"/>
+  </composition>
+</scene>

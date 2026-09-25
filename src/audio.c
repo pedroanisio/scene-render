@@ -98,6 +98,7 @@ static SrStatus mix_track_block(const SrScene *scene, const SrAudioTrack *track,
     if (clip_first >= clip_end) return SR_OK;
     uint64_t span = clip_end - clip_first;
     uint64_t plays = track->loop_count > 0 ? (uint64_t)track->loop_count : 1;
+    uint64_t total = plays > UINT64_MAX / span ? UINT64_MAX : span * plays;
     uint64_t global = scene_first + block_first;
     size_t offset = 0;
     if (global < start) {
@@ -106,10 +107,10 @@ static SrStatus mix_track_block(const SrScene *scene, const SrAudioTrack *track,
         offset = (size_t)silent;
     }
     uint64_t local = global + offset - start;
-    while (offset < block_frames && local < span * plays) {
+    while (offset < block_frames && local < total) {
         uint64_t source_frame = clip_first + local % span;
         uint64_t until_wrap = span - local % span;
-        uint64_t until_end = span * plays - local;
+        uint64_t until_end = total - local;
         size_t count = block_frames - offset;
         if ((uint64_t)count > until_wrap) count = (size_t)until_wrap;
         if ((uint64_t)count > until_end) count = (size_t)until_end;

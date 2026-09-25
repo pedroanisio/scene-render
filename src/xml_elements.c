@@ -1,4 +1,5 @@
 #include "xml_internal.h"
+#include "scene_render/color.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -87,20 +88,12 @@ bool sr_xml_parse_node_common(ParseContext *ctx, const char *element,
     if (!sr_xml_parse_double_attr(ctx, element, attrs, "opacity", &node->opacity.base) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "x", &node->transform.x.base) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "y", &node->transform.y.base) ||
-        !sr_xml_parse_double_attr(ctx, element, attrs, "zPosition",
-                           &node->transform.z.base) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "rotation",
                            &node->transform.rotation.base) ||
-        !sr_xml_parse_double_attr(ctx, element, attrs, "rotationX",
-                           &node->transform.rotation_x.base) ||
-        !sr_xml_parse_double_attr(ctx, element, attrs, "rotationY",
-                           &node->transform.rotation_y.base) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "scaleX",
                            &node->transform.scale_x.base) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "scaleY",
                            &node->transform.scale_y.base) ||
-        !sr_xml_parse_double_attr(ctx, element, attrs, "scaleZ",
-                           &node->transform.scale_z.base) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "anchorX",
                            &node->transform.anchor_x.base) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "anchorY",
@@ -120,8 +113,9 @@ bool sr_xml_parse_node_common(ParseContext *ctx, const char *element,
 
 void sr_xml_start_project(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"width", "height", "fps", "duration", "seed",
-                                    "linearLight", "background", "mode"};
-    if (!sr_xml_attrs_allowed(ctx, "project", attrs, allowed, 8)) return;
+                                    "linearLight", "background", "mode",
+                                    "workingColorSpace"};
+    if (!sr_xml_attrs_allowed(ctx, "project", attrs, allowed, 9)) return;
     const char *w = sr_xml_required(ctx, "project", attrs, "width");
     const char *h = sr_xml_required(ctx, "project", attrs, "height");
     const char *fps = sr_xml_required(ctx, "project", attrs, "fps");
@@ -147,6 +141,10 @@ void sr_xml_start_project(ParseContext *ctx, const XML_Char **attrs) {
     if ((value = sr_xml_attr(attrs, "linearLight")) &&
         !sr_parse_bool(value, &ctx->scene->project.linear_light))
         SR_XML_FAIL_RETURN(ctx, "project", "linearLight", "expected true or false");
+    if ((value = sr_xml_attr(attrs, "workingColorSpace")) &&
+        !sr_color_space_parse(value, &ctx->scene->project.working_color_space))
+        SR_XML_FAIL_RETURN(ctx, "project", "workingColorSpace",
+                           "expected srgb, rec709, display-p3, or rec2020");
     if ((value = sr_xml_attr(attrs, "background")) &&
         !sr_parse_color(value, &ctx->scene->project.background))
         SR_XML_FAIL_RETURN(ctx, "project", "background",
@@ -168,8 +166,10 @@ void sr_xml_start_project(ParseContext *ctx, const XML_Char **attrs) {
 void sr_xml_start_output(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"path", "codec", "pixelFormat", "preset",
                                     "crf", "bitrate", "audioCodec",
-                                    "audioBitrate"};
-    if (!sr_xml_attrs_allowed(ctx, "output", attrs, allowed, 8)) return;
+                                    "audioBitrate", "colorSpace", "colorRange",
+                                    "sphericalMetadata"};
+    if (!sr_xml_attrs_allowed(ctx, "output", attrs, allowed, 11)) return;
+    ctx->scene->output.source_line = sr_xml_line(ctx);
     const char *path = sr_xml_required(ctx, "output", attrs, "path");
     const char *codec = sr_xml_required(ctx, "output", attrs, "codec");
     if (ctx->failed) return;
@@ -206,12 +206,27 @@ void sr_xml_start_output(ParseContext *ctx, const XML_Char **attrs) {
          !ctx->scene->output.audio_bitrate))
         SR_XML_FAIL_RETURN(ctx, "output", "audioBitrate",
                            "expected a positive integer in bits/second");
+    if ((value = sr_xml_attr(attrs, "colorSpace")) &&
+        !sr_color_space_parse(value, &ctx->scene->output.color_space))
+        SR_XML_FAIL_RETURN(ctx, "output", "colorSpace",
+                           "expected srgb, rec709, display-p3, or rec2020");
+    if ((value = sr_xml_attr(attrs, "colorRange"))) {
+        if (!strcmp(value, "full")) ctx->scene->output.full_range = true;
+        else if (!strcmp(value, "limited")) ctx->scene->output.full_range = false;
+        else SR_XML_FAIL_RETURN(ctx, "output", "colorRange",
+                                "expected limited or full");
+    }
+    if ((value = sr_xml_attr(attrs, "sphericalMetadata")) &&
+        !sr_parse_bool(value, &ctx->scene->output.spherical_metadata))
+        SR_XML_FAIL_RETURN(ctx, "output", "sphericalMetadata",
+                           "expected true or false");
     ctx->seen_output = true;
 }
 
 void sr_xml_start_image(ParseContext *ctx, const XML_Char **attrs) {
-    const char *const allowed[] = {"id", "src", "width", "height"};
-    if (!sr_xml_attrs_allowed(ctx, "image", attrs, allowed, 4)) return;
+    const char *const allowed[] = {"id", "src", "width", "height",
+                                    "colorSpace"};
+    if (!sr_xml_attrs_allowed(ctx, "image", attrs, allowed, 5)) return;
     const char *id = sr_xml_required(ctx, "image", attrs, "id");
     const char *src = sr_xml_required(ctx, "image", attrs, "src");
     const char *w = sr_xml_required(ctx, "image", attrs, "width");
@@ -234,12 +249,17 @@ void sr_xml_start_image(ParseContext *ctx, const XML_Char **attrs) {
         SR_XML_FAIL_RETURN(ctx, "image", "width", "expected a positive integer");
     if (!sr_parse_u32(h, &asset->height) || !asset->height)
         SR_XML_FAIL_RETURN(ctx, "image", "height", "expected a positive integer");
+    const char *color_space = sr_xml_attr(attrs, "colorSpace");
+    if (color_space && !sr_color_space_parse(color_space,
+                                              &asset->source_color_space))
+        SR_XML_FAIL_RETURN(ctx, "image", "colorSpace",
+                           "expected srgb, rec709, display-p3, or rec2020");
 }
 
 void sr_xml_start_video(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"id", "src", "width", "height", "fps",
-                                    "duration"};
-    if (!sr_xml_attrs_allowed(ctx, "video", attrs, allowed, 6)) return;
+                                    "duration", "colorSpace"};
+    if (!sr_xml_attrs_allowed(ctx, "video", attrs, allowed, 7)) return;
     const char *id = sr_xml_required(ctx, "video", attrs, "id");
     const char *src = sr_xml_required(ctx, "video", attrs, "src");
     const char *w = sr_xml_required(ctx, "video", attrs, "width");
@@ -265,6 +285,11 @@ void sr_xml_start_video(ParseContext *ctx, const XML_Char **attrs) {
         SR_XML_FAIL_RETURN(ctx, "video", "fps", "expected positive N or N/D");
     if (!sr_parse_double(duration, &asset->duration) || asset->duration <= 0.0)
         SR_XML_FAIL_RETURN(ctx, "video", "duration", "expected a positive duration");
+    const char *color_space = sr_xml_attr(attrs, "colorSpace");
+    if (color_space && !sr_color_space_parse(color_space,
+                                              &asset->source_color_space))
+        SR_XML_FAIL_RETURN(ctx, "video", "colorSpace",
+                           "expected srgb, rec709, display-p3, or rec2020");
 }
 
 void sr_xml_start_audio(ParseContext *ctx, const XML_Char **attrs) {
@@ -286,27 +311,31 @@ void sr_xml_start_audio(ParseContext *ctx, const XML_Char **attrs) {
 }
 
 void sr_xml_start_mask(ParseContext *ctx, const XML_Char **attrs) {
-    const char *const allowed[] = {"type", "x", "y", "width", "height", "invert"};
-    if (!sr_xml_attrs_allowed(ctx, "mask", attrs, allowed, 6)) return;
+    const char *const allowed[] = {"type", "x", "y", "width", "height",
+                                    "radius", "invert"};
+    if (!sr_xml_attrs_allowed(ctx, "mask", attrs, allowed, 7)) return;
     ParseFrame *p = sr_xml_parent(ctx);
     const char *type = sr_xml_required(ctx, "mask", attrs, "type");
     if (!p || !p->node || !type) return;
-    if (strcmp(type, "rect") != 0)
-        SR_XML_FAIL_RETURN(ctx, "mask", "type", "only rect masks are supported");
     SrMask *mask = &p->node->mask;
     mask->enabled = true;
+    if (!strcmp(type,"rect")) mask->type=SR_MASK_RECT;
+    else if (!strcmp(type,"ellipse")) mask->type=SR_MASK_ELLIPSE;
+    else if (!strcmp(type,"rounded-rect")) mask->type=SR_MASK_ROUNDED_RECT;
+    else SR_XML_FAIL_RETURN(ctx,"mask","type",
+                            "expected rect, ellipse, or rounded-rect");
     if (!sr_xml_parse_double_attr(ctx, "mask", attrs, "x", &mask->x) ||
         !sr_xml_parse_double_attr(ctx, "mask", attrs, "y", &mask->y) ||
         !sr_xml_parse_double_attr(ctx, "mask", attrs, "width", &mask->width) ||
-        !sr_xml_parse_double_attr(ctx, "mask", attrs, "height", &mask->height)) return;
+        !sr_xml_parse_double_attr(ctx, "mask", attrs, "height", &mask->height) ||
+        !sr_xml_parse_double_attr(ctx, "mask", attrs, "radius", &mask->radius)) return;
     if (mask->width <= 0.0 || mask->height <= 0.0)
         SR_XML_FAIL_RETURN(ctx, "mask", "width/height", "expected positive dimensions");
+    if (mask->radius < 0.0)
+        SR_XML_FAIL_RETURN(ctx,"mask","radius","expected a non-negative radius");
     const char *invert = sr_xml_attr(attrs, "invert");
     if (invert && !sr_parse_bool(invert, &mask->invert))
         SR_XML_FAIL_RETURN(ctx, "mask", "invert", "expected true or false");
-    if (p->node->type == SR_NODE_GROUP && mask->invert)
-        SR_XML_FAIL_RETURN(ctx, "mask", "invert",
-                           "inverted group masks require a later rendering phase");
     sr_xml_push(ctx, (ParseFrame){.kind = E_MASK, .node = p->node,
                                   .curve = SR_CURVE_LINEAR}, "mask");
 }

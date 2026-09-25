@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef struct {
     SrNode *node;
@@ -22,13 +23,13 @@ typedef struct {
     double fixed_step;
 } CacheHeader;
 
-static void collect(SrNode *node, BodyState **states, size_t *count,
+static bool collect(SrNode *node, BodyState **states, size_t *count,
                     size_t *capacity) {
     if (node->body.type != SR_BODY_NONE) {
         if (*count == *capacity) {
             size_t next = *capacity ? *capacity * 2 : 8;
             BodyState *grown = sr_realloc(*states, next * sizeof(*grown));
-            if (!grown) return;
+            if (!grown) return false;
             *states = grown; *capacity = next;
         }
         SrRigidBody *body = &node->body;
@@ -40,7 +41,8 @@ static void collect(SrNode *node, BodyState **states, size_t *count,
         ++*count;
     }
     for (size_t i = 0; i < node->child_count; ++i)
-        collect(node->children[i], states, count, capacity);
+        if (!collect(node->children[i], states, count, capacity)) return false;
+    return true;
 }
 
 static uint64_t hash_bytes(uint64_t hash, const void *data, size_t length) {
@@ -65,6 +67,35 @@ static uint64_t signature(const SrScene *scene, const BodyState *states,
         hash = hash_bytes(hash, &states[i].node->body,
                           sizeof(states[i].node->body));
         hash = hash_bytes(hash, &states[i].x, sizeof(double) * 3);
+        hash = hash_bytes(hash, &states[i].node->shape_width, sizeof(double));
+        hash = hash_bytes(hash, &states[i].node->shape_height, sizeof(double));
+        hash = hash_bytes(hash, &states[i].node->transform.scale_x.base,
+                          sizeof(double));
+        hash = hash_bytes(hash, &states[i].node->transform.scale_y.base,
+                          sizeof(double));
+        if (states[i].node->asset) {
+            hash = hash_bytes(hash, &states[i].node->asset->width,
+                              sizeof(uint32_t));
+            hash = hash_bytes(hash, &states[i].node->asset->height,
+                              sizeof(uint32_t));
+        }
+    }
+    hash = hash_bytes(hash, &scene->physics.field_count,
+                      sizeof(scene->physics.field_count));
+    for (size_t i = 0; i < scene->physics.field_count; ++i) {
+        const SrForceField *field = &scene->physics.fields[i];
+        hash = hash_bytes(hash, field->id, strlen(field->id));
+        hash = hash_bytes(hash, &field->radial, sizeof(field->radial));
+        hash = hash_bytes(hash, &field->x, sizeof(double) * 6);
+    }
+    hash = hash_bytes(hash, &scene->physics.constraint_count,
+                      sizeof(scene->physics.constraint_count));
+    for (size_t i = 0; i < scene->physics.constraint_count; ++i) {
+        const SrConstraint *constraint = &scene->physics.constraints[i];
+        hash = hash_bytes(hash, constraint->id, strlen(constraint->id));
+        hash = hash_bytes(hash, constraint->a_id, strlen(constraint->a_id));
+        hash = hash_bytes(hash, constraint->b_id, strlen(constraint->b_id));
+        hash = hash_bytes(hash, &constraint->rest_length, sizeof(double) * 3);
     }
     return hash;
 }
@@ -108,9 +139,13 @@ static bool load_cache(SrScene *scene, BodyState *states, size_t count,
 }
 
 static void save_cache(const SrScene *scene, BodyState *states, size_t count,
-                       uint64_t samples, uint64_t hash) {
+                       uint64_t samples, uint64_t hash, SrDiagnostics *diag) {
     char *path = cache_path(scene); if (!path) return;
-    FILE *file = fopen(path, "wb"); free(path); if (!file) return;
+    size_t length=strlen(path)+16;char *temporary=sr_alloc(length);
+    if(!temporary){free(path);return;}
+    snprintf(temporary,length,"%s.tmp-XXXXXX",path);int fd=mkstemp(temporary);
+    FILE *file=fd>=0?fdopen(fd,"wb"):NULL;
+    if(!file){if(fd>=0)close(fd);free(temporary);free(path);return;}
     CacheHeader header = {{'S','R','P','H','Y','S','1','\0'}, 1, (uint32_t)count,
                           samples, hash, scene->physics.fixed_step};
     bool ok = fwrite(&header, sizeof(header), 1, file) == 1;
@@ -119,7 +154,11 @@ static void save_cache(const SrScene *scene, BodyState *states, size_t count,
         double pose[3] = {sample->x.base, sample->y.base, sample->rotation.base};
         if (fwrite(pose, sizeof(pose), 1, file) != 1) { ok = false; break; }
     }
-    fclose(file);
+    if(fclose(file)!=0)ok=false;
+    if(ok&&rename(temporary,path)!=0)ok=false;
+    if(!ok){unlink(temporary);sr_diag_warning(diag,0,NULL,NULL,
+        "could not atomically write physics cache '%s': %s",path,strerror(errno));}
+    free(temporary);free(path);
 }
 
 static void dimensions(const SrNode *node, double *width, double *height) {
@@ -211,12 +250,19 @@ SrStatus sr_physics_prepare(SrScene *scene,SrDiagnostics *diag){
     if (!scene->physics.enabled) return SR_OK;
     BodyState *states = NULL;
     size_t count = 0, capacity = 0;
-    collect(scene->root, &states, &count, &capacity);
-    if(!count){free(states);return SR_OK;}uint64_t samples=(uint64_t)ceil(scene->project.duration/scene->physics.fixed_step)+1;
+    if(!collect(scene->root,&states,&count,&capacity)){free(states);return SR_ERR_MEMORY;}
+    if(!count){free(states);return SR_OK;}
+    double exact_samples=ceil(scene->project.duration/scene->physics.fixed_step)+1.0;
+    if(!isfinite(exact_samples)||exact_samples>(double)(SIZE_MAX/sizeof(SrPhysicsSample))){
+        sr_diag_error(diag,0,"physics","fixedStep","physics sample cache is too large");
+        free(states);return SR_ERR_MEMORY;}
+    uint64_t samples=(uint64_t)exact_samples;
     uint64_t hash=signature(scene,states,count);if(load_cache(scene,states,count,samples,hash)){sr_diag_info(diag,"loaded physics cache");free(states);return SR_OK;}
-    for(size_t i=0;i<count;++i){states[i].node->physics_samples=sr_alloc(samples*sizeof(SrPhysicsSample));if(!states[i].node->physics_samples){free(states);return SR_ERR_MEMORY;}states[i].node->physics_sample_count=samples;}
+    for(size_t i=0;i<count;++i){states[i].node->physics_samples=sr_alloc(samples*sizeof(SrPhysicsSample));if(!states[i].node->physics_samples){
+            for(size_t j=0;j<i;++j){free(states[j].node->physics_samples);states[j].node->physics_samples=NULL;states[j].node->physics_sample_count=0;}
+            free(states);return SR_ERR_MEMORY;}states[i].node->physics_sample_count=samples;}
     for(uint64_t s=0;s<samples;++s){for(size_t i=0;i<count;++i){SrPhysicsSample *sample=&states[i].node->physics_samples[s];sample->enabled=true;sample->x.base=states[i].x;sample->y.base=states[i].y;sample->rotation.base=states[i].angle;}if(s+1<samples)simulate_step(scene,states,count);}
-    save_cache(scene,states,count,samples,hash);sr_diag_info(diag,"simulated %llu fixed physics steps",(unsigned long long)(samples-1));free(states);return SR_OK;
+    save_cache(scene,states,count,samples,hash,diag);sr_diag_info(diag,"simulated %llu fixed physics steps",(unsigned long long)(samples-1));free(states);return SR_OK;
 }
 
 bool sr_physics_pose(const SrScene *scene,const SrNode *node,double time,double *x,double *y,double *rotation){

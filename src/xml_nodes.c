@@ -7,8 +7,8 @@
 void sr_xml_start_node(ParseContext *ctx, const char *name,
                        const XML_Char **attrs, SrNodeType type) {
     static const char *const common[] = {"id", "z", "visible", "opacity", "x",
-        "y", "zPosition", "rotation", "rotationX", "rotationY", "scaleX",
-        "scaleY", "scaleZ", "anchorX", "anchorY", "start", "end"};
+        "y", "rotation", "scaleX", "scaleY", "anchorX", "anchorY", "start",
+        "end"};
     const char *allowed[26];
     memcpy(allowed, common, sizeof(common));
     size_t count = sizeof(common) / sizeof(common[0]);
@@ -131,11 +131,11 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
             sr_node_free(node); SR_XML_FAIL_RETURN(ctx, name, "preset",
                 "expected smoke, sparks, dust, or rain");
         }
-        if (!sr_xml_parse_double_attr(ctx, name, attrs, "rate", &node->particle_rate) ||
-            !sr_xml_parse_double_attr(ctx, name, attrs, "lifetime", &node->particle_lifetime) ||
-            !sr_xml_parse_double_attr(ctx, name, attrs, "speed", &node->particle_speed) ||
-            !sr_xml_parse_double_attr(ctx, name, attrs, "spread", &node->particle_spread) ||
-            !sr_xml_parse_double_attr(ctx, name, attrs, "size", &node->particle_size)) {
+        if (!sr_xml_parse_double_attr(ctx, name, attrs, "rate", &node->particle_rate.base) ||
+            !sr_xml_parse_double_attr(ctx, name, attrs, "lifetime", &node->particle_lifetime.base) ||
+            !sr_xml_parse_double_attr(ctx, name, attrs, "speed", &node->particle_speed.base) ||
+            !sr_xml_parse_double_attr(ctx, name, attrs, "spread", &node->particle_spread.base) ||
+            !sr_xml_parse_double_attr(ctx, name, attrs, "size", &node->particle_size.base)) {
             sr_node_free(node); return;
         }
         const char *value = sr_xml_attr(attrs, "color");
@@ -146,8 +146,9 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
         if (value && !sr_blend_parse(value, &node->blend)) {
             sr_node_free(node); SR_XML_FAIL_RETURN(ctx, name, "blend", "unsupported blend mode");
         }
-        if (node->particle_rate < 0.0 || node->particle_lifetime <= 0.0 ||
-            node->particle_size <= 0.0) {
+        if (node->particle_rate.base < 0.0 ||
+            node->particle_lifetime.base <= 0.0 ||
+            node->particle_size.base <= 0.0) {
             sr_node_free(node); SR_XML_FAIL_RETURN(ctx, name, "rate/lifetime/size",
                 "invalid particle parameters");
         }

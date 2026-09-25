@@ -53,7 +53,7 @@ void sr_xml_start_constraint(ParseContext *ctx,const XML_Char **attrs){
     SrPhysicsWorld *world=&ctx->scene->physics;if(world->constraint_count==world->constraint_capacity){size_t cap=world->constraint_capacity?world->constraint_capacity*2:4;
         SrConstraint *items=sr_realloc(world->constraints,cap*sizeof(*items));if(!items)SR_XML_FAIL_RETURN(ctx,"constraint",NULL,"out of memory");
         memset(items+world->constraint_capacity,0,(cap-world->constraint_capacity)*sizeof(*items));world->constraints=items;world->constraint_capacity=cap;}
-    SrConstraint *constraint=&world->constraints[world->constraint_count++];constraint->id=sr_strdup(id);constraint->a_id=sr_strdup(a);constraint->b_id=sr_strdup(b);
+    SrConstraint *constraint=&world->constraints[world->constraint_count++];constraint->source_line=sr_xml_line(ctx);constraint->id=sr_strdup(id);constraint->a_id=sr_strdup(a);constraint->b_id=sr_strdup(b);
     constraint->stiffness=!strcmp(type,"distance")?1000:20;constraint->damping=1;
     if(!constraint->id||!constraint->a_id||!constraint->b_id)SR_XML_FAIL_RETURN(ctx,"constraint",NULL,"out of memory");
     if(!decimal(ctx,"constraint",attrs,"restLength",&constraint->rest_length)||
