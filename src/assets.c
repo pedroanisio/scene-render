@@ -69,6 +69,10 @@ static SrStatus sr_open_video(SrScene *scene, const char *path, SrAsset *asset,
         return status;
     }
     const SrVideoInfo *info = sr_video_info(asset->video);
+    if (info->matrix_approximated)
+        sr_diag_warning(diag, asset->source_line, "video", "src",
+                        "'%s' uses the BT.2020 constant-luminance matrix, "
+                        "approximated with the non-constant-luminance one", path);
     if (info->width != asset->width || info->height != asset->height) {
         sr_diag_error(diag, asset->source_line, "video", "width/height",
                       "declared dimensions %ux%u do not match the stream's %ux%u",
@@ -128,6 +132,12 @@ SrStatus sr_assets_load(SrScene *scene, SrDiagnostics *diag) {
             return status;
         }
     }
+    size_t minimum = sr_video_scene_minimum_bytes(scene);
+    if (minimum > SR_VIDEO_CACHE_DEFAULT_BYTES)
+        sr_diag_warning(diag, 0, "video", NULL,
+                        "the frames every video source keeps (%zu bytes) exceed "
+                        "the %zu-byte frame cache budget", minimum,
+                        (size_t)SR_VIDEO_CACHE_DEFAULT_BYTES);
     return SR_OK;
 }
 

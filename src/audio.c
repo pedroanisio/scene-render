@@ -1,9 +1,13 @@
 #define _POSIX_C_SOURCE 200809L
 #include "scene_render/audio.h"
 
+#include "audio_internal.h"
+#include "media_internal.h"
+
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 
 #include <math.h>
@@ -38,13 +42,43 @@ typedef struct {
     int64_t limit;       /* most samples accepted */
     bool placed;         /* first frame's timestamp has been applied */
     int64_t trim;        /* output samples still to drop (priming before t=0) */
+    int64_t origin;      /* timeline origin in the stream time base */
+    int64_t next_in;     /* timeline position of the next input sample, in
+                            1/decoder-rate units; INT64_MIN = unknown */
+    uint8_t **silence;   /* SILENCE_CHUNK input samples of silence */
 } Decoder;
+
+/* Timestamp jitter up to this is ignored (samples are concatenated); larger
+ * gaps are filled with silence and larger overlaps trimmed. */
+#define SR_AUDIO_JITTER_SECONDS 0.020
+enum { SILENCE_CHUNK = 4096 };
 
 static void set_err(char *err, size_t len, const char *what, int averr) {
     if (!err || !len) return;
     char message[AV_ERROR_MAX_STRING_SIZE] = "";
     if (averr < 0) av_strerror(averr, message, sizeof(message));
     snprintf(err, len, "%s%s%s", what, averr < 0 ? ": " : "", message);
+}
+
+/* The file's timeline origin (media_internal.h), shared with its video.
+ * Without any stream start time, the earliest packet timestamp of the used
+ * streams is found by demuxing once, and the file is then reopened. */
+static int find_origin(Decoder *d, const char *path) {
+    AVStream *st = d->fmt->streams[d->stream];
+    int64_t origin_us = sr_media_origin_us(d->fmt);
+    if (origin_us == AV_NOPTS_VALUE) {
+        int video = av_find_best_stream(d->fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+        int rc = sr_media_scan_origin(d->fmt, d->pkt, d->stream, video, &origin_us);
+        if (rc < 0) return rc;
+        avformat_close_input(&d->fmt);
+        rc = avformat_open_input(&d->fmt, path, NULL, NULL);
+        if (rc >= 0) rc = avformat_find_stream_info(d->fmt, NULL);
+        if (rc < 0) return rc;
+        if (d->stream >= (int)d->fmt->nb_streams) return AVERROR_INVALIDDATA;
+        st = d->fmt->streams[d->stream];
+    }
+    d->origin = sr_media_origin_in(st, origin_us);
+    return 0;
 }
 
 static int open_all(Decoder *d, const char *path, const char **stage) {
@@ -66,6 +100,9 @@ static int open_all(Decoder *d, const char *path, const char **stage) {
     if (!d->dec) return AVERROR(ENOMEM);
     rc = avcodec_parameters_to_context(d->dec, par);
     if (rc < 0) return rc;
+    /* Needed for the decoder to advance a frame's timestamp past samples it
+     * skips (priming signalled as skip-samples side data, as in MP4). */
+    d->dec->pkt_timebase = d->fmt->streams[d->stream]->time_base;
     d->dec->thread_count = 1;
     rc = avcodec_open2(d->dec, codec, NULL);
     if (rc < 0) return rc;
@@ -89,7 +126,9 @@ static int open_all(Decoder *d, const char *path, const char **stage) {
     *stage = "out of memory";
     d->pkt = av_packet_alloc();
     d->frame = av_frame_alloc();
-    return d->pkt && d->frame ? 0 : AVERROR(ENOMEM);
+    if (!d->pkt || !d->frame) return AVERROR(ENOMEM);
+    *stage = "cannot read timestamps";
+    return find_origin(d, path);
 }
 
 static int reserve(Decoder *d, int64_t samples) {
@@ -104,34 +143,76 @@ static int reserve(Decoder *d, int64_t samples) {
     return 0;
 }
 
-/* Resamples `frame` (NULL flushes) and appends the result. */
-static int append(Decoder *d, const AVFrame *frame) {
-    int in_samples = frame ? frame->nb_samples : 0;
-    int room = swr_get_out_samples(d->swr, in_samples);
+/* Resamples `count` input samples (in == NULL flushes) and appends the
+ * result. */
+static int append_input(Decoder *d, const uint8_t **in, int count) {
+    int room = swr_get_out_samples(d->swr, in ? count : 0);
     if (room < 0) return room;
     int rc = reserve(d, d->samples + room);
     if (rc < 0) return rc;
     uint8_t *out = (uint8_t *)(d->pcm + d->samples * d->channels);
-    int got = swr_convert(d->swr, &out, room,
-                          frame ? (const uint8_t **)frame->extended_data : NULL,
-                          in_samples);
+    int got = swr_convert(d->swr, &out, room, in, in ? count : 0);
     if (got < 0) return got;
     d->samples += got;
     return 0;
 }
 
-/* Clip sample k plays at k / rate seconds of the file: a stream that starts
- * late is preceded by silence, and encoder priming placed before zero (AAC
- * in Matroska) is dropped. When the time base is too coarse to express the
- * priming exactly and the codec declares it, the declared padding is used. */
+static int append(Decoder *d, const AVFrame *frame) {
+    return frame ? append_input(d, (const uint8_t **)frame->extended_data,
+                                frame->nb_samples)
+                 : append_input(d, NULL, 0);
+}
+
+/* Feeds `count` input samples of silence through the resampler, so a
+ * timestamp gap keeps its length on the output timeline. */
+static int append_silence(Decoder *d, int64_t count) {
+    int channels = d->dec->ch_layout.nb_channels;
+    if (!d->silence) {
+        int rc = av_samples_alloc_array_and_samples(&d->silence, NULL, channels,
+                                                    SILENCE_CHUNK,
+                                                    d->dec->sample_fmt, 0);
+        if (rc < 0) return rc;
+        av_samples_set_silence(d->silence, 0, SILENCE_CHUNK, channels,
+                               d->dec->sample_fmt);
+    }
+    while (count > 0) {
+        int chunk = count < SILENCE_CHUNK ? (int)count : SILENCE_CHUNK;
+        int rc = append_input(d, (const uint8_t **)d->silence, chunk);
+        if (rc < 0) return rc;
+        count -= chunk;
+    }
+    return 0;
+}
+
+/* Appends the samples of `f` from input sample `skip` on. */
+static int append_from(Decoder *d, const AVFrame *f, int skip) {
+    if (skip <= 0) return append(d, f);
+    if (skip >= f->nb_samples) return 0;
+    int channels = f->ch_layout.nb_channels;
+    int planes = av_sample_fmt_is_planar((enum AVSampleFormat)f->format) ? channels : 1;
+    int step = av_get_bytes_per_sample((enum AVSampleFormat)f->format) *
+               (planes == 1 ? channels : 1);
+    const uint8_t **in = malloc((size_t)planes * sizeof(*in));
+    if (!in) return AVERROR(ENOMEM);
+    for (int p = 0; p < planes; ++p) in[p] = f->extended_data[p] + (size_t)skip * step;
+    int rc = append_input(d, in, f->nb_samples - skip);
+    free(in);
+    return rc;
+}
+
+/* Clip sample k plays at k / rate seconds of the file's timeline (from the
+ * origin shared with its video): a stream that starts late is preceded by
+ * silence, and encoder priming placed before zero (AAC in Matroska) is
+ * dropped. When the time base is too coarse to express the priming exactly
+ * and the codec declares it, the declared padding is used. */
 static int place(Decoder *d, const AVFrame *f) {
     d->placed = true;
     int64_t pts = f->best_effort_timestamp;
     if (pts == AV_NOPTS_VALUE) return 0;
     const AVStream *st = d->fmt->streams[d->stream];
     AVRational out_tb = {1, (int)d->rate};
-    int64_t at = av_rescale_q_rnd(pts, st->time_base, out_tb,
-                                  AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+    int64_t at = av_rescale_q_rnd(av_sat_sub64(pts, d->origin), st->time_base,
+                                  out_tb, AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
     int64_t tick = av_rescale_q(1, st->time_base, out_tb);
     int pad = st->codecpar->initial_padding;
     if (at < 0 && pad > 0 && d->dec->sample_rate > 0) {
@@ -157,19 +238,68 @@ static void apply_trim(Decoder *d) {
     d->trim -= n;
 }
 
+/* Input-sample position of frame f on the timeline (1/decoder rate), or
+ * INT64_MIN without a timestamp. */
+static int64_t frame_position(const Decoder *d, const AVFrame *f) {
+    int64_t pts = f->best_effort_timestamp;
+    int rate = f->sample_rate > 0 ? f->sample_rate : d->dec->sample_rate;
+    if (pts == AV_NOPTS_VALUE || rate <= 0) return INT64_MIN;
+    return av_rescale_q_rnd(av_sat_sub64(pts, d->origin),
+                            d->fmt->streams[d->stream]->time_base,
+                            (AVRational){1, rate},
+                            AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+}
+
+/* Every frame after the first plays at its own timestamp: a gap beyond
+ * SR_AUDIO_JITTER_SECONDS becomes silence, an overlap beyond it trims the
+ * start of the new frame, and smaller jitter is ignored. Returns the input
+ * samples of f to skip, or an error. */
+static int64_t follow_timestamps(Decoder *d, const AVFrame *f) {
+    int64_t at = frame_position(d, f);
+    if (at == INT64_MIN || d->next_in == INT64_MIN) {
+        if (d->next_in != INT64_MIN) d->next_in += f->nb_samples;
+        return 0;
+    }
+    int rate = f->sample_rate > 0 ? f->sample_rate : d->dec->sample_rate;
+    int64_t jitter = (int64_t)(SR_AUDIO_JITTER_SECONDS * rate);
+    int64_t skip = 0;
+    if (at - d->next_in > jitter) {
+        int64_t gap = at - d->next_in;
+        if (av_rescale(gap, d->rate, rate) > d->limit - d->samples)
+            return AVERROR(E2BIG);   /* before feeding it all to swr */
+        int rc = append_silence(d, gap);
+        if (rc < 0) return rc;
+        d->next_in = at;
+    } else if (d->next_in - at > jitter) {
+        skip = d->next_in - at;
+        if (skip > f->nb_samples) skip = f->nb_samples;
+    }
+    d->next_in += f->nb_samples - skip;
+    return skip;
+}
+
 static int drain(Decoder *d) {
     for (;;) {
         int rc = avcodec_receive_frame(d->dec, d->frame);
         if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF) return 0;
         if (rc < 0) return rc;
+        int64_t skip = 0;
         if (!d->placed) {
             rc = place(d, d->frame);
             if (rc < 0) {
                 av_frame_unref(d->frame);
                 return rc;
             }
+            int64_t at = frame_position(d, d->frame);
+            d->next_in = at == INT64_MIN ? INT64_MIN : at + d->frame->nb_samples;
+        } else {
+            skip = follow_timestamps(d, d->frame);
+            if (skip < 0) {
+                av_frame_unref(d->frame);
+                return (int)skip;
+            }
         }
-        rc = append(d, d->frame);
+        rc = append_from(d, d->frame, (int)skip);
         if (rc == 0 && d->trim > 0) apply_trim(d);
         av_frame_unref(d->frame);
         if (rc < 0) return rc;
@@ -208,7 +338,7 @@ SrStatus sr_audio_decode_file(const char *path, uint32_t rate,
         return SR_ERR_ARGUMENT;
     }
     Decoder d = {.rate = rate, .channels = channels,
-                 .limit = (int64_t)(max_seconds * rate)};
+                 .limit = (int64_t)(max_seconds * rate), .next_in = INT64_MIN};
     const char *stage = "";
     int rc = open_all(&d, path, &stage);
     if (rc >= 0) {
@@ -222,6 +352,8 @@ SrStatus sr_audio_decode_file(const char *path, uint32_t rate,
     }
     av_frame_free(&d.frame);
     av_packet_free(&d.pkt);
+    if (d.silence) av_freep(&d.silence[0]);
+    av_freep(&d.silence);
     swr_free(&d.swr);
     avcodec_free_context(&d.dec);
     avformat_close_input(&d.fmt);
@@ -283,10 +415,12 @@ struct SrMixer {
     uint32_t channels;
 };
 
-static uint64_t seconds_to_samples(double seconds, uint32_t rate) {
+uint64_t sr_audio_seconds_to_samples(double seconds, uint32_t rate) {
     if (!(seconds > 0.0)) return 0;
     double value = seconds * rate;
-    return value >= 1.8e19 ? UINT64_MAX : (uint64_t)llround(value);
+    /* Saturate before llround, whose result must fit in a long long. */
+    if (!(value < 0x1p63)) return UINT64_MAX;
+    return (uint64_t)llround(value);
 }
 
 SrStatus sr_mixer_create(const SrScene *scene, SrMixer **out) {
@@ -308,10 +442,10 @@ SrStatus sr_mixer_create(const SrScene *scene, SrMixer **out) {
         const SrAsset *asset = track->asset;
         if (!asset || !asset->audio_pcm || !asset->audio_frames) continue;
         SrVoice voice = {.pcm = asset->audio_pcm};
-        voice.start = seconds_to_samples(track->start, rate);
-        voice.clip_first = seconds_to_samples(track->clip_in, rate);
+        voice.start = sr_audio_seconds_to_samples(track->start, rate);
+        voice.clip_first = sr_audio_seconds_to_samples(track->clip_in, rate);
         voice.clip_end = track->clip_out >= 0.0
-            ? seconds_to_samples(track->clip_out, rate) : asset->audio_frames;
+            ? sr_audio_seconds_to_samples(track->clip_out, rate) : asset->audio_frames;
         if (voice.clip_end > asset->audio_frames) voice.clip_end = asset->audio_frames;
         if (voice.clip_first >= voice.clip_end) continue;
         voice.span = voice.clip_end - voice.clip_first;
@@ -332,8 +466,8 @@ SrStatus sr_mixer_create(const SrScene *scene, SrMixer **out) {
                 ++total;
             voice.total = total;
         }
-        voice.fade_in = seconds_to_samples(track->fade_in, rate);
-        voice.fade_out = seconds_to_samples(track->fade_out, rate);
+        voice.fade_in = sr_audio_seconds_to_samples(track->fade_in, rate);
+        voice.fade_out = sr_audio_seconds_to_samples(track->fade_out, rate);
         voice.volume = track->volume;
         voice.gain[0] = voice.gain[1] = track->volume;
         if (mixer->channels == 2 && track->pan != 0.0) {

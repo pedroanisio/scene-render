@@ -82,6 +82,13 @@ void sr_xml_start_audio_track(ParseContext *ctx, const XML_Char **attrs) {
     const char *reverse = sr_xml_attr(attrs, "reverse");
     if (reverse && !sr_parse_bool(reverse, &track->reverse))
         SR_XML_FAIL_RETURN(ctx, "audioTrack", "reverse", "expected true or false");
+    /* Upper bound on track times and fades (about 116 days): keeps every
+     * seconds * sampleRate product far inside the sample counter. */
+    const double limit = 1e7;
+    if (track->start > limit || track->clip_in > limit || track->clip_out > limit ||
+        track->fade_in > limit || track->fade_out > limit)
+        SR_XML_FAIL_RETURN(ctx, "audioTrack", "start/clipIn/clipOut/fadeIn/fadeOut",
+                           "track times and fades must be at most 1e7 seconds");
     if (track->start < 0.0 || track->clip_in < 0.0 ||
         (track->clip_out >= 0.0 && track->clip_out <= track->clip_in) ||
         track->volume < 0.0 || track->volume > 1.0 ||

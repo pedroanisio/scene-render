@@ -1,5 +1,5 @@
 /* Stream inspection for tests/run-integration.sh, replacing ffprobe:
- *   sr-probe FILE
+ *   sr-probe [--samples] FILE
  * prints one line per stream:
  *   stream=<index> type=video codec=<name> width=<w> height=<h> frames=<n>
  *     pix_fmt=<fmt> range=<tv|pc> space=<..> transfer=<..> primaries=<..>
@@ -8,15 +8,22 @@
  *     duration=<seconds>
  * Frame counts and durations come from demuxing every packet (pts + duration
  * of the last packet minus the first pts, from t=0 at the earliest), not
- * from container headers. */
+ * from container headers. With --samples, audio lines end with
+ *     samples=<n>
+ * the decoded sample count on the file's timeline: every sample the decoder
+ * outputs with default options (skip-samples and discard-padding side data
+ * honoured), minus codec priming placed before t=0 (the declared
+ * initial_padding when the first timestamp is negative). */
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/spherical.h>
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static const char *spherical(const AVStream *st) {
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 31, 102)
@@ -33,16 +40,67 @@ static const char *spherical(const AVStream *st) {
 #endif
 }
 
+/* Decoded samples of audio stream `si` on the timeline (see above); -1 on
+ * error. */
+static int64_t decoded_samples(const char *path, int si) {
+    AVFormatContext *fmt = NULL;
+    if (avformat_open_input(&fmt, path, NULL, NULL) < 0) return -1;
+    int64_t total = -1;
+    AVCodecContext *dec = NULL;
+    AVPacket *pkt = av_packet_alloc();
+    AVFrame *frame = av_frame_alloc();
+    if (avformat_find_stream_info(fmt, NULL) < 0 || si >= (int)fmt->nb_streams ||
+        !pkt || !frame) goto done;
+    AVStream *st = fmt->streams[si];
+    const AVCodec *codec = avcodec_find_decoder(st->codecpar->codec_id);
+    dec = codec ? avcodec_alloc_context3(codec) : NULL;
+    if (!dec || avcodec_parameters_to_context(dec, st->codecpar) < 0) goto done;
+    dec->pkt_timebase = st->time_base;
+    if (avcodec_open2(dec, codec, NULL) < 0) goto done;
+    int64_t count = 0, first = AV_NOPTS_VALUE;
+    bool eof = false;
+    while (!eof) {
+        int rc = av_read_frame(fmt, pkt);
+        if (rc < 0) {
+            eof = true;
+            avcodec_send_packet(dec, NULL);
+        } else {
+            if (pkt->stream_index == si) avcodec_send_packet(dec, pkt);
+            av_packet_unref(pkt);
+        }
+        while (avcodec_receive_frame(dec, frame) == 0) {
+            if (first == AV_NOPTS_VALUE) first = frame->best_effort_timestamp;
+            count += frame->nb_samples;
+            av_frame_unref(frame);
+        }
+    }
+    if (first != AV_NOPTS_VALUE && first < 0 && dec->sample_rate > 0) {
+        int64_t before = st->codecpar->initial_padding > 0
+            ? st->codecpar->initial_padding
+            : av_rescale_q(-first, st->time_base, (AVRational){1, dec->sample_rate});
+        count -= before < count ? before : count;
+    }
+    total = count;
+done:
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+    avcodec_free_context(&dec);
+    avformat_close_input(&fmt);
+    return total;
+}
+
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s FILE\n", argv[0]);
+    bool samples = argc == 3 && strcmp(argv[1], "--samples") == 0;
+    if (argc != 2 && !samples) {
+        fprintf(stderr, "usage: %s [--samples] FILE\n", argv[0]);
         return 2;
     }
+    const char *path = argv[argc - 1];
     av_log_set_level(AV_LOG_ERROR);
     AVFormatContext *fmt = NULL;
-    if (avformat_open_input(&fmt, argv[1], NULL, NULL) < 0 ||
+    if (avformat_open_input(&fmt, path, NULL, NULL) < 0 ||
         avformat_find_stream_info(fmt, NULL) < 0) {
-        fprintf(stderr, "sr-probe: cannot read %s\n", argv[1]);
+        fprintf(stderr, "sr-probe: cannot read %s\n", path);
         return 1;
     }
     unsigned n = fmt->nb_streams;
@@ -81,9 +139,12 @@ int main(int argc, char **argv) {
                    av_color_primaries_name(par->color_primaries), duration,
                    spherical(st));
         } else if (par->codec_type == AVMEDIA_TYPE_AUDIO) {
-            printf("stream=%u type=audio codec=%s rate=%d channels=%d duration=%.6f\n",
+            printf("stream=%u type=audio codec=%s rate=%d channels=%d duration=%.6f",
                    i, avcodec_get_name(par->codec_id), par->sample_rate,
                    par->ch_layout.nb_channels, duration);
+            if (samples)
+                printf(" samples=%lld", (long long)decoded_samples(path, (int)i));
+            printf("\n");
         }
     }
     av_packet_free(&pkt);

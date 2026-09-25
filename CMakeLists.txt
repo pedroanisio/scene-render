@@ -123,7 +123,8 @@ if(BUILD_TESTING)
                avformat_find_stream_info av_find_best_stream avcodec_find_decoder
                avcodec_parameters_to_context av_read_frame avformat_seek_file
                avcodec_send_packet avcodec_receive_frame av_frame_ref
-               swr_alloc_set_opts2 swr_init swr_convert swr_get_out_samples)
+               swr_alloc_set_opts2 swr_init swr_convert swr_get_out_samples
+               sws_setColorspaceDetails sws_scale)
         target_link_options(sr-unit-tests PRIVATE -Wl,--wrap=${fn})
     endforeach()
     # Stream inspection for tests/run-integration.sh (replaces ffprobe).

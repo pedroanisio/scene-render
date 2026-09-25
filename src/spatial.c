@@ -1,6 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 #include "scene_render/spatial.h"
 
+#include "spatial_internal.h"
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -125,36 +127,93 @@ static bool mem_grow(uint8_t *data, const MemBox *box, size_t extra) {
     return true;
 }
 
+/* The chunk-offset table (stco or co64) of the trak found at or after
+ * *cursor in `movie`, with its ancestors; *cursor moves past that trak.
+ * 1 = found, 0 = no more traks, -1 = malformed. */
+typedef struct {
+    MemBox track, media, info, table, offsets;
+    bool wide;
+    uint32_t count;
+} OffsetTable;
+
+static int next_offset_table(const uint8_t *data, const MemBox *movie,
+                             size_t *cursor, OffsetTable *out) {
+    size_t end = movie->offset + movie->size;
+    while (*cursor < end) {
+        OffsetTable t = {0};
+        if (!mem_box(data, *cursor, end, &t.track)) return -1;
+        *cursor += t.track.size;
+        if (!mem_type(data, &t.track, "trak")) continue;
+        if (!mem_child(data, &t.track, "mdia", &t.media) ||
+            !mem_child(data, &t.media, "minf", &t.info) ||
+            !mem_child(data, &t.info, "stbl", &t.table)) continue;
+        if (!mem_child(data, &t.table, "stco", &t.offsets)) {
+            if (!mem_child(data, &t.table, "co64", &t.offsets)) continue;
+            t.wide = true;
+        }
+        size_t body = t.offsets.offset + t.offsets.header;
+        if (t.offsets.size < t.offsets.header + 8) return -1;
+        t.count = read_be32(data + body + 4);
+        if ((t.offsets.size - t.offsets.header - 8) / (t.wide ? 8 : 4) < t.count)
+            return -1;
+        *out = t;
+        return 1;
+    }
+    return 0;
+}
+
+/* True when shifting this 32-bit table by `shift` pushes an entry at or
+ * past `threshold` beyond UINT32_MAX. */
+static bool needs_co64(const uint8_t *data, const OffsetTable *t,
+                       uint64_t threshold, uint64_t shift) {
+    if (t->wide) return false;
+    const uint8_t *at = data + t->offsets.offset + t->offsets.header + 8;
+    for (uint32_t i = 0; i < t->count; ++i, at += 4) {
+        uint64_t value = read_be32(at);
+        if (value >= threshold && value + shift > UINT32_MAX) return true;
+    }
+    return false;
+}
+
+/* Rewrites stco `t` of the moov buffer (*data, *size) as co64: the table
+ * and every ancestor grow by 4 bytes per entry. */
+static bool promote_to_co64(uint8_t **data, size_t *size, const OffsetTable *t) {
+    size_t growth = (size_t)t->count * 4;
+    MemBox root;
+    if (!mem_box(*data, 0, *size, &root) || *size > SIZE_MAX - growth) return false;
+    uint8_t *grown = realloc(*data, *size + growth);
+    if (!grown) return false;
+    *data = grown;
+    size_t entries = t->offsets.offset + t->offsets.header + 8;
+    size_t tail = entries + (size_t)t->count * 4;
+    memmove(grown + tail + growth, grown + tail, *size - tail);
+    for (uint32_t i = t->count; i-- > 0;)
+        write_be64_mem(grown + entries + (size_t)i * 8,
+                       read_be32(grown + entries + (size_t)i * 4));
+    memcpy(grown + t->offsets.offset + 4, "co64", 4);
+    *size += growth;
+    return mem_grow(grown, &t->offsets, growth) && mem_grow(grown, &t->table, growth) &&
+           mem_grow(grown, &t->info, growth) && mem_grow(grown, &t->media, growth) &&
+           mem_grow(grown, &t->track, growth) && mem_grow(grown, &root, growth);
+}
+
 /* Adds `extra` to every stco/co64 chunk offset at or past `threshold` (the
  * original end of moov) in every track: needed when the moov box precedes
  * media data it grows in front of. */
 static bool shift_chunk_offsets(uint8_t *data, const MemBox *movie,
                                 uint64_t threshold, uint64_t extra) {
     size_t cursor = movie->offset + movie->header;
-    size_t end = movie->offset + movie->size;
-    while (cursor < end) {
-        MemBox track, media, info, table, offsets;
-        if (!mem_box(data, cursor, end, &track)) return false;
-        cursor += track.size;
-        if (!mem_type(data, &track, "trak")) continue;
-        if (!mem_child(data, &track, "mdia", &media) ||
-            !mem_child(data, &media, "minf", &info) ||
-            !mem_child(data, &info, "stbl", &table)) continue;
-        bool wide = false;
-        if (!mem_child(data, &table, "stco", &offsets)) {
-            if (!mem_child(data, &table, "co64", &offsets)) continue;
-            wide = true;
-        }
-        size_t body = offsets.offset + offsets.header;
-        if (offsets.size < offsets.header + 8) return false;
-        uint32_t count = read_be32(data + body + 4);
-        size_t entry = wide ? 8 : 4;
-        if ((offsets.size - offsets.header - 8) / entry < count) return false;
-        uint8_t *at = data + body + 8;
-        for (uint32_t i = 0; i < count; ++i, at += entry) {
-            if (wide) {
+    OffsetTable t;
+    int found;
+    while ((found = next_offset_table(data, movie, &cursor, &t)) > 0) {
+        uint8_t *at = data + t.offsets.offset + t.offsets.header + 8;
+        for (uint32_t i = 0; i < t.count; ++i, at += t.wide ? 8 : 4) {
+            if (t.wide) {
                 uint64_t value = read_be64(at);
-                if (value >= threshold) write_be64_mem(at, value + extra);
+                if (value >= threshold) {
+                    if (value > UINT64_MAX - extra) return false;
+                    write_be64_mem(at, value + extra);
+                }
             } else {
                 uint64_t value = read_be32(at);
                 if (value < threshold) continue;
@@ -164,7 +223,30 @@ static bool shift_chunk_offsets(uint8_t *data, const MemBox *movie,
             }
         }
     }
-    return true;
+    return found == 0;
+}
+
+bool sr_spatial_shift_offsets(uint8_t **moov, size_t *size, uint64_t threshold,
+                              uint64_t extra) {
+    /* Each promotion grows moov, which moves the media further and can push
+     * another table over the limit: repeat until no table needs it. */
+    uint64_t growth = 0;
+    for (;;) {
+        MemBox root;
+        if (!mem_box(*moov, 0, *size, &root) || root.size != *size) return false;
+        size_t cursor = root.header;
+        OffsetTable t;
+        int found;
+        while ((found = next_offset_table(*moov, &root, &cursor, &t)) > 0 &&
+               !needs_co64(*moov, &t, threshold, extra + growth)) {}
+        if (found < 0) return false;
+        if (found == 0) break;
+        if (!promote_to_co64(moov, size, &t)) return false;
+        growth += (uint64_t)t.count * 4;
+    }
+    MemBox root;
+    return mem_box(*moov, 0, *size, &root) &&
+           shift_chunk_offsets(*moov, &root, threshold, extra + growth);
 }
 
 /* Finds the top-level moov box and whether any mdat follows it. */
@@ -281,9 +363,10 @@ SrStatus sr_spatial_inject_mp4(const char *path, uint32_t width,
     memmove(moov + insert + extra, moov + insert, moov_size - insert);
     uuid_box(moov + insert, xml);
     ok = mem_grow(moov, &track, extra) && mem_grow(moov, &root, extra);
-    root.size += extra;
+    size_t out_size = moov_size + extra;
     if (ok && media_after)
-        ok = shift_chunk_offsets(moov, &root, movie.offset + movie.size, extra);
+        ok = sr_spatial_shift_offsets(&moov, &out_size, movie.offset + movie.size,
+                                      extra);
     size_t path_size = strlen(path) + 32;
     char *temporary = ok ? sr_alloc(path_size) : NULL;
     int descriptor = -1;
@@ -296,7 +379,7 @@ SrStatus sr_spatial_inject_mp4(const char *path, uint32_t width,
     uint64_t after = movie.offset + movie.size;
     ok = ok && target && seek_to(source, 0) &&
          copy_range(source, target, movie.offset) &&
-         fwrite(moov, 1, moov_size + extra, target) == moov_size + extra &&
+         fwrite(moov, 1, out_size, target) == out_size &&
          seek_to(source, after) &&
          copy_range(source, target, (uint64_t)end - after) &&
          fflush(target) == 0;

@@ -45,9 +45,15 @@ FreeType. The engine starts no child processes.
   `sr_scene_free` releases it.
 - Layer instances reference shared assets. A still/text/vector asset holds one
   cached blend-space image. A video asset owns one open demuxer/decoder and
-  an LRU of converted frames keyed by source-frame index (256 MiB per asset,
-  at least two frames), each converted to blend space once when decoded;
-  request/hit/decode/seek counts are reported by `--metrics`.
+  an LRU of converted frames keyed by source-frame index (256 MiB per asset),
+  each converted to blend space once when decoded; request/hit/decode/seek
+  counts are reported by `--metrics`. The budget always yields to one frame
+  (the one just returned): a single frame larger than the budget is kept
+  regardless (7680×4320 float RGBA is about 506 MiB), and asset loading
+  warns once when the frames all sources keep together exceed the budget.
+  Frame `i` shows the latest source frame presented at or before `i / fps`
+  on the file's timeline, whose origin (the container start, audio codec
+  priming excluded) the asset's soundtrack shares.
 - Text assets are rendered once while assets load. Fonts are opened through a
   per-scene cache keyed by (resolved path, face index) and owned by `SrScene`
   (freed by `sr_assets_unload`/`sr_scene_free`); each font owns its FreeType
