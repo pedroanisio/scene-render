@@ -8,7 +8,7 @@ encoders have explicit owners and lifetimes. Dynamically sized arrays impose no
 artificial layer limit. Production codecs and text shaping remain in mature
 external components rather than being reimplemented, all linked in-process:
 codecs are the FFmpeg libraries; text uses Fontconfig, FriBidi, HarfBuzz and
-FreeType. The engine starts no child processes.
+FreeType. Everything runs inside the one `scene-render` process.
 
 ## Modules
 
@@ -293,4 +293,14 @@ segments; it exists only in the `scene-render-testhooks` test executable
 
 Missing assets, codecs, OpenCL, memory, segment writes, and libav failures
 produce contextual diagnostics and a nonzero exit instead of partial
-success.
+success. An allocation failure in engine code surfaces as `SR_ERR_MEMORY`
+(exit 8) with everything allocated so far released; inside the Expat
+callbacks, which cannot return a status, it is reported as an "out of
+memory" diagnostic and the load fails with `SR_ERR_XML` (exit 3). Two
+places degrade instead of failing, with identical output: `sr_parallel_for`
+runs the job on the calling thread when it cannot allocate its thread
+table, and a thread that cannot be started has its rows run by the caller.
+`unit.oom` fails every engine allocation of a scene load, an asset load, a
+one-frame render and an encode in turn and checks these rules, including
+that nothing leaks; `unit.encode_faults` does the same for every libav call
+the core makes.

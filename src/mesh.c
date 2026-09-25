@@ -42,12 +42,13 @@ static bool resolve(long value,size_t count,size_t *index){long result=value>0?v
     if(result<0||(size_t)result>=count)return false;
     *index=(size_t)result;return true;}
 
-static bool add_face(SrMesh *mesh,const VecList *vertices,const VecList *normals,
+/* SR_OK, SR_ERR_ASSET for an index out of range, SR_ERR_MEMORY. */
+static SrStatus add_face(SrMesh *mesh,const VecList *vertices,const VecList *normals,
                      FaceIndex *face,size_t count){
     for(size_t corner=1;corner+1<count;++corner){size_t selected[3]={0,corner,corner+1};
         SrMeshTriangle triangle={0};bool supplied=true;
         for(size_t i=0;i<3;++i){FaceIndex f=face[selected[i]];size_t vertex;
-            if(!resolve(f.vertex,vertices->count,&vertex))return false;
+            if(!resolve(f.vertex,vertices->count,&vertex))return SR_ERR_ASSET;
             Vec3 p=vertices->items[vertex];
             triangle.position[i][0]=p.x;triangle.position[i][1]=p.y;triangle.position[i][2]=p.z;
             size_t normal;if(!f.has_normal||!resolve(f.normal,normals->count,&normal)){supplied=false;continue;}
@@ -57,7 +58,12 @@ static bool add_face(SrMesh *mesh,const VecList *vertices,const VecList *normals
             Vec3 c={triangle.position[2][0],triangle.position[2][1],triangle.position[2][2]};
             Vec3 n=normalize(cross(subtract(b,a),subtract(c,a)));for(size_t i=0;i<3;++i){
                 triangle.normal[i][0]=n.x;triangle.normal[i][1]=n.y;triangle.normal[i][2]=n.z;}}
-        if(!triangle_add(mesh,triangle))return false;}return true;
+        if(!triangle_add(mesh,triangle))return SR_ERR_MEMORY;}return SR_OK;
+}
+
+static SrStatus obj_nomem(const char *path,size_t source_line,SrDiagnostics *diag){
+    sr_diag_error(diag,source_line,"mesh","src","out of memory while loading OBJ '%s'",path);
+    return SR_ERR_MEMORY;
 }
 
 static SrStatus obj_error(const char *path,size_t line,size_t source_line,
@@ -74,15 +80,19 @@ SrStatus sr_mesh_load_obj(const char *path,SrMesh **result,size_t source_line,
     while(status==SR_OK&&getline(&line,&capacity,file)>=0){++line_number;char *p=line;while(isspace((unsigned char)*p))++p;
         if(*p=='\0'||*p=='#')continue;
         if(p[0]=='v'&&isspace((unsigned char)p[1])){Vec3 value;char extra;
-            if(sscanf(p+1," %lf %lf %lf %c",&value.x,&value.y,&value.z,&extra)!=3||!vec_add(&vertices,value))
-                status=obj_error(path,line_number,source_line,diag,"invalid vertex");}
+            if(sscanf(p+1," %lf %lf %lf %c",&value.x,&value.y,&value.z,&extra)!=3)
+                status=obj_error(path,line_number,source_line,diag,"invalid vertex");
+            else if(!vec_add(&vertices,value))status=obj_nomem(path,source_line,diag);}
         else if(p[0]=='v'&&p[1]=='n'&&isspace((unsigned char)p[2])){Vec3 value;char extra;
-            if(sscanf(p+2," %lf %lf %lf %c",&value.x,&value.y,&value.z,&extra)!=3||!vec_add(&normals,value))
-                status=obj_error(path,line_number,source_line,diag,"invalid normal");}
+            if(sscanf(p+2," %lf %lf %lf %c",&value.x,&value.y,&value.z,&extra)!=3)
+                status=obj_error(path,line_number,source_line,diag,"invalid normal");
+            else if(!vec_add(&normals,value))status=obj_nomem(path,source_line,diag);}
         else if(p[0]=='f'&&isspace((unsigned char)p[1])){FaceIndex face[256];size_t count=0;char *save=NULL;
             for(char *token=strtok_r(p+1," \t\r\n",&save);token;token=strtok_r(NULL," \t\r\n",&save)){
                 if(count==256||!parse_index(token,&face[count++])){status=obj_error(path,line_number,source_line,diag,"invalid face index");break;}}
-            if(status==SR_OK&&(count<3||!add_face(mesh,&vertices,&normals,face,count)))
+            SrStatus added=status==SR_OK&&count>=3?add_face(mesh,&vertices,&normals,face,count):SR_ERR_ASSET;
+            if(status==SR_OK&&added==SR_ERR_MEMORY)status=obj_nomem(path,source_line,diag);
+            else if(status==SR_OK&&added!=SR_OK)
                 status=obj_error(path,line_number,source_line,diag,"face references an invalid vertex or normal");}
     }
     if(status==SR_OK&&ferror(file))status=obj_error(path,line_number,source_line,diag,"read error");

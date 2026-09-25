@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Golden: in-process text with the vendored Inter fonts only (no
+     Fontconfig lookup): wrapping, justification, centring, letter spacing,
+     explicit line breaks, vertical alignment and right-to-left paragraphs
+     (bidi reordering of neutrals, start alignment at the right edge). -->
+<scene version="1.0">
+  <project width="320" height="180" fps="12" duration="2" seed="16"
+           linearLight="true" background="#0E1320FF"/>
+  <assets>
+    <text id="body" width="180" height="110" size="12" lineHeight="1.3"
+          align="justify" color="#E0E8F8FF"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf"
+          text="Paragraphs wrap at spaces and after hyphens to the width of the box; justified lines fill it except the last line.&#10;A new paragraph starts after a line feed."/>
+    <text id="title" text="Golden AV" width="130" height="30" size="22"
+          letterSpacing="1.5" color="#FFD48AFF" align="center"
+          fontFile="../../assets/third-party/inter/Inter-SemiBold.ttf"/>
+    <text id="rtl" text="(abc, 123) end!&#10;right-to-left paragraph" width="130"
+          height="60" size="13" direction="rtl" color="#9FE8C8FF"
+          verticalAlign="bottom"
+          fontFile="../../assets/third-party/inter/Inter-Medium.ttf"/>
+    <text id="light" text="middle&#10;aligned" width="130" height="60" size="16"
+          align="end" verticalAlign="middle" color="#A0C8FFFF"
+          fontFile="../../assets/third-party/inter/Inter-Light.ttf"/>
+  </assets>
+  <composition>
+    <shape id="bodyBox" shape="rect" width="180" height="110" x="8" y="8" fill="#FFFFFF14"/>
+    <layer id="bodyLayer" asset="body" x="8" y="8"/>
+    <layer id="titleLayer" asset="title" x="190" y="8">
+      <animate property="opacity">
+        <key time="0" value="0.3"/><key time="2" value="1"/>
+      </animate>
+    </layer>
+    <shape id="rtlBox" shape="rect" width="130" height="60" x="190" y="45" fill="#FFFFFF14"/>
+    <layer id="rtlLayer" asset="rtl" x="190" y="45"/>
+    <layer id="lightLayer" asset="light" x="190" y="112"/>
+    <layer id="movingLayer" asset="title" x="8" y="130" rotation="-4">
+      <animate property="position.x">
+        <key time="0" value="8"/><key time="2" value="50"/>
+      </animate>
+    </layer>
+  </composition>
+</scene>

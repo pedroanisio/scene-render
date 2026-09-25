@@ -1,11 +1,15 @@
 # scene-render
 
-`scene-render` 1.1.0 is a modular C17/POSIX video-generation engine. It reads a
-validated XML scene, evaluates an absolute-frame timeline, simulates visual
-physics at a fixed timestep, renders one RGBA frame at a time, mixes bounded
-audio blocks, and streams synchronized media to FFmpeg. The scene model,
-validation, timeline, camera, renderer, compositor, lighting/effects, physics,
-deformation, audio mixer, caches, diagnostics, and CLI are implemented in C.
+`scene-render` 1.1.0 is a modular C17/POSIX video-generation engine. It
+validates an XML scene against an embedded XSD, evaluates an absolute-frame
+timeline, simulates visual physics at a fixed timestep, renders one float
+premultiplied frame at a time, mixes the audio for each frame, and encodes
+video and audio in-process through the FFmpeg libraries (libavformat,
+libavcodec, libswscale, libswresample). Text is laid out with FreeType,
+HarfBuzz, FriBidi and Fontconfig, also in-process: the engine never starts
+another program. The scene model, validation, timeline, camera, renderer,
+compositor, lighting/effects, physics, deformation, audio mixer, caches,
+diagnostics, and CLI are implemented in C.
 
 The engine renders standard 3840×2160 video, configurable 2:1 equirectangular
 video (including 3840×1920), and animated 3840×2160 perspective viewports from
@@ -18,17 +22,24 @@ effects.
 ## Build
 
 Required and optional dependencies, exact verified versions, and licenses are
-listed in [`docs/dependencies.md`](docs/dependencies.md). Building requires
-`pkg-config` and the FFmpeg development libraries (libavformat ≥ 60,
-libavcodec ≥ 60, libavutil ≥ 58, libswscale ≥ 7, libswresample ≥ 4; e.g.
-Debian/Ubuntu `libavformat-dev libavcodec-dev libavutil-dev libswscale-dev
-libswresample-dev`) with the libx264/libx265/FFV1/AAC encoders you intend to
-use, plus FreeType, HarfBuzz (≥ 2.8.2), FriBidi and Fontconfig development
-files for text (Debian/Ubuntu `libfreetype-dev libharfbuzz-dev libfribidi-dev
-libfontconfig-dev`). Encoding, media decoding and text rendering all run
-in-process; no `ffmpeg` executable is needed. Production codecs are
-deliberately not reimplemented. The tests build `sr-probe`, which replaces
-`ffprobe` in the integration script.
+listed in [`docs/dependencies.md`](docs/dependencies.md). Building requires a
+C17 compiler, CMake ≥ 3.20 (or GNU Make), `pkg-config`, and the development
+files of:
+
+| Library | Minimum | Debian/Ubuntu package |
+|---|---|---|
+| Expat | 2.5 | `libexpat1-dev` |
+| libxml2 | 2.9.1 | `libxml2-dev` |
+| libavformat, libavcodec, libavutil, libswscale, libswresample | 60, 60, 58, 7, 4 | `libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libswresample-dev` |
+| FreeType, HarfBuzz, FriBidi, Fontconfig | any, 2.8.2, 1.0, 2.13 | `libfreetype-dev libharfbuzz-dev libfribidi-dev libfontconfig-dev` |
+
+libavcodec must expose the encoders the scenes use (`libx264` for `h264`,
+`libx265` for `h265`, `ffv1`, `aac`; `png` for PNG previews). Whether a given
+FFmpeg build is LGPL or GPL depends on its configure flags (`--enable-gpl
+--enable-libx264 --enable-libx265` make it GPL); see `docs/dependencies.md`.
+No `ffmpeg` or `ffprobe` executable is needed: the tests build `sr-probe`
+for stream inspection. OpenCL is loaded at run time only for
+`--renderer gpu`.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -36,7 +47,9 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-The strict Make path is equivalent:
+The Make path needs no CMake and builds the same binaries (`BUILD=DIR`
+selects the output directory); `make test` runs every unit suite and the
+integration script, while the `cli.*` checks run only under CTest:
 
 ```sh
 make -j
@@ -44,8 +57,12 @@ make test
 ```
 
 Both builds select C17 and compile project sources with
-`-Wall -Wextra -Wpedantic -Werror`. POSIX clocks, files and pthreads are the
-documented platform layer.
+`-Wall -Wextra -Wpedantic -Wshadow -Wstrict-prototypes -Wmissing-prototypes
+-Wformat=2 -Werror` (`SR_WERROR=OFF`/`SR_WERROR=0` drops `-Werror`) and
+`-ffp-contract=off -fno-fast-math`. `-DSR_SANITIZE=ON` (`make SR_SANITIZE=1`)
+adds AddressSanitizer and UBSan, `-DSR_COVERAGE=ON` (`make SR_COVERAGE=1`)
+gcov instrumentation, `-DSR_PROFILE=ON` gprof. POSIX clocks, files and
+pthreads are the platform layer.
 
 ## Commands
 
@@ -168,8 +185,8 @@ uninterrupted `--resume` render of the same command, but not to a render
 without `--resume`: every segment starts with a keyframe, so the video
 bitstream differs (frames decode to the same pictures within codec loss).
 
-`--metrics` prints a `metrics:` line (the engine's own RSS is the whole
-memory cost: there are no encoder child processes), a `video:` line with
+`--metrics` prints a `metrics:` line (the process's own peak RSS is the
+whole memory cost, since encoding is in-process), a `video:` line with
 decoder cache statistics (`sources requests cache_hits decoded seeks`), a
 `physics:` line (`steps` simulated by this run, `cache_hit`), a `resume:`
 line (`segments_rendered segments_reused`), and per-stage times.
@@ -206,87 +223,177 @@ contains 300 3840×2160 H.264 frames and 10.000000 seconds of stereo AAC.
 
 ## Execution pipeline
 
-1. Expat tokenizes XML while engine-owned checks report source line, element,
-   attribute, and reason. DOCTYPE is rejected.
-2. References are resolved, child order is stabilized by `(z, XML order)`, and
-   layer instances point to shared immutable asset records.
-3. Still media is decoded once. Video is decoded lazily into a four-frame
-   per-source LRU. Declared source color spaces convert into the working space.
-4. Rigid bodies simulate at XML `fixedStep`, independent of output FPS.
-   Versioned/signature-checked pose caches can be reused across renders.
-5. Every frame time is calculated directly from its integer index. Lighting,
-   depth-tested primitives/meshes, ordered 2D compositing, optional viewport
-   extraction, effects, and output color conversion produce one RGBA frame.
-6. Audio sources decode to temporary float streams and mix in 4096-frame
-   blocks with trim, finite loops, volume, and pan.
-7. RGBA video and float audio stream to a supervised FFmpeg process at an exact
-   rational frame rate. MP4 equirectangular files receive Spatial Media v1 UUID
-   metadata; Matroska receives projection/spherical stream tags.
+1. **Validate and load.** libxml2 validates the document against the XSD
+   embedded at build time (no network, no external entities, no DTD); each
+   schema error is reported as `FILE:LINE: error: <element> @attribute:
+   message`. Expat then builds the owned scene graph with semantic checks
+   (numeric ranges, unique ids, reference types, 2:1 panoramas, clip
+   bounds). A DOCTYPE is rejected.
+2. **Resolve.** References are resolved, children are ordered by
+   `(z, XML order)`, and layers point to shared asset records.
+3. **Assets.** Stills are decoded once with libavformat/libavcodec (PNG,
+   JPEG, PPM, ...) and converted to blend space; text is shaped and
+   rasterized once per asset; vector paths are filled and stroked once; OBJ
+   meshes are parsed once. Each video asset opens one persistent decoder
+   whose converted frames live in a 256 MiB per-asset LRU. Each audio asset
+   is decoded once, in memory, to the mix format with libswresample.
+4. **Physics.** Rigid and soft bodies are simulated for the whole duration
+   at `physics/@fixedStep`, independent of the output rate; the samples can
+   be stored in and restored from a signature-checked cache
+   (`physics/@cache`, `--physics-cache`).
+5. **Frames.** Frame `N` is rendered at time `N × fps_den / fps_num`,
+   computed from the integer index: clear to the background, 3D pass
+   (depth-tested primitives and meshes, shadow maps, optional supersampling),
+   2D compositing (groups, masks, blends, deformers, particles, group
+   effects), viewport extraction in viewport mode, whole-frame effects, and
+   conversion to 8- or 16-bit straight RGBA in the output color space.
+6. **Audio.** The mixer produces exactly the samples of frame `N`,
+   `[floor(N·rate·fps_den/fps_num), floor((N+1)·rate·fps_den/fps_num))`,
+   with trim, loops, volume, equal-power pan, fades, speed and reverse.
+7. **Encode.** libavcodec encodes the video (libx264, libx265 or FFV1 via
+   libswscale's explicit Y'CbCr matrix and range) and the audio (AAC by
+   default) with bit-exact flags; libavformat muxes MP4/QuickTime or
+   Matroska with color tags. Equirectangular output carries spherical side
+   data (MP4 `sv3d`/`st3d`, Matroska `Projection`) and, in MP4, the Spatial
+   Media v1 UUID box injected after the encode. `--hash` stops before the
+   encoder, previews write PNG or PPM, and `--resume` encodes segments that
+   are then assembled by packet copy.
 
 See [`docs/architecture.md`](docs/architecture.md),
 [`docs/xml-reference.md`](docs/xml-reference.md), and the normative
 [`schema/scene-v1.xsd`](schema/scene-v1.xsd).
 
+## Architecture
+
+| Module (`src/`) | Responsibility |
+|---|---|
+| `xml_schema`, `xml`, `xml_elements`, `xml_nodes`, `xml_visual`, `xml_camera`, `xml_audio`, `xml_physics`, `xml_resolve` | XSD validation (libxml2), Expat callbacks, typed attributes, semantic checks, reference resolution |
+| `scene`, `timeline`, `common`, `diagnostics` | owned scene graph, keyframe curves, checked helpers, contextual messages |
+| `assets`, `video`, `text`, `vector_path`, `procedural`, `mesh`, `audio` | image/video decoding and the frame LRU, text engine, vector paths, OBJ meshes, audio decoding and the mixer |
+| `color`, `raster`, `compositor`, `deform`, `particles`, `effects` | blend-space conversions, coverage and blend kernels, the 2D compositor, warps, particles, frame and group effects |
+| `lighting`, `camera`, `physics` | 3D pass and shadow maps, panorama viewport, fixed-step physics and its cache |
+| `parallel`, `gpu` | deterministic row jobs, optional OpenCL color conversion |
+| `renderer`, `resume`, `encoder`, `spatial` | frame loop, preview/hash/segmented resume, libav encoding and muxing, MP4 spherical metadata |
+| `cli_args`, `main` | argument parsing (pure, unit-tested) and orchestration |
+
+The complete table with ownership rules is in
+[`docs/architecture.md`](docs/architecture.md); features map to modules and
+tests in [`docs/feature-matrix.md`](docs/feature-matrix.md).
+
 ## Determinism
 
-With identical XML, input assets, engine and dependency versions, font setup,
-platform floating-point behavior, and seed, CPU-rendered RGBA frames are
-byte-identical. Frame times never accumulate. Physics has a fixed step,
-particles use stateless integer hashes, ordering is stable, and parallel jobs
-write disjoint output ranges. Tests compare one- and four-thread results.
+With identical XML, input assets, engine and library versions, fonts, and
+compiler/C library/architecture, the RGBA frames handed to the encoder are
+byte-identical. The reasons:
 
-Encoded container bytes are outside the frame determinism boundary because
-external encoder builds can change. Golden tests hash the lossless rendered
-PPM output. The optional GPU color kernel is not claimed byte-identical across
-different GPU vendors; CPU fallback remains the reference.
+- every target is compiled with `-ffp-contract=off -fno-fast-math`, so the
+  compiler cannot fuse multiply-adds or reorder floating-point arithmetic;
+- frame time is computed from the integer frame index and the rational
+  frame rate, never accumulated; audio sample ranges use exact integer
+  arithmetic;
+- physics runs at a fixed step over the whole scene before the first frame;
+  particles are closed-form functions of the seed and their index; nothing
+  depends on the previous frame or the render order;
+- parallel work (`--threads`) is split into disjoint row ranges with no
+  floating-point reduction across workers, so any thread count gives the
+  same bytes; groups and children draw in a stable order.
+
+`unit.golden` checks this on 14 scenes (1 and 4 threads, and after another
+frame rendered first) against committed PNG references, `cli.hash_threads`
+compares `--hash` output across thread counts, and the integration script
+compares 1- and 4-thread previews and PPM hashes in `tests/golden.sha256`.
+The encoders run with bit-exact flags, so identical frames and libraries
+also give identical files (`encode.bitexact_output`); another FFmpeg or
+x264/x265 build may encode differently. The OpenCL color conversion is not
+claimed identical across GPU vendors; the CPU path is the reference.
 
 ## Color, streaming, and memory
 
-Projects select `srgb`, `rec709`, `display-p3`, or `rec2020` working space.
-Image and video assets declare their source space (sRGB by default). Linear
-light blending uses the active space's transfer function, final RGB conversion
-uses explicit matrices, and FFmpeg output receives primaries, transfer,
-matrix, and full/limited range tags.
+Projects select an `srgb`, `rec709`, `display-p3` or `rec2020` working space
+and optionally linear-light blending. Image and video assets declare their
+source space (sRGB by default) and are converted once into the blend space:
+float premultiplied RGBA in the working gamut, linear when `linearLight` is
+set. The final frame is unpremultiplied, converted to the output gamut and
+transfer, clamped, and rounded to 8-bit (16-bit for pixel formats deeper
+than 8 bits); libswscale converts it to Y'CbCr with the BT.709 or BT.2020
+matrix and the requested range, and the stream is tagged with matching
+primaries, transfer, matrix and range.
 
-Input and output are streamed; entire videos are never retained. The principal
-working set is current render surfaces, effect scratch buffers, decoded stills,
-four frames per active video asset, physics poses, and bounded audio blocks.
-Metrics report render/write/wait/wall time, throughput, process RSS values, and
-a conservative self-plus-child peak upper bound.
+Nothing is buffered beyond the current frame: the renderer keeps its float
+frames (16 bytes per pixel, 126.6 MiB at 3840×2160), one isolated-group
+buffer per nesting depth, effect scratch buffers, the 8- or 16-bit encoder
+input, the decoded stills and text, up to 256 MiB of converted frames per
+video asset, the physics samples, and each audio asset decoded in memory.
+Video and audio go straight from memory to libavcodec; there are no
+temporary files except `--resume` segments. `--metrics` reports frames,
+render/encode/wall seconds, FPS, peak RSS of the process (the whole cost:
+encoding is in-process), CPU time, decoder cache statistics, physics steps,
+resume segments, and per-stage wall/CPU seconds; `--metrics-trace` writes
+one JSON line per frame.
 
 ## Physical and visual scope
 
 The fixed-step 2D solver is deterministic visual behavior, **not verified
-physical simulation**. It uses semi-implicit Euler integration, circle and
-axis-aligned-box contacts (mixed pairs use bounding circles), restitution/friction
-impulses, force fields, damping, and iterative
-spring/distance constraints. Soft bodies, deformation, bounding-volume mesh
-shadows, screen-space ground shadows, and lens flare are visual approximations.
+physical simulation**. It uses semi-implicit Euler integration, exact
+circle-vs-oriented-box contacts and a separating-axis test between oriented
+boxes, restitution and friction impulses, directional, radial and vortex
+force fields, exponential damping, springs, distance constraints and pins.
+Soft bodies are mass-spring grids with pressure and pins; deformers,
+screen-space point-light shadows and the lens flare are visual
+approximations.
 
-The CPU 3D path supports lit sphere/box/plane primitives and triangulated
-Wavefront OBJ geometry with a depth buffer. It is not a general PBR engine,
-does not promise physically based energy conservation, and does not implement
-arbitrary material/shader graphs. These boundaries are explicit in
-[`docs/feature-matrix.md`](docs/feature-matrix.md).
+The CPU 3D path draws spheres, boxes and planes as lit camera-facing sprites
+and Wavefront OBJ meshes as triangles, with a shared depth buffer, shadow
+maps for directional and spot lights, and optional supersampling. It is not
+a general PBR engine and has no material or shader graphs. These boundaries
+are listed in [`docs/feature-matrix.md`](docs/feature-matrix.md).
 
 ## Verification
 
 ```sh
-make unit
-make integration
-make test
+ctest --test-dir build --output-on-failure    # or: make test
 ```
 
-The suite covers contextual XML failures, deep dynamic layer nesting, all
-interpolation/blend modes, shared assets, vector paths, OBJ import, named color
-conversion, exact goldens, deterministic parallelism, shaped/inverted masks,
-physics cache replay, animated particles/effects/deformation, A/V duration equality,
-360 output, MP4 spherical UUID metadata, segmented resume (interrupted and
-completed runs byte-identical, manifest invalidation), the CLI contract
-(`cli.*` CTest entries driven by `tests/cli/*.cmake`), and H.264/H.265/FFV1
-when exposed by FFmpeg. CMake/CTest and sanitizer results are recorded in
-[`docs/phases.md`](docs/phases.md); the 4K measurement is in
-[`docs/benchmark.md`](docs/benchmark.md).
+CTest runs one entry per unit suite (`unit.<suite>`), the integration script
+(`integration`) and the command-line contract (`cli.*`, driven by
+`tests/cli/*.cmake`). Among the suites:
+
+- `unit.golden` compares 14 feature scenes in `tests/golden/` byte for byte
+  with reviewed PNG references, with 1 and 4 threads;
+  `SR_UPDATE_GOLDEN=1 build/sr-unit-tests golden` regenerates them (see
+  [`tests/golden/README.md`](tests/golden/README.md) for the determinism
+  scope and the review procedure);
+- `unit.oom` fails every allocation made by engine code during a scene load,
+  an asset load, a one-frame render and an encode, one at a time, and checks
+  that each failure returns `SR_ERR_MEMORY` (or `SR_ERR_XML` with an
+  "out of memory" diagnostic from inside the Expat callbacks) and leaks
+  nothing; allocations inside the shared libraries are not intercepted;
+- `unit.encode_faults` fails each libav call the core makes.
+
+The sanitizer build runs the same suite:
+
+```sh
+cmake -S . -B build/asan -DCMAKE_BUILD_TYPE=Debug -DSR_SANITIZE=ON
+cmake --build build/asan --parallel
+ASAN_OPTIONS=detect_leaks=0 ctest --test-dir build/asan --output-on-failure
+```
+
+(LeakSanitizer needs ptrace and does not run inside the Flatpak SDK sandbox;
+`unit.oom` has its own leak check.) Coverage uses gcov directly:
+
+```sh
+cmake -S . -B build/coverage -DSR_COVERAGE=ON
+cmake --build build/coverage --parallel
+ctest --test-dir build/coverage
+python3 tools/coverage.py build/coverage   # per-file and TOTAL line/branch coverage of src/
+tools/coverage-gate.sh                     # all of the above; fails below the floors
+```
+
+`tools/coverage-gate.sh` is independent of CTest's result: it fails when
+line or branch coverage of `src/` falls more than 2 points below the
+measured 90.30% of lines and 71.29% of branches. The 4K measurement is in
+[`docs/benchmark.md`](docs/benchmark.md) and the history of the phases in
+[`docs/phases.md`](docs/phases.md).
 
 ## Troubleshooting
 
@@ -316,8 +423,11 @@ Original code is Apache-2.0; see [`LICENSE`](LICENSE). Third-party components
 are not vendored as source. Exact verified versions and licenses are documented
 in [`docs/dependencies.md`](docs/dependencies.md).
 
-The one vendored third-party asset is the Inter typeface in
-[`assets/third-party/inter`](assets/third-party/inter), used by
-`archive-beacon.xml`. It is licensed under the SIL Open Font License 1.1, not
-Apache-2.0; its source URL, version, checksums, and attribution sit beside the
-font files.
+Two third-party asset sets are vendored, each with its license, source URL,
+version, checksums and attribution beside the files, and neither is
+Apache-2.0: the Inter typeface in
+[`assets/third-party/inter`](assets/third-party/inter) (SIL Open Font
+License 1.1; used by `archive-beacon.xml`, `dusk-parallax.xml`, `text-layout.xml` and the golden
+text scenes) and the dusk-parallax pixel art in
+[`assets/third-party/dusk-parallax`](assets/third-party/dusk-parallax)
+(CC0 1.0; used by `dusk-parallax.xml` and `tests/golden/images.xml`).

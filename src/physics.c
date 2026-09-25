@@ -732,8 +732,9 @@ double sr_soft_body_substeps(const SrSoftBody *body, bool rigid,
 /* One fixed step of the grid: gravity and fields, springs with damping
  * ratio `damping`, area-preserving pressure, anchor springs to the node's
  * rigid pose (when it has a rigid body), pins, and frame-bound collisions;
- * semi-implicit Euler with enough substeps to stay stable. */
-static void soft_step(const SrScene *scene, SoftState *soft, double t) {
+ * semi-implicit Euler with enough substeps to stay stable. False when the
+ * force scratch cannot be allocated (the step is not taken). */
+static bool soft_step(const SrScene *scene, SoftState *soft, double t) {
     const SrSoftBody *body = &soft->node->soft_body;
     double dt = scene->physics.fixed_step, m = soft->node_mass;
     double k = body->stiffness, zeta = body->damping;
@@ -745,7 +746,7 @@ static void soft_step(const SrScene *scene, SoftState *soft, double t) {
     double width = scene->project.width, height = scene->project.height;
     double *fx = sr_alloc(soft->count * sizeof(double));
     double *fy = sr_alloc(soft->count * sizeof(double));
-    if (!fx || !fy) { free(fx); free(fy); return; }
+    if (!fx || !fy) { free(fx); free(fy); return false; }
     SrMat3 pose = soft_pose(soft);
     for (int step = 0; step < steps; ++step) {
         double time = t + step * h;
@@ -814,6 +815,7 @@ static void soft_step(const SrScene *scene, SoftState *soft, double t) {
         }
     }
     free(fx); free(fy);
+    return true;
 }
 
 /* ---- driver ---------------------------------------------------------------- */
@@ -922,7 +924,17 @@ SrStatus sr_physics_prepare(SrScene *scene, SrDiagnostics *diag) {
         if (s + 1 < samples) {
             double t = (double)s * dt;
             if (count) simulate_step(scene, states, count, t);
-            for (size_t i = 0; i < soft_count; ++i) soft_step(scene, &soft_states[i], t);
+            bool stepped = true;
+            for (size_t i = 0; i < soft_count && stepped; ++i)
+                stepped = soft_step(scene, &soft_states[i], t);
+            if (!stepped) {
+                sr_diag_error(diag, 0, "softBody", NULL,
+                              "out of memory while simulating soft bodies");
+                release_samples(states, count, softs, soft_count);
+                for (size_t i = 0; i < soft_count; ++i) soft_free(&soft_states[i]);
+                free(soft_states); free(states); free(softs);
+                return SR_ERR_MEMORY;
+            }
         }
     }
     save_cache(scene, states, count, softs, soft_count, samples, hash, diag);

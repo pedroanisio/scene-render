@@ -16,5 +16,12 @@ SrImage *sr_asset_get_frame(SrScene *scene, SrAsset *asset, double source_time,
  * playback and the exclusive end of a forward clip. */
 SrImage *sr_asset_get_frame_before(SrScene *scene, SrAsset *asset,
                                    double source_time, SrDiagnostics *diag);
+/* sr_asset_get_frame / sr_asset_get_frame_before (`before`) that also
+ * reports why no frame was returned (SR_ERR_MEMORY when a video frame could
+ * not be allocated, SR_ERR_ASSET for other decoding failures, SR_OK
+ * otherwise); `status` may be NULL. */
+SrImage *sr_asset_get_frame_status(SrScene *scene, SrAsset *asset,
+                                   double source_time, bool before,
+                                   SrDiagnostics *diag, SrStatus *status);
 
 #endif

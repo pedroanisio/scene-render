@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Golden: parametric emitter with animated rate and direction, square
+     particles with color keyframes, and the four presets. -->
+<scene version="1.0">
+  <project width="320" height="180" fps="12" duration="2" seed="22"
+           linearLight="true" background="#0A0E18FF"/>
+  <composition>
+    <particleEmitter id="fountain" x="100" y="175" direction="-90" spread="18"
+                     speed="150" speedVariance="30" gravityY="200" size="2.5"
+                     sizeEnd="0.6" color="#FFE070FF" colorEnd="#FF402000"
+                     lifetime="1.2" lifetimeVariance="0.3" maxParticles="300"
+                     emitterWidth="12" blend="add">
+      <animate property="rate">
+        <key time="0" value="20"/><key time="1" value="120"/><key time="2" value="40"/>
+      </animate>
+      <animate property="direction" defaultInterpolation="ease-in-out">
+        <key time="0" value="-110"/><key time="2" value="-70"/>
+      </animate>
+    </particleEmitter>
+    <particleEmitter id="confetti" x="240" y="10" rate="18" lifetime="3" direction="90"
+                     spread="50" speed="35" gravityY="25" size="2.5" shape="square"
+                     emitterWidth="100" color="#FFFFFFFF" colorEnd="#FFFFFF00">
+      <animate property="color">
+        <key time="0" value="#FF5D8F"/><key time="2" value="#5DD9FF"/>
+      </animate>
+    </particleEmitter>
+    <particleEmitter id="smoke" preset="smoke" x="30" y="170" rate="10" lifetime="2"
+                     speed="30" spread="12" size="4" color="#B8C4D6AA" blend="screen"/>
+    <particleEmitter id="sparks" preset="sparks" x="200" y="120" rate="40"
+                     lifetime="0.8" speed="120" spread="60" size="1.5"
+                     color="#FFC040FF" blend="add"/>
+    <particleEmitter id="dust" preset="dust" x="160" y="90" rate="30" lifetime="2"
+                     speed="40" spread="180" size="1.5" color="#FFF4C2AA"
+                     emitterWidth="80" emitterHeight="40"/>
+    <particleEmitter id="rain" preset="rain" x="280" y="0" rate="60" lifetime="1"
+                     speed="200" size="1" color="#80A0FFC0" seed="99"/>
+  </composition>
+</scene>

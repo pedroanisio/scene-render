@@ -28,9 +28,13 @@ static bool parse_int(const char *text, int *value) {
     return true;
 }
 
+/* Parsed from a bounded stack copy: no allocation, so a failure always
+ * means malformed text (the XSD limits fps to digits and one slash). */
 static bool parse_fps(const char *text, uint32_t *num, uint32_t *den) {
-    char *copy = sr_strdup(text);
-    if (!copy) return false;
+    char copy[64];
+    size_t length = strlen(text);
+    if (length >= sizeof(copy)) return false;
+    memcpy(copy, text, length + 1);
     char *slash = strchr(copy, '/');
     bool ok;
     if (slash) {
@@ -40,7 +44,6 @@ static bool parse_fps(const char *text, uint32_t *num, uint32_t *den) {
         ok = sr_parse_u32(copy, num);
         *den = 1;
     }
-    free(copy);
     return ok && *num > 0 && *den > 0;
 }
 

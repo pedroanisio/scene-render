@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Golden: vector paths (cubic, quadratic, relative commands) with
+     evenodd and nonzero fills, open and closed strokes; stroked rect and
+     ellipse vectors and shapes; animated transforms of path layers. -->
+<scene version="1.0">
+  <project width="320" height="180" fps="12" duration="2" seed="13"
+           background="#101418FF"/>
+  <assets>
+    <vector id="heart" shape="path" width="120" height="100"
+            path="M 60 90 C 10 60 0 30 20 15 C 35 5 55 10 60 30 C 65 10 85 5 100 15 C 120 30 110 60 60 90 Z"
+            fill="#E04070FF" stroke="#FFE0E8FF" strokeWidth="3"/>
+    <vector id="star" shape="path" width="100" height="100"
+            path="M 50 5 L 79 95 L 2 39 L 98 39 L 21 95 Z" fill="#F0C040FF"
+            fillRule="evenodd"/>
+    <vector id="starNZ" shape="path" width="100" height="100"
+            path="M 50 5 L 79 95 L 2 39 L 98 39 L 21 95 Z" fill="#40C0F0FF"
+            fillRule="nonzero"/>
+    <vector id="wave" shape="path" width="140" height="40"
+            path="M 5 20 q 15 -30 30 0 q 15 30 30 0 m 5 0 l 20 -10 h 20 v 20 L 135 20"
+            fill="#00000000" stroke="#80FF80FF" strokeWidth="4"/>
+    <vector id="box" shape="rect" width="50" height="30" fill="#4060A0FF"
+            stroke="#FFFFFFFF" strokeWidth="4"/>
+    <vector id="oval" shape="ellipse" width="50" height="30" fill="#A06040FF"
+            stroke="#FFFFFFFF" strokeWidth="2"/>
+  </assets>
+  <composition>
+    <layer id="heartLayer" asset="heart" x="5" y="5"/>
+    <layer id="starLayer" asset="star" x="120" y="5">
+      <animate property="rotation">
+        <key time="0" value="0"/><key time="2" value="72"/>
+      </animate>
+    </layer>
+    <layer id="starNZLayer" asset="starNZ" x="215" y="5" scaleX="0.9" scaleY="0.9"/>
+    <layer id="waveLayer" asset="wave" x="10" y="120">
+      <animate property="scale.x">
+        <key time="0" value="1"/><key time="2" value="1.5"/>
+      </animate>
+    </layer>
+    <layer id="boxLayer" asset="box" x="200" y="120"/>
+    <layer id="ovalLayer" asset="oval" x="260" y="125" rotation="20"/>
+    <shape id="ring" shape="ellipse" width="36" height="36" x="160" y="125"
+           fill="#00000000" stroke="#FF8040FF" strokeWidth="5"/>
+  </composition>
+</scene>

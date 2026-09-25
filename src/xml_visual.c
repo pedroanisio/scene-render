@@ -160,7 +160,9 @@ void sr_xml_start_vector(ParseContext *ctx, const XML_Char **attrs) {
     const char *path=sr_xml_attr(attrs,"path");
     if(asset->vector_shape==SR_SHAPE_PATH){
         if(!path)SR_XML_FAIL_RETURN(ctx,"vector","path","path is required for shape=path");
-        if(!sr_vector_path_valid(path))SR_XML_FAIL_RETURN(ctx,"vector","path",
+        SrStatus parsed=sr_vector_path_check(path);
+        if(parsed==SR_ERR_MEMORY)SR_XML_FAIL_RETURN(ctx,"vector","path","out of memory");
+        if(parsed!=SR_OK)SR_XML_FAIL_RETURN(ctx,"vector","path",
             "invalid path; supported commands are M/L/H/V/C/Q/Z");
         asset->vector_path=sr_strdup(path);
         if(!asset->vector_path)SR_XML_FAIL_RETURN(ctx,"vector","path","out of memory");

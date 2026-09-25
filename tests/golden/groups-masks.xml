@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Golden: nested isolated groups (blend, opacity), pass-through groups
+     with animated and inverted masks, rounded-rect and multiple masks. -->
+<scene version="1.0">
+  <project width="320" height="180" fps="12" duration="2" seed="12"
+           linearLight="true" background="#202830FF"/>
+  <composition>
+    <shape id="stripe1" shape="rect" width="320" height="30" y="30" fill="#C08040FF"/>
+    <shape id="stripe2" shape="rect" width="320" height="30" y="110" fill="#4080C0FF"/>
+    <group id="isolated" x="20" y="20" opacity="0.8" blend="screen">
+      <shape id="i1" shape="ellipse" width="80" height="80" fill="#FF3030FF"/>
+      <shape id="i2" shape="ellipse" width="80" height="80" x="40" fill="#30FF30FF"
+             blend="multiply"/>
+      <group id="inner" x="20" y="40" rotation="15" opacity="0.6">
+        <mask type="ellipse" x="0" y="0" width="60" height="60"/>
+        <shape id="i3" shape="rect" width="70" height="70" fill="#3030FFFF"/>
+      </group>
+    </group>
+    <group id="passThrough" x="170" y="15">
+      <mask type="rounded-rect" x="0" y="0" width="130" height="150" radius="24">
+        <animate property="width" defaultInterpolation="ease-in-out">
+          <key time="0" value="130"/><key time="2" value="60"/>
+        </animate>
+      </mask>
+      <mask type="ellipse" x="30" y="40" width="60" height="60" invert="true">
+        <animate property="y">
+          <key time="0" value="10"/><key time="2" value="80"/>
+        </animate>
+      </mask>
+      <shape id="p1" shape="rect" width="130" height="150" fill="#F0E0A0FF"/>
+      <shape id="p2" shape="rect" width="40" height="150" x="45" fill="#A020A0C0"
+             blend="difference"/>
+    </group>
+    <shape id="maskedShape" shape="rect" width="100" height="40" x="30" y="130"
+           fill="#FFFFFFFF">
+      <mask type="rect" x="10" y="5" width="60" height="30">
+        <animate property="x">
+          <key time="0" value="0"/><key time="2" value="40"/>
+        </animate>
+      </mask>
+    </shape>
+  </composition>
+</scene>

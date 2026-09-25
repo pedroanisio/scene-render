@@ -303,9 +303,14 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
         }
     }
     ParseFrame *p = sr_xml_parent(ctx);
-    if (!p || !p->node || sr_node_add_child(p->node, node) != SR_OK) {
+    SrStatus attached = p && p->node ? sr_node_add_child(p->node, node)
+                                     : SR_ERR_ARGUMENT;
+    if (attached != SR_OK) {
         sr_node_free(node);
-        SR_XML_FAIL_RETURN(ctx, name, NULL, "cannot attach node to parent");
+        SR_XML_FAIL_RETURN(ctx, name, NULL,
+                           attached == SR_ERR_MEMORY
+                               ? "out of memory while attaching node to parent"
+                               : "cannot attach node to parent");
     }
     sr_xml_push(ctx, (ParseFrame){.kind = type == SR_NODE_GROUP ? E_GROUP : E_LAYER,
                                   .node = node, .curve = SR_CURVE_LINEAR}, name);

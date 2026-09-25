@@ -14,6 +14,9 @@ typedef struct {
 /* True when `path` parses: SVG subset M/L/H/V/C/Q/Z (absolute and
  * relative), every subpath with at least two points. */
 bool sr_vector_path_valid(const char *path);
+/* SR_OK when `path` parses, SR_ERR_ASSET when it is malformed, SR_ERR_MEMORY
+ * when the parse ran out of memory. */
+SrStatus sr_vector_path_check(const char *path);
 
 /* Exact-area coverage of `path` (coordinates in pixels) over a width x
  * height grid: signed-area scanline accumulation, resolved with the fill

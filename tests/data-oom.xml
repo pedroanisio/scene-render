@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Allocation-failure injection scene (tests/unit/test_oom.c): every asset
+     kind and most node, effect, light and physics features at a small
+     size, so each replay of load, asset load and one frame stays cheap. -->
+<scene version="1.0">
+  <project width="96" height="54" fps="12" duration="1" seed="5"
+           linearLight="true" background="#102030FF" antialias3d="2"/>
+  <output path="oom.mkv" codec="ffv1" pixelFormat="yuv444p"/>
+  <assets>
+    <image id="checker" src="../examples/assets/checker.ppm" width="8" height="8"/>
+    <image id="peaks" src="data-oom-tile.png" width="24" height="14"/>
+    <video id="clip" src="../examples/assets/clip.mp4" width="160" height="90"
+           fps="12" duration="2"/>
+    <text id="label" text="OOM ab&#10;(rtl) x" width="60" height="30" size="9"
+          align="justify" direction="rtl"
+          fontFile="../assets/third-party/inter/Inter-Regular.ttf"/>
+    <vector id="star" shape="path" width="20" height="20"
+            path="M 10 1 L 16 19 L 0 7 L 20 7 L 4 19 Z" fill="#F0C040FF"
+            stroke="#FFFFFFFF" strokeWidth="1"/>
+    <mesh id="octa" src="../examples/assets/octahedron.obj"/>
+  </assets>
+  <materials>
+    <material id="gem" baseColor="#5DE4FFFF" metallic="0.4" roughness="0.3"/>
+  </materials>
+  <composition>
+    <object3D id="gemObj" primitive="mesh" mesh="octa" material="gem" x="80" y="15"
+              z="10" radius="10"/>
+    <object3D id="orb" primitive="sphere" material="gem" x="70" y="40" z="0" radius="6"/>
+    <layer id="bg" asset="peaks" x="0" y="0" scaleX="2" scaleY="2"/>
+    <layer id="clipLayer" asset="clip" x="40" y="30" scaleX="0.2" scaleY="0.2" speed="2">
+      <animate property="source.time">
+        <key time="0" value="1"/><key time="1" value="0"/>
+      </animate>
+    </layer>
+    <group id="g" x="4" y="4" opacity="0.8" blend="screen" effects="shadow">
+      <mask type="rounded-rect" x="0" y="0" width="40" height="30" radius="6">
+        <animate property="width"><key time="0" value="40"/><key time="1" value="20"/></animate>
+      </mask>
+      <layer id="tile" asset="checker" scaleX="3" scaleY="3">
+        <deform>
+          <modifier type="mesh-warp" rows="3" cols="3">
+            <point row="1" col="1" x="0.5" y="-0.5"/>
+          </modifier>
+          <modifier type="wave" amount="1" frequency="1"/>
+        </deform>
+      </layer>
+      <layer id="starLayer" asset="star" x="10" y="5" blend="add"/>
+    </group>
+    <layer id="labelLayer" asset="label" x="30" y="10"/>
+    <shape id="floor" shape="rect" width="96" height="6" x="48" y="51" anchorX="48"
+           anchorY="3" fill="#243B55FF">
+      <rigidBody type="static"/>
+    </shape>
+    <shape id="ball" shape="ellipse" width="8" height="8" x="20" y="10" anchorX="4"
+           anchorY="4" fill="#EE6C4DFF">
+      <rigidBody shape="circle" radius="4" restitution="0.5"/>
+    </shape>
+    <shape id="jelly" shape="rect" width="12" height="10" x="60" y="20" fill="#E07A5FFF">
+      <softBody rows="3" cols="3" stiffness="10" pin="top"/>
+    </shape>
+    <particleEmitter id="sparks" preset="sparks" x="48" y="40" rate="30"
+                     lifetime="0.5" speed="40" size="1" color="#FFC040FF" blend="add"/>
+  </composition>
+  <lights>
+    <light id="amb" type="ambient" intensity="0.2"/>
+    <light id="sun" type="directional" intensity="0.8" yaw="-20" pitch="10"
+           castShadow="true" shadowMapSize="32"/>
+    <light id="lamp" type="point" x="30" y="20" z="20" range="60" intensity="1"/>
+  </lights>
+  <effects>
+    <effect id="shadow" type="drop-shadow" offsetX="2" offsetY="2" radius="1"/>
+    <effect id="lit" type="lighting" lights="lamp" relief="2"/>
+    <effect id="glow" type="glow" intensity="0.3" radius="2"/>
+    <effect id="bloom" type="bloom" intensity="0.2" radius="2"/>
+    <effect id="blur" type="blur" radius="0.5"/>
+    <effect id="grade" type="color-grade" saturation="1.1"/>
+    <effect id="vig" type="vignette" intensity="0.3"/>
+  </effects>
+  <physics fixedStep="0.008333333333333333" gravityY="200">
+    <forceField id="wind" type="directional" forceX="10"/>
+  </physics>
+</scene>
