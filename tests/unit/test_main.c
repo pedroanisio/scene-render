@@ -5,6 +5,8 @@
 
 #include "harness.h"
 
+#include <libavutil/log.h>
+
 #ifndef SR_TEST_DATA_DIR
 #error "SR_TEST_DATA_DIR must name the repository root"
 #endif
@@ -49,12 +51,15 @@ int main(int argc, char **argv)
         {"blend", sr_tests_blend},       {"group", sr_tests_group},
         {"raster", sr_tests_raster},     {"mask", sr_tests_mask},
         {"path", sr_tests_path},         {"image", sr_tests_image},
+        {"encode", sr_tests_encode},     {"encode_faults", sr_tests_encode_faults},
+        {"audio", sr_tests_audio},       {"video", sr_tests_video},
     };
     if (argc > 2) {
         fprintf(stderr, "usage: %s [SUITE]\n", argv[0]);
         return EXIT_FAILURE;
     }
     const char *filter = argc > 1 ? argv[1] : NULL;
+    av_log_set_level(AV_LOG_ERROR);   /* libav's own chatter, not ours */
     int run = 0, failed = 0;
     for (size_t s = 0; s < sizeof suites / sizeof suites[0]; ++s) {
         if (filter && strcmp(filter, suites[s].name) != 0) {

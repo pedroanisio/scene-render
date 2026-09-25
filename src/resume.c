@@ -28,8 +28,9 @@ static uint64_t hash_file(uint64_t hash, const char *path) {
     return hash;
 }
 
-static uint64_t scene_hash(const SrScene *scene) {
+static uint64_t scene_hash(const SrScene *scene, unsigned bits) {
     uint64_t hash = UINT64_C(1469598103934665603);
+    hash = hash_bytes(hash, &bits, sizeof(bits));
     hash = hash_bytes(hash, SR_VERSION, strlen(SR_VERSION));
     hash = hash_file(hash, scene->source_path);
     for (size_t i = 0; i < scene->asset_count; ++i) {
@@ -74,14 +75,15 @@ static SrStatus make_dirs(const char *path, SrDiagnostics *diag) {
 }
 
 SrStatus sr_resume_open(SrResumeCache *cache, const SrScene *scene,
-                        const char *output_path, bool enabled,
+                        const char *output_path, bool enabled, unsigned bits,
                         SrDiagnostics *diag) {
     *cache = (SrResumeCache){0};
     if (!enabled) return SR_OK;
+    if (bits != 8 && bits != 16) return SR_ERR_ARGUMENT;
     size_t pixels = (size_t)scene->project.width * scene->project.height;
     if (scene->project.height && pixels / scene->project.height !=
         scene->project.width) return SR_ERR_MEMORY;
-    uint64_t signature = scene_hash(scene);
+    uint64_t signature = scene_hash(scene, bits);
     size_t length = strlen(output_path) + 40;
     cache->directory = sr_alloc(length);
     if (!cache->directory) return SR_ERR_MEMORY;
@@ -89,15 +91,16 @@ SrStatus sr_resume_open(SrResumeCache *cache, const SrScene *scene,
              (unsigned long long)signature);
     SrStatus status = make_dirs(cache->directory, diag);
     if (status != SR_OK) { sr_resume_close(cache); return status; }
-    cache->frame_bytes = pixels * 4;
+    if (pixels > SIZE_MAX / 8) { sr_resume_close(cache); return SR_ERR_MEMORY; }
+    cache->frame_bytes = pixels * 4 * (bits / 8);
     cache->enabled = true;
     char manifest[4096];
     snprintf(manifest, sizeof(manifest), "%s/manifest.txt", cache->directory);
     FILE *file = fopen(manifest, "wb");
     if (!file) { sr_resume_close(cache); return SR_ERR_IO; }
-    fprintf(file, "scene-render=%s\nsignature=%016llx\nsize=%ux%u\n",
+    fprintf(file, "scene-render=%s\nsignature=%016llx\nsize=%ux%u\nbits=%u\n",
             SR_VERSION, (unsigned long long)signature, scene->project.width,
-            scene->project.height);
+            scene->project.height, bits);
     if (fclose(file) != 0) { sr_resume_close(cache); return SR_ERR_IO; }
     sr_diag_info(diag, "resume cache: %s", cache->directory);
     return SR_OK;
@@ -111,7 +114,7 @@ static bool frame_path(const SrResumeCache *cache, uint64_t frame, char *path,
 }
 
 bool sr_resume_load(const SrResumeCache *cache, uint64_t frame,
-                    uint8_t *rgba, SrDiagnostics *diag) {
+                    void *rgba, SrDiagnostics *diag) {
     if (!cache->enabled) return false;
     char path[4096];
     if (!frame_path(cache, frame, path, sizeof(path))) return false;
@@ -128,7 +131,7 @@ bool sr_resume_load(const SrResumeCache *cache, uint64_t frame,
 }
 
 SrStatus sr_resume_store(const SrResumeCache *cache, uint64_t frame,
-                         const uint8_t *rgba, SrDiagnostics *diag) {
+                         const void *rgba, SrDiagnostics *diag) {
     if (!cache->enabled) return SR_OK;
     char path[4096], temporary[4096];
     if (!frame_path(cache, frame, path, sizeof(path))) return SR_ERR_IO;

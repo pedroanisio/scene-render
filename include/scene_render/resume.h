@@ -10,13 +10,15 @@ typedef struct {
     size_t frame_bytes;
 } SrResumeCache;
 
+/* Frames are cached exactly as the encoder consumes them: straight RGBA of
+ * `bits` (8 or 16) per component; the bit depth is part of the signature. */
 SrStatus sr_resume_open(SrResumeCache *cache, const SrScene *scene,
-                        const char *output_path, bool enabled,
+                        const char *output_path, bool enabled, unsigned bits,
                         SrDiagnostics *diag);
 bool sr_resume_load(const SrResumeCache *cache, uint64_t frame,
-                    uint8_t *rgba, SrDiagnostics *diag);
+                    void *rgba, SrDiagnostics *diag);
 SrStatus sr_resume_store(const SrResumeCache *cache, uint64_t frame,
-                         const uint8_t *rgba, SrDiagnostics *diag);
+                         const void *rgba, SrDiagnostics *diag);
 void sr_resume_close(SrResumeCache *cache);
 
 #endif

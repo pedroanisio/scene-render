@@ -79,3 +79,45 @@ or shaped-text feature set. Neither result is real-time; the CPU renderer is a
 deterministic reference implementation. The optional OpenCL path currently
 accelerates final color conversion only, so it should not be presented as a
 full GPU raster benchmark.
+
+## Measurement tools
+
+**Per-stage metrics.** `--metrics` now also prints engine CPU (`user_s`,
+`sys_s`), setup time, and a `stages:` line. With the in-process libav encoder
+there are no FFmpeg child processes, so engine CPU is the whole cost. Each stage shows `wall/cpu` seconds, where cpu covers every
+engine thread, so a cpu/wall ratio near 1 means the stage ran serially. The
+stages are `clear`, `lighting`, `composite`, `viewport`, `effects`, `convert`,
+`resume` and `encode`.
+
+`--metrics-trace FILE` writes one JSON row per frame, plus a final summary
+row with totals and the slowest frame per stage:
+
+```sh
+./build/scene-render --scene examples/archive-beacon.xml \
+  --frame-range 390:420 --metrics --metrics-trace build/trace.jsonl
+```
+
+**Profiling.** `make profile` (or `scripts/profile.sh [SCENE] [A:B]
+[THREADS]`) builds a `-pg` binary in `build/profile/`. It renders the slice
+and writes gprof `flat.txt` and `graph.txt` next to the trace. CMake builds
+the same binary with `-DSR_PROFILE=ON`. gprof samples only the main thread
+and cannot see time spent in libm, libc or the kernel, so profile with
+`THREADS=1` and compare the report total with `user_s`.
+
+**Regression guard.** `make perf-check` renders
+`benchmarks/perf-scene.xml`, a 30-frame 1280×720 viewport scene that uses
+every stage and only committed assets. It does one warm-up and then 5 timed
+runs, and compares the median engine CPU per stage with
+`benchmarks/baseline.json`. The check fails in either case:
+
+- **Timing:** any stage above the noise floor, or the total, is more than 15%
+  slower (exit 1).
+- **Output:** sample frames differ between `--threads 1` and `--threads 4`,
+  or differ from the recorded hashes (exit 2).
+
+It is not part of `make test`, because timings depend on the host. The
+committed baseline comes from an Intel Core Ultra 7 155H with 22 threads.
+On that machine, run-to-run spread was 4% or less. On any other machine,
+record a local baseline first with
+`python3 scripts/perf-check.py --update`. Commit a new baseline only on
+purpose, and only when both the host and the change are known.

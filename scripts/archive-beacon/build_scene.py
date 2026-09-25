@@ -671,7 +671,7 @@ def main():
     parser.add_argument("--output", default=os.path.join(ROOT, "examples",
                                                          "archive-beacon.xml"))
     args = parser.parse_args()
-    contacts = build(args.render_time_uhd.upper(), args.render_time_360.upper())
+    contacts = build(args.render_time_uhd, args.render_time_360)
     with open(args.output, "w") as f:
         f.write("\n".join(out) + "\n")
     for rid, hit in sorted(contacts.items()):

@@ -1,4 +1,5 @@
 #include "scene_render/scene.h"
+#include "scene_render/video.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -62,13 +63,13 @@ static void asset_free(SrAsset *asset) {
     free(asset->font_family);
     free(asset->font_file);
     free(asset->vector_path);
-    free(asset->audio_cache_path);
+    free(asset->audio_pcm);
     if (asset->mesh) {
         free(asset->mesh->triangles);
         free(asset->mesh);
     }
     image_free(asset->decoded);
-    for (size_t i = 0; i < 4; ++i) image_free(asset->video_cache[i].image);
+    sr_video_close(asset->video);
 }
 
 static void camera_free(SrCamera *camera) {

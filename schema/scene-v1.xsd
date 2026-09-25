@@ -432,6 +432,10 @@
     <xs:attribute name="loop" type="xs:nonNegativeInteger" default="0"/>
     <xs:attribute name="volume" type="unitDecimal" default="1"/>
     <xs:attribute name="pan" type="xs:double" default="0"/>
+    <xs:attribute name="fadeIn" type="xs:double" default="0"/>
+    <xs:attribute name="fadeOut" type="xs:double" default="0"/>
+    <xs:attribute name="speed" type="xs:double" default="1"/>
+    <xs:attribute name="reverse" type="xs:boolean" default="false"/>
   </xs:complexType>
   <xs:complexType name="audioMixType">
     <xs:sequence><xs:element name="audioTrack" type="audioTrackType" maxOccurs="unbounded"/></xs:sequence>

@@ -69,11 +69,7 @@ typedef struct {
     size_t triangle_capacity;
 } SrMesh;
 
-typedef struct {
-    int64_t frame_index;
-    uint64_t age;
-    SrImage *image;
-} SrVideoCacheEntry;
+struct SrVideoSource;
 
 typedef struct {
     SrAssetType type;
@@ -87,8 +83,7 @@ typedef struct {
     SrColorSpace source_color_space;
     size_t source_line;
     SrImage *decoded;
-    SrVideoCacheEntry video_cache[4];
-    uint64_t cache_clock;
+    struct SrVideoSource *video;   /* persistent decoder of a video asset */
     char *text;
     char *font_family;
     char *font_file;
@@ -100,8 +95,10 @@ typedef struct {
     SrColor vector_stroke;
     double vector_stroke_width;
     SrMesh *mesh;
-    char *audio_cache_path;
-    uint64_t audio_frames;
+    float *audio_pcm;       /* decoded soundtrack: interleaved float at the
+                               audioMix rate and channel count */
+    uint64_t audio_frames;  /* samples per channel in audio_pcm */
+    bool audio_decoded;
 } SrAsset;
 
 typedef struct {
@@ -254,6 +251,10 @@ typedef struct {
     int64_t loop_count;
     double volume;
     double pan;
+    double fade_in;         /* seconds of linear gain ramp from the start */
+    double fade_out;        /* seconds of linear gain ramp to the end */
+    double speed;           /* source seconds per output second (> 0) */
+    bool reverse;           /* play each loop of [clipIn, clipOut) backward */
     size_t source_line;
 } SrAudioTrack;
 

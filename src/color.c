@@ -179,10 +179,22 @@ static uint8_t round_code(double value) {
     return (uint8_t)(scaled > 255.0 ? 255.0 : scaled);
 }
 
+static uint16_t round_code16(double value) {
+    double scaled = floor(clamp_unit(value) * 65535.0 + 0.5);
+    return (uint16_t)(scaled > 65535.0 ? 65535.0 : scaled);
+}
+
 SrStatus sr_color_output_init(SrColorOutput *output, const SrProject *project,
                               SrColorSpace target) {
-    if (!output || !project) return SR_ERR_ARGUMENT;
+    return sr_color_output_init_bits(output, project, target, 8);
+}
+
+SrStatus sr_color_output_init_bits(SrColorOutput *output,
+                                   const SrProject *project,
+                                   SrColorSpace target, unsigned bits) {
+    if (!output || !project || (bits != 8 && bits != 16)) return SR_ERR_ARGUMENT;
     *output = (SrColorOutput){0};
+    output->bits = bits;
     SrColorSpace working = project->working_color_space;
     output->linear_light = project->linear_light;
     output->passthrough = !project->linear_light && working == target;
@@ -190,11 +202,19 @@ SrStatus sr_color_output_init(SrColorOutput *output, const SrProject *project,
     Matrix3 matrix = gamut_matrix(working, target);
     memcpy(output->matrix, matrix.value, sizeof(output->matrix));
     if (output->passthrough) return SR_OK;
-    output->encode = sr_alloc(SR_COLOR_LUT_SIZE);
-    if (!output->encode) return SR_ERR_MEMORY;
-    for (size_t i = 0; i < SR_COLOR_LUT_SIZE; ++i)
-        output->encode[i] = round_code(sr_color_encode(
-            (double)i / (SR_COLOR_LUT_SIZE - 1), target));
+    if (bits == 16) {
+        output->encode16 = sr_alloc(SR_COLOR_LUT_SIZE * sizeof(uint16_t));
+        if (!output->encode16) return SR_ERR_MEMORY;
+        for (size_t i = 0; i < SR_COLOR_LUT_SIZE; ++i)
+            output->encode16[i] = round_code16(sr_color_encode(
+                (double)i / (SR_COLOR_LUT_SIZE - 1), target));
+    } else {
+        output->encode = sr_alloc(SR_COLOR_LUT_SIZE);
+        if (!output->encode) return SR_ERR_MEMORY;
+        for (size_t i = 0; i < SR_COLOR_LUT_SIZE; ++i)
+            output->encode[i] = round_code(sr_color_encode(
+                (double)i / (SR_COLOR_LUT_SIZE - 1), target));
+    }
     if (!project->linear_light) {
         output->decode = sr_alloc(SR_COLOR_LUT_SIZE * sizeof(float));
         if (!output->decode) {
@@ -212,6 +232,7 @@ void sr_color_output_free(SrColorOutput *output) {
     if (!output) return;
     free(output->decode);
     free(output->encode);
+    free(output->encode16);
     *output = (SrColorOutput){0};
 }
 
@@ -227,10 +248,17 @@ static inline uint8_t direct_code(float value) {
     return (uint8_t)(value * 255.0f + 0.5f);
 }
 
+static inline uint16_t direct_code16(float value) {
+    if (!(value > 0.0f)) return 0;
+    if (value >= 1.0f) return 65535;
+    return (uint16_t)(value * 65535.0f + 0.5f);
+}
+
 typedef struct {
     const SrColorOutput *output;
     const SrFrame *frame;
     uint8_t *rgba8;
+    uint16_t *rgba16;
 } ConvertContext;
 
 static void convert_rows(void *opaque, size_t begin, size_t end) {
@@ -273,8 +301,58 @@ static void convert_rows(void *opaque, size_t begin, size_t end) {
 SrStatus sr_color_convert_frame(const SrColorOutput *output,
                                 const SrFrame *frame, uint8_t *rgba8,
                                 unsigned threads) {
-    if (!output || !frame || !frame->px || !rgba8) return SR_ERR_ARGUMENT;
+    if (!output || !frame || !frame->px || !rgba8 || output->bits == 16)
+        return SR_ERR_ARGUMENT;
     if (!output->passthrough && !output->encode) return SR_ERR_ARGUMENT;
-    ConvertContext context = {output, frame, rgba8};
+    ConvertContext context = {output, frame, rgba8, NULL};
     return sr_parallel_for(frame->height, threads, convert_rows, &context);
+}
+
+/* convert_rows with 16-bit codes; kept separate so the 8-bit loop stays
+ * exactly as it was. */
+static void convert_rows16(void *opaque, size_t begin, size_t end) {
+    const ConvertContext *context = opaque;
+    const SrColorOutput *output = context->output;
+    uint32_t width = context->frame->width;
+    for (size_t y = begin; y < end; ++y) {
+        const float *s = context->frame->px + y * width * 4;
+        uint16_t *d = context->rgba16 + y * width * 4;
+        for (uint32_t x = 0; x < width; ++x, s += 4, d += 4) {
+            float alpha = s[3];
+            d[3] = direct_code16(alpha);
+            if (!(alpha > 0.0f)) {
+                d[0] = d[1] = d[2] = 0;
+                continue;
+            }
+            float inv = 1.0f / alpha;
+            float c[3] = {s[0] * inv, s[1] * inv, s[2] * inv};
+            if (output->passthrough) {
+                for (size_t i = 0; i < 3; ++i) d[i] = direct_code16(c[i]);
+                continue;
+            }
+            if (!output->linear_light)
+                for (size_t i = 0; i < 3; ++i)
+                    c[i] = output->decode[lut_index(c[i])];
+            if (!output->identity_gamut) {
+                float m[3];
+                for (size_t row = 0; row < 3; ++row)
+                    m[row] = (float)(output->matrix[row][0] * c[0] +
+                                     output->matrix[row][1] * c[1] +
+                                     output->matrix[row][2] * c[2]);
+                memcpy(c, m, sizeof(c));
+            }
+            for (size_t i = 0; i < 3; ++i)
+                d[i] = output->encode16[lut_index(c[i])];
+        }
+    }
+}
+
+SrStatus sr_color_convert_frame16(const SrColorOutput *output,
+                                  const SrFrame *frame, uint16_t *rgba16,
+                                  unsigned threads) {
+    if (!output || !frame || !frame->px || !rgba16 || output->bits != 16)
+        return SR_ERR_ARGUMENT;
+    if (!output->passthrough && !output->encode16) return SR_ERR_ARGUMENT;
+    ConvertContext context = {output, frame, NULL, rgba16};
+    return sr_parallel_for(frame->height, threads, convert_rows16, &context);
 }

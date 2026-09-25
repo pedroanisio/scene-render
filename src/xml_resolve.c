@@ -33,9 +33,12 @@ static bool resolve_audio(ParseContext *ctx) {
     for (size_t i = 0; i < ctx->scene->audio.track_count; ++i) {
         SrAudioTrack *track = &ctx->scene->audio.tracks[i];
         track->asset = sr_scene_find_asset(ctx->scene, track->asset_id);
-        if (!track->asset || track->asset->type != SR_ASSET_AUDIO) {
+        /* An audio file, or the soundtrack of a video asset. */
+        if (!track->asset || (track->asset->type != SR_ASSET_AUDIO &&
+                              track->asset->type != SR_ASSET_VIDEO)) {
             sr_diag_error(ctx->diag, track->source_line, "audioTrack", "asset",
-                          "unknown audio asset id '%s'", track->asset_id);
+                          "unknown audio or video asset id '%s'",
+                          track->asset_id);
             return false;
         }
     }

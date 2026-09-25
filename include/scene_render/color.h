@@ -39,10 +39,17 @@ typedef struct {
     double matrix[3][3];     /* linear working -> linear output */
     float *decode;           /* working-encoded [0,1] -> linear (65536) */
     uint8_t *encode;         /* linear output [0,1] -> 8-bit code (65536) */
+    uint16_t *encode16;      /* linear output [0,1] -> 16-bit code (65536) */
+    unsigned bits;           /* 8 or 16: which convert entry point applies */
 } SrColorOutput;
 
+/* 8-bit output tables (sr_color_convert_frame). */
 SrStatus sr_color_output_init(SrColorOutput *output, const SrProject *project,
                               SrColorSpace target);
+/* `bits` 8 or 16; 16 builds the tables for sr_color_convert_frame16. */
+SrStatus sr_color_output_init_bits(SrColorOutput *output,
+                                   const SrProject *project,
+                                   SrColorSpace target, unsigned bits);
 void sr_color_output_free(SrColorOutput *output);
 
 /* Blend space frame -> unpremultiply -> linear working -> output gamut ->
@@ -51,5 +58,11 @@ void sr_color_output_free(SrColorOutput *output);
 SrStatus sr_color_convert_frame(const SrColorOutput *output,
                                 const SrFrame *frame, uint8_t *rgba8,
                                 unsigned threads);
+/* The same conversion producing 16-bit straight RGBA: each component is
+ * clamp(v) * 65535 rounded half up (output must be initialised with 16
+ * bits). */
+SrStatus sr_color_convert_frame16(const SrColorOutput *output,
+                                  const SrFrame *frame, uint16_t *rgba16,
+                                  unsigned threads);
 
 #endif

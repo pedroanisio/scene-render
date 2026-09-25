@@ -35,8 +35,9 @@ void sr_xml_start_audio_mix(ParseContext *ctx, const XML_Char **attrs) {
 
 void sr_xml_start_audio_track(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"id", "asset", "start", "clipIn",
-                                    "clipOut", "loop", "volume", "pan"};
-    if (!sr_xml_attrs_allowed(ctx, "audioTrack", attrs, allowed, 8)) return;
+                                    "clipOut", "loop", "volume", "pan",
+                                    "fadeIn", "fadeOut", "speed", "reverse"};
+    if (!sr_xml_attrs_allowed(ctx, "audioTrack", attrs, allowed, 12)) return;
     const char *id = sr_xml_required(ctx, "audioTrack", attrs, "id");
     const char *asset = sr_xml_required(ctx, "audioTrack", attrs, "asset");
     if (ctx->failed) return;
@@ -58,6 +59,7 @@ void sr_xml_start_audio_track(ParseContext *ctx, const XML_Char **attrs) {
     SrAudioTrack *track = &mix->tracks[mix->track_count++];
     track->clip_out = -1.0;
     track->volume = 1.0;
+    track->speed = 1.0;
     track->id = sr_strdup(id);
     track->asset_id = sr_strdup(asset);
     track->source_line = sr_xml_line(ctx);
@@ -67,7 +69,19 @@ void sr_xml_start_audio_track(ParseContext *ctx, const XML_Char **attrs) {
         !number(ctx, "audioTrack", attrs, "clipIn", &track->clip_in) ||
         !number(ctx, "audioTrack", attrs, "clipOut", &track->clip_out) ||
         !number(ctx, "audioTrack", attrs, "volume", &track->volume) ||
-        !number(ctx, "audioTrack", attrs, "pan", &track->pan)) return;
+        !number(ctx, "audioTrack", attrs, "pan", &track->pan) ||
+        !number(ctx, "audioTrack", attrs, "fadeIn", &track->fade_in) ||
+        !number(ctx, "audioTrack", attrs, "fadeOut", &track->fade_out) ||
+        !number(ctx, "audioTrack", attrs, "speed", &track->speed)) return;
+    if (track->fade_in < 0.0 || track->fade_out < 0.0)
+        SR_XML_FAIL_RETURN(ctx, "audioTrack", "fadeIn/fadeOut",
+                           "fades must be non-negative seconds");
+    if (!(track->speed > 0.0) || track->speed > 100.0)
+        SR_XML_FAIL_RETURN(ctx, "audioTrack", "speed",
+                           "expected a number in (0,100]");
+    const char *reverse = sr_xml_attr(attrs, "reverse");
+    if (reverse && !sr_parse_bool(reverse, &track->reverse))
+        SR_XML_FAIL_RETURN(ctx, "audioTrack", "reverse", "expected true or false");
     if (track->start < 0.0 || track->clip_in < 0.0 ||
         (track->clip_out >= 0.0 && track->clip_out <= track->clip_in) ||
         track->volume < 0.0 || track->volume > 1.0 ||

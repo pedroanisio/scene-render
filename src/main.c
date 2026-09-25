@@ -1,6 +1,8 @@
 #include "scene_render/renderer.h"
 #include "scene_render/xml.h"
 
+#include <libavutil/log.h>
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,8 +29,9 @@ static void usage(FILE *stream) {
             "  --output FILE            Override XML output path\n"
             "  --validate               Validate without decoding or rendering\n"
             "  --frame-range A:B        Render half-open frame range [A,B)\n"
-            "  --preview-frame N        Write one deterministic PPM frame\n"
-            "  --preview-out FILE       Preview path (default build/preview.ppm)\n"
+            "  --preview-frame N        Write one deterministic preview frame\n"
+            "  --preview-out FILE       Preview path (default build/preview.ppm);\n"
+            "                           a .png name writes PNG, anything else PPM\n"
             "  --mode standard|equirectangular|viewport\n"
             "                           Override project mode (360 modes need scene360)\n"
             "  --resolution WIDTHxHEIGHT\n"
@@ -37,7 +40,8 @@ static void usage(FILE *stream) {
             "  --threads auto|N         Render/encoder worker count\n"
             "  --renderer cpu|gpu       Select backend (gpu falls back to CPU)\n"
             "  --resume                  Reuse deterministic cached RGBA frames\n"
-            "  --metrics                 Print timing and peak memory\n"
+            "  --metrics                 Print timing, CPU, per-stage and memory metrics\n"
+            "  --metrics-trace FILE      Write per-frame stage timings as JSON Lines\n"
             "  --verbose                 Verbose diagnostics\n"
             "  --version                 Print version\n",
             SR_VERSION);
@@ -171,6 +175,8 @@ static int parse_cli(int argc, char **argv, CliOptions *options) {
             }
         } else if (strcmp(argv[i], "--resume") == 0) {
             options->render.resume = true;
+        } else if (strcmp(argv[i], "--metrics-trace") == 0) {
+            if (!require_value(argc, argv, &i, &options->render.trace_path)) return 2;
         } else if (strcmp(argv[i], "--metrics") == 0) {
             options->metrics = true;
             options->render.report_metrics = true;
@@ -228,6 +234,8 @@ int main(int argc, char **argv) {
     SrDiagnostics diag;
     sr_diag_init(&diag, options.scene_path, stderr);
     diag.verbose = options.verbose;
+    /* libav reports through diagnostics; its own log only when verbose. */
+    av_log_set_level(options.verbose ? AV_LOG_INFO : AV_LOG_ERROR);
     SrScene scene;
     SrStatus status = sr_scene_load_xml(options.scene_path, &scene, &diag);
     if (status != SR_OK) {
@@ -278,14 +286,32 @@ int main(int argc, char **argv) {
         double fps = metrics.wall_seconds > 0.0
                          ? metrics.frames / metrics.wall_seconds
                          : 0.0;
+        /* Encoding runs in-process, so peak_rss_kib is the whole cost. */
         fprintf(stderr,
                 "metrics: frames=%llu render_s=%.6f encode_s=%.6f "
                 "wall_s=%.6f fps=%.3f peak_rss_kib=%ld "
-                "self_peak_rss_kib=%ld child_peak_rss_kib=%ld\n",
+                "self_peak_rss_kib=%ld "
+                "user_s=%.3f sys_s=%.3f setup_s=%.3f audio_samples=%llu\n",
                 (unsigned long long)metrics.frames, metrics.render_seconds,
                 metrics.encode_seconds, metrics.wall_seconds, fps,
                 metrics.peak_rss_kib, metrics.peak_self_rss_kib,
-                metrics.peak_child_rss_kib);
+                metrics.user_seconds, metrics.system_seconds,
+                metrics.setup_wall_seconds,
+                (unsigned long long)metrics.audio_samples);
+        fprintf(stderr,
+                "video: sources=%zu requests=%llu cache_hits=%llu "
+                "decoded=%llu seeks=%llu\n",
+                metrics.video_sources,
+                (unsigned long long)metrics.video_requests,
+                (unsigned long long)metrics.video_cache_hits,
+                (unsigned long long)metrics.video_decoded,
+                (unsigned long long)metrics.video_seeks);
+        /* Per stage: total wall seconds / total engine CPU seconds. */
+        fputs("stages:", stderr);
+        for (int stage = 0; stage < SR_STAGE_COUNT; ++stage)
+            fprintf(stderr, " %s=%.3f/%.3f", sr_stage_name((SrStage)stage),
+                    metrics.stages.wall[stage], metrics.stages.cpu[stage]);
+        fputc('\n', stderr);
     }
     sr_scene_free(&scene);
     return status;

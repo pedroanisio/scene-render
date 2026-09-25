@@ -49,7 +49,10 @@ full-frame blur on every frame after 5 s. The fix is a closing key at 0 in
   runtime. The same flags can therefore produce different bytes on different
   hosts [C1].
 
-## Tier 0 — measure first (S–M effort)
+## Tier 0 — measure first (S–M effort) — implemented
+
+Done: stage timers and `--metrics-trace`, CPU for the engine and children,
+`make profile`, and `make perf-check`. See [benchmark.md](benchmark.md#measurement-tools).
 
 1. **Per-stage timers in `sr_render_frame`.** Record wall time and thread CPU
    time for lighting, composite, viewport, each effect, colour conversion and

@@ -37,9 +37,21 @@ are relative to the current working directory.
 `output` requires `path` and `codec` (`h264`, `h265`, or `ffv1`). It accepts
 `pixelFormat`, `preset`, mutually usable `crf`/`bitrate`, `audioCodec`,
 `audioBitrate`, `colorSpace="srgb|rec709|display-p3|rec2020"`,
-`colorRange="limited|full"`, and `sphericalMetadata`. The engine preflights
-the requested FFmpeg video and audio encoders and reports unavailable codecs
-before rendering.
+`colorRange="limited|full"`, and `sphericalMetadata`. Encoding runs
+in-process through libavformat/libavcodec (no FFmpeg executable). The container
+follows the output extension: `.mp4`/`.mov` (MP4/QuickTime) or `.mkv`
+(Matroska); any other extension is an error, and `ffv1` requires `.mkv`.
+`codec` selects the `libx264`, `libx265`, or `ffv1` encoder; `pixelFormat` is
+any libavutil pixel format name the chosen encoder supports (an unsupported
+one is rejected with the list of supported formats). Formats with more than
+8 bits per component (for example `yuv420p10le`) are fed from a 16-bit RGBA
+conversion of the frame. `audioCodec` names any libavcodec audio encoder
+(`aac` by default). RGB is converted to Y'CbCr with the BT.709 matrix for
+`srgb`, `rec709` and `display-p3` outputs and BT.2020 for `rec2020`, from full
+range to the `colorRange` range, and the stream is tagged accordingly.
+Timestamps are constant-rate (`0..N-1` in units of `1/fps`) and the output is
+bit-exact: identical scenes produce identical files. Unavailable encoders are
+reported when the encoder opens, before the first frame renders.
 
 ## Assets
 
@@ -53,7 +65,21 @@ before rendering.
 | `mesh` | `id`, `src` | — |
 
 Declared video geometry/FPS/duration make frame indexing explicit and
-deterministic. The engine does not silently derive timeline metadata. Image
+deterministic. The engine does not silently derive timeline metadata: a
+decoded frame's index is its presentation timestamp, rebased to the first
+frame, at the declared `fps`. A stream whose frame rate or length differs from
+the declaration produces a warning (the declared values still apply); a
+stream whose dimensions differ is an error. An index with no frame of its own
+(variable-rate gaps) shows the latest earlier frame, and indices past the last
+frame show the last one. Each video asset keeps one decoder open for the whole
+render; sequential access decodes forward, backward or far jumps seek to the
+nearest earlier keyframe, and converted frames are kept in a 256 MiB LRU per
+asset (at least two frames), so every layer sharing the asset shares its
+frames. Y'CbCr is converted with the stream's own matrix and range (BT.709,
+BT.601 or BT.2020; untagged streams use BT.709 from 720 lines up and BT.601
+below). Images are decoded in-process too, from any format libavformat reads
+(PNG, JPEG, PPM, WebP, ...); PPM/PNM files must match the declared size,
+other formats are resampled to it (Lanczos). Image
 and video pixels are converted from their declared source color space to the
 project working space. Text is shaped and rasterized by FFmpeg's drawtext
 stack (FreeType, Fontconfig, FriBidi, and HarfBuzz in the verified build), so
@@ -161,9 +187,13 @@ Viewport orientation conventions (all angles in degrees):
   clamp vertically at the poles.
 
 For equirectangular MP4/MOV output with `sphericalMetadata="true"`, the final
-file receives the Google Spatial Media v1 spherical UUID box. Matroska keeps
-the projection stream tags written by FFmpeg. Metadata injection is atomic and
-only occurs after a successful encode.
+file receives both the Spherical Video V2 `sv3d`/`st3d` boxes (written by the
+muxer from equirectangular spherical side data) and the Google Spatial Media
+v1 spherical UUID box, injected after the encode into the video `trak` of
+either MP4 layout (the encoder writes `moov` first, "faststart"; chunk offsets
+are shifted accordingly). Matroska receives its equirectangular `Projection`
+element from the same side data. Injection is atomic and only occurs after a
+successful encode.
 
 ## Materials, 3D, and lights
 
@@ -214,8 +244,35 @@ damping, and pressure and produces a documented procedural approximation.
 ## Audio
 
 `audioMix` accepts `sampleRate` (8–384 kHz) and `channels` (1 or 2). Each
-`audioTrack` requires `id` and an audio `asset`, and accepts `start`, `clipIn`,
-`clipOut`, finite `loop` play count, `volume` `[0,1]`, and `pan` `[-1,1]`.
+`audioTrack` requires `id` and an `asset` (an `audio` asset, or a `video`
+asset whose best audio stream is used), and accepts:
+
+| Attribute | Default | Meaning |
+|---|---|---|
+| `start` | 0 | scene time (s) of the track's first sample |
+| `clipIn`, `clipOut` | 0, end | source range (s) that plays |
+| `loop` | 0 | play count (0 and 1 both play once) |
+| `volume` | 1 | gain in `[0,1]` |
+| `pan` | 0 | `[-1,1]`, equal-power (stereo mixes only) |
+| `fadeIn`, `fadeOut` | 0 | seconds of linear gain ramp after the start and before the end |
+| `speed` | 1 | `(0,100]` source seconds per output second (varispeed) |
+| `reverse` | false | each play runs from `clipOut` back to `clipIn` |
+
+Every asset is decoded once, in memory, with libswresample to the mix rate and
+channel count (clips longer than 4 hours are rejected), and shared by all its
+tracks. All times convert to samples with `round(t × rate)`, and the mixer is
+sample-exact: video frame `n` covers samples
+`[floor(n × rate × fps_den / fps_num), floor((n+1) × rate × fps_den / fps_num))`
+(exact integer arithmetic), so a range render's audio track has exactly the
+selected frames' sample count. A track plays `(clipOut − clipIn) × loop`
+source seconds, which last that long divided by `speed` in output time; the
+fade-out ends at the track's last output sample. Pan gains are
+`√2·cos θ` / `√2·sin θ` with `θ = (pan + 1)·π/4`: `pan="0"` is unity on both
+channels, the summed power of the two gains is constant, and a mono source
+(upmixed at −3 dB) panned fully to one side reaches unity there. `speed ≠ 1`
+reads the source with linear interpolation, like tape (pitch follows speed);
+it is not band-limited, so speeds above 1 can alias. The mix is clipped to
+`[-1,1]`.
 
 ## Colors and time
 
@@ -225,7 +282,7 @@ sRGB, Rec.709, Display-P3, and Rec.2020. Assets are decoded from their source
 space into the blend space (the working gamut, linear light when
 `linearLight="true"`, premultiplied float), blending follows the W3C
 separable formulas there (`add` is not clamped until output), and the final
-frame is converted to 8-bit in the output space with matching FFmpeg
-primaries/transfer/matrix/range tags. Times and durations are decimal
+frame is converted to 8-bit (16-bit for pixel formats deeper than 8 bits) in
+the output space with matching primaries/transfer/matrix/range tags. Times and durations are decimal
 seconds. Frames are selected on a half-open interval; frame N occurs exactly
 at `N × fps_den / fps_num`.

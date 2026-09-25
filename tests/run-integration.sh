@@ -1,17 +1,24 @@
 #!/bin/sh
-# usage: run-integration.sh ROOT BINARY WORKDIR
+# usage: run-integration.sh ROOT BINARY WORKDIR [PROBE]
 #   ROOT     repository root (read-only: nothing is written below it)
 #   BINARY   scene-render executable under test
 #   WORKDIR  directory that receives every output, cache and copied scene
+#   PROBE    sr-probe (tests/tools/sr-probe.c) for stream inspection;
+#            default: sr-probe next to BINARY. No FFmpeg CLI is needed.
 set -eu
 
-if [ $# -ne 3 ]; then
-    echo "usage: $0 ROOT BINARY WORKDIR" >&2
+if [ $# -ne 3 ] && [ $# -ne 4 ]; then
+    echo "usage: $0 ROOT BINARY WORKDIR [PROBE]" >&2
     exit 2
 fi
 root=$(cd "$1" && pwd)
 binary=$2
 work=$3
+probe_tool=${4:-$(dirname "$binary")/sr-probe}
+test -x "$probe_tool" || {
+    echo "sr-probe not found at $probe_tool" >&2
+    exit 2
+}
 mkdir -p "$work"
 work=$(cd "$work" && pwd)
 case $binary in
@@ -24,6 +31,14 @@ esac
 # so the source tree is never modified.
 stage_scene() {
     sed -e 's#\.\./build/test-artifacts/##g' "$root/tests/$1" > "$work/$1"
+}
+
+# field FILE TYPE KEY: value of KEY on the first TYPE (video|audio) stream
+# line printed by sr-probe.
+field() {
+    "$probe_tool" "$1" | awk -v type="type=$2" -v key="$3" '
+        $2 == type { for (i = 1; i <= NF; ++i) {
+            split($i, kv, "="); if (kv[1] == key) { print kv[2]; exit } } }'
 }
 
 # golden NAME FILE: compare FILE's SHA-256 with the NAME entry of
@@ -116,36 +131,27 @@ golden production "$production_a"
 video="$work/integration.mp4"
 "$binary" --scene "$root/examples/keyframe-curves.xml" --resolution 320x180 \
     --fps 12 --frame-range 0:12 --output "$video" --threads 1 --quality low
-probe=$(ffprobe -v error -select_streams v:0 \
-    -show_entries stream=width,height,nb_frames -of csv=p=0 "$video")
+probe="$(field "$video" video width),$(field "$video" video height),$(field "$video" video frames)"
 test "$probe" = "320,180,12" || {
-    echo "unexpected ffprobe result: $probe" >&2
+    echo "unexpected probe result: $probe" >&2
     exit 1
 }
 
 media="$work/media.mp4"
 "$binary" --scene "$root/tests/data-media.xml" --output "$media" --threads 1
-video_codec=$(ffprobe -v error -select_streams v:0 \
-    -show_entries stream=codec_name -of csv=p=0 "$media")
-audio_codec=$(ffprobe -v error -select_streams a:0 \
-    -show_entries stream=codec_name -of csv=p=0 "$media")
+video_codec=$(field "$media" video codec)
+audio_codec=$(field "$media" audio codec)
 test "$video_codec" = "h264" && test "$audio_codec" = "aac" || {
     echo "unexpected media codecs: video=$video_codec audio=$audio_codec" >&2
     exit 1
 }
-python3 - "$media" <<'PY'
-import json
-import subprocess
-import sys
-
-probe = subprocess.run([
-    "ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration",
-    "-of", "json", sys.argv[1]], check=True, capture_output=True, text=True)
-streams = {item["codec_type"]: float(item["duration"])
-           for item in json.loads(probe.stdout)["streams"]}
-if set(streams) != {"video", "audio"} or abs(streams["video"]-streams["audio"]) > 1/48000:
-    raise SystemExit(f"A/V duration mismatch: {streams}")
-PY
+# Packet-derived durations; AAC frames are 1024 samples, so the audio track
+# may overhang the last video frame by less than one frame.
+video_duration=$(field "$media" video duration)
+audio_duration=$(field "$media" audio duration)
+awk -v v="$video_duration" -v a="$audio_duration" 'BEGIN {
+    d = a - v; if (d < 0) d = -d
+    if (d > 1024 / 48000) { printf "A/V duration mismatch: video=%s audio=%s\n", v, a; exit 1 } }'
 
 viewport_video="$work/viewport.mp4"
 "$binary" --scene "$root/tests/data-viewport.xml" --output "$viewport_video" \
@@ -159,23 +165,15 @@ test -n "$manifest"
 cache_dir=$(dirname "$manifest")
 test "$(find "$cache_dir" -name '*.rgba' | wc -l)" -eq 6
 
-if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q 'ffv1'; then
-    "$binary" --scene "$root/tests/data-equirect.xml" \
-        --output "$work/equirect.mkv" --threads 1
-    dimensions=$(ffprobe -v error -select_streams v:0 \
-        -show_entries stream=width,height -of csv=p=0 \
-        "$work/equirect.mkv")
-    test "$dimensions" = "256,128"
-fi
+"$binary" --scene "$root/tests/data-equirect.xml" \
+    --output "$work/equirect.mkv" --threads 1
+dimensions="$(field "$work/equirect.mkv" video width),$(field "$work/equirect.mkv" video height)"
+test "$dimensions" = "256,128"
+test "$(field "$work/equirect.mkv" video spherical)" = "equirectangular"
 
-if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q 'libx265'; then
-    "$binary" --scene "$root/tests/data-h265.xml" \
-        --output "$work/h265.mp4" --threads 1
-    codec=$(ffprobe -v error -select_streams v:0 \
-        -show_entries stream=codec_name -of csv=p=0 \
-        "$work/h265.mp4")
-    test "$codec" = "hevc"
-fi
+"$binary" --scene "$root/tests/data-h265.xml" \
+    --output "$work/h265.mp4" --threads 1
+test "$(field "$work/h265.mp4" video codec)" = "hevc"
 
 spatial="$work/spatial.mp4"
 "$binary" --scene "$root/tests/data-spatial.xml" --output "$spatial" --threads 1
@@ -187,10 +185,11 @@ data = pathlib.Path(sys.argv[1]).read_bytes()
 uuid = bytes.fromhex("ffcc8263f8554a938814587a02521fdd")
 if uuid not in data or b"GSpherical:ProjectionType=\"equirectangular\"" not in data:
     raise SystemExit("MP4 spherical UUID metadata missing")
+if b"sv3d" not in data:
+    raise SystemExit("MP4 sv3d box missing")
 PY
-color=$(ffprobe -v error -select_streams v:0 \
-    -show_entries stream=color_range,color_space,color_transfer,color_primaries \
-    -of csv=p=0 "$spatial")
+test "$(field "$spatial" video spherical)" = "equirectangular"
+color="$(field "$spatial" video range),$(field "$spatial" video space),$(field "$spatial" video transfer),$(field "$spatial" video primaries)"
 test "$color" = "tv,bt709,iec61966-2-1,bt709" || {
     echo "unexpected spatial color tags: $color" >&2
     exit 1
@@ -198,20 +197,18 @@ test "$color" = "tv,bt709,iec61966-2-1,bt709" || {
 
 rec709="$work/rec709.mp4"
 "$binary" --scene "$root/tests/data-rec709.xml" --output "$rec709" --threads 1
-color=$(ffprobe -v error -select_streams v:0 \
-    -show_entries stream=color_range,color_space,color_transfer,color_primaries \
-    -of csv=p=0 "$rec709")
+color="$(field "$rec709" video range),$(field "$rec709" video space),$(field "$rec709" video transfer),$(field "$rec709" video primaries)"
 test "$color" = "tv,bt709,bt709,bt709" || {
     echo "unexpected Rec.709 color tags: $color" >&2
     exit 1
 }
 
-if ffmpeg -hide_banner -encoders 2>/dev/null | grep -q 'ffv1'; then
-    "$binary" --scene "$root/tests/data-ffv1.xml" \
-        --output "$work/ffv1.mkv" --threads 1
-    codec=$(ffprobe -v error -select_streams v:0 \
-        -show_entries stream=codec_name -of csv=p=0 \
-        "$work/ffv1.mkv")
-    test "$codec" = "ffv1"
-fi
+"$binary" --scene "$root/tests/data-ffv1.xml" \
+    --output "$work/ffv1.mkv" --threads 1
+test "$(field "$work/ffv1.mkv" video codec)" = "ffv1"
+
+# PNG previews through libavcodec.
+"$binary" --scene "$root/examples/keyframe-curves.xml" \
+    --resolution 320x180 --preview-frame 30 --preview-out "$work/preview.png"
+test "$(field "$work/preview.png" video codec)" = "png"
 echo "integration tests passed"
