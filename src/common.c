@@ -66,14 +66,22 @@ bool sr_parse_u32(const char *text, uint32_t *value) {
     return true;
 }
 
+/* Unsigned decimal: digits only. Signs, whitespace anywhere and trailing
+ * characters are rejected (strtoull alone would accept " 5", "+5" and wrap
+ * "-1" to UINT64_MAX). */
 bool sr_parse_u64(const char *text, uint64_t *value) {
-    if (!text || !*text || !value || text[0] == '-') {
+    if (!text || !*text || !value) {
         return false;
+    }
+    for (const char *cursor = text; *cursor; ++cursor) {
+        if (*cursor < '0' || *cursor > '9') {
+            return false;
+        }
     }
     errno = 0;
     char *tail = NULL;
     unsigned long long parsed = strtoull(text, &tail, 10);
-    if (errno || tail == text || !sr_number_tail_ok(tail)) {
+    if (errno || tail == text || *tail != '\0') {
         return false;
     }
     *value = (uint64_t)parsed;

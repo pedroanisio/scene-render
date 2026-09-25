@@ -52,6 +52,14 @@ SrStatus sr_encoder_open_copy(SrEncoder **out, const SrScene *scene,
 SrStatus sr_encoder_copy_video(SrEncoder *encoder, const char *segment_path,
                                uint64_t first_frame, uint64_t frame_count,
                                SrDiagnostics *diag);
+/* Validates a committed --resume segment before it is reused: exactly one
+ * video stream whose codec, size and pixel format are the scene's output
+ * settings, exactly `frame_count` packets, and a keyframe first. SR_OK when
+ * valid; SR_ERR_ENCODER (reason in `why`) when it is not; SR_ERR_MEMORY
+ * when libav ran out of memory. */
+SrStatus sr_encoder_check_segment(const SrScene *scene, const char *path,
+                                  uint64_t frame_count, char *why,
+                                  size_t why_size);
 /* Bits per component this encoder expects in sr_encoder_write_video. */
 unsigned sr_encoder_bits(const SrEncoder *encoder);
 /* One frame: width*height*4 components of 8 or 16 bits, tightly packed. */

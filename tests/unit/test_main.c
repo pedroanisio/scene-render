@@ -57,6 +57,7 @@ int main(int argc, char **argv)
         {"particles", sr_tests_particles}, {"deform", sr_tests_deform},
         {"shadow", sr_tests_shadow},     {"depth", sr_tests_depth},
         {"text", sr_tests_text},         {"args", sr_tests_args},
+        {"resume", sr_tests_resume},
     };
     if (argc > 2) {
         fprintf(stderr, "usage: %s [SUITE]\n", argv[0]);

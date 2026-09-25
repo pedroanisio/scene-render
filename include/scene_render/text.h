@@ -30,6 +30,11 @@ SrStatus sr_font_match_family(const char *family, char **path, int *face_index,
  * the Fontconfig configuration used for family lookup. */
 typedef struct SrFontCache SrFontCache;
 void sr_font_cache_free(SrFontCache *cache);
+/* Fonts opened through the cache (NULL cache: none), and the resolved file
+ * path of font i (NULL when i is out of range): explicit font files and
+ * the files font families resolved to alike. */
+size_t sr_font_cache_count(const SrFontCache *cache);
+const char *sr_font_cache_path(const SrFontCache *cache, size_t i);
 
 typedef struct {
     double size;            /* px per em */

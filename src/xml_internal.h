@@ -38,7 +38,9 @@ typedef struct {
     ParseFrame *stack;
     size_t depth;
     size_t stack_capacity;
+    size_t element_depth;       /* open elements, bounded by SR_XML_MAX_DEPTH */
     bool failed;
+    bool out_of_memory;         /* the failure was an allocation (exit 8) */
     bool seen_project;
     bool seen_output;
     bool seen_assets;

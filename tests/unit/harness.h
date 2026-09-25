@@ -95,5 +95,6 @@ extern const sr_test_case sr_tests_shadow[];
 extern const sr_test_case sr_tests_depth[];
 extern const sr_test_case sr_tests_text[];
 extern const sr_test_case sr_tests_args[];
+extern const sr_test_case sr_tests_resume[];
 
 #endif

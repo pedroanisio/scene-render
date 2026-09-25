@@ -47,8 +47,10 @@ pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
 # rasterization, all in-process (src/text.c).
 pkg_check_modules(TEXT REQUIRED IMPORTED_TARGET
     freetype2 harfbuzz>=2.8.2 fribidi>=1.0 fontconfig>=2.13)
-# Runtime XSD validation of scene documents (src/xml_schema.c).
-pkg_check_modules(LIBXML2 REQUIRED IMPORTED_TARGET libxml-2.0>=2.9.1)
+# Runtime XSD validation of scene documents (src/xml_schema.c). 2.9.14 is
+# the first release that never loads external parameter entities while
+# entity substitution is off.
+pkg_check_modules(LIBXML2 REQUIRED IMPORTED_TARGET libxml-2.0>=2.9.14)
 
 # Embed the XSD so the schema the loader enforces is the schema we ship.
 set(SR_XSD ${CMAKE_CURRENT_SOURCE_DIR}/schema/scene-v1.xsd)
@@ -116,15 +118,29 @@ if(BUILD_TESTING)
     set(SR_UNIT_SUITES timeline geometry compositor color vector mesh scene xml
                        camera physics blend group raster mask path image
                        encode encode_faults audio video
-                       fx anim_color particles deform shadow text args depth)
+                       fx anim_color particles deform shadow text args resume
+                       depth)
     file(GLOB SR_UNIT_SOURCES CONFIGURE_DEPENDS
          ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/*.c)
     add_executable(sr-unit-tests ${SR_UNIT_SOURCES})
     target_compile_definitions(sr-unit-tests PRIVATE
         SR_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
         SR_TEST_TMP_DIR="${CMAKE_BINARY_DIR}/test_tmp")
+    # Internal headers too (src/xml_schema.h: refusing-loader counter).
+    target_include_directories(sr-unit-tests PRIVATE src)
     target_link_libraries(sr-unit-tests PRIVATE scene_render_core)
     sr_configure_target(sr-unit-tests)
+    # The interruption test's program: the same sources with the
+    # SR_TEST_HOOKS abort hook compiled in. Only cli.resume runs it; the
+    # shipped scene-render has no hook (cli.no_test_hooks checks).
+    add_executable(scene-render-testhooks src/main.c ${SCENE_RENDER_SOURCES})
+    target_include_directories(scene-render-testhooks PRIVATE include src)
+    target_compile_definitions(scene-render-testhooks PRIVATE
+        _POSIX_C_SOURCE=200809L SR_TEST_HOOKS)
+    target_link_libraries(scene-render-testhooks PRIVATE EXPAT::EXPAT
+        PkgConfig::LIBAV PkgConfig::TEXT PkgConfig::LIBXML2 m Threads::Threads
+        ${CMAKE_DL_LIBS})
+    sr_configure_target(scene-render-testhooks)
     # libav fault injection (tests/unit/test_encode_faults.c): every libav
     # call made by the statically linked core goes through a wrapper that can
     # be told to fail.
@@ -206,8 +222,28 @@ if(BUILD_TESTING)
     add_test(NAME cli.hash_threads COMMAND ${CMAKE_COMMAND} -DCMD=${SR_CLI}
              -DSCENE=${SR_MEDIA} -P ${SR_CLI_DIR}/hash_threads.cmake)
     add_test(NAME cli.resume COMMAND ${CMAKE_COMMAND} -DCMD=${SR_CLI}
+             -DHOOKS=$<TARGET_FILE:scene-render-testhooks>
              -DSCENE=${SR_MEDIA} -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
              -DWORK=${SR_CLI_TMP}/resume -P ${SR_CLI_DIR}/resume_check.cmake)
+    add_test(NAME cli.no_test_hooks COMMAND ${CMAKE_COMMAND} -DCMD=${SR_CLI}
+             -DHOOKS=$<TARGET_FILE:scene-render-testhooks>
+             -P ${SR_CLI_DIR}/no_test_hooks.cmake)
+    # A second render on the same OUTPUT while the lock is held: exit 7.
+    find_program(SR_FLOCK flock)
+    if(SR_FLOCK)
+        add_test(NAME cli.resume_locked COMMAND ${CMAKE_COMMAND} -DCMD=${SR_CLI}
+                 -DFLOCK=${SR_FLOCK} -DSCENE=${SR_MEDIA}
+                 -DWORK=${SR_CLI_TMP}/locked -P ${SR_CLI_DIR}/resume_locked.cmake)
+    endif()
+    # Standard output that cannot be written is an I/O error (exit 7).
+    add_test(NAME cli.stdout_full COMMAND ${CMAKE_COMMAND} -DCMD=${SR_CLI}
+             -DSCENE=${SR_MEDIA} -DWORK=${SR_CLI_TMP}/full
+             -P ${SR_CLI_DIR}/stdout_full.cmake)
+    sr_cli_exit(missing_value 2 "--scene requires a value" --scene --validate)
+    sr_cli_exit(duplicate_option 2 "--scene given more than once"
+                --scene ${SR_MEDIA} --scene ${SR_MEDIA} --validate)
+    sr_cli_exit(signed_range 2 "--frame-range expects"
+                --scene ${SR_MEDIA} --hash --frame-range "0:-1")
     add_test(NAME cli.physics_cache COMMAND ${CMAKE_COMMAND} -DCMD=${SR_CLI}
              -DSCENE=${CMAKE_CURRENT_SOURCE_DIR}/tests/data-advanced.xml
              -DWORK=${SR_CLI_TMP}/physics -P ${SR_CLI_DIR}/physics_cache.cmake)
