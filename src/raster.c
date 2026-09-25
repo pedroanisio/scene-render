@@ -31,11 +31,17 @@ static float mix(SrBlendMode mode, float cb, float cs) {
     }
 }
 
+#define SR_BLEND_MIN_ALPHA 1e-6f
+
 void sr_blend_px(SrBlendMode mode, float dst[4], const float src[4]) {
     float as = src[3];
     if (!(as > 0.0f)) return;
     float ab = dst[3];
-    if (mode == SR_BLEND_NORMAL || !(ab > 0.0f)) {
+    /* Un-premultiplying divides by alpha; below SR_BLEND_MIN_ALPHA the
+     * quotient can overflow while the mode term's weight (as * ab) is
+     * negligible, so such pixels use source-over instead. */
+    if (mode == SR_BLEND_NORMAL || as < SR_BLEND_MIN_ALPHA ||
+        ab < SR_BLEND_MIN_ALPHA) {
         float keep = 1.0f - as;
         dst[0] = src[0] + dst[0] * keep;
         dst[1] = src[1] + dst[1] * keep;

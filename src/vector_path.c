@@ -120,13 +120,18 @@ static void accumulate_edge(Accumulator *acc, double x0, double y0,
     }
     if (y1 <= 0.0 || y0 >= acc->height) return;
     double dxdy = (x1 - x0) / (y1 - y0), x = x0;
+    /* Clamp in double before converting so huge coordinates stay defined. */
     int ystart = (int)floor(y0 < 0.0 ? 0.0 : y0);
     if (y0 < 0.0) x -= y0 * dxdy;
-    int yend = (int)ceil(y1) < acc->height ? (int)ceil(y1) : acc->height;
+    int yend = (int)fmin(ceil(y1), (double)acc->height);
+    /* Endpoints are clamped to [0, limit] by clipped_edge, but intersections
+     * computed from the slope can drift by rounding; keep them in the grid. */
+    double limit = acc->width - 2;
+    x = fmin(fmax(x, 0.0), limit);
     for (int y = ystart; y < yend; ++y) {
         float *row = acc->cells + (size_t)y * (size_t)acc->width;
         double dy = fmin(y + 1.0, y1) - fmax((double)y, y0);
-        double xnext = x + dxdy * dy;
+        double xnext = fmin(fmax(x + dxdy * dy, 0.0), limit);
         float d = (float)dy * direction;
         double lo = x < xnext ? x : xnext, hi = x < xnext ? xnext : x;
         double lof = floor(lo);
@@ -214,37 +219,40 @@ static void resolve(const Accumulator *acc, SrFillRule rule, float *coverage) {
     }
 }
 
-enum { JOIN_STEPS = 16 };
+/* Round-joined, round-capped stroke coverage: the stroke is the set of
+ * points within half_width of the polyline, so coverage follows from the
+ * distance to the nearest segment. Unlike a union of
+ * accumulated quads and discs, overlapping joins are never counted twice. */
+static double segment_distance(Point a, Point b, double px, double py) {
+    double dx = b.x - a.x, dy = b.y - a.y, len2 = dx * dx + dy * dy;
+    double t = len2 > 0.0 ? ((px - a.x) * dx + (py - a.y) * dy) / len2 : 0.0;
+    t = fmin(fmax(t, 0.0), 1.0);
+    return hypot(px - (a.x + t * dx), py - (a.y + t * dy));
+}
 
-/* Stroke as the union of one quad per segment and a disc per vertex (round
- * joins and caps), all wound the same way so overlaps add and clamp at full
- * coverage under the nonzero rule. */
-static void accumulate_stroke(Accumulator *acc, const Path *path,
-                              double half_width) {
-    Point disc[JOIN_STEPS];
-    for (size_t c = 0; c < path->count; ++c) {
-        const Contour *contour = &path->items[c];
-        size_t n = contour->count;
-        for (size_t i = 0; i < n; ++i) {
-            Point center = contour->points[i];
-            for (int j = 0; j < JOIN_STEPS; ++j) {
-                double angle = 2.0 * SR_PI * j / JOIN_STEPS;
-                disc[j] = (Point){center.x + half_width * cos(angle),
-                                  center.y + half_width * sin(angle)};
+static void stroke_coverage(const Path *path, double half_width,
+                            uint32_t width, uint32_t height, float *stroke) {
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            double px = x + 0.5, py = y + 0.5, best = HUGE_VAL;
+            for (size_t c = 0; c < path->count; ++c) {
+                const Contour *contour = &path->items[c];
+                size_t n = contour->count;
+                size_t segments = contour->closed ? n : n - 1;
+                for (size_t i = 0; i < segments; ++i) {
+                    double d = segment_distance(contour->points[i],
+                                                contour->points[(i + 1) % n],
+                                                px, py);
+                    if (d < best) best = d;
+                }
             }
-            accumulate_polygon(acc, disc, JOIN_STEPS);
-        }
-        size_t segments = contour->closed ? n : n - 1;
-        for (size_t i = 0; i < segments; ++i) {
-            Point a = contour->points[i], b = contour->points[(i + 1) % n];
-            double length = hypot(b.x - a.x, b.y - a.y);
-            if (length < 1e-12) continue;
-            double nx = -(b.y - a.y) / length * half_width;
-            double ny = (b.x - a.x) / length * half_width;
-            /* Wound like the discs (clockwise on screen). */
-            Point quad[4] = {{a.x - nx, a.y - ny}, {b.x - nx, b.y - ny},
-                             {b.x + nx, b.y + ny}, {a.x + nx, a.y + ny}};
-            accumulate_polygon(acc, quad, 4);
+            /* Overlap of a 1 px box across the stroke, [d-.5, d+.5], with the
+             * band [-half_width, half_width]: exact for straight runs, also
+             * for strokes thinner than a pixel. */
+            double coverage = fmin(best + 0.5, half_width) -
+                              fmax(best - 0.5, -half_width);
+            stroke[(size_t)y * width + x] =
+                (float)fmin(fmax(coverage, 0.0), 1.0);
         }
     }
 }
@@ -253,7 +261,8 @@ SrStatus sr_vector_path_coverage(const char *text, SrFillRule rule,
                                  double stroke_width, uint32_t width,
                                  uint32_t height, float *fill, float *stroke) {
     if (!text || !fill || !width || !height || width > INT32_MAX - 2 ||
-        height > INT32_MAX)
+        height > INT32_MAX ||
+        (size_t)height > SIZE_MAX / sizeof(float) / ((size_t)width + 2))
         return SR_ERR_ARGUMENT;
     Path path = {0};
     if (!parse_path(text, &path)) {
@@ -272,9 +281,7 @@ SrStatus sr_vector_path_coverage(const char *text, SrFillRule rule,
     resolve(&acc, rule, fill);
     if (stroke) {
         if (stroke_width > 0.0) {
-            memset(acc.cells, 0, cells * sizeof(float));
-            accumulate_stroke(&acc, &path, stroke_width * 0.5);
-            resolve(&acc, SR_FILL_NONZERO, stroke);
+            stroke_coverage(&path, stroke_width * 0.5, width, height, stroke);
         } else {
             memset(stroke, 0, (size_t)width * height * sizeof(float));
         }
@@ -284,33 +291,21 @@ SrStatus sr_vector_path_coverage(const char *text, SrFillRule rule,
     return SR_OK;
 }
 
-static uint8_t channel(double value) {
-    return (uint8_t)floor(fmax(0.0, fmin(1.0, value)) * 255.0 + 0.5);
-}
-
 void sr_vector_compose(const float *fill, const float *stroke,
-                       const SrVectorStyle *style, size_t pixels,
-                       uint8_t *rgba8) {
-    const SrColor f = style->fill, s = style->stroke;
+                       const float fill_px[4], const float stroke_px[4],
+                       size_t pixels, float *px) {
     for (size_t i = 0; i < pixels; ++i) {
-        double cf = fill[i] * f.a;
-        double cs = stroke ? stroke[i] * s.a : 0.0;
-        double keep = 1.0 - cs;
-        double alpha = cs + cf * keep;
-        uint8_t *out = &rgba8[i * 4];
-        if (!(alpha > 0.0)) {
-            out[0] = out[1] = out[2] = out[3] = 0;
-            continue;
-        }
-        out[0] = channel((s.r * cs + f.r * cf * keep) / alpha);
-        out[1] = channel((s.g * cs + f.g * cf * keep) / alpha);
-        out[2] = channel((s.b * cs + f.b * cf * keep) / alpha);
-        out[3] = channel(alpha);
+        float cf = fill[i], cs = stroke ? stroke[i] : 0.0f;
+        float keep = 1.0f - stroke_px[3] * cs;
+        float *out = &px[i * 4];
+        for (int c = 0; c < 4; ++c)
+            out[c] = stroke_px[c] * cs + fill_px[c] * cf * keep;
     }
 }
 
 SrStatus sr_vector_path_render(const char *text, const SrVectorStyle *style,
-                               uint32_t width, uint32_t height, uint8_t *rgba8,
+                               const float fill_px[4], const float stroke_px[4],
+                               uint32_t width, uint32_t height, float *px,
                                size_t source_line, SrDiagnostics *diag) {
     size_t pixels = (size_t)width * height;
     bool stroked = style->stroke_width > 0.0;
@@ -326,7 +321,8 @@ SrStatus sr_vector_path_render(const char *text, const SrVectorStyle *style,
     if (status == SR_ERR_ASSET)
         sr_diag_error(diag, source_line, "vector", "path",
                       "invalid path; supported commands are M/L/H/V/C/Q/Z");
-    if (status == SR_OK) sr_vector_compose(fill, stroke, style, pixels, rgba8);
+    if (status == SR_OK)
+        sr_vector_compose(fill, stroke, fill_px, stroke_px, pixels, px);
     free(fill);
     free(stroke);
     return status;

@@ -39,34 +39,39 @@ SrStatus sr_procedural_asset(const SrProject *project, SrAsset *asset,
     SrVectorStyle style = {asset->vector_fill_rule, asset->color,
                            asset->vector_stroke, asset->vector_stroke_width};
     bool stroked = style.stroke_width > 0.0;
-    uint8_t *rgba = sr_alloc(pixels * 4);
     float *fill = sr_alloc(pixels * sizeof(float));
     float *stroke = stroked ? sr_alloc(pixels * sizeof(float)) : NULL;
+    float *px = sr_alloc(pixels * 4 * sizeof(float));
     SrImage *image = sr_alloc(sizeof(*image));
-    SrStatus status = rgba && fill && image && (!stroked || stroke)
+    SrStatus status = px && fill && image && (!stroked || stroke)
                           ? SR_OK : SR_ERR_MEMORY;
+    /* Vector colors are working-space values, like every XML color; they are
+     * converted once and the stroke is composed over the fill in blend
+     * space, so linear-light projects blend vector edges in linear light. */
+    float fill_px[4], stroke_px[4];
+    sr_color_to_blend(project, style.fill, fill_px);
+    sr_color_to_blend(project, style.stroke, stroke_px);
     if (status == SR_OK) {
         if (asset->vector_shape == SR_SHAPE_PATH) {
-            status = sr_vector_path_render(asset->vector_path, &style,
-                                           asset->width, asset->height, rgba,
+            status = sr_vector_path_render(asset->vector_path, &style, fill_px,
+                                           stroke_px, asset->width,
+                                           asset->height, px,
                                            asset->source_line, diag);
         } else {
             shape_coverage(asset, fill, stroke);
-            sr_vector_compose(fill, stroke, &style, pixels, rgba);
+            sr_vector_compose(fill, stroke, fill_px, stroke_px, pixels, px);
         }
     }
-    /* Vector colors are working-space values, like every XML color. */
-    if (status == SR_OK)
-        status = sr_color_image_from_rgba8(project, project->working_color_space,
-                                           rgba, (size_t)asset->width * 4,
-                                           asset->width, asset->height, image);
-    free(rgba);
     free(fill);
     free(stroke);
     if (status != SR_OK) {
+        free(px);
         free(image);
         return status;
     }
+    image->width = asset->width;
+    image->height = asset->height;
+    image->px = px;
     asset->decoded = image;
     return SR_OK;
 }

@@ -55,11 +55,11 @@ static void test_star_fill_rules(sr_test_ctx *t)
 static void test_stroke_width_coverage(sr_test_ctx *t)
 {
     /* An open 40 px horizontal line stroked 4 px wide: a 40 x 4 band plus
-     * two round caps, each half of a radius-2 16-gon, i.e. one 16-gon. */
+     * two round caps, each half of a radius-2 disc, i.e. one disc. */
     CHECK(t, sr_vector_path_coverage("M 30 50 L 70 50", SR_FILL_NONZERO, 4.0,
                                      W, H, fill, stroke) == SR_OK);
     CHECK_NEAR(t, total(fill, W * H), 0.0, 1e-6);
-    double disc = 0.5 * 16 * 2.0 * 2.0 * sin(2.0 * SR_PI / 16.0);
+    double disc = SR_PI * 2.0 * 2.0;
     CHECK_NEAR(t, total(stroke, W * H), 40.0 * 4.0 + disc, 0.5);
     CHECK_NEAR(t, stroke[48 * W + 50], 1.0, 1e-6);
     CHECK_NEAR(t, stroke[51 * W + 50], 1.0, 1e-6);
@@ -67,30 +67,58 @@ static void test_stroke_width_coverage(sr_test_ctx *t)
     CHECK_NEAR(t, stroke[53 * W + 50], 0.0, 1e-6);
 }
 
-static void test_render_straight_rgba(sr_test_ctx *t)
+static void test_render_premultiplied(sr_test_ctx *t)
 {
-    uint8_t rgba[16 * 16 * 4];
+    float px[16 * 16 * 4];
     SrVectorStyle style = {SR_FILL_NONZERO, {1, 0, 0, 1}, {0, 0, 1, 1}, 2.0};
+    const float red[4] = {1, 0, 0, 1}, blue[4] = {0, 0, 1, 1};
     FILE *sink = tmpfile();
     SrDiagnostics diag;
     sr_diag_init(&diag, "unit-path", sink ? sink : stderr);
-    CHECK(t, sr_vector_path_render("M 4 4 H 12 V 12 H 4 Z", &style, 16, 16,
-                                   rgba, 1, &diag) == SR_OK);
-    const uint8_t *center = &rgba[(8 * 16 + 8) * 4];
-    CHECK_INT(t, center[0], 255);
-    CHECK_INT(t, center[2], 0);
-    CHECK_INT(t, center[3], 255);
-    const uint8_t *edge = &rgba[(8 * 16 + 4) * 4];  /* on the outline */
-    CHECK_INT(t, edge[2], 255);
-    CHECK_INT(t, edge[3], 255);
-    CHECK_INT(t, rgba[(1 * 16 + 1) * 4 + 3], 0);
+    CHECK(t, sr_vector_path_render("M 4 4 H 12 V 12 H 4 Z", &style, red, blue,
+                                   16, 16, px, 1, &diag) == SR_OK);
+    const float *center = &px[(8 * 16 + 8) * 4];
+    CHECK_NEAR(t, center[0], 1.0, 1e-6);
+    CHECK_NEAR(t, center[2], 0.0, 1e-6);
+    CHECK_NEAR(t, center[3], 1.0, 1e-6);
+    const float *edge = &px[(8 * 16 + 4) * 4];  /* on the outline */
+    CHECK_NEAR(t, edge[2], 1.0, 1e-6);
+    CHECK_NEAR(t, edge[3], 1.0, 1e-6);
+    CHECK_NEAR(t, px[(1 * 16 + 1) * 4 + 3], 0.0, 1e-6);
     if (sink) fclose(sink);
+}
+
+static void test_stroke_joins_not_double_counted(sr_test_ctx *t)
+{
+    /* A collinear vertex inside a 0.5 px wide stroke: the round join at
+     * (4.5, 2.5) must not add coverage on top of the segment band. */
+    CHECK(t, sr_vector_path_coverage("M 2 2.5 L 4.5 2.5 L 8 2.5",
+                                     SR_FILL_NONZERO, 0.5, W, H, fill,
+                                     stroke) == SR_OK);
+    CHECK_NEAR(t, stroke[2 * W + 4], 0.5, 1e-6);
+}
+
+static void test_left_edge_rounding_stays_in_bounds(sr_test_ctx *t)
+{
+    /* Slope rounding puts the first intersection a hair left of x = 0. */
+    float small_fill[2];
+    CHECK(t, sr_vector_path_coverage("M .1 .1 L 0 .3 L 1 .3 Z",
+                                     SR_FILL_NONZERO, 0.0, 2, 1, small_fill,
+                                     NULL) == SR_OK);
+    CHECK(t, small_fill[0] >= 0.0f && small_fill[0] <= 1.0f);
+    /* Coordinates far beyond int range are clipped, not converted. */
+    CHECK(t, sr_vector_path_coverage("M 0 0 L 1 3000000000 L 0 3000000000 Z",
+                                     SR_FILL_NONZERO, 0.0, W, H, fill,
+                                     NULL) == SR_OK);
+    CHECK(t, fill[(H - 1) * W] > 0.0f);
 }
 
 const sr_test_case sr_tests_path[] = {
     {"unit_square_exact", test_unit_square_exact},
     {"star_fill_rules", test_star_fill_rules},
     {"stroke_width_coverage", test_stroke_width_coverage},
-    {"render_straight_rgba", test_render_straight_rgba},
+    {"render_premultiplied", test_render_premultiplied},
+    {"stroke_joins_not_double_counted", test_stroke_joins_not_double_counted},
+    {"left_edge_rounding_stays_in_bounds", test_left_edge_rounding_stays_in_bounds},
     {NULL, NULL},
 };

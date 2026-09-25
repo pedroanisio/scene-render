@@ -96,7 +96,20 @@ static void test_transparent_source_noop(sr_test_ctx *t)
     }
 }
 
+static void test_tiny_alpha_keeps_backdrop(sr_test_ctx *t)
+{
+    float dst[4] = {0.5f, 0.5f, 0.5f, 1.0f};
+    const float src[4] = {1e-40f, 1e-40f, 1e-40f, 1e-40f};
+    for (int mode = SR_BLEND_ADD; mode <= SR_BLEND_DIFFERENCE; ++mode) {
+        float d[4] = {dst[0], dst[1], dst[2], dst[3]};
+        sr_blend_px((SrBlendMode)mode, d, src);
+        CHECK_NEAR(t, d[0], 0.5, 1e-6);
+        CHECK_NEAR(t, d[3], 1.0, 1e-6);
+    }
+}
+
 const sr_test_case sr_tests_blend[] = {
+    {"tiny_alpha_keeps_backdrop", test_tiny_alpha_keeps_backdrop},
     {"normal", test_normal},
     {"multiply", test_multiply},
     {"screen", test_screen},
