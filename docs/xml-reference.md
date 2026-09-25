@@ -489,7 +489,16 @@ the mesh-warp sampler. A node without a rigid body simulates in its static
 
 `deform` contains ordered `modifier` elements of type `bend`, `twist`, `wave`,
 `squash`, `stretch`, or `mesh-warp`. Controls are `amount`, `frequency`,
-`phase`, and `axis="x|y"`; controls can contain animation tracks.
+`phase`, and `axis="x|y"`; controls can contain animation tracks. They are
+inverse sample warps in the node's local pixels: `wave` shifts by
+`amount x sin(2 pi frequency u + phase)` (u the other axis' coordinate over
+the box size), `bend` by `amount x n^2` (n the centred coordinate over the
+box size), `twist` rotates by `amount x r` degrees (r the normalized
+distance from the box centre), `squash` scales the content vertically by
+`f = max(0.05, 1 - amount)` and horizontally by `1 / f`, and `stretch` does
+the same with `f = max(0.05, 1 + amount)`. These
+five do not grow the drawn area: content they move outside the node's own
+box (plus half the stroke) is clipped.
 `mesh-warp` takes `rows` and `cols` (2–16, default 4) and `point` children
 `<point row="r" col="c" x="dx" y="dy"/>` (`x`/`y` animate) offsetting control
 point (r, c) of a grid spanning the node's local box by (dx, dy) local

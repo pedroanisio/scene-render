@@ -139,6 +139,16 @@ if(BUILD_TESTING)
         PkgConfig::LIBAV PkgConfig::TEXT PkgConfig::LIBXML2 m Threads::Threads
         ${CMAKE_DL_LIBS})
     sr_configure_target(scene-render-testhooks)
+    # --- Verification depth (P7) ---------------------------------------
+    # unit.golden: reference images in tests/golden/expected/
+    # (SR_UPDATE_GOLDEN=1 regenerates them). unit.oom: allocation-failure
+    # injection (tests/unit/test_oom.c) reroutes every malloc/calloc/realloc
+    # (and free, for its leak check) made by the statically linked core
+    # through a failing counter.
+    list(APPEND SR_UNIT_SUITES golden oom)
+    target_link_options(sr-unit-tests PRIVATE
+        -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+    # --------------------------------------------------------------------
     # libav fault injection (tests/unit/test_encode_faults.c): every libav
     # call made by the statically linked core goes through a wrapper that can
     # be told to fail.

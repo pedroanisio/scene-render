@@ -58,6 +58,8 @@ int main(int argc, char **argv)
         {"shadow", sr_tests_shadow},
         {"text", sr_tests_text},         {"args", sr_tests_args},
         {"resume", sr_tests_resume},
+        /* Verification depth (P7). */
+        {"golden", sr_tests_golden},     {"oom", sr_tests_oom},
     };
     if (argc > 2) {
         fprintf(stderr, "usage: %s [SUITE]\n", argv[0]);

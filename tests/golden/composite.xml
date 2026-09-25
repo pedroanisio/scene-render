@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Golden: every blend mode over a gradient-like backdrop in linear light,
+     animated opacity, rotation and fill keyframes, z ordering. -->
+<scene version="1.0">
+  <project width="320" height="180" fps="12" duration="2" seed="11"
+           linearLight="true" background="#18202CFF"/>
+  <composition>
+    <shape id="bandA" shape="rect" width="320" height="60" x="0" y="0" fill="#D04030FF"/>
+    <shape id="bandB" shape="rect" width="320" height="60" x="0" y="60" fill="#30A060FF"/>
+    <shape id="bandC" shape="rect" width="320" height="60" x="0" y="120" fill="#3050D0FF"/>
+    <shape id="normal" shape="ellipse" width="60" height="60" x="10" y="20"
+           fill="#FFFFFFB0" blend="normal">
+      <animate property="opacity">
+        <key time="0" value="1"/><key time="2" value="0.25"/>
+      </animate>
+    </shape>
+    <shape id="add" shape="ellipse" width="60" height="60" x="60" y="60"
+           fill="#806040FF" blend="add"/>
+    <shape id="multiply" shape="rect" width="50" height="120" x="120" y="30"
+           fill="#F0C080FF" blend="multiply" stroke="#FFFFFFFF" strokeWidth="2">
+      <animate property="rotation" defaultInterpolation="ease-in-out">
+        <key time="0" value="0"/><key time="2" value="45"/>
+      </animate>
+    </shape>
+    <shape id="screen" shape="ellipse" width="70" height="70" x="170" y="10"
+           fill="#4080FFFF" blend="screen"/>
+    <shape id="overlay" shape="rect" width="60" height="100" x="200" y="70"
+           fill="#A0A0A0FF" blend="overlay">
+      <animate property="fill">
+        <key time="0" value="#202020"/><key time="2" value="#F0F0F0"/>
+      </animate>
+    </shape>
+    <shape id="difference" shape="ellipse" width="80" height="80" x="240" y="40"
+           fill="#FFFFFFFF" blend="difference">
+      <animate property="position.x">
+        <key time="0" value="240" interpolation="cubic-bezier" bezier="0.2,0,0.3,1"/><key time="2" value="200"/>
+      </animate>
+    </shape>
+    <shape id="under" shape="rect" width="40" height="40" x="20" y="120" z="-1"
+           fill="#FFFF00FF"/>
+  </composition>
+</scene>

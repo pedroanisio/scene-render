@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Golden: 3D pass without a camera (world x/y are canvas pixels): a
+     receiving plane, a rotating OBJ mesh, a box and a bobbing sphere,
+     shadow-mapped directional and spot lights, a point light, 2x2
+     supersampling. -->
+<scene version="1.0">
+  <project width="320" height="180" fps="12" duration="2" seed="20"
+           linearLight="true" background="#0A1020FF" antialias3d="2"/>
+  <assets>
+    <mesh id="octa" src="../../examples/assets/octahedron.obj"/>
+  </assets>
+  <materials>
+    <material id="wallMat" baseColor="#8A94A8FF" roughness="0.9"/>
+    <material id="gemMat" baseColor="#5DE4FFFF" metallic="0.45" roughness="0.2"
+              emissive="#031322FF"/>
+    <material id="cubeMat" baseColor="#3C78E6FF" metallic="0.1" roughness="0.4"/>
+    <material id="orbMat" baseColor="#F0A040FF" metallic="0.5" roughness="0.3"/>
+  </materials>
+  <composition>
+    <object3D id="wall" primitive="plane" material="wallMat" x="160" y="95"
+              z="-120" radius="90"/>
+    <object3D id="gem" primitive="mesh" mesh="octa" material="gemMat" x="110"
+              y="90" z="30" radius="40" rotationX="-18" rotationY="25">
+      <animate property="rotation.y">
+        <key time="0" value="25"/><key time="2" value="205"/>
+      </animate>
+    </object3D>
+    <object3D id="cube" primitive="box" material="cubeMat" x="200" y="110"
+              z="40" radius="20">
+      <animate property="rotation">
+        <key time="0" value="0"/><key time="2" value="60"/>
+      </animate>
+    </object3D>
+    <object3D id="orb" primitive="sphere" material="orbMat" x="230" y="60"
+              z="10" radius="16" receiveShadow="false">
+      <animate property="position.y" defaultInterpolation="ease-in-out">
+        <key time="0" value="55"/><key time="1" value="80"/><key time="2" value="55"/>
+      </animate>
+    </object3D>
+  </composition>
+  <lights>
+    <light id="amb" type="ambient" color="#C8D8FFFF" intensity="0.15"/>
+    <light id="sun" type="directional" color="#FFF2DCFF" intensity="0.8"
+           yaw="-22" pitch="12" castShadow="true" shadowMapSize="256"/>
+    <light id="spot" type="spot" color="#FF8FC8FF" intensity="0.6" x="260"
+           y="150" z="220" spotAngle="40" range="600" falloff="1"
+           castShadow="true" shadowMapSize="128"/>
+    <light id="rim" type="point" color="#40FFB0FF" intensity="1.2" x="40"
+           y="20" z="160" range="500" falloff="1.5"/>
+  </lights>
+</scene>

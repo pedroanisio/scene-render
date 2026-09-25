@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Golden: 2:1 equirectangular canvas with a magnified checker, a marker
+     crossing the 360 seam and a dust emitter. -->
+<scene version="1.0">
+  <project width="320" height="160" fps="12" duration="2" seed="18"
+           mode="equirectangular" background="#001020FF"/>
+  <assets>
+    <image id="tile" src="../../examples/assets/checker.ppm" width="8" height="8"/>
+  </assets>
+  <scene360 layout="equirectangular" width="320" height="160"/>
+  <composition>
+    <layer id="pano" asset="tile" scaleX="40" scaleY="20" opacity="0.7"/>
+    <shape id="marker" shape="ellipse" width="40" height="40" x="280" y="60"
+           fill="#FFCC00FF">
+      <animate property="position.x">
+        <key time="0" value="250"/><key time="2" value="310"/>
+      </animate>
+    </shape>
+    <particleEmitter id="stars" preset="dust" x="160" y="80" rate="24"
+                     lifetime="1.5" speed="60" spread="180" size="2"
+                     color="#FFFFFFFF" blend="screen"/>
+  </composition>
+</scene>

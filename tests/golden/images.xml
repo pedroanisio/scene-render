@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Golden: image layers magnified (8x8 checker at 11x and 17.3x, rotated,
+     animated scale), a large PNG resampled to its declared size, edges
+     crossing the canvas border, and an anchor-centred rotation. -->
+<scene version="1.0">
+  <project width="320" height="180" fps="12" duration="2" seed="14"
+           linearLight="true" background="#000000FF"/>
+  <assets>
+    <image id="checker" src="../../examples/assets/checker.ppm" width="8" height="8"/>
+    <image id="peaks" src="../../assets/third-party/dusk-parallax/far-peaks.png"
+           width="190" height="112"/>
+  </assets>
+  <composition>
+    <layer id="bg" asset="peaks" x="130" y="68"/>
+    <layer id="magnified" asset="checker" x="-20" y="-10" scaleX="11" scaleY="11"/>
+    <layer id="tilted" asset="checker" x="140" y="20" scaleX="17.3" scaleY="9.1"
+           rotation="23" opacity="0.85"/>
+    <layer id="spinning" asset="checker" x="60" y="130" anchorX="4" anchorY="4"
+           scaleX="6" scaleY="6" blend="screen">
+      <animate property="rotation">
+        <key time="0" value="0"/><key time="2" value="90"/>
+      </animate>
+      <animate property="scale.y">
+        <key time="0" value="6"/><key time="2" value="3.5"/>
+      </animate>
+    </layer>
+    <layer id="edge" asset="checker" x="290" y="150" scaleX="7.5" scaleY="7.5"/>
+  </composition>
+</scene>

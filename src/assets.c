@@ -102,7 +102,8 @@ static SrStatus sr_open_video(SrScene *scene, const char *path, SrAsset *asset,
 SrStatus sr_assets_load(SrScene *scene, SrDiagnostics *diag) {
     for (size_t i = 0; i < scene->asset_count; ++i) {
         SrAsset *asset = &scene->assets[i];
-        if (asset->decoded || asset->video || asset->type == SR_ASSET_AUDIO) {
+        if (asset->decoded || asset->video || asset->mesh ||
+            asset->type == SR_ASSET_AUDIO) {
             continue;
         }
         if(asset->type==SR_ASSET_MESH){char *path=sr_path_join(scene->base_dir,asset->source);
@@ -151,6 +152,11 @@ void sr_assets_unload(SrScene *scene) {
         }
         sr_video_close(asset->video);
         asset->video = NULL;
+        if (asset->mesh) {
+            free(asset->mesh->triangles);
+            free(asset->mesh);
+            asset->mesh = NULL;
+        }
         free(asset->audio_pcm);
         asset->audio_pcm = NULL;
         asset->audio_frames = 0;
@@ -178,12 +184,22 @@ void sr_assets_video_stats(const SrScene *scene, size_t *sources,
 
 SrImage *sr_asset_get_frame(SrScene *scene, SrAsset *asset, double source_time,
                             SrDiagnostics *diag) {
+    return sr_asset_get_frame_status(scene, asset, source_time, diag, NULL);
+}
+
+SrImage *sr_asset_get_frame_status(SrScene *scene, SrAsset *asset,
+                                   double source_time, SrDiagnostics *diag,
+                                   SrStatus *status) {
+    SrStatus ignored;
+    if (!status) status = &ignored;
+    *status = SR_OK;
     (void)scene;
     if (!asset) return NULL;
     if (asset->type != SR_ASSET_VIDEO) return asset->decoded;
     if (!asset->video) {
         sr_diag_error(diag, asset->source_line, "video", "src",
                       "video asset '%s' is not loaded", asset->id);
+        *status = SR_ERR_ASSET;
         return NULL;
     }
     double fps = (double)asset->fps_num / asset->fps_den;
@@ -192,7 +208,8 @@ SrImage *sr_asset_get_frame(SrScene *scene, SrAsset *asset, double source_time,
     if (total > 0 && index >= total) index = total - 1;
     const SrImage *image = NULL;
     char err[256] = "";
-    if (sr_video_frame(asset->video, index, &image, err, sizeof(err)) != SR_OK) {
+    *status = sr_video_frame(asset->video, index, &image, err, sizeof(err));
+    if (*status != SR_OK) {
         sr_diag_error(diag, asset->source_line, "video", "src",
                       "cannot decode frame %lld of '%s': %s", (long long)index,
                       asset->id, err);
