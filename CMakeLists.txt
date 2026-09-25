@@ -33,8 +33,8 @@ function(sr_configure_target target)
     endif()
     if(SR_SANITIZE)
         target_compile_options(${target} PRIVATE
-            -fsanitize=address,undefined -fno-omit-frame-pointer)
-        target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+            -fsanitize=address,undefined,float-cast-overflow -fno-omit-frame-pointer)
+        target_link_options(${target} PRIVATE -fsanitize=address,undefined,float-cast-overflow)
     endif()
 endfunction()
 

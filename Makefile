@@ -19,8 +19,8 @@ endif
 SR_DETERMINISM := -ffp-contract=off -fno-fast-math
 CFLAGS += -std=c17 $(SR_WARNINGS) $(SR_DETERMINISM)
 ifeq ($(SR_SANITIZE),1)
-CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
-LDFLAGS += -fsanitize=address,undefined
+CFLAGS += -fsanitize=address,undefined,float-cast-overflow -fno-omit-frame-pointer
+LDFLAGS += -fsanitize=address,undefined,float-cast-overflow
 endif
 ifeq ($(SR_PROFILE),1)
 # override: -pg must reach compile and link even when CFLAGS/LDFLAGS are
@@ -87,7 +87,7 @@ UNIT_SUITES := timeline geometry compositor color vector mesh scene xml \
 	camera physics blend group raster mask path image encode encode_faults \
 	audio video fx anim_color particles deform shadow text args resume
 TEST_CPPFLAGS := -Isrc -DSR_TEST_DATA_DIR='"$(CURDIR)"' \
-	-DSR_TEST_TMP_DIR='"$(CURDIR)/$(BUILD)/test_tmp"'
+	-DSR_TEST_TMP_DIR='"$(abspath $(BUILD))/test_tmp"'
 DEPS := $(CORE_OBJECTS:.o=.d) $(APP_OBJECT:.o=.d) $(TEST_OBJECTS:.o=.d)
 
 .PHONY: all clean test unit integration profile perf-check
@@ -129,15 +129,15 @@ $(BUILD)/unit/%.o: tests/unit/%.c
 # One run per suite, mirroring the unit.<suite> ctest entries.
 unit: $(BUILD)/sr-unit-tests
 	@status=0; for suite in $(UNIT_SUITES); do \
-		out=$$(./build/sr-unit-tests $$suite 2>&1); rc=$$?; \
+		out=$$("$(abspath $(BUILD))/sr-unit-tests" $$suite 2>&1); rc=$$?; \
 		printf '%s\n' "$$out"; \
-		if [ $$rc -ne 0 ] || printf '%s\n' "$$out" | grep -q '\[FAIL\]'; then \
+		if [ $$rc -ne 0 ] || printf '%s\n' "$$out" | grep -Eq '\[FAIL\]|runtime error:|ERROR: AddressSanitizer'; then \
 			echo "unit.$$suite FAILED"; status=1; fi; \
 	done; exit $$status
 
 integration: $(BUILD)/scene-render $(BUILD)/sr-probe
-	sh tests/run-integration.sh "$(CURDIR)" "$(CURDIR)/$(BUILD)/scene-render" \
-		"$(CURDIR)/$(BUILD)/test-artifacts" "$(CURDIR)/$(BUILD)/sr-probe"
+	sh tests/run-integration.sh "$(CURDIR)" "$(abspath $(BUILD))/scene-render" \
+		"$(abspath $(BUILD))/test-artifacts" "$(abspath $(BUILD))/sr-probe"
 
 test: unit integration
 
