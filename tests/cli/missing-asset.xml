@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<!-- Schema-valid scene whose image file does not exist (exit code 4). -->
+<scene version="1.0">
+  <project width="16" height="16" fps="1" duration="1"/>
+  <assets>
+    <image id="missing" src="does-not-exist.ppm" width="8" height="8"/>
+  </assets>
+  <composition>
+    <layer id="l" asset="missing"/>
+  </composition>
+</scene>

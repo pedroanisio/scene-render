@@ -456,7 +456,11 @@ typedef struct {
     double fixed_step;
     double gravity_x;
     double gravity_y;
-    char *cache_path;
+    char *cache_path;           /* XML <physics cache>, relative to the scene */
+    char *cache_dir;            /* --physics-cache DIR (wins over cache_path):
+                                   DIR/physics-<signature>.bin */
+    uint64_t steps_simulated;   /* set by sr_physics_prepare */
+    bool cache_hit;             /* samples restored from the cache */
     SrConstraint *constraints;
     size_t constraint_count;
     size_t constraint_capacity;

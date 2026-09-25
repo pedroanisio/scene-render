@@ -113,7 +113,9 @@ static void test_antialias_attribute(sr_test_ctx *t)
         "<scene version=\"1.0\"><project width=\"8\" height=\"8\" fps=\"10\" duration=\"1\" "
         "antialias3d=\"5\"/><composition/></scene>";
     CHECK(t, st_load(t, "ss-bad.xml", bad, &scene, &message) == SR_ERR_XML);
-    CHECK_CONTAINS(t, message, "<project> @antialias3d: expected 1, 2, 3, or 4");
+    /* The XSD rejects it before the loader's own range check runs. */
+    CHECK_CONTAINS(t, message, ":1: error: <project> @antialias3d:");
+    CHECK_CONTAINS(t, message, "maximum value allowed ('4')");
     free(message);
     const char *good =
         "<scene version=\"1.0\"><project width=\"8\" height=\"8\" fps=\"10\" duration=\"1\"/>"

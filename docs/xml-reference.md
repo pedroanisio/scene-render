@@ -1,9 +1,17 @@
 # XML scene reference
 
-The normative grammar is `schema/scene-v1.xsd`. Runtime validation adds numeric
-relationships, unique IDs, reference types, 2:1 panorama checks, clip bounds,
-and supported-codec behavior. Diagnostics use the XML source line plus element
-and attribute whenever Expat exposes them.
+The normative grammar is `schema/scene-v1.xsd`. It is embedded in the binary
+at build time (`scene-render --print-schema` prints it) and every scene is
+validated against it with libxml2 before loading: no network access, no
+external entities or DTD loading, no entity substitution. Each schema error
+becomes a diagnostic `FILE:LINE: error: <element> @attribute: message` (the
+attribute is taken from libxml2's message when it names one) and the load
+fails with exit code 3. Documents with a DOCTYPE, and documents that are not
+well-formed, are rejected by the loader's own checks with its usual message.
+After the schema, the Expat loader adds numeric relationships, unique IDs,
+reference types, 2:1 panorama checks, clip bounds, and supported-codec
+behavior. Its diagnostics use the XML source line plus element and attribute
+whenever Expat exposes them.
 
 ## Document order
 
@@ -402,7 +410,10 @@ it casts no shadows.
 ## Physics and deformation
 
 `physics` accepts `fixedStep`, `gravityX`, `gravityY`, and an optional binary
-`cache` path. It may contain:
+`cache` path (relative to the scene file). `--physics-cache DIR` on the
+command line overrides it: the cache is then `DIR/physics-<signature>.bin`,
+named by the simulation signature, so several scenes can share one
+directory. It may contain:
 
 - directional `forceField` with `forceX/forceY`;
 - radial `forceField` with `x/y`, `strength`, and `falloff`: acceleration

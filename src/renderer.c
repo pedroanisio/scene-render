@@ -18,6 +18,7 @@
 
 #include <errno.h>
 #include <math.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,7 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 const char *sr_stage_name(SrStage stage) {
     static const char *const names[SR_STAGE_COUNT] = {
@@ -293,6 +295,252 @@ static SrStatus sr_render_frame(SrScene *scene, uint64_t index,
     return status;
 }
 
+/* Everything one range render (encode, hash or segmented resume) shares. */
+typedef struct {
+    SrScene *scene;
+    const SrRenderOptions *options;
+    SrRenderMetrics *metrics;
+    SrDiagnostics *diag;
+    SrFrameState *state;
+    SrFrame *composition;
+    SrFrame *frame;         /* output-sized frame (viewport or composition) */
+    SrGpu *gpu;
+    FILE *trace;
+    size_t frame_bytes;     /* bytes of state->pixels */
+    SrMixer *mixer;         /* NULL: the scene has no audio */
+    float *audio;           /* one frame's mixed block */
+    uint32_t channels;
+} SrRun;
+
+static SrStatus sr_run_audio_open(SrRun *run) {
+    SrScene *scene = run->scene;
+    if (!scene->audio.track_count) return SR_OK;
+    SrStatus status = sr_audio_load(scene, run->diag);
+    if (status == SR_OK) status = sr_mixer_create(scene, &run->mixer);
+    /* Largest per-frame block: ceil(rate * fps_den / fps_num). */
+    size_t block = (size_t)(sr_frame_to_sample(1, scene->audio.sample_rate,
+                                               scene->project.fps_num,
+                                               scene->project.fps_den) + 1);
+    if (status == SR_OK) {
+        run->audio = sr_alloc(block * scene->audio.channels * sizeof(float));
+        if (!run->audio) status = SR_ERR_MEMORY;
+    }
+    run->channels = scene->audio.channels;
+    return status;
+}
+
+/* Mixes frame `index`'s samples [S(index), S(index+1)) into run->audio: the
+ * blocks tile the range exactly, so the audio of [first, end) lasts exactly
+ * S(end) - S(first) samples. Returns the sample count. */
+static size_t sr_run_mix(SrRun *run, uint64_t index) {
+    const SrScene *scene = run->scene;
+    uint32_t rate = scene->audio.sample_rate;
+    uint64_t from = sr_frame_to_sample(index, rate, scene->project.fps_num,
+                                       scene->project.fps_den);
+    uint64_t to = sr_frame_to_sample(index + 1, rate, scene->project.fps_num,
+                                     scene->project.fps_den);
+    sr_mixer_mix(run->mixer, from, (size_t)(to - from), run->audio);
+    run->metrics->audio_samples += to - from;
+    return (size_t)(to - from);
+}
+
+static SrStatus sr_run_render(SrRun *run, uint64_t index, SrStageTimes *times) {
+    return sr_render_frame(run->scene, index, run->state, run->composition,
+                           run->frame, run->options->encoder_threads, run->gpu,
+                           &run->metrics->render_seconds, times, run->diag);
+}
+
+static void sr_run_account(SrRun *run, uint64_t index, uint64_t total,
+                           const SrStageTimes *times) {
+    sr_stage_accumulate(run->metrics, times);
+    sr_trace_frame(run->trace, index,
+                   (double)index * run->scene->project.fps_den /
+                       run->scene->project.fps_num, false, times);
+    ++run->metrics->frames;
+    if (run->diag->verbose && (run->metrics->frames % 30 == 0))
+        sr_diag_info(run->diag, "rendered %llu/%llu selected frames",
+                     (unsigned long long)run->metrics->frames,
+                     (unsigned long long)total);
+}
+
+/* --hash: frames are hashed exactly as the encoder would receive them. */
+static SrStatus sr_run_hash(SrRun *run, uint64_t first, uint64_t end) {
+    FILE *out = run->options->hash_stream ? run->options->hash_stream : stdout;
+    uint64_t audio_hash = SR_FNV_OFFSET;
+    SrStatus status = SR_OK;
+    for (uint64_t index = first; index < end && status == SR_OK; ++index) {
+        SrStageTimes times = {0};
+        status = sr_run_render(run, index, &times);
+        if (status != SR_OK) break;
+        fprintf(out, "%llu %016llx\n", (unsigned long long)index,
+                (unsigned long long)sr_fnv1a64(SR_FNV_OFFSET, run->state->pixels,
+                                               run->frame_bytes));
+        if (run->mixer) {
+            size_t samples = sr_run_mix(run, index);
+            audio_hash = sr_fnv1a64(audio_hash, run->audio,
+                                    samples * run->channels * sizeof(float));
+        }
+        sr_run_account(run, index, end - first, &times);
+    }
+    if (status == SR_OK && run->mixer)
+        fprintf(out, "audio %016llx\n", (unsigned long long)audio_hash);
+    if (fflush(out) != 0 && status == SR_OK) {
+        sr_diag_error(run->diag, 0, NULL, NULL, "cannot write hashes: %s",
+                      strerror(errno));
+        status = SR_ERR_IO;
+    }
+    return status;
+}
+
+/* Renders [first, end) into an open encoder; audio too when `with_audio`. */
+static SrStatus sr_run_frames(SrRun *run, SrEncoder *encoder, uint64_t first,
+                              uint64_t end, uint64_t total, bool with_audio) {
+    SrStatus status = SR_OK;
+    for (uint64_t index = first; index < end && status == SR_OK; ++index) {
+        SrStageTimes times = {0};
+        status = sr_run_render(run, index, &times);
+        if (status != SR_OK) break;
+        SrStageMark mark = sr_stage_begin();
+        status = sr_encoder_write_video(encoder, run->state->pixels, run->diag);
+        if (status == SR_OK && with_audio && run->mixer) {
+            size_t samples = sr_run_mix(run, index);
+            status = sr_encoder_write_audio(encoder, run->audio, samples, run->diag);
+        }
+        sr_stage_end(&times, SR_STAGE_ENCODE, mark);
+        if (status == SR_OK) sr_run_account(run, index, total, &times);
+    }
+    return status;
+}
+
+static SrEncoderAudio sr_run_audio_format(const SrRun *run) {
+    return (SrEncoderAudio){run->scene->audio.sample_rate,
+                            run->mixer ? run->channels : 0};
+}
+
+static SrStatus sr_run_encode(SrRun *run, const char *path, uint64_t first,
+                              uint64_t end) {
+    SrEncoderAudio audio = sr_run_audio_format(run);
+    SrEncoder *encoder = NULL;
+    SrStatus status = sr_encoder_open(&encoder, run->scene, path,
+                                      run->options->encoder_threads, &audio,
+                                      run->diag);
+    if (status == SR_OK) {
+        status = sr_run_frames(run, encoder, first, end, end - first, true);
+        SrStatus finished = sr_encoder_finish(encoder, run->diag);
+        if (status == SR_OK) status = finished;
+    }
+    run->metrics->encode_seconds += sr_encoder_seconds(encoder);
+    sr_encoder_destroy(encoder);
+    return status;
+}
+
+/* Test hook: SR_TEST_ABORT_AFTER_SEGMENTS=N kills the process (SIGKILL,
+ * like an interruption) once this run has committed N segments. */
+static void sr_run_maybe_abort(uint64_t committed) {
+    const char *value = getenv("SR_TEST_ABORT_AFTER_SEGMENTS");
+    uint64_t limit;
+    if (value && sr_parse_u64(value, &limit) && limit && committed >= limit) {
+        fflush(NULL);
+        raise(SIGKILL);
+    }
+}
+
+static SrStatus sr_run_segment(SrRun *run, const SrResume *resume, uint64_t k) {
+    uint64_t from, to;
+    sr_resume_segment_range(resume, k, &from, &to);
+    char *partial = sr_resume_segment_path(resume, k, true);
+    if (!partial) return SR_ERR_MEMORY;
+    SrEncoder *encoder = NULL;
+    SrStatus status = sr_encoder_open_segment(&encoder, run->scene, partial,
+                                              run->options->encoder_threads,
+                                              run->diag);
+    if (status == SR_OK) {
+        status = sr_run_frames(run, encoder, from, to, resume->end - resume->first,
+                               false);
+        SrStatus finished = sr_encoder_finish(encoder, run->diag);
+        if (status == SR_OK) status = finished;
+    }
+    run->metrics->encode_seconds += sr_encoder_seconds(encoder);
+    sr_encoder_destroy(encoder);
+    if (status == SR_OK) status = sr_resume_commit(resume, k, run->diag);
+    if (status != SR_OK) unlink(partial);
+    free(partial);
+    return status;
+}
+
+/* Packet-copies every committed segment into `path` and encodes the audio
+ * of the whole range once. */
+static SrStatus sr_run_assemble(SrRun *run, const SrResume *resume,
+                                const char *path) {
+    char *template_path = sr_resume_segment_path(resume, 0, false);
+    if (!template_path) return SR_ERR_MEMORY;
+    SrEncoderAudio audio = sr_run_audio_format(run);
+    SrEncoder *encoder = NULL;
+    SrStatus status = sr_encoder_open_copy(&encoder, run->scene, path,
+                                           template_path, &audio, run->diag);
+    free(template_path);
+    for (uint64_t k = 0; status == SR_OK && k < resume->segment_count; ++k) {
+        uint64_t from, to;
+        sr_resume_segment_range(resume, k, &from, &to);
+        char *segment = sr_resume_segment_path(resume, k, false);
+        status = segment ? sr_encoder_copy_video(encoder, segment,
+                                                 from - resume->first, to - from,
+                                                 run->diag)
+                         : SR_ERR_MEMORY;
+        free(segment);
+        for (uint64_t index = from; status == SR_OK && run->mixer && index < to;
+             ++index) {
+            size_t samples = sr_run_mix(run, index);
+            status = sr_encoder_write_audio(encoder, run->audio, samples, run->diag);
+        }
+    }
+    if (encoder) {
+        SrStatus finished = sr_encoder_finish(encoder, run->diag);
+        if (status == SR_OK) status = finished;
+    }
+    run->metrics->encode_seconds += sr_encoder_seconds(encoder);
+    sr_encoder_destroy(encoder);
+    return status;
+}
+
+static SrStatus sr_run_resume(SrRun *run, const char *path, uint64_t first,
+                              uint64_t end) {
+    const SrRenderOptions *options = run->options;
+    SrResumeSettings settings = {options->encoder_threads, options->request_gpu,
+                                 run->state->bits};
+    uint32_t segment_frames = options->segment_frames
+                                  ? options->segment_frames
+                                  : SR_RESUME_DEFAULT_SEGMENT_FRAMES;
+    SrResume resume;
+    SrStatus status = sr_resume_prepare(&resume, run->scene, path, first, end,
+                                        segment_frames, &settings, run->diag);
+    if (status != SR_OK) return status;
+    uint64_t committed = 0;
+    for (uint64_t k = 0; status == SR_OK && k < resume.segment_count; ++k) {
+        if (sr_resume_segment_done(&resume, k)) {
+            ++run->metrics->segments_reused;
+            continue;
+        }
+        status = sr_run_segment(run, &resume, k);
+        if (status == SR_OK) {
+            ++run->metrics->segments_rendered;
+            sr_run_maybe_abort(++committed);
+        }
+    }
+    if (status == SR_OK) {
+        SrStageMark mark = sr_stage_begin();
+        status = sr_run_assemble(run, &resume, path);
+        sr_stage_end(&run->metrics->stages, SR_STAGE_RESUME, mark);
+    }
+    if (status == SR_OK && !options->keep_parts)
+        status = sr_resume_remove(&resume, run->diag);
+    sr_diag_info(run->diag, "resume: %llu segment(s) rendered, %llu reused",
+                 (unsigned long long)run->metrics->segments_rendered,
+                 (unsigned long long)run->metrics->segments_reused);
+    sr_resume_close(&resume);
+    return status;
+}
+
 SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
                    SrRenderMetrics *metrics, SrDiagnostics *diag) {
     if (!scene || !options || !metrics) {
@@ -327,6 +575,8 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
     }
     SrStatus status = sr_assets_load(scene, diag);
     if (status == SR_OK) status = sr_physics_prepare(scene, diag);
+    metrics->physics_steps = scene->physics.steps_simulated;
+    metrics->physics_cache_hit = scene->physics.cache_hit;
     metrics->setup_wall_seconds = sr_monotonic_seconds() - setup.wall;
     metrics->setup_cpu_seconds = sr_process_cpu_seconds() - setup.cpu;
     if (status != SR_OK) {
@@ -401,103 +651,48 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
         sr_trace_frame(trace, options->preview_frame,
                        (double)options->preview_frame * scene->project.fps_den /
                            scene->project.fps_num, false, &times);
+        char fallback[40];
+        const char *preview_path = options->preview_path;
+        if (!preview_path) {
+            snprintf(fallback, sizeof(fallback), "frame-%06llu.png",
+                     (unsigned long long)options->preview_frame);
+            preview_path = fallback;
+        }
         if (status == SR_OK) {
-            status = sr_has_suffix(options->preview_path, ".png")
-                ? sr_write_png(options->preview_path, frame->width,
+            metrics->preview_hash = sr_fnv1a64(SR_FNV_OFFSET, state.pixels,
+                                               frame_bytes);
+            status = sr_has_suffix(preview_path, ".png")
+                ? sr_write_png(preview_path, frame->width,
                                frame->height, state.pixels, diag)
-                : sr_write_ppm(options->preview_path, frame->width,
+                : sr_write_ppm(preview_path, frame->width,
                                frame->height, state.pixels, diag);
         }
         metrics->frames = status == SR_OK ? 1 : 0;
         goto cleanup;
     }
-    char *path = options->output_override
-                     ? sr_strdup(options->output_override)
-                     : sr_path_join(scene->base_dir, scene->output.path);
-    if (!path) {
-        status = SR_ERR_MEMORY;
-        goto cleanup;
-    }
-    status = sr_make_parent_dirs(path, diag);
-    SrMixer *mixer = NULL;
-    float *audio = NULL;
-    SrEncoderAudio audio_format = {scene->audio.sample_rate, 0};
-    const uint32_t fps_num = scene->project.fps_num, fps_den = scene->project.fps_den;
-    const uint32_t rate = scene->audio.sample_rate;
-    if (status == SR_OK && scene->audio.track_count) {
-        status = sr_audio_load(scene, diag);
-        if (status == SR_OK) status = sr_mixer_create(scene, &mixer);
-        /* Largest per-frame block: ceil(rate * fps_den / fps_num). */
-        size_t block = (size_t)(sr_frame_to_sample(1, rate, fps_num, fps_den) + 1);
-        if (status == SR_OK) {
-            audio = sr_alloc(block * scene->audio.channels * sizeof(float));
-            if (!audio) status = SR_ERR_MEMORY;
-        }
-        audio_format.channels = scene->audio.channels;
-    }
-    SrEncoder *encoder = NULL;
-    SrResumeCache resume = {0};
-    if (status == SR_OK)
-        status = sr_resume_open(&resume, scene, path, options->resume,
-                                state.bits, diag);
-    if (status == SR_OK)
-        status = sr_encoder_open(&encoder, scene, path, options->encoder_threads,
-                                 &audio_format, diag);
+    SrRun run = {scene, options, metrics, diag, &state, &composition, frame,
+                 &gpu, trace, frame_bytes, NULL, NULL, 0};
+    status = sr_run_audio_open(&run);
     if (status == SR_OK) {
-        for (uint64_t index = first; index < end; ++index) {
-            SrStageTimes times = {0};
-            SrStageMark mark = sr_stage_begin();
-            bool reused = sr_resume_load(&resume, index, state.pixels, diag);
-            sr_stage_end(&times, SR_STAGE_RESUME, mark);
-            if (!reused)
-                status = sr_render_frame(scene, index, &state, &composition,
-                                         frame, options->encoder_threads, &gpu,
-                                         &metrics->render_seconds, &times, diag);
-            if (status == SR_OK && !reused) {
-                mark = sr_stage_begin();
-                status = sr_resume_store(&resume, index, state.pixels, diag);
-                sr_stage_end(&times, SR_STAGE_RESUME, mark);
-            }
-            if (status != SR_OK) break;
-            mark = sr_stage_begin();
-            status = sr_encoder_write_video(encoder, state.pixels, diag);
-            if (status == SR_OK && mixer) {
-                /* This frame's samples [S(index), S(index+1)): the blocks
-                 * tile the range exactly, so the audio track lasts exactly
-                 * S(end) - S(first) samples. */
-                uint64_t from = sr_frame_to_sample(index, rate, fps_num, fps_den);
-                uint64_t to = sr_frame_to_sample(index + 1, rate, fps_num, fps_den);
-                sr_mixer_mix(mixer, from, (size_t)(to - from), audio);
-                status = sr_encoder_write_audio(encoder, audio, (size_t)(to - from),
-                                                diag);
-                metrics->audio_samples += to - from;
-            }
-            sr_stage_end(&times, SR_STAGE_ENCODE, mark);
-            if (status != SR_OK) break;
-            sr_stage_accumulate(metrics, &times);
-            sr_trace_frame(trace, index,
-                           (double)index * scene->project.fps_den /
-                               scene->project.fps_num, reused, &times);
-            ++metrics->frames;
-            if (diag->verbose && (metrics->frames % 30 == 0)) {
-                sr_diag_info(diag, "rendered %llu/%llu selected frames",
-                             (unsigned long long)metrics->frames,
-                             (unsigned long long)(end - first));
-            }
+        if (options->hash) {
+            status = sr_run_hash(&run, first, end);
+        } else {
+            char *path = options->output_override
+                             ? sr_strdup(options->output_override)
+                             : sr_path_join(scene->base_dir, scene->output.path);
+            status = path ? sr_make_parent_dirs(path, diag) : SR_ERR_MEMORY;
+            if (status == SR_OK)
+                status = options->resume ? sr_run_resume(&run, path, first, end)
+                                         : sr_run_encode(&run, path, first, end);
+            if (status == SR_OK && scene->project.mode == SR_MODE_EQUIRECTANGULAR &&
+                scene->output.spherical_metadata && sr_spatial_is_mp4(path))
+                status = sr_spatial_inject_mp4(path, scene->project.width,
+                                               scene->project.height, diag);
+            free(path);
         }
-        SrStatus finished = sr_encoder_finish(encoder, diag);
-        if (status == SR_OK) status = finished;
     }
-    metrics->encode_seconds = sr_encoder_seconds(encoder);
-    sr_encoder_destroy(encoder);
-    if (status == SR_OK && scene->project.mode == SR_MODE_EQUIRECTANGULAR &&
-        scene->output.spherical_metadata && sr_spatial_is_mp4(path))
-        status = sr_spatial_inject_mp4(path, scene->project.width,
-                                       scene->project.height, diag);
-    sr_mixer_destroy(mixer);
-    free(audio);
-    sr_resume_close(&resume);
-    free(path);
+    sr_mixer_destroy(run.mixer);
+    free(run.audio);
 
 cleanup:
     sr_assets_video_stats(scene, &metrics->video_sources, video_totals);

@@ -16,6 +16,7 @@ FreeType. The engine starts no child processes.
 |---|---|
 | `common`, `diagnostics` | checked allocation/parsing/path helpers and contextual messages |
 | `scene` | owned scene graph and typed resources |
+| `xml_schema` | libxml2 validation against the XSD embedded at build time (`cmake/schema_data.c.in` or the Makefile's od/sed recipe) |
 | `xml*` | Expat callbacks, dynamic element stack, typed attributes, semantic/reference validation |
 | `timeline` | stable key ordering and six interpolation curves |
 | `assets`, `procedural` | shared still/text/vector cache; video assets own a persistent decoder |
@@ -33,11 +34,12 @@ FreeType. The engine starts no child processes.
 | `camera` | equirectangular viewport mapping and deterministic row workers |
 | `effects` | rectangle-bounded blur, glow/bloom, grade, vignette, lens flare, drop shadow, and 2D lighting on the frame or a group buffer |
 | `gpu` | optional OpenCL 1.2 final color-conversion kernel and capability probe |
-| `resume` | content-signature directory and atomic raw-frame cache writes |
-| `encoder` | in-process libavcodec/libavformat encode: swscale RGB to Y'CbCr, A/V muxing, color tags, spherical side data |
+| `resume` | `OUTPUT.parts/` segment directory: manifest fingerprint, discard on mismatch, atomic segment commit, cleanup |
+| `encoder` | in-process libavcodec/libavformat encode: swscale RGB to Y'CbCr, A/V muxing, color tags, spherical side data; video-only segment mode and packet-copy (pass-through) mode for resume assembly |
 | `spatial` | atomic MP4 Spatial Media v1 spherical UUID injection (moov before or after mdat) |
-| `renderer` | phase ordering, absolute-frame loop, preview/range/resume, and metrics |
-| `main` | CLI parsing, overrides, quality policy, and documented fallbacks |
+| `renderer` | phase ordering, absolute-frame loop, preview/range/hash/segmented resume, and metrics |
+| `cli_args` | pure argv → `SrCliOptions` parsing and usage text (no I/O, no exit), unit-tested |
+| `main` | orchestration: overrides, quality policy, printing, exit status |
 
 ## Ownership and streaming
 
@@ -76,7 +78,7 @@ FreeType. The engine starts no child processes.
   of the children's clipped bounds) of a buffer is cleared or composited. A
   4K scene with one level of isolated groups therefore holds two float
   frames plus the 8-bit output buffer (31.6 MiB; 63.3 MiB at 16 bits for
-  pixel formats deeper than 8 bits) handed to the encoder, resume cache, and
+  pixel formats deeper than 8 bits) handed to the encoder, `--hash`, and
   PPM/PNG preview.
 - Each worker receives disjoint rows. No floating-point reduction depends on
   scheduling, so CPU output is byte-identical across supported thread counts.
@@ -89,7 +91,7 @@ flowchart TD
   B --> C["Camera, lit 3D, layered 2D"]
   C --> D["Viewport projection + effects"]
   D --> E["Output color conversion"]
-  E --> F["Resume cache + in-process encode/mux"]
+  E --> F["In-process encode/mux (or --resume segments + packet-copy mux)"]
   F --> G["Optional spherical metadata"]
 ```
 
@@ -213,9 +215,27 @@ conversion. Rasterization, masking, lighting, and effects remain on the CPU.
 If the OpenCL loader/device/kernel is unavailable, the engine logs a warning
 and uses the CPU path without changing scene semantics.
 
-Resume mode atomically stores completed RGBA output frames under
-`OUTPUT.resume/SIGNATURE`. Restarting still rebuilds the output container but
-skips cached frame rendering. Cached frames are stored at the bit depth the
-encoder consumes, which is part of the signature. Missing assets, codecs,
-OpenCL, memory, cache writes, and libav failures produce contextual diagnostics
-and a nonzero exit instead of partial success.
+`--resume` splits the range into segments of `--segment-frames` frames
+(default 150). Segment `k` is encoded by its own video-only encoder (no
+audio, no spherical metadata) to `OUTPUT.parts/seg-KKKKKK.part.<ext>` (mkv
+for FFV1, mp4 otherwise) and committed by renaming it to
+`seg-KKKKKK.<ext>`, so only complete segments carry the final name; stale
+`.part` files are deleted on the next run. `OUTPUT.parts/manifest` is a text
+fingerprint: engine version, FNV-1a hash of the scene file, size + mtime +
+first-MiB hash of every asset and `fontFile`, frame range, segment size, the
+effective project and video output settings (after CLI overrides), thread
+count, renderer backend and encoder bit depth. Any difference discards all
+segments. When every segment exists, a pass-through encoder takes the video
+stream parameters from segment 0, copies each segment's packets with
+timestamps moved to frame units, shifted by the segment's first frame and
+rescaled to the output stream, and meanwhile mixes and encodes the audio
+of the whole range once, exactly as a normal render does; spherical side
+data and the MP4 UUID are applied to the final file. Because every segment
+begins with a keyframe, the video bitstream differs from a render without
+`--resume`; a resumed render is byte-identical to an uninterrupted
+`--resume` render of the same command. `SR_TEST_ABORT_AFTER_SEGMENTS=N`
+(tests only) kills the process after it has committed N segments.
+
+Missing assets, codecs, OpenCL, memory, segment writes, and libav failures
+produce contextual diagnostics and a nonzero exit instead of partial
+success.

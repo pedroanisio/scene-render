@@ -8,7 +8,9 @@
 #include "scene_text.h"
 
 /* A single free body with no gravity. damping*dt = 500 * 0.01 = 5, far past
- * the point where the old linear factor (1 - damping*dt) turned negative. */
+ * the point where the old linear factor (1 - damping*dt) turned negative.
+ * The XSD caps damping at 1, so the scene is loaded with a valid value and
+ * the engine is then driven past the schema's range directly. */
 #define DT 0.01
 #define DAMPING 500.0
 #define V0 100.0
@@ -25,10 +27,10 @@ static void test_heavy_damping_never_flips_sign(sr_test_ctx *t)
         "duration=\"0.2\"/><composition>"
         "<shape id=\"body\" shape=\"rect\" width=\"4\" height=\"4\" x=\"0\" y=\"0\">"
         "<rigidBody type=\"dynamic\" shape=\"box\" mass=\"1\" velocityX=\"%g\" "
-        "angularVelocity=\"%g\" linearDamping=\"%g\" angularDamping=\"%g\"/>"
+        "angularVelocity=\"%g\" linearDamping=\"1\" angularDamping=\"1\"/>"
         "</shape></composition>"
         "<physics fixedStep=\"%g\" gravityX=\"0\" gravityY=\"0\"/></scene>",
-        V0, W0, DAMPING, DAMPING, DT);
+        V0, W0, DT);
     CHECK(t, fclose(file) == 0);
     FILE *sink = tmpfile();
     CHECK(t, sink != NULL);
@@ -39,8 +41,12 @@ static void test_heavy_damping_never_flips_sign(sr_test_ctx *t)
     SrStatus status = sr_scene_load_xml(path, &scene, &diag);
     CHECK(t, status == SR_OK);
     if (status != SR_OK) { fclose(sink); unlink(path); return; }
-    CHECK(t, sr_physics_prepare(&scene, &diag) == SR_OK);
     SrNode *body = sr_scene_find_node(&scene, "body");
+    if (body) {
+        body->body.linear_damping = DAMPING;
+        body->body.angular_damping = DAMPING;
+    }
+    CHECK(t, sr_physics_prepare(&scene, &diag) == SR_OK);
     CHECK(t, body != NULL);
     if (body && body->physics_sample_count > 2) {
         double x0, y0, r0;

@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<!-- Schema violations on lines 5 and 6 for the cli.validate_error test. -->
+<scene version="1.0">
+  <project width="64" height="64" fps="10" duration="1"/>
+  <composition><shape id="a" shape="rect" width="4" height="4" bogus="1"/>
+    <shape id="b" shape="rect" width="4" height="4" opacity="2"/>
+  </composition>
+</scene>

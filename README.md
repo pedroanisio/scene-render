@@ -81,22 +81,72 @@ documented platform layer.
 ./build/scene-render --scene examples/archive-beacon.xml \
   --mode equirectangular --output build/archive-beacon-360.mp4
 
-# Preserve completed post-color RGBA frames for an interrupted render.
+# Resumable render: segments of 150 frames under build/viewport.mp4.parts/;
+# rerunning the same command after an interruption renders only the
+# missing segments.
 ./build/scene-render --scene examples/viewport-360.xml \
   --output build/viewport.mp4 --resume
+
+# Per-frame FNV-1a hashes of the exact encoder input, without encoding.
+./build/scene-render --scene examples/keyframe-curves.xml \
+  --frame-range 0:30 --hash
+
+# Validate against the embedded XSD, or print it.
+./build/scene-render --scene examples/keyframe-curves.xml --validate
+./build/scene-render --print-schema > scene-v1.xsd
 ```
 
-Run `scene-render --help` for the complete CLI. Options include `--validate`,
-`--frame-range A:B`, `--preview-frame N`, `--preview-out FILE`,
-`--mode standard|equirectangular|viewport`, `--resolution WIDTHxHEIGHT`,
-`--fps N/D`, `--quality low|medium|high`,
-`--threads auto|N`, `--renderer cpu|gpu`, `--resume`, `--verbose`,
-`--metrics`, and `--metrics-trace FILE`. `--output` picks the container from
-its extension (`.mp4`, `.mov`, `.mkv`). `--preview-out` writes PNG when the
-name ends in `.png` and PPM otherwise. `--metrics` prints a `metrics:` line
-(the engine's own RSS is the whole memory cost: there are no encoder child
-processes), a `video:` line with decoder cache statistics
-(`sources requests cache_hits decoded seeks`), and per-stage times.
+Run `scene-render --help` for the complete CLI. Argument parsing lives in
+`src/cli_args.c` (a pure function tested by `unit.args`); `src/main.c` only
+orchestrates.
+
+| Option | Meaning |
+|---|---|
+| `--scene FILE` | Scene XML; required except with `--help`, `--version`, `--print-schema` |
+| `--output FILE` | Override `output/@path`; the container follows the extension (`.mp4`, `.mov`, `.mkv`) |
+| `--validate` | XSD + semantic validation only; prints `valid: FILE (N assets, M top-level layers)` |
+| `--print-schema` | Print the XSD embedded in the binary (`schema/scene-v1.xsd` at build time) |
+| `--frame-range A:B` | Render the half-open range `[A,B)` (`A < B`; `B` is clamped to the scene) |
+| `--preview-frame N`, `--frame N` | Write one 8-bit preview frame and print `<path> <16-hex FNV-1a 64>` over its RGBA bytes |
+| `--preview-out FILE` | Preview path; default `frame-NNNNNN.png` in the working directory; `.png` writes PNG, anything else PPM |
+| `--hash` | Render the range without encoding; print `<frame> <16-hex>` per frame over the exact bytes the encoder would receive (8- or 16-bit RGBA), then `audio <16-hex>` over the range's mixed float PCM when the scene has audio. Identical for every `--threads` value |
+| `--mode standard\|equirectangular\|viewport` | Override the project mode (360 modes need `scene360`) |
+| `--resolution WIDTHxHEIGHT`, `--fps N` or `N/D`, `--quality low\|medium\|high` | Override size, rate, encoder quality preset |
+| `--threads auto\|N`, `--renderer cpu\|gpu` | Worker count; OpenCL colour conversion with CPU fallback |
+| `--resume`, `--segment-frames N`, `--keep-parts` | Segmented resumable render (below); default 150 frames per segment |
+| `--physics-cache DIR` | Store/reuse the physics simulation as `DIR/physics-<signature>.bin` (created if missing); overrides `physics/@cache` |
+| `--metrics`, `--metrics-trace FILE` | Metrics on stderr; per-frame stage timings as JSON Lines |
+| `--verbose`, `--version`, `--help` | Verbose diagnostics; `scene-render VERSION`; usage |
+
+Exit status is a stable contract: `0` success, `2` usage or argument error
+(unknown option, frame out of range, bad override), `3` XML/XSD/semantic
+error, `4` asset error, `5` render error, `6` encoder error, `7` I/O error,
+`8` out of memory.
+
+Every scene is validated against the embedded XSD with libxml2 before the
+Expat loader applies its semantic checks; each schema error is reported as
+`FILE:LINE: error: <element> @attribute: message` and exits with 3.
+
+`--resume` renders the range in segments of `--segment-frames` frames, each an
+independently encoded video-only file with its own keyframe in
+`OUTPUT.parts/` (committed by atomic rename), next to a `manifest` that
+records the scene file's hash, every asset file's size, mtime and first-MiB
+hash, the range, the segment size, all effective video/render settings and
+the engine version. A rerun with any difference discards the old segments;
+otherwise only missing segments are rendered. The output is then muxed by
+copying the segments' video packets (timestamps shifted per segment) while
+the audio of the whole range is mixed and encoded once; spherical metadata
+is applied as for a normal render. `OUTPUT.parts/` is removed afterwards
+unless `--keep-parts` is given. A resumed render is byte-identical to an
+uninterrupted `--resume` render of the same command, but not to a render
+without `--resume`: every segment starts with a keyframe, so the video
+bitstream differs (frames decode to the same pictures within codec loss).
+
+`--metrics` prints a `metrics:` line (the engine's own RSS is the whole
+memory cost: there are no encoder child processes), a `video:` line with
+decoder cache statistics (`sources requests cache_hits decoded seeks`), a
+`physics:` line (`steps` simulated by this run, `cache_hit`), a `resume:`
+line (`segments_rendered segments_reused`), and per-stage times.
 
 The GPU selection dynamically loads OpenCL 1.2 and executes final named-space
 color conversion on a GPU. Scene traversal and the reference rasterizer remain
@@ -204,7 +254,9 @@ The suite covers contextual XML failures, deep dynamic layer nesting, all
 interpolation/blend modes, shared assets, vector paths, OBJ import, named color
 conversion, exact goldens, deterministic parallelism, shaped/inverted masks,
 physics cache replay, animated particles/effects/deformation, A/V duration equality,
-360 output, MP4 spherical UUID metadata, resume reuse, and H.264/H.265/FFV1
+360 output, MP4 spherical UUID metadata, segmented resume (interrupted and
+completed runs byte-identical, manifest invalidation), the CLI contract
+(`cli.*` CTest entries driven by `tests/cli/*.cmake`), and H.264/H.265/FFV1
 when exposed by FFmpeg. CMake/CTest and sanitizer results are recorded in
 [`docs/phases.md`](docs/phases.md); the 4K measurement is in
 [`docs/benchmark.md`](docs/benchmark.md).
@@ -224,7 +276,10 @@ when exposed by FFmpeg. CMake/CTest and sanitizer results are recorded in
   also retains panorama and viewport frames.
 - Slow divergent time remaps: each video asset caches up to 256 MiB of
   converted frames; `--metrics` shows cache hits and seeks.
-- Resume disk use: `OUTPUT.resume` stores raw RGBA frames by content signature.
+- Resume disk use: `OUTPUT.parts/` holds one encoded segment per
+  `--segment-frames` frames until the render completes (`--keep-parts` keeps
+  it); delete it to force a full re-render. Fonts found through Fontconfig
+  families are not fingerprinted; `fontFile` fonts are.
 - OpenCL warning: no usable GPU was found; the deterministic CPU reference was
   selected automatically.
 

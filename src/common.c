@@ -218,6 +218,15 @@ double sr_monotonic_seconds(void) {
     return (double)value.tv_sec + (double)value.tv_nsec / 1000000000.0;
 }
 
+uint64_t sr_fnv1a64(uint64_t hash, const void *data, size_t size) {
+    const uint8_t *bytes = data;
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
 SrMat3 sr_mat_identity(void) {
     return (SrMat3){1.0, 0.0, 0.0, 0.0, 1.0, 0.0};
 }

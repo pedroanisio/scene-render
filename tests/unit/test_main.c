@@ -56,7 +56,7 @@ int main(int argc, char **argv)
         {"fx", sr_tests_fx},             {"anim_color", sr_tests_anim_color},
         {"particles", sr_tests_particles}, {"deform", sr_tests_deform},
         {"shadow", sr_tests_shadow},
-        {"text", sr_tests_text},
+        {"text", sr_tests_text},         {"args", sr_tests_args},
     };
     if (argc > 2) {
         fprintf(stderr, "usage: %s [SUITE]\n", argv[0]);

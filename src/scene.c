@@ -143,6 +143,7 @@ void sr_scene_free(SrScene *scene) {
     free(scene->materials); free(scene->lights); free(scene->objects3d);
     free(scene->effects); free(scene->physics.constraints);
     free(scene->physics.fields); free(scene->physics.cache_path);
+    free(scene->physics.cache_dir);
     free(scene->scene360.viewport_camera_id);
     free(scene->source_path); free(scene->base_dir); free(scene->output.path);
     free(scene->output.pixel_format); free(scene->output.preset);
