@@ -23,12 +23,12 @@ decode/encode. Details: [xml-reference](xml-reference.md) ·
 | Video | Shared sources, 4-frame cache; trim, loop, reverse, speed, stretch, time remap |
 | Text | UTF-8, shaped, bidi; font family or font file |
 | Vectors | Rect, ellipse, SVG-style paths (M L H V C Q Z), antialiased |
-| Shapes | Rect/ellipse with fill + stroke |
-| 3D | Sphere, box, plane, Wavefront OBJ meshes; depth buffer |
+| Shapes | Rect/ellipse with fill + stroke (both animatable colors) |
+| 3D | Sphere, box, plane, Wavefront OBJ meshes; depth buffer; `antialias3d` 1–4 supersampling |
 | Materials | Base color, emissive, metallic, roughness |
-| Lights | Ambient, directional, point, spot; shadows (approximate) |
+| Lights | Ambient, directional, point, spot; shadow maps (PCF) for directional/spot, approximate for point; animated color |
 | Cameras | Perspective / orthographic |
-| Particles | Smoke, sparks, dust, rain; deterministic |
+| Particles | Parametric emitters (direction, spread, speed ± variance, gravity, size→sizeEnd, color→colorEnd, lifetime ± variance, spawn area, cap, seed, disc/square); optional smoke/sparks/dust/rain presets; stateless and deterministic |
 
 ## Compositing
 
@@ -39,21 +39,22 @@ decode/encode. Details: [xml-reference](xml-reference.md) ·
 
 ## Animation
 
-- Keyframes on almost every numeric property: transforms, opacity, camera, lights, effects, particles, deformers, media time
+- Keyframes on almost every numeric property: transforms, opacity, camera, lights, every effect parameter, particles, deformers and mesh-warp points, force fields, media time
+- Color keyframes (shape fill/stroke, particle color/colorEnd, light and effect color), interpolated in linear light
 - Easing: step, linear, ease-in/out/in-out, cubic Bézier
 
 ## Physics & deformation
 
-- 2D rigid bodies: static/kinematic/dynamic, circle/box, friction, restitution, damping
-- Gravity, directional and radial force fields
-- Spring and distance constraints
-- Soft-body look (procedural)
-- Deformers: bend, twist, wave, squash, stretch
+- 2D rigid bodies: static/kinematic/dynamic, circle/box, friction, restitution, damping; exact circle-vs-box and oriented box-box (SAT) contacts
+- Gravity, directional, radial and vortex force fields (animatable)
+- Spring, distance and pin constraints (rigid or springy pins)
+- Soft bodies: simulated mass-spring grids with pressure and pinning
+- Deformers: bend, twist, wave, squash, stretch, mesh-warp
 - Fixed timestep, cacheable
 
 ## Post effects
 
-Glow, bloom, blur, color grade, vignette, lens flare. Applied in order; skipped when intensity is 0.
+Glow, bloom, blur, color grade, vignette, lens flare, drop shadow, 2D lighting (point/spot/directional/ambient lights, falloff curves, alpha relief). Applied in order to the whole frame, or to a group's buffer when the group lists them in `effects`; every parameter animates; skipped when intensity is 0.
 
 ## Audio
 

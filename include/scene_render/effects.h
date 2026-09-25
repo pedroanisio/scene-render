@@ -3,7 +3,33 @@
 
 #include "scene_render/compositor.h"
 
+/* Pixel rectangle [x0,x1) x [y0,y1). */
+typedef struct {
+    int x0, y0, x1, y1;
+} SrEffectRect;
+
+/* Applies every enabled effect that no group references, in XML order, to
+ * the whole frame (effect positions are canvas pixels). */
 SrStatus sr_effects_apply(const SrScene *scene, double time, SrFrame *frame,
                           unsigned threads, SrDiagnostics *diag);
+
+/* Applies `effects` in order to an isolated group buffer whose non-zero
+ * pixels lie inside *rect. Each effect first grows *rect by its reach
+ * (sr_effect_reach) and runs over the grown rectangle only, so the result
+ * equals running it over the whole buffer. `to_canvas` maps the group's
+ * local space to buffer pixels (light positions and ranges). */
+SrStatus sr_effects_apply_group(const SrScene *scene, SrEffect *const *effects,
+                                size_t count, double time, SrFrame *frame,
+                                SrMat3 to_canvas, SrEffectRect *rect,
+                                unsigned threads);
+
+/* How far, in pixels, `effect` at `time` can move content outward: the
+ * blur radius for glow/bloom/blur, offset plus radius plus one for
+ * drop-shadow, zero for per-pixel effects. */
+int sr_effect_reach(const SrEffect *effect, double time);
+
+/* 2D light falloff curve at normalized distance q = d / range (0 at q >= 1):
+ * smooth (1 - q^2)^2, linear 1 - q, quadratic (1 - q)^2, none 1. */
+double sr_light_falloff(SrFalloff falloff, double q);
 
 #endif

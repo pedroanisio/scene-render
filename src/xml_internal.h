@@ -12,7 +12,7 @@ typedef enum {
     E_KEY, E_AUDIO_MIX, E_AUDIO_TRACK, E_SCENE360, E_CAMERA, E_MATERIALS,
     E_MATERIAL, E_LIGHTS, E_LIGHT, E_EFFECTS, E_EFFECT, E_PHYSICS,
     E_FORCE_FIELD, E_CONSTRAINT, E_PARTICLES, E_RIGID_BODY, E_SOFT_BODY,
-    E_DEFORM, E_MODIFIER, E_OBJECT3D
+    E_DEFORM, E_MODIFIER, E_OBJECT3D, E_POINT
 } ElementKind;
 
 typedef struct {
@@ -25,6 +25,9 @@ typedef struct {
     SrModifier *modifier;
     SrObject3D *object3d;
     SrMask *mask;
+    SrForceField *field;
+    SrAnimValue *point;         /* mesh-warp point: [0] = x, [1] = y */
+    SrAnimColor *color_anim;    /* animate/key: target color track */
     SrCurve curve;
 } ParseFrame;
 
@@ -89,6 +92,7 @@ void sr_xml_start_rigid_body(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_soft_body(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_deform(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_modifier(ParseContext *ctx, const XML_Char **attrs);
+void sr_xml_start_point(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_node(ParseContext *ctx, const char *name,
                        const XML_Char **attrs, SrNodeType type);
 void sr_xml_start_mask(ParseContext *ctx, const XML_Char **attrs);

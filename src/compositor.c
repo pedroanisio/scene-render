@@ -1,7 +1,10 @@
 #include "scene_render/compositor.h"
 #include "scene_render/assets.h"
 #include "scene_render/color.h"
+#include "scene_render/deform.h"
+#include "scene_render/effects.h"
 #include "scene_render/parallel.h"
+#include "scene_render/particles.h"
 #include "scene_render/physics.h"
 
 #include <float.h>
@@ -43,6 +46,16 @@ typedef struct {
 
 typedef enum { SR_OP_IMAGE, SR_OP_SHAPE, SR_OP_BUFFER } SrOpKind;
 
+/* Grid deformations evaluated once per draw: the offsets of every
+ * mesh-warp modifier (NULL entries for the other modifier types) and of
+ * the simulated soft body. */
+typedef struct {
+    double **mesh;
+    double *storage;            /* owns every mesh[i] grid */
+    double *soft;
+    double extent;              /* largest offset: bounds padding */
+} SrDeformState;
+
 typedef struct {
     SrOpKind kind;
     const SrTarget *target;
@@ -54,6 +67,7 @@ typedef struct {
     const SrNode *node;       /* deformation source, may be NULL */
     double time;
     double deform_width, deform_height;
+    const SrDeformState *deform;
     const SrImage *image;
     SrMaskType shape;
     double width, height;
@@ -208,10 +222,18 @@ static SrMat3 sr_node_matrix(const SrScene *scene, const SrNode *node, double ti
 }
 
 static SrVec2 sr_deform_inverse(const SrNode *node, SrVec2 point,
-                                double width, double height, double time) {
+                                double width, double height, double time,
+                                const SrDeformState *state) {
     double cx = width * 0.5, cy = height * 0.5;
     for (size_t index = node->modifier_count; index > 0; --index) {
         const SrModifier *modifier = &node->modifiers[index - 1];
+        if (modifier->type == SR_MOD_MESH_WARP) {
+            if (state && state->mesh && state->mesh[index - 1])
+                point = sr_grid_warp_inverse(state->mesh[index - 1],
+                                             modifier->rows, modifier->cols,
+                                             width, height, point);
+            continue;
+        }
         double amount = sr_anim_eval(&modifier->amount, time);
         double frequency = sr_anim_eval(&modifier->frequency, time);
         double phase = sr_anim_eval(&modifier->phase, time);
@@ -247,17 +269,61 @@ static SrVec2 sr_deform_inverse(const SrNode *node, SrVec2 point,
             point.x = cx + (point.x - cx) * factor;
         }
     }
-    if (node->soft_body.enabled) {
-        double oscillation = sin(time * sqrt(node->soft_body.stiffness)) *
-                             exp(-node->soft_body.damping * time);
-        point.x -= (node->soft_body.pressure + oscillation * 3.0) *
-                   sin(point.y / fmax(height, 1.0) * SR_PI);
-    }
+    if (state && state->soft)
+        point = sr_grid_warp_inverse(state->soft, node->soft_body.rows,
+                                     node->soft_body.cols, width, height, point);
     return point;
 }
 
 static bool sr_node_deforms(const SrNode *node) {
-    return node && (node->modifier_count > 0 || node->soft_body.enabled);
+    return node && (node->modifier_count > 0 ||
+                    (node->soft_body.enabled && node->soft_body.sample_count));
+}
+
+static void sr_deform_free(SrDeformState *state) {
+    free(state->mesh);
+    free(state->storage);
+    free(state->soft);
+    *state = (SrDeformState){0};
+}
+
+/* Evaluates the grid deformations of `node` at `time`. */
+static SrStatus sr_deform_prepare(const SrScene *scene, const SrNode *node,
+                                  double time, SrDeformState *state) {
+    *state = (SrDeformState){0};
+    size_t total = 0;
+    for (size_t i = 0; i < node->modifier_count; ++i)
+        if (node->modifiers[i].type == SR_MOD_MESH_WARP)
+            total += (size_t)node->modifiers[i].rows * node->modifiers[i].cols * 2;
+    if (total) {
+        state->mesh = sr_alloc(node->modifier_count * sizeof(*state->mesh));
+        double *values = state->storage = sr_alloc(total * sizeof(*values));
+        if (!state->mesh || !values) { sr_deform_free(state); return SR_ERR_MEMORY; }
+        for (size_t i = 0; i < node->modifier_count; ++i) {
+            const SrModifier *modifier = &node->modifiers[i];
+            if (modifier->type != SR_MOD_MESH_WARP) continue;
+            size_t count = (size_t)modifier->rows * modifier->cols * 2;
+            state->mesh[i] = values;
+            for (size_t j = 0; j < count; ++j)
+                values[j] = sr_anim_eval(&modifier->points[j], time);
+            state->extent = fmax(state->extent,
+                                 sr_grid_warp_extent(values, count / 2));
+            values += count;
+        }
+    }
+    if (node->soft_body.enabled && node->soft_body.sample_count) {
+        size_t count = (size_t)node->soft_body.rows * node->soft_body.cols;
+        state->soft = sr_alloc(count * 2 * sizeof(*state->soft));
+        if (!state->soft) { sr_deform_free(state); return SR_ERR_MEMORY; }
+        if (sr_physics_soft_offsets(scene, node, time, state->soft))
+            state->extent = fmax(state->extent,
+                                 sr_grid_warp_extent(state->soft, count));
+        else {
+            free(state->soft);
+            state->soft = NULL;
+        }
+    }
+    return SR_OK;
 }
 
 static SrClip sr_clip_intersect(SrClip a, SrClip b) {
@@ -396,7 +462,8 @@ static void sr_op_rows(void *opaque, size_t begin, size_t end) {
                 SrVec2 local = sr_mat_point(op->inverse, (SrVec2){cx, cy});
                 if (deform)
                     local = sr_deform_inverse(op->node, local, op->deform_width,
-                                              op->deform_height, op->time);
+                                              op->deform_height, op->time,
+                                              op->deform);
                 if (op->kind == SR_OP_IMAGE) {
                     coverage *= sr_shape_coverage(
                         SR_MASK_RECT, 0.0, 0.0, op->image->width,
@@ -456,17 +523,6 @@ static double sr_media_time(const SrNode *node, double time) {
     return node->reverse ? end - local - 1e-12 : node->clip_in + local;
 }
 
-static uint64_t sr_hash64(uint64_t value) {
-    value += UINT64_C(0x9e3779b97f4a7c15);
-    value = (value ^ (value >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
-    value = (value ^ (value >> 27)) * UINT64_C(0x94d049bb133111eb);
-    return value ^ (value >> 31);
-}
-
-static double sr_random_signed(uint64_t seed) {
-    return (double)(sr_hash64(seed) >> 11) / 4503599627370495.5 - 1.0;
-}
-
 static SrDrawOp sr_op_base(const SrNode *node, const SrTarget *target,
                            SrMat3 inverse, double opacity, double time,
                            const SrMaskLink *masks) {
@@ -484,21 +540,35 @@ static SrStatus sr_draw_image(SrDrawContext *context, const SrNode *node,
         context->scene, node->asset, sr_media_time(node, context->time),
         context->diag);
     if (!image) return SR_OK;  /* reported through diagnostics */
+    SrDeformState deform;
+    SrStatus status = sr_deform_prepare(context->scene, node, context->time,
+                                        &deform);
+    if (status != SR_OK) return status;
     SrDrawOp op = sr_op_base(node, target, inverse, opacity, context->time,
                              masks);
     op.kind = SR_OP_IMAGE;
     op.image = image;
     op.deform_width = image->width;
     op.deform_height = image->height;
+    op.deform = &deform;
+    /* Grid deformers can move content past the node box. */
+    double pad = ceil(deform.extent);
     op.bounds = sr_clip_intersect(
-        sr_bounds(world, 0.0, 0.0, image->width, image->height, target), clip);
-    return sr_op_execute(context->compositor, &op);
+        sr_bounds(world, -pad, -pad, image->width + 2.0 * pad,
+                  image->height + 2.0 * pad, target), clip);
+    status = sr_op_execute(context->compositor, &op);
+    sr_deform_free(&deform);
+    return status;
 }
 
 static SrStatus sr_draw_shape(SrDrawContext *context, const SrNode *node,
                               SrMat3 world, SrMat3 inverse, double opacity,
                               SrClip clip, const SrTarget *target,
                               const SrMaskLink *masks) {
+    SrDeformState deform;
+    SrStatus status = sr_deform_prepare(context->scene, node, context->time,
+                                        &deform);
+    if (status != SR_OK) return status;
     SrDrawOp op = sr_op_base(node, target, inverse, opacity, context->time,
                              masks);
     op.kind = SR_OP_SHAPE;
@@ -507,21 +577,27 @@ static SrStatus sr_draw_shape(SrDrawContext *context, const SrNode *node,
     op.height = node->shape_height;
     op.deform_width = node->shape_width;
     op.deform_height = node->shape_height;
+    op.deform = &deform;
     op.half_stroke = node->stroke_width * 0.5;
-    sr_color_to_blend(&context->scene->project, node->fill, op.fill);
-    sr_color_to_blend(&context->scene->project, node->stroke, op.stroke);
-    double pad = op.half_stroke;
+    sr_color_to_blend(&context->scene->project,
+                      sr_anim_color_eval(&node->fill, context->time), op.fill);
+    sr_color_to_blend(&context->scene->project,
+                      sr_anim_color_eval(&node->stroke, context->time), op.stroke);
+    double pad = op.half_stroke + ceil(deform.extent);
     op.bounds = sr_clip_intersect(
         sr_bounds(world, -pad, -pad, node->shape_width + 2.0 * pad,
                   node->shape_height + 2.0 * pad, target), clip);
-    return sr_op_execute(context->compositor, &op);
+    status = sr_op_execute(context->compositor, &op);
+    sr_deform_free(&deform);
+    return status;
 }
 
-/* One anti-aliased disc per particle, drawn in order on this thread (discs
- * are small and may overlap, so order matters). */
+/* One anti-aliased disc (or axis-aligned square) per particle, drawn in
+ * order on this thread (particles are small and may overlap, so order
+ * matters). */
 static void sr_draw_disc(const SrTarget *target, SrBlendMode blend,
                          float opacity, SrVec2 center, double radius,
-                         const float color[4], SrClip clip,
+                         bool square, const float color[4], SrClip clip,
                          const SrMaskLink *masks, SrGroupBuffer *buffer) {
     SrClip bounds = {(int)floor(center.x - radius - 1.0),
                      (int)floor(center.y - radius - 1.0),
@@ -534,8 +610,9 @@ static void sr_draw_disc(const SrTarget *target, SrBlendMode blend,
         float *d = target->px + ((size_t)y * target->width + (size_t)bounds.x0) * 4;
         for (int x = bounds.x0; x < bounds.x1; ++x, d += 4) {
             double dx = x + 0.5 - center.x, dy = y + 0.5 - center.y;
-            float coverage = sr_distance_coverage(sqrt(dx * dx + dy * dy) - radius,
-                                                  1.0);
+            double distance = square ? fmax(fabs(dx), fabs(dy)) - radius
+                                     : sqrt(dx * dx + dy * dy) - radius;
+            float coverage = sr_distance_coverage(distance, 1.0);
             if (!(coverage > 0.0f)) continue;
             coverage *= opacity * sr_link_coverage(masks, x + 0.5, y + 0.5);
             if (!(coverage > 0.0f)) continue;
@@ -546,58 +623,27 @@ static void sr_draw_disc(const SrTarget *target, SrBlendMode blend,
     }
 }
 
-static void sr_draw_particles(SrDrawContext *context, const SrNode *node,
-                              SrMat3 world, double opacity, SrClip clip,
-                              const SrTarget *target,
-                              const SrMaskLink *masks) {
-    const SrScene *scene = context->scene;
-    double time = context->time;
-    double local_time = time - node->start_time;
-    double rate = fmax(0.0, sr_anim_eval(&node->particle_rate, time));
-    double lifetime = fmax(1e-9, sr_anim_eval(&node->particle_lifetime, time));
-    double speed_value = sr_anim_eval(&node->particle_speed, time);
-    double spread = sr_anim_eval(&node->particle_spread, time);
-    double size = fmax(0.0, sr_anim_eval(&node->particle_size, time));
-    double born_value = local_time > 0.0 ? floor(local_time * rate) : 0.0;
-    uint64_t born = !isfinite(born_value) || born_value >= (double)(UINT64_MAX-1)
-        ? UINT64_MAX-1 : (uint64_t)born_value;
-    double active_value = ceil(lifetime * rate) + 1.0;
-    uint64_t active = !isfinite(active_value) || active_value > 1000001.0
-        ? 1000001 : (uint64_t)active_value;
-    uint64_t first = born > active ? born - active : 0;
-    if (born - first > 1000000) first = born - 1000000;
-    for (uint64_t i = first; i <= born; ++i) {
-        double birth = rate > 0.0 ? i / rate : 0.0;
-        double age = local_time - birth;
-        if (age < 0.0 || age > lifetime) continue;
-        uint64_t base = scene->project.seed ^ ((uint64_t)node->order << 32) ^ i;
-        double jitter = sr_random_signed(base);
-        double angle = (spread * jitter - 90.0) * SR_PI / 180.0;
-        double speed = speed_value * (0.75 +
-                       0.25 * sr_random_signed(base + 1));
-        double px = cos(angle) * speed * age;
-        double py = sin(angle) * speed * age;
-        if (strcmp(node->particle_preset, "rain") == 0) {
-            px = jitter * 40.0; py = speed * age;
-        } else if (strcmp(node->particle_preset, "smoke") == 0) {
-            px += sin(age * 3.0 + jitter) * 15.0; py = -fabs(speed) * age;
-        } else if (strcmp(node->particle_preset, "dust") == 0) {
-            px *= 0.25; py *= 0.25;
-        } else {
-            py += 200.0 * age * age;
-        }
-        SrVec2 center = sr_mat_point(world, (SrVec2){px, py});
-        double radius = size *
-                        (strcmp(node->particle_preset, "smoke") == 0
-                             ? 1.0 + age : 1.0);
-        double fade = 1.0 - age / lifetime;
-        SrColor color = node->particle_color;
-        color.a *= fade;
+static SrStatus sr_draw_particles(SrDrawContext *context, const SrNode *node,
+                                  SrMat3 world, double opacity, SrClip clip,
+                                  const SrTarget *target,
+                                  const SrMaskLink *masks) {
+    SrParticle *particles = NULL;
+    size_t count = 0;
+    SrStatus status = sr_particles_eval(context->scene, node, context->time,
+                                        &particles, &count);
+    if (status != SR_OK) return status;
+    bool square = node->particle_shape == SR_PARTICLE_SQUARE;
+    for (size_t i = 0; i < count; ++i) {
+        const SrParticle *particle = &particles[i];
+        SrVec2 center = sr_mat_point(world, (SrVec2){particle->x, particle->y});
         float premultiplied[4];
-        sr_color_to_blend(&scene->project, color, premultiplied);
-        sr_draw_disc(target, node->blend, (float)opacity, center, radius,
-                     premultiplied, clip, masks, target->buffer);
+        sr_color_to_blend(&context->scene->project, particle->color, premultiplied);
+        sr_draw_disc(target, node->blend, (float)opacity, center,
+                     particle->radius, square, premultiplied, clip, masks,
+                     target->buffer);
     }
+    free(particles);
+    return SR_OK;
 }
 
 static SrStatus sr_draw_node(SrDrawContext *context, const SrNode *node,
@@ -617,9 +663,11 @@ static SrStatus sr_draw_children(SrDrawContext *context, const SrNode *node,
     return SR_OK;
 }
 
-/* A group renders into an isolated buffer iff it has a non-normal blend or
- * opacity below one; the buffer is composited once with the group's blend,
- * opacity and masks (plus any masks inherited from pass-through ancestors).
+/* A group renders into an isolated buffer iff it has a non-normal blend,
+ * opacity below one or group effects; the effects run on the buffer (its
+ * dirty rectangle grown by each effect's reach) and the buffer is then
+ * composited once with the group's blend, opacity and masks (plus any
+ * masks inherited from pass-through ancestors).
  * Otherwise the group is a pass-through: its children draw straight into the
  * parent target against the real backdrop, and its masks join the chain
  * applied to every child draw. */
@@ -627,7 +675,8 @@ static SrStatus sr_draw_group(SrDrawContext *context, const SrNode *node,
                               SrMat3 world, double opacity, SrClip clip,
                               const SrTarget *target, size_t depth,
                               const SrMaskLink *outer) {
-    bool isolated = node->blend != SR_BLEND_NORMAL || opacity < 1.0;
+    bool isolated = node->blend != SR_BLEND_NORMAL || opacity < 1.0 ||
+                    node->effect_ref_count > 0;
     if (!isolated && node->mask_count == 0)
         return sr_draw_children(context, node, world, clip, target, depth,
                                 outer);
@@ -655,6 +704,16 @@ static SrStatus sr_draw_group(SrDrawContext *context, const SrNode *node,
                               buffer};
             status = sr_draw_children(context, node, world, inner, &group,
                                       depth + 1, NULL);
+        }
+        if (status == SR_OK && node->effect_ref_count) {
+            SrEffectRect rect = {buffer->x0, buffer->y0, buffer->x1, buffer->y1};
+            status = sr_effects_apply_group(context->scene, node->effect_refs,
+                                            node->effect_ref_count,
+                                            context->time, &buffer->frame,
+                                            world, &rect,
+                                            context->compositor->threads);
+            buffer->x0 = rect.x0; buffer->y0 = rect.y0;
+            buffer->x1 = rect.x1; buffer->y1 = rect.y1;
         }
         if (status == SR_OK) {
             SrDrawOp op = {.kind = SR_OP_BUFFER, .target = target,
@@ -703,7 +762,8 @@ static SrStatus sr_draw_node(SrDrawContext *context, const SrNode *node,
         status = sr_draw_shape(context, node, world, inverse, opacity, clip,
                                target, chain);
     else if (node->type == SR_NODE_PARTICLES)
-        sr_draw_particles(context, node, world, opacity, clip, target, chain);
+        status = sr_draw_particles(context, node, world, opacity, clip, target,
+                                   chain);
     if (masks != local_masks) free(masks);
     return status;
 }

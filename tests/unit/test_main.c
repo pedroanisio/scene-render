@@ -53,6 +53,9 @@ int main(int argc, char **argv)
         {"path", sr_tests_path},         {"image", sr_tests_image},
         {"encode", sr_tests_encode},     {"encode_faults", sr_tests_encode_faults},
         {"audio", sr_tests_audio},       {"video", sr_tests_video},
+        {"fx", sr_tests_fx},             {"anim_color", sr_tests_anim_color},
+        {"particles", sr_tests_particles}, {"deform", sr_tests_deform},
+        {"shadow", sr_tests_shadow},
     };
     if (argc > 2) {
         fprintf(stderr, "usage: %s [SUITE]\n", argv[0]);

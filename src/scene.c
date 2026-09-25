@@ -1,5 +1,6 @@
 #include "scene_render/scene.h"
 #include "scene_render/video.h"
+#include "scene_render/color.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -35,7 +36,8 @@ void sr_scene_init(SrScene *scene) {
         .width = 3840, .height = 2160, .fps_num = 30, .fps_den = 1,
         .duration = 10.0, .linear_light = true,
         .working_color_space = SR_COLOR_SRGB,
-        .background = {0.0, 0.0, 0.0, 1.0}, .mode = SR_MODE_STANDARD
+        .background = {0.0, 0.0, 0.0, 1.0}, .mode = SR_MODE_STANDARD,
+        .antialias3d = 1
     };
     scene->output.codec = SR_CODEC_H264;
     scene->output.path = sr_strdup("build/output.mp4");
@@ -81,6 +83,7 @@ static void camera_free(SrCamera *camera) {
 
 static void light_free(SrLight *light) {
     free(light->id);
+    sr_anim_color_free(&light->color);
     anim_free(&light->intensity);
     anim_free(&light->x); anim_free(&light->y); anim_free(&light->z);
     anim_free(&light->yaw); anim_free(&light->pitch);
@@ -105,17 +108,35 @@ void sr_scene_free(SrScene *scene) {
         transform_free(&scene->objects3d[i].transform);
     }
     for (size_t i = 0; i < scene->effect_count; ++i) {
-        free(scene->effects[i].id);
-        anim_free(&scene->effects[i].intensity);
-        anim_free(&scene->effects[i].radius);
+        SrEffect *effect = &scene->effects[i];
+        free(effect->id);
+        anim_free(&effect->intensity);
+        anim_free(&effect->radius);
+        anim_free(&effect->threshold);
+        anim_free(&effect->saturation);
+        anim_free(&effect->contrast);
+        anim_free(&effect->brightness);
+        anim_free(&effect->offset_x);
+        anim_free(&effect->offset_y);
+        anim_free(&effect->relief);
+        sr_anim_color_free(&effect->color);
+        for (size_t j = 0; j < effect->light_count; ++j)
+            free(effect->light_ids[j]);
+        free(effect->light_ids);
+        free(effect->lights);
     }
     for (size_t i = 0; i < scene->physics.constraint_count; ++i) {
         free(scene->physics.constraints[i].id);
         free(scene->physics.constraints[i].a_id);
         free(scene->physics.constraints[i].b_id);
     }
-    for (size_t i = 0; i < scene->physics.field_count; ++i)
-        free(scene->physics.fields[i].id);
+    for (size_t i = 0; i < scene->physics.field_count; ++i) {
+        SrForceField *field = &scene->physics.fields[i];
+        free(field->id);
+        anim_free(&field->x); anim_free(&field->y);
+        anim_free(&field->force_x); anim_free(&field->force_y);
+        anim_free(&field->strength);
+    }
     free(scene->assets); free(scene->audio.tracks); free(scene->cameras);
     free(scene->materials); free(scene->lights); free(scene->objects3d);
     free(scene->effects); free(scene->physics.constraints);
@@ -167,13 +188,20 @@ SrNode *sr_node_create(SrScene *scene, SrNodeType type) {
     node->clip_out = -1.0;
     node->speed = 1.0;
     node->time_stretch = 1.0;
-    node->fill = (SrColor){1, 1, 1, 1};
-    node->stroke = (SrColor){0, 0, 0, 0};
+    node->fill = sr_anim_color_static((SrColor){1, 1, 1, 1});
+    node->stroke = sr_anim_color_static((SrColor){0, 0, 0, 0});
     node->particle_rate.base = 10.0;
     node->particle_lifetime.base = 1.0;
     node->particle_speed.base = 100.0;
     node->particle_size.base = 4.0;
-    node->particle_color = (SrColor){1, 1, 1, 1};
+    node->particle_direction.base = -90.0;
+    node->particle_color = sr_anim_color_static((SrColor){1, 1, 1, 1});
+    node->particle_color_end = sr_anim_color_static((SrColor){1, 1, 1, 0});
+    node->particle_max = 10000;
+    node->particle_speed_factor = 1.0;
+    node->particle_wobble_frequency = 3.0;
+    node->soft_body.rows = 4;
+    node->soft_body.cols = 4;
     node->body.mass = 1.0;
     node->body.friction = 0.5;
     node->body.linear_damping = 0.01;
@@ -226,10 +254,25 @@ void sr_node_free(SrNode *node) {
     if (!node) return;
     for (size_t i = 0; i < node->child_count; ++i) sr_node_free(node->children[i]);
     for (size_t i = 0; i < node->modifier_count; ++i) {
-        anim_free(&node->modifiers[i].amount);
-        anim_free(&node->modifiers[i].frequency);
-        anim_free(&node->modifiers[i].phase);
+        SrModifier *modifier = &node->modifiers[i];
+        anim_free(&modifier->amount);
+        anim_free(&modifier->frequency);
+        anim_free(&modifier->phase);
+        if (modifier->points) {
+            size_t count = (size_t)modifier->rows * modifier->cols * 2;
+            for (size_t j = 0; j < count; ++j) anim_free(&modifier->points[j]);
+            free(modifier->points);
+        }
     }
+    for (size_t i = 0; i < node->effect_ref_count; ++i) free(node->effect_ids[i]);
+    free(node->effect_ids);
+    free(node->effect_refs);
+    free(node->soft_body.offsets);
+    sr_anim_color_free(&node->fill);
+    sr_anim_color_free(&node->stroke);
+    sr_anim_color_free(&node->particle_color);
+    sr_anim_color_free(&node->particle_color_end);
+    anim_free(&node->particle_direction);
     for (size_t i = 0; i < node->mask_count; ++i) {
         anim_free(&node->masks[i].x);
         anim_free(&node->masks[i].y);
@@ -321,6 +364,22 @@ SrAnimValue *sr_node_property(SrNode *node, const char *name) {
         if (strcmp(name, "speed") == 0) return &node->particle_speed;
         if (strcmp(name, "spread") == 0) return &node->particle_spread;
         if (strcmp(name, "size") == 0) return &node->particle_size;
+        if (strcmp(name, "direction") == 0) return &node->particle_direction;
+    }
+    return NULL;
+}
+
+SrAnimColor *sr_node_color_property(SrNode *node, const char *name) {
+    if (!node || !name) return NULL;
+    if (node->type == SR_NODE_SHAPE) {
+        if (strcmp(name, "fill") == 0) return &node->fill;
+        if (strcmp(name, "stroke") == 0) return &node->stroke;
+    } else if (node->type == SR_NODE_PARTICLES) {
+        if (strcmp(name, "color") == 0) return &node->particle_color;
+        if (strcmp(name, "colorEnd") == 0) {
+            node->particle_color_end_set = true;
+            return &node->particle_color_end;
+        }
     }
     return NULL;
 }

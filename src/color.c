@@ -356,3 +356,61 @@ SrStatus sr_color_convert_frame16(const SrColorOutput *output,
     ConvertContext context = {output, frame, NULL, rgba16};
     return sr_parallel_for(frame->height, threads, convert_rows16, &context);
 }
+
+/* ---- animated colors ----------------------------------------------------- */
+
+SrAnimColor sr_anim_color_static(SrColor base) {
+    return (SrAnimColor){.base = base, .space = SR_COLOR_SRGB};
+}
+
+void sr_anim_color_free(SrAnimColor *color) {
+    if (!color) return;
+    sr_track_free(&color->r);
+    sr_track_free(&color->g);
+    sr_track_free(&color->b);
+    sr_track_free(&color->a);
+}
+
+SrStatus sr_anim_color_add_key(SrAnimColor *color, SrKeyframe key, SrColor value) {
+    SrKeyframe channel = key;
+    channel.value = sr_color_decode(value.r, color->space);
+    SrStatus status = sr_track_add(&color->r, channel);
+    channel.value = sr_color_decode(value.g, color->space);
+    if (status == SR_OK) status = sr_track_add(&color->g, channel);
+    channel.value = sr_color_decode(value.b, color->space);
+    if (status == SR_OK) status = sr_track_add(&color->b, channel);
+    channel.value = fmax(0.0, fmin(1.0, value.a));
+    if (status == SR_OK) status = sr_track_add(&color->a, channel);
+    return status;
+}
+
+SrStatus sr_anim_color_finalize(SrAnimColor *color) {
+    SrStatus status = sr_track_finalize(&color->r);
+    if (status == SR_OK) status = sr_track_finalize(&color->g);
+    if (status == SR_OK) status = sr_track_finalize(&color->b);
+    if (status == SR_OK) status = sr_track_finalize(&color->a);
+    return status;
+}
+
+SrColor sr_anim_color_eval(const SrAnimColor *color, double time) {
+    if (!color) return (SrColor){0, 0, 0, 0};
+    if (color->r.count == 0) return color->base;
+    return (SrColor){
+        sr_color_encode(sr_track_eval(&color->r, 0.0, time), color->space),
+        sr_color_encode(sr_track_eval(&color->g, 0.0, time), color->space),
+        sr_color_encode(sr_track_eval(&color->b, 0.0, time), color->space),
+        fmax(0.0, fmin(1.0, sr_track_eval(&color->a, 0.0, time)))};
+}
+
+static double mix_channel(double a, double b, double t, SrColorSpace space) {
+    if (a == b || t == 0.0) return a;
+    double la = sr_color_decode(a, space), lb = sr_color_decode(b, space);
+    return sr_color_encode(la + (lb - la) * t, space);
+}
+
+SrColor sr_color_mix_linear(SrColor a, SrColor b, double t, SrColorSpace space) {
+    return (SrColor){mix_channel(a.r, b.r, t, space),
+                     mix_channel(a.g, b.g, t, space),
+                     mix_channel(a.b, b.b, t, space),
+                     a.a == b.a || t == 0.0 ? a.a : a.a + (b.a - a.a) * t};
+}

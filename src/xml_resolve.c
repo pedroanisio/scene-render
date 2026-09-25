@@ -3,7 +3,30 @@
 #include <math.h>
 #include <string.h>
 
+static SrEffect *find_effect(SrScene *scene, const char *id) {
+    for (size_t i = 0; i < scene->effect_count; ++i)
+        if (strcmp(scene->effects[i].id, id) == 0) return &scene->effects[i];
+    return NULL;
+}
+
 static bool resolve_nodes(ParseContext *ctx, SrNode *node) {
+    if (node->effect_ref_count) {
+        node->effect_refs = sr_alloc(node->effect_ref_count * sizeof(*node->effect_refs));
+        if (!node->effect_refs) {
+            sr_diag_error(ctx->diag, node->source_line, "group", "effects", "out of memory");
+            return false;
+        }
+        for (size_t i = 0; i < node->effect_ref_count; ++i) {
+            SrEffect *effect = find_effect(ctx->scene, node->effect_ids[i]);
+            if (!effect) {
+                sr_diag_error(ctx->diag, node->source_line, "group", "effects",
+                              "unknown effect id '%s'", node->effect_ids[i]);
+                return false;
+            }
+            effect->referenced = true;
+            node->effect_refs[i] = effect;
+        }
+    }
     if (node->type == SR_NODE_MEDIA) {
         node->asset = sr_scene_find_asset(ctx->scene, node->asset_id);
         if (!node->asset) {
@@ -99,10 +122,49 @@ static bool resolve_visual(ParseContext *ctx) {
     return true;
 }
 
+static bool resolve_effects(ParseContext *ctx) {
+    for (size_t i = 0; i < ctx->scene->effect_count; ++i) {
+        SrEffect *effect = &ctx->scene->effects[i];
+        if (!effect->light_count) continue;
+        effect->lights = sr_alloc(effect->light_count * sizeof(*effect->lights));
+        if (!effect->lights) {
+            sr_diag_error(ctx->diag, effect->source_line, "effect", "lights", "out of memory");
+            return false;
+        }
+        for (size_t j = 0; j < effect->light_count; ++j) {
+            SrLight *light = NULL;
+            for (size_t k = 0; k < ctx->scene->light_count; ++k)
+                if (strcmp(ctx->scene->lights[k].id, effect->light_ids[j]) == 0)
+                    light = &ctx->scene->lights[k];
+            if (!light) {
+                sr_diag_error(ctx->diag, effect->source_line, "effect", "lights",
+                              "unknown light id '%s'", effect->light_ids[j]);
+                return false;
+            }
+            light->used_2d = true;
+            effect->lights[j] = light;
+        }
+    }
+    return true;
+}
+
 static bool resolve_physics(ParseContext *ctx) {
     for (size_t i = 0; i < ctx->scene->physics.constraint_count; ++i) {
         SrConstraint *constraint = &ctx->scene->physics.constraints[i];
         constraint->a = sr_scene_find_node(ctx->scene, constraint->a_id);
+        if (constraint->type == SR_CONSTRAINT_PIN) {
+            if (!constraint->a || constraint->a->body.type == SR_BODY_NONE) {
+                sr_diag_error(ctx->diag, constraint->source_line, "constraint", "a",
+                              "pin constraint '%s' requires a rigid-body node id",
+                              constraint->id);
+                return false;
+            }
+            if (!constraint->rest_length_set)
+                constraint->rest_length = hypot(
+                    constraint->a->transform.x.base - constraint->x,
+                    constraint->a->transform.y.base - constraint->y);
+            continue;
+        }
         constraint->b = sr_scene_find_node(ctx->scene, constraint->b_id);
         if (!constraint->a || !constraint->b ||
             constraint->a->body.type == SR_BODY_NONE ||
@@ -129,6 +191,7 @@ bool sr_xml_resolve_scene(ParseContext *ctx) {
     if (!resolve_audio(ctx)) return false;
     if (!resolve_camera(ctx)) return false;
     if (!resolve_visual(ctx)) return false;
+    if (!resolve_effects(ctx)) return false;
     if (!resolve_physics(ctx)) return false;
     sr_node_sort_children(ctx->scene->root);
     return true;

@@ -72,7 +72,7 @@ static void test_stroke_centred(sr_test_ctx *t)
     fx_scene(&scene, 40, 40);
     SrNode *rect = fx_rect(&scene, NULL, 10, 10, 20, 20, (SrColor){0, 0, 1, 1}, 1.0);
     if (rect) {
-        rect->stroke = (SrColor){1, 0, 0, 1};
+        rect->stroke.base = (SrColor){1, 0, 0, 1};
         rect->stroke_width = 4.0;
     }
     SrFrame frame = {0};

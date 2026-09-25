@@ -114,8 +114,8 @@ bool sr_xml_parse_node_common(ParseContext *ctx, const char *element,
 void sr_xml_start_project(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"width", "height", "fps", "duration", "seed",
                                     "linearLight", "background", "mode",
-                                    "workingColorSpace"};
-    if (!sr_xml_attrs_allowed(ctx, "project", attrs, allowed, 9)) return;
+                                    "workingColorSpace", "antialias3d"};
+    if (!sr_xml_attrs_allowed(ctx, "project", attrs, allowed, 10)) return;
     const char *w = sr_xml_required(ctx, "project", attrs, "width");
     const char *h = sr_xml_required(ctx, "project", attrs, "height");
     const char *fps = sr_xml_required(ctx, "project", attrs, "fps");
@@ -160,6 +160,10 @@ void sr_xml_start_project(ParseContext *ctx, const XML_Char **attrs) {
             SR_XML_FAIL_RETURN(ctx, "project", "mode",
                                "expected standard, equirectangular, or viewport");
     }
+    if ((value = sr_xml_attr(attrs, "antialias3d")) &&
+        (!sr_parse_u32(value, &ctx->scene->project.antialias3d) ||
+         ctx->scene->project.antialias3d < 1 || ctx->scene->project.antialias3d > 4))
+        SR_XML_FAIL_RETURN(ctx, "project", "antialias3d", "expected 1, 2, 3, or 4");
     ctx->seen_project = true;
 }
 
@@ -346,20 +350,33 @@ void sr_xml_start_mask(ParseContext *ctx, const XML_Char **attrs) {
                                   .curve = SR_CURVE_LINEAR}, "mask");
 }
 
+static SrAnimColor *animate_color_target(ParseFrame *p, const char *property) {
+    if (p->kind == E_LAYER && p->node) return sr_node_color_property(p->node, property);
+    if (p->light && strcmp(property, "color") == 0) return &p->light->color;
+    if (p->effect && strcmp(property, "color") == 0) return &p->effect->color;
+    return NULL;
+}
+
 void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"property", "defaultInterpolation"};
     if (!sr_xml_attrs_allowed(ctx, "animate", attrs, allowed, 2)) return;
     ParseFrame *p = sr_xml_parent(ctx);
     const char *property = sr_xml_required(ctx, "animate", attrs, "property");
     if (!p || !property) return;
-    SrAnimValue *anim = p->node && p->kind != E_MASK
+    SrAnimValue *anim = p->node && p->kind != E_MASK && p->kind != E_POINT
         ? sr_node_property(p->node, property) : NULL;
+    SrAnimColor *color = animate_color_target(p, property);
     if (p->kind == E_MASK && p->mask) {
         if (strcmp(property, "x") == 0) anim = &p->mask->x;
         else if (strcmp(property, "y") == 0) anim = &p->mask->y;
         else if (strcmp(property, "width") == 0) anim = &p->mask->width;
         else if (strcmp(property, "height") == 0) anim = &p->mask->height;
         else if (strcmp(property, "radius") == 0) anim = &p->mask->radius;
+    }
+    if (p->kind == E_POINT && p->point) {
+        anim = NULL;
+        if (strcmp(property, "x") == 0) anim = &p->point[0];
+        else if (strcmp(property, "y") == 0) anim = &p->point[1];
     }
     if (p->camera) {
         if (strcmp(property, "position.x") == 0) anim = &p->camera->x;
@@ -379,10 +396,26 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
         else if (strcmp(property, "pitch") == 0) anim = &p->light->pitch;
     }
     if (p->effect) {
-        if (strcmp(property, "intensity") == 0) anim = &p->effect->intensity;
-        else if (strcmp(property, "radius") == 0) anim = &p->effect->radius;
+        SrEffect *e = p->effect;
+        if (strcmp(property, "intensity") == 0) anim = &e->intensity;
+        else if (strcmp(property, "radius") == 0) anim = &e->radius;
+        else if (strcmp(property, "threshold") == 0) anim = &e->threshold;
+        else if (strcmp(property, "saturation") == 0) anim = &e->saturation;
+        else if (strcmp(property, "contrast") == 0) anim = &e->contrast;
+        else if (strcmp(property, "brightness") == 0) anim = &e->brightness;
+        else if (strcmp(property, "offsetX") == 0) anim = &e->offset_x;
+        else if (strcmp(property, "offsetY") == 0) anim = &e->offset_y;
+        else if (strcmp(property, "relief") == 0) anim = &e->relief;
     }
-    if (p->modifier) {
+    if (p->field) {
+        SrForceField *f = p->field;
+        if (strcmp(property, "strength") == 0) anim = &f->strength;
+        else if (strcmp(property, "forceX") == 0) anim = &f->force_x;
+        else if (strcmp(property, "forceY") == 0) anim = &f->force_y;
+        else if (strcmp(property, "x") == 0) anim = &f->x;
+        else if (strcmp(property, "y") == 0) anim = &f->y;
+    }
+    if (p->modifier && p->kind == E_MODIFIER) {
         if (strcmp(property, "amount") == 0) anim = &p->modifier->amount;
         else if (strcmp(property, "frequency") == 0) anim = &p->modifier->frequency;
         else if (strcmp(property, "phase") == 0) anim = &p->modifier->phase;
@@ -398,21 +431,24 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
         else if (strcmp(property, "scale.y") == 0) anim = &p->object3d->transform.scale_y;
         else if (strcmp(property, "scale.z") == 0) anim = &p->object3d->transform.scale_z;
     }
-    if (!anim)
+    if (color) anim = NULL;
+    if (!anim && !color)
         SR_XML_FAIL_RETURN(ctx, "animate", "property",
                            "property is not animatable for this element");
-    if (anim->track.count)
+    if ((anim && anim->track.count) || (color && color->r.count))
         SR_XML_FAIL_RETURN(ctx, "animate", "property",
                            "property already has an animation track");
+    if (color) color->space = ctx->scene->project.working_color_space;
     SrCurve curve = SR_CURVE_LINEAR;
     const char *interpolation = sr_xml_attr(attrs, "defaultInterpolation");
     if (interpolation && !sr_curve_parse(interpolation, &curve))
         SR_XML_FAIL_RETURN(ctx, "animate", "defaultInterpolation",
                            "unsupported interpolation curve");
     sr_xml_push(ctx, (ParseFrame){.kind = E_ANIMATE, .node = p->node,
-        .anim = anim, .camera = p->camera, .light = p->light,
-        .effect = p->effect, .modifier = p->modifier,
-        .object3d = p->object3d, .mask = p->mask, .curve = curve}, "animate");
+        .anim = anim, .color_anim = color, .camera = p->camera,
+        .light = p->light, .effect = p->effect, .modifier = p->modifier,
+        .object3d = p->object3d, .mask = p->mask, .field = p->field,
+        .curve = curve}, "animate");
 }
 
 void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs) {
@@ -427,7 +463,12 @@ void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs) {
     if (!sr_parse_double(time_text, &key.time) || key.time < 0.0)
         SR_XML_FAIL_RETURN(ctx, "key", "time",
                            "expected a non-negative time in seconds");
-    if (!sr_parse_double(value_text, &key.value))
+    SrColor color_value = {0, 0, 0, 0};
+    if (p->color_anim) {
+        if (!sr_parse_color(value_text, &color_value))
+            SR_XML_FAIL_RETURN(ctx, "key", "value",
+                               "expected a color (#RRGGBB, #RRGGBBAA, or r,g,b[,a])");
+    } else if (!sr_parse_double(value_text, &key.value))
         SR_XML_FAIL_RETURN(ctx, "key", "value", "expected a finite decimal number");
     const char *curve = sr_xml_attr(attrs, "interpolation");
     if (curve && !sr_curve_parse(curve, &key.curve))
@@ -442,7 +483,10 @@ void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs) {
         SR_XML_FAIL_RETURN(ctx, "key", "bezier",
                            "bezier is valid only with cubic-bezier");
     }
-    if (sr_track_add(&p->anim->track, key) != SR_OK)
+    SrStatus added = p->color_anim
+        ? sr_anim_color_add_key(p->color_anim, key, color_value)
+        : sr_track_add(&p->anim->track, key);
+    if (added != SR_OK)
         SR_XML_FAIL_RETURN(ctx, "key", NULL, "out of memory");
     sr_xml_push(ctx, (ParseFrame){.kind = E_KEY, .node = p->node,
                                   .anim = p->anim, .curve = key.curve}, "key");

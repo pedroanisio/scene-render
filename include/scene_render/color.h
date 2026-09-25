@@ -20,6 +20,17 @@ double sr_color_encode(double value, SrColorSpace space);
  * transfer-encoded working-space values) to premultiplied blend space. */
 void sr_color_to_blend(const SrProject *project, SrColor color, float out[4]);
 
+/* Straight transfer-encoded color of `color` at `time`. With keyframes the
+ * r/g/b channel tracks interpolate linear-light values which are then
+ * re-encoded with color->space; alpha interpolates directly. Without keys
+ * the result is exactly color->base. */
+SrColor sr_anim_color_eval(const SrAnimColor *color, double time);
+
+/* Straight transfer-encoded color `t` of the way from `a` to `b`, mixed in
+ * linear light (alpha mixed directly). Returns `a` exactly when t == 0 and
+ * keeps equal channels bit-exact. */
+SrColor sr_color_mix_linear(SrColor a, SrColor b, double t, SrColorSpace space);
+
 /* Converts 8-bit straight-alpha RGBA in `source` (rows `stride` bytes apart)
  * to a freshly allocated premultiplied blend-space image: transfer decode via
  * a 256-entry table, source->working gamut matrix, re-encode when the

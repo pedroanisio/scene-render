@@ -170,8 +170,8 @@ void sr_xml_start_material(ParseContext *ctx, const XML_Char **attrs) {
 
 void sr_xml_start_light(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"id","type","color","intensity","x","y","z",
-        "yaw","pitch","range","falloff","spotAngle","castShadow"};
-    if (!sr_xml_attrs_allowed(ctx, "light", attrs, allowed, 13)) return;
+        "yaw","pitch","range","falloff","spotAngle","castShadow","shadowMapSize"};
+    if (!sr_xml_attrs_allowed(ctx, "light", attrs, allowed, 14)) return;
     const char *id = sr_xml_required(ctx, "light", attrs, "id");
     const char *type = sr_xml_required(ctx, "light", attrs, "type");
     if (ctx->failed) return;
@@ -187,7 +187,10 @@ void sr_xml_start_light(ParseContext *ctx, const XML_Char **attrs) {
         ctx->scene->lights = items; ctx->scene->light_capacity = capacity;
     }
     SrLight *light = &ctx->scene->lights[ctx->scene->light_count++];
-    light->id = sr_strdup(id); light->color = (SrColor){1,1,1,1};
+    light->id = sr_strdup(id);
+    light->color = sr_anim_color_static((SrColor){1,1,1,1});
+    light->color.space = ctx->scene->project.working_color_space;
+    light->shadow_map_size = 2048; light->source_line = sr_xml_line(ctx);
     light->intensity.base = 1.0; light->range = 1000.0;
     light->falloff = 2.0; light->spot_angle = 45.0;
     if (!light->id) SR_XML_FAIL_RETURN(ctx, "light", NULL, "out of memory");
@@ -197,7 +200,7 @@ void sr_xml_start_light(ParseContext *ctx, const XML_Char **attrs) {
     else if (!strcmp(type,"spot")) light->type=SR_LIGHT_SPOT;
     else SR_XML_FAIL_RETURN(ctx,"light","type","unsupported light type");
     const char *value = sr_xml_attr(attrs,"color");
-    if (value && !sr_parse_color(value,&light->color)) SR_XML_FAIL_RETURN(ctx,"light","color","invalid color");
+    if (value && !sr_parse_color(value,&light->color.base)) SR_XML_FAIL_RETURN(ctx,"light","color","invalid color");
     if (!decimal(ctx,"light",attrs,"intensity",&light->intensity.base) ||
         !decimal(ctx,"light",attrs,"x",&light->x.base) || !decimal(ctx,"light",attrs,"y",&light->y.base) ||
         !decimal(ctx,"light",attrs,"z",&light->z.base) || !decimal(ctx,"light",attrs,"yaw",&light->yaw.base) ||
@@ -209,13 +212,48 @@ void sr_xml_start_light(ParseContext *ctx, const XML_Char **attrs) {
                            "expected non-negative intensity/falloff, positive range, and 0 < spotAngle < 180");
     value = sr_xml_attr(attrs,"castShadow");
     if (value && !sr_parse_bool(value,&light->cast_shadow)) SR_XML_FAIL_RETURN(ctx,"light","castShadow","expected true or false");
+    value = sr_xml_attr(attrs,"shadowMapSize");
+    if (value && (!sr_parse_u32(value,&light->shadow_map_size) ||
+                  light->shadow_map_size < 16 || light->shadow_map_size > 8192))
+        SR_XML_FAIL_RETURN(ctx,"light","shadowMapSize","expected an integer in [16, 8192]");
     sr_xml_push(ctx,(ParseFrame){.kind=E_LIGHT,.light=light},"light");
+}
+
+static bool anim_decimal(ParseContext *ctx, const XML_Char **attrs,
+                         const char *name, SrAnimValue *target) {
+    return decimal(ctx, "effect", attrs, name, &target->base);
+}
+
+/* Splits the lighting effect's `lights` id list. */
+static bool parse_light_ids(SrEffect *effect, const char *text) {
+    size_t capacity = 0;
+    const char *cursor = text;
+    while (*cursor) {
+        while (*cursor && isspace((unsigned char)*cursor)) ++cursor;
+        if (!*cursor) break;
+        const char *begin = cursor;
+        while (*cursor && !isspace((unsigned char)*cursor)) ++cursor;
+        if (effect->light_count == capacity) {
+            capacity = capacity ? capacity * 2 : 4;
+            char **ids = sr_realloc(effect->light_ids, capacity * sizeof(*ids));
+            if (!ids) return false;
+            effect->light_ids = ids;
+        }
+        size_t length = (size_t)(cursor - begin);
+        char *id = sr_alloc(length + 1);
+        if (!id) return false;
+        memcpy(id, begin, length);
+        id[length] = '\0';
+        effect->light_ids[effect->light_count++] = id;
+    }
+    return true;
 }
 
 void sr_xml_start_effect(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"id","type","enabled","intensity","radius","threshold",
-        "saturation","contrast","brightness","color"};
-    if (!sr_xml_attrs_allowed(ctx,"effect",attrs,allowed,10)) return;
+        "saturation","contrast","brightness","color","offsetX","offsetY","lights",
+        "falloff","relief"};
+    if (!sr_xml_attrs_allowed(ctx,"effect",attrs,allowed,15)) return;
     const char *id=sr_xml_required(ctx,"effect",attrs,"id");
     const char *type=sr_xml_required(ctx,"effect",attrs,"type");
     if(ctx->failed)return;
@@ -225,20 +263,45 @@ void sr_xml_start_effect(ParseContext *ctx, const XML_Char **attrs) {
         SrEffect *items=sr_realloc(ctx->scene->effects,cap*sizeof(*items));if(!items)SR_XML_FAIL_RETURN(ctx,"effect",NULL,"out of memory");
         memset(items+ctx->scene->effect_capacity,0,(cap-ctx->scene->effect_capacity)*sizeof(*items));ctx->scene->effects=items;ctx->scene->effect_capacity=cap;}
     SrEffect *effect=&ctx->scene->effects[ctx->scene->effect_count++];effect->id=sr_strdup(id);effect->enabled=true;
-    effect->intensity.base=1;effect->radius.base=4;effect->threshold=.7;effect->saturation=1;effect->contrast=1;effect->color=(SrColor){1,1,1,1};
+    effect->source_line=sr_xml_line(ctx);
+    effect->intensity.base=1;effect->radius.base=4;effect->threshold.base=.7;effect->saturation.base=1;effect->contrast.base=1;
+    effect->offset_x.base=8;effect->offset_y.base=8;
+    effect->color=sr_anim_color_static((SrColor){1,1,1,1});
+    effect->color.space=ctx->scene->project.working_color_space;
+    effect->falloff=SR_FALLOFF_SMOOTH;
+    if(!effect->id)SR_XML_FAIL_RETURN(ctx,"effect",NULL,"out of memory");
     if(!strcmp(type,"glow"))effect->type=SR_EFFECT_GLOW;else if(!strcmp(type,"bloom"))effect->type=SR_EFFECT_BLOOM;
     else if(!strcmp(type,"blur"))effect->type=SR_EFFECT_BLUR;else if(!strcmp(type,"color-grade"))effect->type=SR_EFFECT_COLOR_GRADE;
     else if(!strcmp(type,"vignette"))effect->type=SR_EFFECT_VIGNETTE;else if(!strcmp(type,"lens-flare"))effect->type=SR_EFFECT_LENS_FLARE;
+    else if(!strcmp(type,"drop-shadow")){effect->type=SR_EFFECT_DROP_SHADOW;effect->color.base=(SrColor){0,0,0,1};}
+    else if(!strcmp(type,"lighting"))effect->type=SR_EFFECT_LIGHTING;
     else SR_XML_FAIL_RETURN(ctx,"effect","type","unsupported effect type");
     const char *value=sr_xml_attr(attrs,"enabled");if(value&&!sr_parse_bool(value,&effect->enabled))SR_XML_FAIL_RETURN(ctx,"effect","enabled","expected true or false");
-    value=sr_xml_attr(attrs,"color");if(value&&!sr_parse_color(value,&effect->color))SR_XML_FAIL_RETURN(ctx,"effect","color","invalid color");
-    if(!decimal(ctx,"effect",attrs,"intensity",&effect->intensity.base)||!decimal(ctx,"effect",attrs,"radius",&effect->radius.base)||
-       !decimal(ctx,"effect",attrs,"threshold",&effect->threshold)||!decimal(ctx,"effect",attrs,"saturation",&effect->saturation)||
-       !decimal(ctx,"effect",attrs,"contrast",&effect->contrast)||!decimal(ctx,"effect",attrs,"brightness",&effect->brightness))return;
-    if(effect->intensity.base<0||effect->radius.base<0||effect->threshold<0||
-       effect->threshold>1||effect->saturation<0||effect->contrast<0)
-        SR_XML_FAIL_RETURN(ctx,"effect","intensity/radius/threshold/saturation/contrast",
+    value=sr_xml_attr(attrs,"color");if(value&&!sr_parse_color(value,&effect->color.base))SR_XML_FAIL_RETURN(ctx,"effect","color","invalid color");
+    if(!anim_decimal(ctx,attrs,"intensity",&effect->intensity)||!anim_decimal(ctx,attrs,"radius",&effect->radius)||
+       !anim_decimal(ctx,attrs,"threshold",&effect->threshold)||!anim_decimal(ctx,attrs,"saturation",&effect->saturation)||
+       !anim_decimal(ctx,attrs,"contrast",&effect->contrast)||!anim_decimal(ctx,attrs,"brightness",&effect->brightness)||
+       !anim_decimal(ctx,attrs,"offsetX",&effect->offset_x)||!anim_decimal(ctx,attrs,"offsetY",&effect->offset_y)||
+       !anim_decimal(ctx,attrs,"relief",&effect->relief))return;
+    if(effect->intensity.base<0||effect->radius.base<0||effect->threshold.base<0||
+       effect->threshold.base>1||effect->saturation.base<0||effect->contrast.base<0||
+       effect->relief.base<0)
+        SR_XML_FAIL_RETURN(ctx,"effect","intensity/radius/threshold/saturation/contrast/relief",
                            "expected non-negative values and threshold in [0,1]");
+    value=sr_xml_attr(attrs,"falloff");
+    if(value){
+        if(effect->type!=SR_EFFECT_LIGHTING)SR_XML_FAIL_RETURN(ctx,"effect","falloff","falloff requires type=lighting");
+        if(!strcmp(value,"smooth"))effect->falloff=SR_FALLOFF_SMOOTH;
+        else if(!strcmp(value,"linear"))effect->falloff=SR_FALLOFF_LINEAR;
+        else if(!strcmp(value,"quadratic"))effect->falloff=SR_FALLOFF_QUADRATIC;
+        else if(!strcmp(value,"none"))effect->falloff=SR_FALLOFF_NONE;
+        else SR_XML_FAIL_RETURN(ctx,"effect","falloff","expected linear, quadratic, smooth, or none");
+    }
+    value=sr_xml_attr(attrs,"lights");
+    if(value){
+        if(effect->type!=SR_EFFECT_LIGHTING)SR_XML_FAIL_RETURN(ctx,"effect","lights","lights requires type=lighting");
+        if(!parse_light_ids(effect,value))SR_XML_FAIL_RETURN(ctx,"effect","lights","out of memory");
+    }
     sr_xml_push(ctx,(ParseFrame){.kind=E_EFFECT,.effect=effect},"effect");
 }
 
