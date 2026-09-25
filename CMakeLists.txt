@@ -54,6 +54,8 @@ set(SCENE_RENDER_SOURCES
     src/camera.c
     src/lighting.c
     src/effects.c
+    src/particles.c
+    src/deform.c
     src/physics.c
     src/encoder.c
     src/renderer.c
@@ -81,7 +83,8 @@ sr_configure_target(scene-render)
 include(CTest)
 if(BUILD_TESTING)
     set(SR_UNIT_SUITES timeline geometry compositor color vector mesh scene xml
-                       camera physics blend group raster mask path image)
+                       camera physics blend group raster mask path image
+                       fx anim_color particles deform shadow)
     file(GLOB SR_UNIT_SOURCES CONFIGURE_DEPENDS
          ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/*.c)
     add_executable(sr-unit-tests ${SR_UNIT_SOURCES})

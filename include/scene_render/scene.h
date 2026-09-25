@@ -41,14 +41,37 @@ typedef enum { SR_FILL_EVENODD, SR_FILL_NONZERO } SrFillRule;
 typedef enum { SR_MASK_RECT, SR_MASK_ELLIPSE, SR_MASK_ROUNDED_RECT } SrMaskType;
 typedef enum { SR_BODY_NONE, SR_BODY_STATIC, SR_BODY_KINEMATIC, SR_BODY_DYNAMIC } SrBodyType;
 typedef enum { SR_COLLIDER_BOX, SR_COLLIDER_CIRCLE } SrColliderType;
-typedef enum { SR_MOD_BEND, SR_MOD_TWIST, SR_MOD_WAVE, SR_MOD_SQUASH, SR_MOD_STRETCH } SrModifierType;
+typedef enum { SR_MOD_BEND, SR_MOD_TWIST, SR_MOD_WAVE, SR_MOD_SQUASH, SR_MOD_STRETCH,
+               SR_MOD_MESH_WARP } SrModifierType;
+typedef enum { SR_PIN_NONE, SR_PIN_TOP, SR_PIN_BOTTOM, SR_PIN_LEFT, SR_PIN_RIGHT,
+               SR_PIN_CORNERS } SrPinMode;
+typedef enum { SR_PARTICLE_DISC, SR_PARTICLE_SQUARE } SrParticleShape;
+typedef enum { SR_FALLOFF_SMOOTH, SR_FALLOFF_LINEAR, SR_FALLOFF_QUADRATIC,
+               SR_FALLOFF_NONE } SrFalloff;
+typedef enum { SR_FIELD_DIRECTIONAL, SR_FIELD_RADIAL, SR_FIELD_VORTEX } SrFieldType;
+typedef enum { SR_CONSTRAINT_SPRING, SR_CONSTRAINT_DISTANCE,
+               SR_CONSTRAINT_PIN } SrConstraintType;
 typedef enum { SR_LIGHT_AMBIENT, SR_LIGHT_DIRECTIONAL, SR_LIGHT_POINT, SR_LIGHT_SPOT } SrLightType;
 typedef enum { SR_OBJECT_SPHERE, SR_OBJECT_BOX, SR_OBJECT_PLANE,
                SR_OBJECT_MESH } SrPrimitive3D;
 typedef enum { SR_COLOR_SRGB, SR_COLOR_DISPLAY_P3,
                SR_COLOR_REC2020, SR_COLOR_REC709 } SrColorSpace;
 typedef enum { SR_EFFECT_GLOW, SR_EFFECT_BLOOM, SR_EFFECT_BLUR, SR_EFFECT_COLOR_GRADE,
-               SR_EFFECT_VIGNETTE, SR_EFFECT_LENS_FLARE } SrEffectType;
+               SR_EFFECT_VIGNETTE, SR_EFFECT_LENS_FLARE, SR_EFFECT_DROP_SHADOW,
+               SR_EFFECT_LIGHTING } SrEffectType;
+
+/* An animatable color. `base` is the static straight color as written in
+ * the XML (transfer-encoded working-space values). Keyframes live in four
+ * channel tracks sharing key times and curves: r, g, b hold straight
+ * LINEAR-light values (decoded with `space`'s transfer at parse time) and a
+ * holds straight alpha, so interpolation happens in linear light and easing
+ * applies to every channel identically. Evaluate with sr_anim_color_eval
+ * (color.h); with no keys the result is exactly `base`. */
+typedef struct {
+    SrColor base;
+    SrTrack r, g, b, a;
+    SrColorSpace space;
+} SrAnimColor;
 
 /* Float premultiplied RGBA in the project blend space: 4 floats per pixel,
  * row-major and tightly packed. See docs/architecture.md. */
@@ -134,6 +157,11 @@ typedef struct {
     SrAnimValue frequency;
     SrAnimValue phase;
     char axis;
+    /* mesh-warp: a rows x cols control grid spanning the node's local box;
+     * points[2 * (r * cols + c)] and [.. + 1] are the x/y offsets in px of
+     * control point (r, c). NULL for the other modifier types. */
+    uint32_t rows, cols;
+    SrAnimValue *points;
 } SrModifier;
 
 typedef struct {
@@ -150,12 +178,19 @@ typedef struct {
     double radius;
 } SrRigidBody;
 
+/* A mass-spring grid simulated by sr_physics_prepare. `offsets` holds, per
+ * fixed physics sample, rows*cols (dx, dy) local-space displacements of the
+ * grid nodes from their rest positions on the node's local box. */
 typedef struct {
     bool enabled;
     double mass;
     double stiffness;
     double damping;
     double pressure;
+    uint32_t rows, cols;
+    SrPinMode pin;
+    double *offsets;
+    size_t sample_count;
 } SrSoftBody;
 
 typedef struct {
@@ -192,16 +227,45 @@ typedef struct SrNode {
     SrShapeType shape;
     double shape_width;
     double shape_height;
-    SrColor fill;
-    SrColor stroke;
+    SrAnimColor fill;
+    SrAnimColor stroke;
     double stroke_width;
+    /* Particle emitter (see src/particles.c). `particle_preset` may be NULL. */
     char *particle_preset;
     SrAnimValue particle_rate;
     SrAnimValue particle_lifetime;
     SrAnimValue particle_speed;
     SrAnimValue particle_spread;
     SrAnimValue particle_size;
-    SrColor particle_color;
+    SrAnimValue particle_direction;
+    SrAnimColor particle_color;
+    SrAnimColor particle_color_end;
+    bool particle_color_end_set;
+    double particle_size_end;
+    bool particle_size_end_set;
+    double particle_speed_variance;
+    bool particle_speed_variance_set;
+    double particle_lifetime_variance;
+    double particle_gravity_x, particle_gravity_y;
+    double particle_emitter_width, particle_emitter_height;
+    uint32_t particle_max;
+    bool particle_seed_set;
+    uint64_t particle_seed;
+    SrParticleShape particle_shape;
+    /* Preset-only motion terms that reproduce the pre-parametric presets:
+     * mean speed = speed * factor, default variance = speed * var_factor,
+     * a sideways wobble of amplitude * sin(age * frequency + phase) px and
+     * a size growth to size * (1 + lifetime) (smoke). */
+    double particle_speed_factor;
+    double particle_speed_var_factor;
+    double particle_wobble;
+    double particle_wobble_frequency;
+    bool particle_grow;
+    /* Group effects: ids from the `effects` attribute, resolved to
+     * scene->effects entries (applied in order to the isolated buffer). */
+    char **effect_ids;
+    size_t effect_ref_count;
+    struct SrEffect **effect_refs;
     SrModifier *modifiers;
     size_t modifier_count;
     size_t modifier_capacity;
@@ -227,6 +291,7 @@ typedef struct {
     SrColorSpace working_color_space;
     SrColor background;
     SrRenderMode mode;
+    uint32_t antialias3d;       /* 3D pass supersampling factor, 1..4 */
 } SrProject;
 
 typedef struct {
@@ -295,7 +360,7 @@ typedef struct {
 typedef struct {
     char *id;
     SrLightType type;
-    SrColor color;
+    SrAnimColor color;
     SrAnimValue intensity;
     SrAnimValue x, y, z;
     SrAnimValue yaw, pitch;
@@ -303,6 +368,9 @@ typedef struct {
     double falloff;
     double spot_angle;
     bool cast_shadow;
+    uint32_t shadow_map_size;   /* directional/spot shadow map texels */
+    bool used_2d;               /* referenced by a 2D lighting effect */
+    size_t source_line;
 } SrLight;
 
 typedef struct {
@@ -319,39 +387,52 @@ typedef struct {
     size_t source_line;
 } SrObject3D;
 
-typedef struct {
+typedef struct SrEffect {
     char *id;
     SrEffectType type;
     bool enabled;
+    bool referenced;            /* applied by a group, not the whole frame */
     SrAnimValue intensity;
     SrAnimValue radius;
-    double threshold;
-    double saturation;
-    double contrast;
-    double brightness;
-    SrColor color;
+    SrAnimValue threshold;
+    SrAnimValue saturation;
+    SrAnimValue contrast;
+    SrAnimValue brightness;
+    SrAnimValue offset_x;       /* drop-shadow */
+    SrAnimValue offset_y;
+    SrAnimValue relief;         /* lighting */
+    SrAnimColor color;
+    SrFalloff falloff;          /* lighting */
+    char **light_ids;           /* lighting: `lights` attribute */
+    SrLight **lights;
+    size_t light_count;
+    size_t source_line;
 } SrEffect;
 
 typedef struct {
     char *id;
+    SrConstraintType type;
     char *a_id;
-    char *b_id;
+    char *b_id;                 /* NULL for pin */
     SrNode *a;
     SrNode *b;
     double rest_length;
+    bool rest_length_set;
     double stiffness;
     double damping;
+    bool rigid;                 /* pin without stiffness: exact projection */
+    double x, y;                /* pin anchor */
     size_t source_line;
 } SrConstraint;
 
 typedef struct {
     char *id;
-    bool radial;
-    double x;
-    double y;
-    double force_x;
-    double force_y;
-    double strength;
+    SrFieldType type;
+    SrAnimValue x;
+    SrAnimValue y;
+    SrAnimValue force_x;
+    SrAnimValue force_y;
+    SrAnimValue strength;
     double falloff;
 } SrForceField;
 
@@ -412,6 +493,18 @@ void sr_node_sort_children(SrNode *node);
 SrNode *sr_scene_find_node(SrScene *scene, const char *id);
 bool sr_scene_id_exists(const SrScene *scene, const char *id);
 SrAnimValue *sr_node_property(SrNode *node, const char *name);
+/* Color properties animatable with <animate property="fill|stroke|color|
+ * colorEnd">; NULL when `name` is not a color property of `node`. */
+SrAnimColor *sr_node_color_property(SrNode *node, const char *name);
+/* A static animatable color: `base` with no keyframes. */
+SrAnimColor sr_anim_color_static(SrColor base);
+void sr_anim_color_free(SrAnimColor *color);
+/* Appends one color keyframe to the four channel tracks: `value` is a
+ * straight transfer-encoded color, decoded to linear light with
+ * color->space. `key` supplies time, curve and bezier controls. */
+SrStatus sr_anim_color_add_key(SrAnimColor *color, SrKeyframe key, SrColor value);
+/* Sorts the channel tracks; fails on duplicate key times. */
+SrStatus sr_anim_color_finalize(SrAnimColor *color);
 bool sr_blend_parse(const char *text, SrBlendMode *mode);
 const char *sr_blend_name(SrBlendMode mode);
 

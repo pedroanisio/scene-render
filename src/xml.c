@@ -233,11 +233,16 @@ static void XMLCALL on_start(void *user, const XML_Char *name,
         sr_xml_start_modifier(ctx, attrs);
         return;
     }
+    if (strcmp(name, "point") == 0 && p->kind == E_MODIFIER) {
+        sr_xml_start_point(ctx, attrs);
+        return;
+    }
     if (strcmp(name, "animate") == 0 &&
         (p->kind == E_GROUP || p->kind == E_LAYER || p->kind == E_PARTICLES ||
          p->kind == E_CAMERA || p->kind == E_MASK ||
          p->kind == E_LIGHT || p->kind == E_EFFECT || p->kind == E_MODIFIER ||
-         p->kind == E_OBJECT3D)) {
+         p->kind == E_OBJECT3D || p->kind == E_FORCE_FIELD ||
+         p->kind == E_POINT)) {
         sr_xml_start_animate(ctx, attrs);
         return;
     }
@@ -290,7 +295,6 @@ static void XMLCALL on_start(void *user, const XML_Char *name,
     }
     if (strcmp(name, "forceField") == 0 && p->kind == E_PHYSICS) {
         sr_xml_start_force_field(ctx, attrs);
-        if (!ctx->failed) sr_xml_push(ctx, (ParseFrame){.kind = E_FORCE_FIELD}, name);
         return;
     }
     if (strcmp(name, "constraint") == 0 && p->kind == E_PHYSICS) {
@@ -307,7 +311,14 @@ static void XMLCALL on_end(void *user, const XML_Char *name) {
     (void)name;
     if (ctx->failed || ctx->depth == 0) return;
     ParseFrame *frame = &ctx->stack[ctx->depth - 1];
-    if (frame->kind == E_ANIMATE) {
+    if (frame->kind == E_ANIMATE && frame->color_anim) {
+        if (frame->color_anim->r.count == 0)
+            SR_XML_FAIL_RETURN(ctx, "animate", NULL,
+                               "animation track requires at least one key");
+        if (sr_anim_color_finalize(frame->color_anim) != SR_OK)
+            SR_XML_FAIL_RETURN(ctx, "animate", NULL,
+                               "keyframe times must be unique");
+    } else if (frame->kind == E_ANIMATE) {
         if (frame->anim->track.count == 0)
             SR_XML_FAIL_RETURN(ctx, "animate", NULL,
                                "animation track requires at least one key");

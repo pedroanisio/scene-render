@@ -21,11 +21,13 @@ in mature external components rather than being reimplemented.
 | `parallel`, `color` | deterministic row jobs; 8-bit input to blend space and blend space to 8-bit output conversion |
 | `raster` | premultiplied W3C blend kernel and signed-distance anti-aliased coverage |
 | `audio` | FFmpeg decode to disk streams and bounded C mixer |
-| `physics` | fixed-step 2D solver, contacts, constraints, and atomic cache serialization |
-| `lighting` | CPU primitive/triangle rasterization, depth, material lighting, approximate shadows |
-| `compositor` | hierarchy, isolated group buffers, masks, deformation, sampling, and particles |
+| `physics` | fixed-step 2D solver (OBB/circle contacts, springs, pins, fields), mass-spring soft bodies, and atomic cache serialization |
+| `lighting` | CPU primitive/triangle rasterization, depth, material lighting, shadow maps, 3D supersampling |
+| `compositor` | hierarchy, isolated group buffers, group effects, masks, deformation, sampling, and particle drawing |
+| `particles` | closed-form, stateless parametric particle evaluation |
+| `deform` | bilinear control-grid inverse warp shared by mesh-warp and soft bodies |
 | `camera` | equirectangular viewport mapping and deterministic row workers |
-| `effects` | parallel blur, glow/bloom, grade, vignette, and lens-flare approximation |
+| `effects` | rectangle-bounded blur, glow/bloom, grade, vignette, lens flare, drop shadow, and 2D lighting on the frame or a group buffer |
 | `gpu` | optional OpenCL 1.2 final color-conversion kernel and capability probe |
 | `resume` | content-signature directory and atomic raw-frame cache writes |
 | `encoder` | FFmpeg encoder preflight, supervised pipe, A/V muxing, and color tags |
@@ -95,8 +97,14 @@ transfer-encoded through a 65536-entry table, clamped, and rounded half up to
 conversion when selected. FFmpeg receives matching primaries, transfer,
 matrix, and range flags.
 
-Groups with a non-normal blend or opacity below one render into an isolated
-buffer composited once with their blend, opacity, and masks; other groups
+Groups with a non-normal blend, opacity below one, or group `effects` render
+into an isolated buffer composited once with their blend, opacity, and masks.
+Group effects run on that buffer first, in the listed order; each one grows
+the buffer's dirty rectangle by its reach (blur radius, shadow offset plus
+radius) and processes only the grown rectangle, which gives the same pixels
+as processing the whole buffer because everything outside it is transparent
+and stays so. Effects no group references run on the whole final frame as
+before. Other groups
 pass their children through to the parent target, and their masks join the
 mask chain whose coverage multiplies into every child draw. Rect, ellipse, and
 rounded-rect shapes and masks get anti-aliased coverage from a signed
@@ -108,24 +116,56 @@ sampled bilinearly on premultiplied texels at pixel centres, clamped to the
 edge texels, and multiplied by the geometric coverage of the image rectangle
 (signed distance at the pixel footprint), so edges fade over about one output
 pixel at any magnification. Deformation is an inverse
-sample warp, avoiding holes in the destination. Every draw is split into
+sample warp, avoiding holes in the destination: mesh-warp and soft bodies
+evaluate a bilinear displacement field over a control grid once per draw and
+invert it per pixel by Newton iteration (an all-zero grid returns the input
+point exactly, so a rest grid is bit-identical to no deformer); their draw
+bounds grow by the largest offset. Every draw is split into
 disjoint row ranges, so results are identical for any thread count.
+
+Animated colors keep one keyframe track per channel with shared key times
+and curves; red, green, and blue keys are stored decoded to linear light
+(with the working space's transfer), interpolated, and re-encoded, so a
+midpoint is the linear-light midpoint. Particles are evaluated in closed form
+per particle index from the emitter seed (its `seed`, else project seed XOR
+a hash of its id): birth time from the constant rate, or from a fixed
+1/240 s integration grid of an animated rate; emission parameters sampled at
+birth. Nothing depends on previously rendered frames or on thread count, and
+the particles themselves are drawn in birth order on one thread.
 
 ## 3D, lighting, and physical behavior
 
 Built-in spheres, boxes, planes, and OBJ triangles share a per-frame depth
 buffer. Perspective/orthographic cameras and ambient, directional, point, and
-spot lights feed deterministic CPU material shading. `castShadow` and
-`receiveShadow` use screen-space and bounding-volume occlusion approximations.
-They are useful visual behavior, not a claim of a physically based renderer.
+spot lights feed deterministic CPU material shading. Directional and spot
+lights with `castShadow` render a depth map per frame from the light
+(orthographic, fitted to the bounding sphere of all objects, for directional
+lights; perspective over the cone for spot lights) by casting one ray per
+texel against every caster (analytic ellipsoid for spheres, the drawn
+camera-facing quad for boxes and planes, triangles for meshes). Receivers
+look it up at a consistent world point with 3x3 percentage-closer filtering
+and a slope-scaled bias. Point lights keep the bounding-volume occlusion test
+and the screen-space blob. `project antialias3d` N renders the pass into an
+N x N supersampled buffer (depth per sample) and box-filters it over the
+frame; N = 1 draws directly and is bit-identical to earlier builds. These
+are useful visual behavior, not a claim of a physically based renderer.
 
 Physics samples at the XML `fixedStep`, independently of output FPS. Dynamic
-bodies receive gravity, force fields, springs, damping, contact iterations,
-friction, and restitution. Render poses interpolate adjacent fixed samples.
-The optional cache contains an engine/versioned scene signature (including
-geometry, forces, and constraints) and is committed by atomic rename. Soft
-bodies and bend/twist/wave/squash/stretch modifiers are deterministic visual
-approximations, not verified physically accurate simulation.
+bodies receive gravity, force fields (directional, radial, vortex; fields
+evaluated at each step's time), springs, damping, contact iterations,
+friction, and restitution; rigid pins are projected after contacts. Circles
+use exact circle-vs-oriented-box contact and boxes a separating-axis test on
+oriented boxes (identical to the former overlap test for unrotated boxes).
+Soft bodies are rows x cols point-mass grids with structural and shear
+springs, area-preserving pressure, optional pins, anchor springs to the
+node's rigid pose when it also has a rigid body, and frame-bound collisions,
+integrated with enough substeps per fixed step to stay stable; each sample
+stores the grid's local offsets. Render poses and grids interpolate adjacent
+fixed samples. The optional cache (format version 3) contains an
+engine/versioned scene signature (including geometry, forces, animated field
+tracks, constraints, and soft bodies) and is committed by atomic rename.
+Bend/twist/wave/squash/stretch modifiers are deterministic visual effects,
+and neither they nor the solver claim physical accuracy.
 
 ## 360 and metadata
 

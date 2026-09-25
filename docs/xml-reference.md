@@ -31,8 +31,11 @@ are relative to the current working directory.
 
 `project` requires positive `width`, `height`, `duration`, and `fps` (`N` or
 `N/D`). Optional fields are `seed`, `linearLight`, `background`,
-`workingColorSpace="srgb|rec709|display-p3|rec2020"`, and `mode`: `standard`,
-`equirectangular`, or `viewport`.
+`workingColorSpace="srgb|rec709|display-p3|rec2020"`, `mode`: `standard`,
+`equirectangular`, or `viewport`, and `antialias3d="1|2|3|4"` (default 1):
+the 3D pass is rendered at N x N samples per pixel and box-filtered (memory
+about `24 x width x height x N^2` bytes during the pass). With 1 the 3D pass
+is unchanged.
 
 `output` requires `path` and `codec` (`h264`, `h265`, or `ffv1`). It accepts
 `pixelFormat`, `preset`, mutually usable `crf`/`bitrate`, `audioCodec`,
@@ -77,8 +80,10 @@ are generated.
 Groups and drawable 2D nodes accept `id`, `z`, `visible`, `opacity`, `start`,
 `end`, `x`, `y`, `rotation`, `scaleX`, `scaleY`, `anchorX`, and `anchorY`.
 Lower `z` draws first; equal `z` retains XML order. A group applies its
-transform recursively and accepts `blend`. A group with `blend` other than
-`normal` or `opacity` below 1 (at that time) is *isolated*: its children
+transform recursively and accepts `blend` and `effects`, a space-separated
+list of `effect` ids (see Effects); an unknown id is an error reported at the
+group's line and `effects` attribute. A group with `blend` other than
+`normal`, `opacity` below 1 (at that time), or any `effects` is *isolated*: its children
 render into a transparent buffer that is then composited once with the
 group's blend, opacity, and masks (children blend against that buffer, not
 against what lies below the group). Otherwise the group is a pass-through:
@@ -95,10 +100,60 @@ implicit clip/speed mapping.
 signed distance at the node's pixel footprint; the stroke is `strokeWidth`
 wide and centred on the outline, drawn over the fill.
 
-`particleEmitter` requires `preset="smoke|sparks|dust|rain"`; it accepts
-`rate`, `lifetime`, `speed`, `spread` in degrees, `size`, `color`, and `blend`.
-The numeric emitter controls `rate`, `lifetime`, `speed`, `spread`, and `size`
-are animatable.
+`particleEmitter` is parametric. Particle `i` (in emission order) is born at
+`i / rate` seconds after the emitter's `start` (with an animated `rate`, where
+the rate integrated from `start` on a fixed 1/240 s grid reaches `i`), and at
+age `a` of its lifetime `L` (fraction `f = a / L`) sits in the emitter's local
+space at
+
+```
+x = ex + cos(d) * v * a + gravityX * a^2 / 2
+y = ey + sin(d) * v * a + gravityY * a^2 / 2
+```
+
+with `d = direction + spread * u1` (degrees, `u1` uniform in [-1, 1]: `spread`
+is the largest deviation either side), `v = speed + speedVariance * u2`,
+`L = lifetime + lifetimeVariance * u0` (at least 1 µs), and `(ex, ey)` uniform
+in the centred `emitterWidth` x `emitterHeight` spawn rectangle. Its radius
+goes linearly from `size` to `sizeEnd` (default `size`) and its color from
+`color` to `colorEnd` in linear light (default: `color` at zero alpha, a fade
+out). Particles are drawn oldest first as anti-aliased `shape="disc|square"`
+(default disc) of that radius in canvas pixels. Every particle is a closed
+function of the seed and its index, so any frame renders identically alone,
+in sequence, or on any thread count. The random streams come from `seed`
+(unsigned 64-bit) when given, else from the project seed XOR a hash of the
+emitter id. At most `maxParticles` (default 10000, up to 10,000,000) are
+alive; when the cap binds the newest are kept.
+
+| Attribute | Default | Notes |
+|---|---|---|
+| `rate` | 10 | particles per second, ≥ 0 |
+| `lifetime`, `lifetimeVariance` | 1, 0 | seconds |
+| `speed`, `speedVariance` | 100, 0 | px/s |
+| `direction`, `spread` | -90 (up), 0 | degrees, 0 = +x, 90 = down |
+| `gravityX`, `gravityY` | 0, 0 | px/s² |
+| `size`, `sizeEnd` | 4, `size` | radius in px |
+| `color`, `colorEnd` | white, `color` at alpha 0 | |
+| `emitterWidth`, `emitterHeight` | 0, 0 | spawn area in px |
+| `maxParticles`, `seed`, `shape`, `blend` | 10000, —, disc, normal | |
+
+`rate`, `speed`, `spread`, `size`, `lifetime`, and `direction` are animatable
+and sampled at each particle's birth (a particle keeps the values it was
+emitted with); `color` and `colorEnd` take color keyframes, also sampled at
+birth. `preset="smoke|sparks|dust|rain"` is optional and only changes
+defaults, reproducing the earlier fixed presets; explicit attributes
+override them:
+
+| Preset | Defaults |
+|---|---|
+| `sparks` | `gravityY` 400; speed drawn from 0.5–1.0 x `speed` |
+| `smoke` | speed 0.5–1.0 x `speed`; ±15 px sideways wobble `15 sin(3a + u1)`; size grows to `size x (1 + L)` |
+| `dust` | speed 0.125–0.25 x `speed` |
+| `rain` | `direction` 90; `emitterWidth` 80; speed 0.5–1.0 x `speed` |
+
+With a preset and no `speedVariance`, `v = speed x (m + w u2)` with the
+preset's mean `m` and half-width `w` above; `speedVariance` switches to the
+plain formula.
 
 `mask` supports `type="rect|ellipse|rounded-rect"`, `x`, `y`, `width`,
 `height`, `radius`, and `invert`. Masks may be placed on drawable nodes or
@@ -128,10 +183,31 @@ order but times must be unique after sorting.
 Node properties include `opacity`, `position.x/y`, `rotation`, `scale.x/y`,
 `anchor.x/y`, and `source.time`. Camera properties are `position.x/y/z`, `yaw`,
 `pitch`, `roll`, and `fov`. Light properties include `intensity`, position,
-`yaw`, and `pitch`. Effect properties include `intensity` and `radius`.
-Particle properties are `rate`, `lifetime`, `speed`, `spread`, and `size`.
-Modifier properties are `amount`, `frequency`, and `phase`. 3D object transform
-properties include position, rotation, and scale axes.
+`yaw`, `pitch`, and `color`. Effect properties are `intensity`, `radius`,
+`threshold`, `saturation`, `contrast`, `brightness`, `offsetX`, `offsetY`,
+`relief`, and `color`. Particle properties are `rate`, `lifetime`, `speed`,
+`spread`, `size`, `direction`, `color`, and `colorEnd`. Shape properties
+additionally include `fill` and `stroke`. Modifier properties are `amount`,
+`frequency`, and `phase`; mesh-warp `point` properties are `x` and `y`.
+Force-field properties are `strength`, `forceX`, `forceY`, `x`, and `y`. 3D
+object transform properties include position, rotation, and scale axes.
+
+Color properties (`fill`, `stroke`, `color`, `colorEnd`) take color strings
+as key values:
+
+```xml
+<animate property="fill" defaultInterpolation="ease-in-out">
+  <key time="0" value="#FF0000"/>
+  <key time="2" value="#0000FF80"/>
+</animate>
+```
+
+They interpolate on straight-alpha linear-light components: each key's red,
+green, and blue are decoded with the working space's transfer, interpolated
+with the key's curve (the same eased fraction for every channel, alpha
+included), re-encoded, and then converted to blend space like any XML color.
+The midpoint of black and white is therefore `#BCBCBC`, not `#808080`. Text
+colors are static asset properties.
 
 ## Cameras and 360
 
@@ -173,22 +249,79 @@ only occurs after a successful encode.
 `object3D` requires `id` and `primitive="sphere|box|plane|mesh"`; it accepts
 `mesh` (required for `primitive="mesh"`), `material`, position, three rotations, three
 scales, `radius`, `castShadow`, and `receiveShadow`. Transform animations may
-be nested. Meshes are triangle-rasterized with a shared depth buffer. Shadow
-occlusion is a deterministic bounding-volume/screen-space approximation, not
-a physically based ray tracer.
+be nested. Meshes are triangle-rasterized with a shared depth buffer; spheres,
+boxes, and planes are camera-facing sprites.
 
 Top-level `lights` contains `light` entries. Each requires `id` and
-`type="ambient|directional|point|spot"`, and accepts color, intensity, position,
-yaw/pitch, range, falloff, spot angle, and shadow flag. Light animation is
-nested normally.
+`type="ambient|directional|point|spot"`, and accepts color (animatable),
+intensity, position, yaw/pitch, range, falloff, spot angle, `castShadow`, and
+`shadowMapSize` (16–8192, default 2048). Light animation is nested normally.
+Lights referenced by a 2D `lighting` effect (below) are 2D lights: they do
+not light the 3D pass.
+
+A directional or spot light with `castShadow="true"` renders a
+`shadowMapSize` x `shadowMapSize` depth map each frame, seen from the light:
+orthographic and fitted to the bounding sphere of all 3D objects for a
+directional light, perspective over the cone (10% margin) for a spot light.
+Every object with `castShadow` (default true) is written into it: spheres as
+ellipsoids, boxes and planes as the camera-facing quad that is drawn, meshes
+as their triangles. Objects with `receiveShadow` (default true) sample it with
+a 3 x 3 percentage-closer filter and a slope-scaled bias (1.5 texels plus 2
+per unit of surface tangent, capped at 10), so shadow edges are soft over
+about one texel and lit surfaces do not self-shadow; the light's direct
+contribution is scaled by the visible fraction (ambient light is not
+shadowed). Without a camera, world x/y are canvas pixels (y down) and the
+viewer looks along -z; with a camera, world space is the camera's. Point
+lights keep the earlier approximation: a caster's bounding sphere between
+the point and the light scales that light by 0.2, and each `castShadow`
+object draws a translucent screen-space blob when any point light casts
+shadows.
 
 ## Effects
 
-Top-level `effects` is applied in XML order. Each `effect` requires `id` and a
-type: `glow`, `bloom`, `blur`, `color-grade`, `vignette`, or `lens-flare`.
-Common controls are `enabled`, `intensity`, `radius`, `threshold`,
-`saturation`, `contrast`, `brightness`, and `color`; irrelevant controls are
-ignored by a particular effect.
+Each `effect` in top-level `effects` requires `id` and a type: `glow`,
+`bloom`, `blur`, `color-grade`, `vignette`, `lens-flare`, `drop-shadow`, or
+`lighting`. Common controls are `enabled`, `intensity` (default 1), `radius`
+(default 4), `threshold` (0.7), `saturation` (1), `contrast` (1),
+`brightness` (0), and `color` (white; black for `drop-shadow`); irrelevant
+controls are ignored by a particular effect. Every numeric control and
+`color` animate with nested `<animate>`. An effect at zero intensity is an
+exact no-op.
+
+An effect that no group lists in its `effects` attribute applies to the
+whole final frame, in XML order, after the viewport projection. An effect
+listed by one or more groups is *only* applied to those groups: in the
+listed order, to the group's isolated buffer before it is composited (so it
+inherits the group's blend, opacity, and masks), independently for each
+group that lists it. Such a buffer's content area grows by each effect's
+reach (blur radius; drop-shadow offset plus radius plus one pixel), so
+effects are never clipped at the group's own bounds. Effect lengths
+(radius, offsets) are canvas pixels; light positions and ranges of
+`lighting` follow the group's transform.
+
+`drop-shadow` accepts `offsetX`, `offsetY` (default 8, 8), `radius` (box
+blur radius, rounded; 0 for a hard shadow), `color`, and `intensity`
+(opacity, clamped to [0, 1]): the content's alpha, shifted (bilinearly for
+fractional offsets) and blurred, tinted with `color`, is placed under the
+content: `out = content + shadow x (1 - content alpha)`.
+
+`lighting` multiplies the content's color (not its alpha) by the light
+arriving at each pixel from the `light` ids in `lights` (space-separated):
+`out = content x (1 + (L - 1) x intensity)`, where `L` sums, per light,
+`color x intensity x f`. For `ambient` lights `f = 1`; for `point` and `spot`
+lights at canvas position (x, y) (their `x`/`y` in the target's space: the
+group's local space, or canvas pixels for a whole-frame effect)
+`f = falloff(d / range)` with the effect's `falloff`: `smooth` (default)
+`(1 - q^2)^2`, `linear` `1 - q`, `quadratic` `(1 - q)^2`, `none` `1`, each 0
+for `q >= 1`; spot lights also multiply a smoothstep cone of full width
+`spotAngle` (±5 degree soft edge) about the heading `yaw` (0 = +x, 90 =
+down). `directional` lights contribute `f = 1` unless relief is on. With
+`relief` > 0 each pixel gets a normal from its alpha gradient scaled by
+`relief` and lights are weighted by Lambert's law: directional lights shine
+along `yaw` from `pitch` degrees above the image plane, and point/spot lights
+sit `z` pixels above it, so edges facing a light brighten and those facing
+away darken. This is compositing light, not physically based rendering, and
+it casts no shadows.
 
 ## Physics and deformation
 
@@ -196,20 +329,56 @@ ignored by a particular effect.
 `cache` path. It may contain:
 
 - directional `forceField` with `forceX/forceY`;
-- radial `forceField` with `x/y`, `strength`, and `falloff`;
-- `constraint type="spring|distance"` with body IDs `a/b`, `restLength`,
-  `stiffness`, and `damping`.
+- radial `forceField` with `x/y`, `strength`, and `falloff`: acceleration
+  `strength / (1 + d)^falloff` toward (`x`, `y`);
+- vortex `forceField` with `x/y`, `strength`, and `falloff`: the same
+  magnitude, tangential (clockwise on screen for positive `strength`);
+- `constraint type="spring|distance"` with body IDs `a/b`, `restLength`
+  (0 or absent: the initial distance), `stiffness`, and `damping`;
+- `constraint type="pin"` tying body `a` to the world point `x`, `y` at
+  `restLength` (absent: the initial distance; 0 holds the body on the point).
+  Without `stiffness` the pin is rigid: after contacts the body is projected
+  back onto the circle and loses its velocity along the pin. With `stiffness`
+  it is a spring to the point, damped by `damping`.
+
+Force-field `x`, `y`, `forceX`, `forceY`, and `strength` animate with nested
+`<animate>`; fields are evaluated at each fixed step's time. Collisions use
+the exact contact between a circle and an oriented box (the box's rotation
+included) and a separating-axis test between oriented boxes; unrotated boxes
+behave exactly as before.
 
 A drawable node may contain `rigidBody` with static/kinematic/dynamic type,
 box/circle shape, mass, friction, restitution, linear/angular damping, initial
 velocities, angular velocity, and radius. Damping (per second, default
 0.01) scales velocity by `exp(-damping * fixedStep)` each step, so it decays
-smoothly and never reverses direction. `softBody` accepts mass, stiffness,
-damping, and pressure and produces a documented procedural approximation.
+smoothly and never reverses direction.
+
+`softBody` on a `layer` or `shape` makes its local box a `rows` x `cols`
+(2–16, default 4 x 4) grid of point masses (`mass` split evenly) joined by
+structural and shear springs of `stiffness` with damping ratio `damping`,
+plus an area-preserving `pressure` that pushes the outline outward when
+compressed. `pin="top|bottom|left|right|corners|none"` (default none) holds
+those grid nodes at their rest positions. The grid is simulated with the
+rigid bodies inside the physics preparation at `fixedStep` (with the world
+defaults when there is no `physics` element): world gravity and force fields
+apply, grid nodes that start inside the frame collide with its bounds (0 to
+the project width/height, restitution 0.2), and a node that also has a `rigidBody` anchors each grid
+node to its rigid pose with a spring, so it wobbles when the body stops.
+The grid is cached with the rigid bodies, render samples interpolate between
+fixed steps like rigid poses, and the node's image is warped by the grid with
+the mesh-warp sampler. A node without a rigid body simulates in its static
+(base) transform; animated transforms move the deformed result.
 
 `deform` contains ordered `modifier` elements of type `bend`, `twist`, `wave`,
-`squash`, or `stretch`. Controls are `amount`, `frequency`, `phase`, and
-`axis="x|y"`; controls can contain animation tracks.
+`squash`, `stretch`, or `mesh-warp`. Controls are `amount`, `frequency`,
+`phase`, and `axis="x|y"`; controls can contain animation tracks.
+`mesh-warp` takes `rows` and `cols` (2–16, default 4) and `point` children
+`<point row="r" col="c" x="dx" y="dy"/>` (`x`/`y` animate) offsetting control
+point (r, c) of a grid spanning the node's local box by (dx, dy) local
+pixels. The content is warped by the bilinear interpolation of the offsets
+(inverse-mapped per pixel by Newton iteration); a grid of zero offsets
+reproduces the undeformed node exactly, and the drawn area grows by the
+largest offset.
 
 ## Audio
 

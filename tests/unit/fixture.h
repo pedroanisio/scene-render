@@ -40,7 +40,7 @@ static inline SrNode *fx_rect(SrScene *scene, SrNode *parent, double x,
     node->transform.y.base = y;
     node->shape_width = width;
     node->shape_height = height;
-    node->fill = fill;
+    node->fill.base = fill;
     node->opacity.base = opacity;
     return node;
 }

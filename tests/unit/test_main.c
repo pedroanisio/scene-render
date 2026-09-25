@@ -49,6 +49,9 @@ int main(int argc, char **argv)
         {"blend", sr_tests_blend},       {"group", sr_tests_group},
         {"raster", sr_tests_raster},     {"mask", sr_tests_mask},
         {"path", sr_tests_path},         {"image", sr_tests_image},
+        {"fx", sr_tests_fx},             {"anim_color", sr_tests_anim_color},
+        {"particles", sr_tests_particles}, {"deform", sr_tests_deform},
+        {"shadow", sr_tests_shadow},
     };
     if (argc > 2) {
         fprintf(stderr, "usage: %s [SUITE]\n", argv[0]);
