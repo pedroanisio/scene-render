@@ -15,6 +15,21 @@
       <xs:minInclusive value="0"/><xs:maxInclusive value="1"/>
     </xs:restriction>
   </xs:simpleType>
+  <xs:simpleType name="durationType">
+    <xs:restriction base="xs:double"><xs:minExclusive value="0"/><xs:maxInclusive value="1000000"/></xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="lightIntensityType">
+    <xs:restriction base="xs:double"><xs:minInclusive value="0"/><xs:maxInclusive value="1000000"/></xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="spotAngleType">
+    <xs:restriction base="xs:double"><xs:minInclusive value="0.5"/><xs:maxInclusive value="179"/></xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="effectOffsetType">
+    <xs:restriction base="xs:double"><xs:minInclusive value="-100000"/><xs:maxInclusive value="100000"/></xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="effectRadiusType">
+    <xs:restriction base="xs:double"><xs:minInclusive value="0"/><xs:maxInclusive value="4096"/></xs:restriction>
+  </xs:simpleType>
   <xs:simpleType name="nonNegativeDecimal">
     <xs:restriction base="xs:double"><xs:minInclusive value="0"/></xs:restriction>
   </xs:simpleType>
@@ -283,6 +298,9 @@
     <xs:attribute name="angularVelocity" type="xs:double" default="0"/>
     <xs:attribute name="radius" type="nonNegativeDecimal" default="0"/>
   </xs:complexType>
+  <!-- softBody: validation also rejects a body whose stable integration
+       needs more than 4096 substeps per physics fixedStep (see
+       docs/xml-reference.md). -->
   <xs:complexType name="softBodyType">
     <xs:attribute name="mass" type="positiveDecimal" default="1"/>
     <xs:attribute name="stiffness" type="positiveDecimal" default="20"/>
@@ -348,10 +366,10 @@
       </xs:restriction></xs:simpleType>
     </xs:attribute>
     <xs:attribute name="color" type="colorType" default="#FFFFFFFF"/>
-    <xs:attribute name="intensity" type="xs:double" default="1"/>
+    <xs:attribute name="intensity" type="lightIntensityType" default="1"/>
     <xs:attribute name="range" type="positiveDecimal"/>
     <xs:attribute name="falloff" type="positiveDecimal" default="2"/>
-    <xs:attribute name="spotAngle" type="positiveDecimal" default="45"/>
+    <xs:attribute name="spotAngle" type="spotAngleType" default="45"/>
     <xs:attribute name="castShadow" type="xs:boolean" default="false"/>
     <xs:attribute name="x" type="xs:double" default="0"/>
     <xs:attribute name="y" type="xs:double" default="0"/>
@@ -497,14 +515,14 @@
     </xs:attribute>
     <xs:attribute name="enabled" type="xs:boolean" default="true"/>
     <xs:attribute name="intensity" type="xs:double" default="1"/>
-    <xs:attribute name="radius" type="xs:double" default="4"/>
+    <xs:attribute name="radius" type="effectRadiusType" default="4"/>
     <xs:attribute name="threshold" type="xs:double" default="0.7"/>
     <xs:attribute name="saturation" type="xs:double" default="1"/>
     <xs:attribute name="contrast" type="xs:double" default="1"/>
     <xs:attribute name="brightness" type="xs:double" default="0"/>
     <xs:attribute name="color" type="colorType"/>
-    <xs:attribute name="offsetX" type="xs:double" default="8"/>
-    <xs:attribute name="offsetY" type="xs:double" default="8"/>
+    <xs:attribute name="offsetX" type="effectOffsetType" default="8"/>
+    <xs:attribute name="offsetY" type="effectOffsetType" default="8"/>
     <xs:attribute name="lights" type="xs:IDREFS"/>
     <xs:attribute name="falloff" default="smooth">
       <xs:simpleType><xs:restriction base="xs:string">
@@ -607,7 +625,7 @@
     <xs:attribute name="width" type="xs:positiveInteger" use="required"/>
     <xs:attribute name="height" type="xs:positiveInteger" use="required"/>
     <xs:attribute name="fps" type="fpsType" use="required"/>
-    <xs:attribute name="duration" type="positiveDecimal" use="required"/>
+    <xs:attribute name="duration" type="durationType" use="required"/>
     <xs:attribute name="seed" type="xs:unsignedLong" default="0"/>
     <xs:attribute name="linearLight" type="xs:boolean" default="true"/>
     <xs:attribute name="workingColorSpace" type="colorSpaceType" default="srgb"/>

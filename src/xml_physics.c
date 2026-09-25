@@ -1,5 +1,7 @@
 #include "xml_internal.h"
+#include "scene_render/physics.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -13,6 +15,35 @@ static bool decimal(ParseContext *ctx,const char *element,const XML_Char **attrs
     return true;
 }
 
+/* A soft body whose stable integration needs more than SR_SOFT_MAX_SUBSTEPS
+ * substeps per fixed step is rejected. Validation assumes the anchor
+ * spring of a rigid body (the conservative case) because <rigidBody> may
+ * follow <softBody>. Checked at <softBody> against the step known then,
+ * and again for every soft body when <physics> sets fixedStep. */
+static bool soft_body_stable(ParseContext *ctx,const SrSoftBody *body,size_t line){
+    double step=ctx->scene->physics.fixed_step;
+    double needed=sr_soft_body_substeps(body,true,step);
+    if(needed<=(double)SR_SOFT_MAX_SUBSTEPS)return true;
+    if(!ctx->failed){
+        sr_diag_error(ctx->diag,line,"softBody","stiffness/mass",
+            "stiffness %g with mass %g over a %ux%u grid needs %.0f integration "
+            "substeps per fixedStep %g (at most %d); lower stiffness, raise mass, "
+            "or reduce fixedStep",body->stiffness,body->mass,body->rows,body->cols,
+            needed,step,SR_SOFT_MAX_SUBSTEPS);
+        ctx->failed=true;
+        XML_StopParser(ctx->parser,XML_FALSE);
+    }
+    return false;
+}
+
+static bool soft_bodies_stable(ParseContext *ctx,const SrNode *node){
+    if(node->soft_body.enabled&&!soft_body_stable(ctx,&node->soft_body,node->source_line))
+        return false;
+    for(size_t i=0;i<node->child_count;++i)
+        if(!soft_bodies_stable(ctx,node->children[i]))return false;
+    return true;
+}
+
 void sr_xml_start_physics(ParseContext *ctx,const XML_Char **attrs){
     const char *const allowed[]={"fixedStep","gravityX","gravityY","cache"};
     if(!sr_xml_attrs_allowed(ctx,"physics",attrs,allowed,4))return;
@@ -22,6 +53,7 @@ void sr_xml_start_physics(ParseContext *ctx,const XML_Char **attrs){
        !decimal(ctx,"physics",attrs,"gravityY",&world->gravity_y))return;
     if(world->fixed_step<=0||world->fixed_step>1.0)
         SR_XML_FAIL_RETURN(ctx,"physics","fixedStep","expected a value in (0,1]");
+    if(ctx->scene->root&&!soft_bodies_stable(ctx,ctx->scene->root))return;
     const char *cache=sr_xml_attr(attrs,"cache");if(cache){world->cache_path=sr_strdup(cache);if(!world->cache_path)SR_XML_FAIL_RETURN(ctx,"physics","cache","out of memory");}
     ctx->seen_physics=true;
 }
@@ -118,6 +150,7 @@ void sr_xml_start_soft_body(ParseContext *ctx,const XML_Char **attrs){
         for(int i=0;i<6;++i)if(!strcmp(value,names[i])){body->pin=(SrPinMode)i;found=true;}
         if(!found)SR_XML_FAIL_RETURN(ctx,"softBody","pin","expected top, bottom, left, right, corners, or none");
     }
+    if(!soft_body_stable(ctx,body,sr_xml_line(ctx)))return;
     sr_xml_push(ctx,(ParseFrame){.kind=E_SOFT_BODY,.node=parent->node},"softBody");
 }
 
@@ -139,13 +172,17 @@ void sr_xml_start_modifier(ParseContext *ctx,const XML_Char **attrs){
         if(value&&(!sr_parse_u32(value,&modifier.rows)||modifier.rows<2||modifier.rows>16))SR_XML_FAIL_RETURN(ctx,"modifier","rows","expected an integer in [2,16]");
         value=sr_xml_attr(attrs,"cols");
         if(value&&(!sr_parse_u32(value,&modifier.cols)||modifier.cols<2||modifier.cols>16))SR_XML_FAIL_RETURN(ctx,"modifier","cols","expected an integer in [2,16]");
-        modifier.points=sr_alloc((size_t)modifier.rows*modifier.cols*2*sizeof(*modifier.points));
-        if(!modifier.points)SR_XML_FAIL_RETURN(ctx,"modifier",NULL,"out of memory");
     }
     if(!decimal(ctx,"modifier",attrs,"amount",&modifier.amount.base)||!decimal(ctx,"modifier",attrs,"frequency",&modifier.frequency.base)||
        !decimal(ctx,"modifier",attrs,"phase",&modifier.phase.base)) return;
     const char *axis=sr_xml_attr(attrs,"axis");
     if(axis){if(strlen(axis)!=1||(axis[0]!='x'&&axis[0]!='y'))SR_XML_FAIL_RETURN(ctx,"modifier","axis","expected x or y");modifier.axis=axis[0];}
+    /* Allocated only once every attribute is valid: until the modifier is
+     * attached to the node nothing else would free it. */
+    if(modifier.type==SR_MOD_MESH_WARP){
+        modifier.points=sr_alloc((size_t)modifier.rows*modifier.cols*2*sizeof(*modifier.points));
+        if(!modifier.points)SR_XML_FAIL_RETURN(ctx,"modifier",NULL,"out of memory");
+    }
     if(sr_node_add_modifier(parent->node,modifier)!=SR_OK){
         free(modifier.points);
         SR_XML_FAIL_RETURN(ctx,"modifier",NULL,"out of memory");}

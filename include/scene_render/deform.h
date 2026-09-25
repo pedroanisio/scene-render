@@ -9,11 +9,15 @@
  * p -> p + D(p) with D the bilinear interpolation of the offsets (constant
  * beyond the box). sr_grid_warp_inverse returns the source point p whose
  * warped position is q, by Newton iteration from q - D(q); an all-zero grid
- * returns q exactly. */
-SrVec2 sr_grid_warp_inverse(const double *offsets, uint32_t rows, uint32_t cols,
-                            double width, double height, SrVec2 q);
+ * returns q exactly. A Newton result whose forward residual is not below
+ * 1e-4 px is replaced by an analytic per-cell inverse (the in-range
+ * solution nearest the Newton start); when no cell maps onto q the call
+ * returns false ("no source": the pixel stays transparent). */
+bool sr_grid_warp_inverse(const double *offsets, uint32_t rows, uint32_t cols,
+                          double width, double height, SrVec2 q, SrVec2 *p);
 
-/* Largest |dx| or |dy| among `count` grid nodes (bounds padding). */
+/* Largest |dx| or |dy| among `count` grid nodes. Grids compose, so a
+ * node's bounds padding is the sum of this over all of its grids. */
 double sr_grid_warp_extent(const double *offsets, size_t count);
 
 #endif

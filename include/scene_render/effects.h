@@ -32,4 +32,13 @@ int sr_effect_reach(const SrEffect *effect, double time);
  * smooth (1 - q^2)^2, linear 1 - q, quadratic (1 - q)^2, none 1. */
 double sr_light_falloff(SrFalloff falloff, double q);
 
+/* Exact slope bounds x/z of the tangent cone from the origin to a sphere
+ * of radius r centred at (a, z) in one light-space axis plane (a along the
+ * map axis, z along the light direction): the tangent directions at
+ * atan2(a, z) +- asin(r / hypot(a, z)). False when the sphere reaches
+ * z <= r (the cone is unbounded). Used for spot shadow-map caster bounds
+ * (src/lighting.c). */
+bool sr_light_cone_slopes(double a, double z, double r, double *low,
+                          double *high);
+
 #endif

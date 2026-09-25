@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* 3D shadow maps (directional light) and 3D-pass supersampling. */
+#include "scene_render/effects.h"
 #include "scene_render/lighting.h"
 
 #include "scene_text.h"
@@ -128,9 +129,76 @@ static void test_antialias_attribute(sr_test_ctx *t)
     }
 }
 
+
+/* Spot caster bounds use the exact tangent cone. The review's case: light-
+ * space centre (10, 0, 10), radius 1. The old estimate u +- r/(z-r) gave a
+ * largest slope of 1.1111, but the silhouette reaches tan(45 deg +
+ * asin(1/sqrt(200))) = 1.1526; the bounds contain every silhouette
+ * direction and are tight. */
+static void test_spot_cone_bounds_exact(sr_test_ctx *t)
+{
+    double low, high;
+    CHECK(t, sr_light_cone_slopes(10.0, 10.0, 1.0, &low, &high));
+    double exact = tan(SR_PI / 4.0 + asin(1.0 / sqrt(200.0)));
+    CHECK_NEAR(t, high, exact, 1e-12);
+    CHECK_NEAR(t, high, 1.1526, 1e-4);
+    CHECK(t, high > 10.0 / 10.0 + 1.0 / (10.0 - 1.0) + 0.04);
+    /* Brute force over the sphere surface (x, y, z) = c + r n. */
+    double seen_low = INFINITY, seen_high = -INFINITY;
+    for (int i = 0; i <= 400; ++i) for (int j = 0; j < 400; ++j) {
+        double theta = SR_PI * i / 400.0, phi = 2.0 * SR_PI * j / 400.0;
+        double x = 10.0 + sin(theta) * cos(phi), z = 10.0 + cos(theta);
+        seen_low = fmin(seen_low, x / z);
+        seen_high = fmax(seen_high, x / z);
+    }
+    CHECK(t, seen_high <= high + 1e-12 && seen_high > high - 1e-4);
+    CHECK(t, seen_low >= low - 1e-12 && seen_low < low + 1e-4);
+    /* On axis: symmetric +-tan(asin(r / z)). */
+    CHECK(t, sr_light_cone_slopes(0.0, 10.0, 1.0, &low, &high));
+    CHECK_NEAR(t, high, tan(asin(0.1)), 1e-12);
+    CHECK_NEAR(t, low, -high, 1e-12);
+    /* A sphere reaching the light plane has no bounded cone. */
+    CHECK(t, !sr_light_cone_slopes(3.0, 1.0, 1.0, &low, &high));
+}
+
+/* Out-of-range light values set directly (below the XML bounds) keep every
+ * texel and pixel bound defined: a 1e-9 degree spot with an off-axis
+ * caster renders (the old lower texel bound was ~9.5e13). */
+static void test_spot_degenerate_angle_defined(sr_test_ctx *t)
+{
+    const char *xml =
+        "<scene version=\"1.0\"><project width=\"64\" height=\"64\" fps=\"10\" "
+        "duration=\"1\" linearLight=\"false\"/><composition>"
+        "<object3D id=\"wall\" primitive=\"plane\" x=\"32\" y=\"32\" z=\"-50\" radius=\"30\"/>"
+        "<object3D id=\"ball\" primitive=\"sphere\" x=\"50\" y=\"20\" z=\"10\" radius=\"6\"/>"
+        "</composition><lights>"
+        "<light id=\"spot\" type=\"spot\" x=\"32\" y=\"32\" z=\"200\" spotAngle=\"30\" "
+        "castShadow=\"true\" shadowMapSize=\"64\"/></lights></scene>";
+    SrScene scene;
+    if (st_load(t, "spot-tiny.xml", xml, &scene, NULL) != SR_OK) { SR_FAIL(t, "load"); return; }
+    scene.lights[0].spot_angle = 1e-9;
+    scene.objects3d[1].transform.x.base = 1e12;
+    SrFrame frame = {0};
+    if (sr_frame_init(&frame, 64, 64) == SR_OK) {
+        const float black[4] = {0, 0, 0, 1};
+        sr_frame_clear(&frame, black, 1);
+        FILE *sink;
+        SrDiagnostics diag;
+        st_diag(&diag, &sink);
+        CHECK(t, sr_lighting_render(&scene, 0.0, &frame, &diag) == SR_OK);
+        if (sink) fclose(sink);
+    } else {
+        SR_FAIL(t, "frame");
+    }
+    sr_frame_free(&frame);
+    sr_scene_free(&scene);
+}
+
 const sr_test_case sr_tests_shadow[] = {
     {"plane_receives_shadow", test_plane_receives_shadow},
     {"supersampling_changes_only_edges", test_supersampling_changes_only_edges},
     {"antialias_attribute", test_antialias_attribute},
+    {"spot_cone_bounds_exact", test_spot_cone_bounds_exact},
+    {"spot_degenerate_angle_defined", test_spot_degenerate_angle_defined},
     {NULL, NULL},
 };

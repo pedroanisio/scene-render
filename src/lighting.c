@@ -1,5 +1,6 @@
 #include "scene_render/lighting.h"
 #include "scene_render/color.h"
+#include "scene_render/effects.h"
 
 #include <float.h>
 #include <math.h>
@@ -239,7 +240,19 @@ static bool map_coords(const ShadowMap *map, Vec3 p, double *fi, double *fj,
     return true;
 }
 
-/* Texel rectangle covering a bounding sphere, clamped to the map. */
+bool sr_light_cone_slopes(double a, double z, double r, double *low,
+                          double *high) {
+    double rho = hypot(a, z);
+    if (!(z > r) || !(r >= 0.0) || !(rho > r)) return false;
+    double beta = atan2(a, z), delta = asin(r / rho);
+    *low = tan(beta - delta);
+    *high = tan(beta + delta);
+    return isfinite(*low) && isfinite(*high);
+}
+
+/* Texel rectangle covering a bounding sphere, clamped to the map. A spot
+ * map uses the exact tangent cone of the sphere (sr_light_cone_slopes)
+ * per axis, plus one texel of padding. */
 static void sphere_texels(const ShadowMap *map, Vec3 c, double r, int *i0,
                           int *j0, int *i1, int *j1) {
     *i0 = 0; *j0 = 0; *i1 = map->size; *j1 = map->size;
@@ -248,20 +261,23 @@ static void sphere_texels(const ShadowMap *map, Vec3 c, double r, int *i0,
         Vec3 q = v_sub(c, map->origin);
         double z = dot(q, map->dir);
         if (z - r <= 1e-6) return;
-        double reach = r / (z - r);
-        double u = dot(q, map->u) / z, v = dot(q, map->v) / z;
-        u0 = ((u - reach) / map->tan_half + 1.0) * 0.5 * map->size;
-        u1 = ((u + reach) / map->tan_half + 1.0) * 0.5 * map->size;
-        v0 = (1.0 - (v + reach) / map->tan_half) * 0.5 * map->size;
-        v1 = (1.0 - (v - reach) / map->tan_half) * 0.5 * map->size;
+        double lo_u, hi_u, lo_v, hi_v;
+        if (!sr_light_cone_slopes(dot(q, map->u), z, r, &lo_u, &hi_u) ||
+            !sr_light_cone_slopes(dot(q, map->v), z, r, &lo_v, &hi_v)) return;
+        u0 = (lo_u / map->tan_half + 1.0) * 0.5 * map->size;
+        u1 = (hi_u / map->tan_half + 1.0) * 0.5 * map->size;
+        v0 = (1.0 - hi_v / map->tan_half) * 0.5 * map->size;
+        v1 = (1.0 - lo_v / map->tan_half) * 0.5 * map->size;
     } else {
         Vec3 q = v_sub(c, map->center);
         double u = dot(q, map->u), v = dot(q, map->v);
         u0 = (u - r + map->half) / map->texel; u1 = (u + r + map->half) / map->texel;
         v0 = (map->half - v - r) / map->texel; v1 = (map->half - v + r) / map->texel;
     }
-    *i0 = (int)fmax(0.0, floor(u0) - 1.0); *i1 = (int)fmin(map->size, ceil(u1) + 1.0);
-    *j0 = (int)fmax(0.0, floor(v0) - 1.0); *j1 = (int)fmin(map->size, ceil(v1) + 1.0);
+    *i0 = sr_clamp_int(floor(u0) - 1.0, 0, map->size);
+    *i1 = sr_clamp_int(ceil(u1) + 1.0, 0, map->size);
+    *j0 = sr_clamp_int(floor(v0) - 1.0, 0, map->size);
+    *j1 = sr_clamp_int(ceil(v1) + 1.0, 0, map->size);
 }
 
 static void map_store(ShadowMap *map, int i, int j, double t) {
@@ -361,10 +377,10 @@ static void map_mesh(ShadowMap *map, const SrObject3D *object, double time) {
             lo_i = fmin(lo_i, fi); hi_i = fmax(hi_i, fi);
             lo_j = fmin(lo_j, fj); hi_j = fmax(hi_j, fj);
         }
-        int i0 = whole ? 0 : (int)fmax(0.0, floor(lo_i) - 1.0);
-        int i1 = whole ? map->size : (int)fmin(map->size, ceil(hi_i) + 1.0);
-        int j0 = whole ? 0 : (int)fmax(0.0, floor(lo_j) - 1.0);
-        int j1 = whole ? map->size : (int)fmin(map->size, ceil(hi_j) + 1.0);
+        int i0 = whole ? 0 : sr_clamp_int(floor(lo_i) - 1.0, 0, map->size);
+        int i1 = whole ? map->size : sr_clamp_int(ceil(hi_i) + 1.0, 0, map->size);
+        int j0 = whole ? 0 : sr_clamp_int(floor(lo_j) - 1.0, 0, map->size);
+        int j1 = whole ? map->size : sr_clamp_int(ceil(hi_j) + 1.0, 0, map->size);
         for (int j = j0; j < j1; ++j) for (int i = i0; i < i1; ++i) {
             Vec3 origin, dir;
             texel_ray(map, i, j, &origin, &dir);
@@ -453,7 +469,9 @@ static double map_visibility(const ShadowMap *map, Vec3 p, Vec3 n) {
     double ndl = fmax(1e-3, fabs(dot(n, dir)));
     double tangent = sqrt(fmax(0.0, 1.0 - ndl * ndl)) / ndl;
     double biased = depth - texel * (1.5 + 2.0 * fmin(tangent, 10.0));
-    int ci = (int)floor(fi), cj = (int)floor(fj), lit = 0;
+    /* Taps beyond the map are lit, so clamping just outside it is exact. */
+    int ci = sr_clamp_int(floor(fi), -2, map->size + 1);
+    int cj = sr_clamp_int(floor(fj), -2, map->size + 1), lit = 0;
     for (int dj = -1; dj <= 1; ++dj) for (int di = -1; di <= 1; ++di) {
         int i = ci + di, j = cj + dj;
         if (i < 0 || j < 0 || i >= map->size || j >= map->size ||
@@ -573,10 +591,11 @@ static void render_mesh(const Pass *pass,const SrObject3D *object){
         double area=edge(v[0].x,v[0].y,v[1].x,v[1].y,v[2].x,v[2].y);
         if(fabs(area)<1e-12)continue;
         Vec3 face=normalize(v_cross(v_sub(v[1].world,v[0].world),v_sub(v[2].world,v[0].world)));
-        int min_x=(int)fmax(0.0,floor(fmin(v[0].x,fmin(v[1].x,v[2].x))*n));
-        int max_x=(int)fmin(frame->width-1.0,ceil(fmax(v[0].x,fmax(v[1].x,v[2].x))*n));
-        int min_y=(int)fmax(0.0,floor(fmin(v[0].y,fmin(v[1].y,v[2].y))*n));
-        int max_y=(int)fmin(frame->height-1.0,ceil(fmax(v[0].y,fmax(v[1].y,v[2].y))*n));
+        int fw=(int)frame->width,fh=(int)frame->height;
+        int min_x=sr_clamp_int(floor(fmin(v[0].x,fmin(v[1].x,v[2].x))*n),0,fw);
+        int max_x=sr_clamp_int(ceil(fmax(v[0].x,fmax(v[1].x,v[2].x))*n),-1,fw-1);
+        int min_y=sr_clamp_int(floor(fmin(v[0].y,fmin(v[1].y,v[2].y))*n),0,fh);
+        int max_y=sr_clamp_int(ceil(fmax(v[0].y,fmax(v[1].y,v[2].y))*n),-1,fh-1);
         for(int y=min_y;y<=max_y;++y)for(int x=min_x;x<=max_x;++x){
             double sx=sample_at(x,n),sy=sample_at(y,n);
             double a=edge(v[1].x,v[1].y,v[2].x,v[2].y,sx,sy)/area;
@@ -611,7 +630,12 @@ static void shadow_blob(const Pass *pass,const SrObject3D *object){
     if(!pass->blob||!object->cast_shadow)return;
     double x,y,projection_scale;if(!project(scene,object,time,&x,&y,&projection_scale))return;x+=25*projection_scale;y+=30*projection_scale;
     double radius=object->radius*fabs(sr_anim_eval(&object->transform.scale_x,time))*projection_scale;
-    for(int py=(int)((y-radius*.3)*n);py<=(int)((y+radius*.3)*n);++py)for(int px=(int)((x-radius)*n);px<=(int)((x+radius)*n);++px){
+    /* Pixels beyond the target are skipped by over(), so the loop bounds
+     * clamp to one pixel outside it. */
+    int bw=(int)pass->target->width,bh=(int)pass->target->height;
+    int py0=sr_clamp_int((y-radius*.3)*n,-1,bh),py1=sr_clamp_int((y+radius*.3)*n,-1,bh);
+    int px0=sr_clamp_int((x-radius)*n,-1,bw),px1=sr_clamp_int((x+radius)*n,-1,bw);
+    for(int py=py0;py<=py1;++py)for(int px=px0;px<=px1;++px){
         double dx=(px/(double)n-x)/fmax(radius,1.0),dy=(py/(double)n-y)/fmax(radius*.3,1.0);
         if(dx*dx+dy*dy<=1.0)over(&scene->project,pass->target,px,py,(SrColor){0,0,0,1},.3);}
 }
@@ -628,7 +652,10 @@ static void render_sprite(const Pass *pass, const SrObject3D *object) {
     bool maps = false;
     for (size_t i = 0; i < scene->light_count; ++i) maps = maps || pass->maps[i].depth;
     SpriteFrame sprite = sprite_frame(object, time);
-    for(int y=(int)floor((cy-ry)*n);y<=(int)ceil((cy+ry)*n);++y)for(int x=(int)floor((cx-rx)*n);x<=(int)ceil((cx+rx)*n);++x){
+    int fw=(int)frame->width,fh=(int)frame->height;
+    int y0=sr_clamp_int(floor((cy-ry)*n),-1,fh),y1=sr_clamp_int(ceil((cy+ry)*n),-1,fh);
+    int x0=sr_clamp_int(floor((cx-rx)*n),-1,fw),x1=sr_clamp_int(ceil((cx+rx)*n),-1,fw);
+    for(int y=y0;y<=y1;++y)for(int x=x0;x<=x1;++x){
         double px=sample_at(x,n),py=sample_at(y,n);
         double nx=(px-cx)/rx,ny=(py-cy)/ry;
         double angle=-sr_anim_eval(&object->transform.rotation,time)*SR_PI/180.0;

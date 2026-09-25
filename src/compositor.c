@@ -53,7 +53,8 @@ typedef struct {
     double **mesh;
     double *storage;            /* owns every mesh[i] grid */
     double *soft;
-    double extent;              /* largest offset: bounds padding */
+    double extent;              /* sum of each grid's largest offset: the
+                                 * grids compose, so this bounds padding */
 } SrDeformState;
 
 typedef struct {
@@ -221,17 +222,21 @@ static SrMat3 sr_node_matrix(const SrScene *scene, const SrNode *node, double ti
     return sr_mat_multiply(matrix, sr_mat_translate(-ax, -ay));
 }
 
-static SrVec2 sr_deform_inverse(const SrNode *node, SrVec2 point,
-                                double width, double height, double time,
-                                const SrDeformState *state) {
+/* Source point of `point` under the node's deformations; false when a
+ * grid has no source there (the pixel stays empty). */
+static bool sr_deform_inverse(const SrNode *node, SrVec2 *io,
+                              double width, double height, double time,
+                              const SrDeformState *state) {
+    SrVec2 point = *io;
     double cx = width * 0.5, cy = height * 0.5;
     for (size_t index = node->modifier_count; index > 0; --index) {
         const SrModifier *modifier = &node->modifiers[index - 1];
         if (modifier->type == SR_MOD_MESH_WARP) {
-            if (state && state->mesh && state->mesh[index - 1])
-                point = sr_grid_warp_inverse(state->mesh[index - 1],
-                                             modifier->rows, modifier->cols,
-                                             width, height, point);
+            if (state && state->mesh && state->mesh[index - 1] &&
+                !sr_grid_warp_inverse(state->mesh[index - 1], modifier->rows,
+                                      modifier->cols, width, height, point,
+                                      &point))
+                return false;
             continue;
         }
         double amount = sr_anim_eval(&modifier->amount, time);
@@ -269,10 +274,12 @@ static SrVec2 sr_deform_inverse(const SrNode *node, SrVec2 point,
             point.x = cx + (point.x - cx) * factor;
         }
     }
-    if (state && state->soft)
-        point = sr_grid_warp_inverse(state->soft, node->soft_body.rows,
-                                     node->soft_body.cols, width, height, point);
-    return point;
+    if (state && state->soft &&
+        !sr_grid_warp_inverse(state->soft, node->soft_body.rows,
+                              node->soft_body.cols, width, height, point, &point))
+        return false;
+    *io = point;
+    return true;
 }
 
 static bool sr_node_deforms(const SrNode *node) {
@@ -306,8 +313,7 @@ static SrStatus sr_deform_prepare(const SrScene *scene, const SrNode *node,
             state->mesh[i] = values;
             for (size_t j = 0; j < count; ++j)
                 values[j] = sr_anim_eval(&modifier->points[j], time);
-            state->extent = fmax(state->extent,
-                                 sr_grid_warp_extent(values, count / 2));
+            state->extent += sr_grid_warp_extent(values, count / 2);
             values += count;
         }
     }
@@ -316,8 +322,7 @@ static SrStatus sr_deform_prepare(const SrScene *scene, const SrNode *node,
         state->soft = sr_alloc(count * 2 * sizeof(*state->soft));
         if (!state->soft) { sr_deform_free(state); return SR_ERR_MEMORY; }
         if (sr_physics_soft_offsets(scene, node, time, state->soft))
-            state->extent = fmax(state->extent,
-                                 sr_grid_warp_extent(state->soft, count));
+            state->extent += sr_grid_warp_extent(state->soft, count);
         else {
             free(state->soft);
             state->soft = NULL;
@@ -350,10 +355,11 @@ static SrClip sr_bounds(SrMat3 matrix, double x, double y, double width,
         max_x = fmax(max_x, p.x);
         max_y = fmax(max_y, p.y);
     }
-    SrClip clip = {(int)fmax(0.0, floor(min_x - 1.0)),
-                   (int)fmax(0.0, floor(min_y - 1.0)),
-                   (int)fmin((double)target->width, ceil(max_x + 1.0)),
-                   (int)fmin((double)target->height, ceil(max_y + 1.0))};
+    int width_px = (int)target->width, height_px = (int)target->height;
+    SrClip clip = {sr_clamp_int(floor(min_x - 1.0), 0, width_px),
+                   sr_clamp_int(floor(min_y - 1.0), 0, height_px),
+                   sr_clamp_int(ceil(max_x + 1.0), 0, width_px),
+                   sr_clamp_int(ceil(max_y + 1.0), 0, height_px)};
     if (clip.x1 < clip.x0) clip.x1 = clip.x0;
     if (clip.y1 < clip.y0) clip.y1 = clip.y0;
     return clip;
@@ -430,7 +436,8 @@ static void sr_image_sample(const SrImage *image, double lx, double ly,
     double sx = sr_clamp(lx - 0.5, 0.0, (double)image->width - 1.0);
     double sy = sr_clamp(ly - 0.5, 0.0, (double)image->height - 1.0);
     double fx = floor(sx), fy = floor(sy);
-    int ix = (int)fx, iy = (int)fy;
+    int ix = sr_clamp_int(fx, 0, (int)image->width - 1);
+    int iy = sr_clamp_int(fy, 0, (int)image->height - 1);
     int ix1 = ix + 1 < (int)image->width ? ix + 1 : ix;
     int iy1 = iy + 1 < (int)image->height ? iy + 1 : iy;
     float tx = (float)(sx - fx), ty = (float)(sy - fy);
@@ -460,10 +467,10 @@ static void sr_op_rows(void *opaque, size_t begin, size_t end) {
                 memcpy(s, op->buffer->frame.px + (d - target->px), sizeof(s));
             } else {
                 SrVec2 local = sr_mat_point(op->inverse, (SrVec2){cx, cy});
-                if (deform)
-                    local = sr_deform_inverse(op->node, local, op->deform_width,
-                                              op->deform_height, op->time,
-                                              op->deform);
+                if (deform &&
+                    !sr_deform_inverse(op->node, &local, op->deform_width,
+                                       op->deform_height, op->time, op->deform))
+                    continue;
                 if (op->kind == SR_OP_IMAGE) {
                     coverage *= sr_shape_coverage(
                         SR_MASK_RECT, 0.0, 0.0, op->image->width,
@@ -599,10 +606,10 @@ static void sr_draw_disc(const SrTarget *target, SrBlendMode blend,
                          float opacity, SrVec2 center, double radius,
                          bool square, const float color[4], SrClip clip,
                          const SrMaskLink *masks, SrGroupBuffer *buffer) {
-    SrClip bounds = {(int)floor(center.x - radius - 1.0),
-                     (int)floor(center.y - radius - 1.0),
-                     (int)ceil(center.x + radius + 1.0),
-                     (int)ceil(center.y + radius + 1.0)};
+    SrClip bounds = {sr_clamp_int(floor(center.x - radius - 1.0), clip.x0, clip.x1),
+                     sr_clamp_int(floor(center.y - radius - 1.0), clip.y0, clip.y1),
+                     sr_clamp_int(ceil(center.x + radius + 1.0), clip.x0, clip.x1),
+                     sr_clamp_int(ceil(center.y + radius + 1.0), clip.y0, clip.y1)};
     bounds = sr_clip_intersect(bounds, clip);
     if (bounds.x1 <= bounds.x0 || bounds.y1 <= bounds.y0) return;
     if (buffer) sr_buffer_mark(buffer, bounds);
@@ -667,7 +674,10 @@ static SrStatus sr_draw_children(SrDrawContext *context, const SrNode *node,
  * opacity below one or group effects; the effects run on the buffer (its
  * dirty rectangle grown by each effect's reach) and the buffer is then
  * composited once with the group's blend, opacity and masks (plus any
- * masks inherited from pass-through ancestors).
+ * masks inherited from pass-through ancestors). With effects, the
+ * children are drawn unrestricted by the group's own masks (only by the
+ * ancestors' clip grown by the effects' reach), so the effects see the
+ * whole content before the masks cut it.
  * Otherwise the group is a pass-through: its children draw straight into the
  * parent target against the real backdrop, and its masks join the chain
  * applied to every child draw. */
@@ -702,7 +712,22 @@ static SrStatus sr_draw_group(SrDrawContext *context, const SrNode *node,
         if (status == SR_OK) {
             SrTarget group = {buffer->frame.px, target->width, target->height,
                               buffer};
-            status = sr_draw_children(context, node, world, inner, &group,
+            /* Group effects read content beyond the group's own masks (a
+             * shadow cast into the mask from outside it, blur taps), so
+             * the children fill the ancestors' clip grown by the effects'
+             * reach; the masks apply when the buffer is composited. */
+            SrClip fill = inner;
+            if (node->effect_ref_count) {
+                double reach = 0.0;
+                for (size_t i = 0; i < node->effect_ref_count; ++i)
+                    reach += sr_effect_reach(node->effect_refs[i], context->time);
+                int w = (int)target->width, h = (int)target->height;
+                fill = (SrClip){sr_clamp_int(clip.x0 - reach, 0, w),
+                                sr_clamp_int(clip.y0 - reach, 0, h),
+                                sr_clamp_int(clip.x1 + reach, 0, w),
+                                sr_clamp_int(clip.y1 + reach, 0, h)};
+            }
+            status = sr_draw_children(context, node, world, fill, &group,
                                       depth + 1, NULL);
         }
         if (status == SR_OK && node->effect_ref_count) {

@@ -82,7 +82,8 @@ static void test_sampler_inverts_warp(sr_test_ctx *t)
     offsets[2 * 8] = -4.0;      /* bottom-right moves (-4, 0) */
     for (int i = 0; i <= 20; ++i) {
         SrVec2 q = {i * 2.0 + 0.3, 40.0 - i * 1.7};
-        SrVec2 p = sr_grid_warp_inverse(offsets, 3, 3, 40.0, 40.0, q);
+        SrVec2 p;
+        CHECK(t, sr_grid_warp_inverse(offsets, 3, 3, 40.0, 40.0, q, &p));
         /* Forward map: bilinear displacement at p. */
         double u = fmin(fmax(p.x / 20.0, 0.0), 2.0), v = fmin(fmax(p.y / 20.0, 0.0), 2.0);
         int c = u >= 1.0 ? 1 : 0, r = v >= 1.0 ? 1 : 0;
@@ -96,7 +97,8 @@ static void test_sampler_inverts_warp(sr_test_ctx *t)
     }
     double zero[8] = {0};
     SrVec2 q = {12.345, 6.789};
-    SrVec2 p = sr_grid_warp_inverse(zero, 2, 2, 10.0, 10.0, q);
+    SrVec2 p;
+    CHECK(t, sr_grid_warp_inverse(zero, 2, 2, 10.0, 10.0, q, &p));
     CHECK(t, p.x == q.x && p.y == q.y);
     CHECK_NEAR(t, sr_grid_warp_extent(offsets, 9), 6.0, 0.0);
 }
@@ -114,10 +116,103 @@ static void test_point_validation(sr_test_ctx *t)
     free(message);
 }
 
+
+/* Forward residual of p against q under a rows x cols grid over w x h. */
+static double forward_residual(const double *offsets, uint32_t rows, uint32_t cols,
+                               double w, double h, SrVec2 p, SrVec2 q)
+{
+    double u = fmin(fmax(p.x / w * (cols - 1), 0.0), cols - 1.0);
+    double v = fmin(fmax(p.y / h * (rows - 1), 0.0), rows - 1.0);
+    uint32_t c = (uint32_t)fmin(floor(u), cols - 2.0), r = (uint32_t)fmin(floor(v), rows - 2.0);
+    double fu = u - c, fv = v - r;
+    const double *d00 = offsets + 2 * (r * cols + c), *d01 = d00 + 2;
+    const double *d10 = d00 + 2 * cols, *d11 = d10 + 2;
+    double dx = d00[0]*(1-fu)*(1-fv) + d01[0]*fu*(1-fv) + d10[0]*(1-fu)*fv + d11[0]*fu*fv;
+    double dy = d00[1]*(1-fu)*(1-fv) + d01[1]*fu*(1-fv) + d10[1]*(1-fu)*fv + d11[1]*fu*fv;
+    return fmax(fabs(p.x + dx - q.x), fabs(p.y + dy - q.y));
+}
+
+/* The review's cycling case: a width-2, three-column grid with x offsets
+ * (-2, -0.3, -0.5) on both rows. Newton from q = -0.3 alternates between
+ * 1.7 and -0.25 (residual 1.56); the fallback solves the first cell
+ * analytically: -2 + 2.7 fu = -0.3, p.x = 1.7 / 2.7. */
+static void test_inverse_newton_cycle_falls_back(sr_test_ctx *t)
+{
+    double offsets[2 * 6] = {-2, 0, -0.3, 0, -0.5, 0, -2, 0, -0.3, 0, -0.5, 0};
+    SrVec2 q = {-0.3, 1.0}, p = {0, 0};
+    CHECK(t, sr_grid_warp_inverse(offsets, 2, 3, 2.0, 2.0, q, &p));
+    CHECK_NEAR(t, p.x, 1.7 / 2.7, 1e-9);
+    CHECK_NEAR(t, p.y, 1.0, 1e-9);
+    CHECK(t, forward_residual(offsets, 2, 3, 2.0, 2.0, p, q) < 1e-4);
+    /* Every query along the row inverts with a small residual. */
+    for (int i = 0; i <= 40; ++i) {
+        SrVec2 row = {-3.0 + i * 0.125, 0.5};
+        if (!sr_grid_warp_inverse(offsets, 2, 3, 2.0, 2.0, row, &p) ||
+            !(forward_residual(offsets, 2, 3, 2.0, 2.0, p, row) < 1e-4))
+            SR_FAIL(t, "query x=%g not inverted", row.x);
+    }
+    /* No source at all (a non-finite query) is reported, not guessed. */
+    SrVec2 bad = {NAN, 0.0};
+    CHECK(t, !sr_grid_warp_inverse(offsets, 2, 3, 2.0, 2.0, bad, &p));
+}
+
+/* Two uniform +10 px mesh-warps compose to +20 px: the node's bounds are
+ * padded by the sum of the grids' displacements, so the shifted right
+ * edge is not clipped (a single-grid 10 px pad cut it at x = 41). */
+static void test_composed_grids_pad_by_sum(sr_test_ctx *t)
+{
+    const char *xml = HEAD
+        "<shape id=\"s\" shape=\"rect\" width=\"20\" height=\"20\" x=\"10\" y=\"10\" fill=\"#FFFFFF\">"
+        "<deform>"
+        "<modifier type=\"mesh-warp\" rows=\"2\" cols=\"2\">"
+        "<point row=\"0\" col=\"0\" x=\"10\" y=\"0\"/><point row=\"0\" col=\"1\" x=\"10\" y=\"0\"/>"
+        "<point row=\"1\" col=\"0\" x=\"10\" y=\"0\"/><point row=\"1\" col=\"1\" x=\"10\" y=\"0\"/>"
+        "</modifier>"
+        "<modifier type=\"mesh-warp\" rows=\"2\" cols=\"2\">"
+        "<point row=\"0\" col=\"0\" x=\"10\" y=\"0\"/><point row=\"0\" col=\"1\" x=\"10\" y=\"0\"/>"
+        "<point row=\"1\" col=\"0\" x=\"10\" y=\"0\"/><point row=\"1\" col=\"1\" x=\"10\" y=\"0\"/>"
+        "</modifier></deform></shape></composition></scene>";
+    SrScene scene;
+    if (st_load(t, "warp-compose.xml", xml, &scene, NULL) != SR_OK) { SR_FAIL(t, "load"); return; }
+    SrFrame frame = {0};
+    if (render(t, &scene, 0.0, &frame)) {
+        CHECK_NEAR(t, st_px(&frame, 28, 20)[3], 0.0, 0.0);    /* moved away */
+        CHECK_NEAR(t, st_px(&frame, 31, 20)[3], 1.0, 1e-6);
+        CHECK_NEAR(t, st_px(&frame, 45, 20)[3], 1.0, 1e-6);   /* was clipped */
+        CHECK_NEAR(t, st_px(&frame, 48, 20)[3], 1.0, 1e-6);
+        CHECK_NEAR(t, st_px(&frame, 51, 20)[3], 0.0, 0.0);
+    }
+    sr_frame_free(&frame);
+    sr_scene_free(&scene);
+}
+
+/* A malformed mesh-warp (invalid axis after rows/cols) fails cleanly; the
+ * control array is allocated only once every attribute is valid, so a
+ * leak checker sees nothing. */
+static void test_malformed_mesh_warp_fails_cleanly(sr_test_ctx *t)
+{
+    static const char *const bad[] = {"axis=\"z\"", "amount=\"nan\"", "phase=\"x\""};
+    for (size_t i = 0; i < 3; ++i) {
+        char xml[768];
+        snprintf(xml, sizeof xml, HEAD
+                 "<shape id=\"s\" shape=\"rect\" width=\"40\" height=\"40\">"
+                 "<deform><modifier type=\"mesh-warp\" rows=\"3\" cols=\"3\" %s/></deform>"
+                 "</shape></composition></scene>", bad[i]);
+        SrScene scene;
+        char *message = NULL;
+        CHECK(t, st_load(t, "warp-malformed.xml", xml, &scene, &message) == SR_ERR_XML);
+        CHECK_CONTAINS(t, message, "<modifier>");
+        free(message);
+    }
+}
+
 const sr_test_case sr_tests_deform[] = {
     {"identity_grid_bit_exact", test_identity_grid_bit_exact},
     {"moved_point_displaces", test_moved_point_displaces},
     {"sampler_inverts_warp", test_sampler_inverts_warp},
     {"point_validation", test_point_validation},
+    {"inverse_newton_cycle_falls_back", test_inverse_newton_cycle_falls_back},
+    {"composed_grids_pad_by_sum", test_composed_grids_pad_by_sum},
+    {"malformed_mesh_warp_fails_cleanly", test_malformed_mesh_warp_fails_cleanly},
     {NULL, NULL},
 };

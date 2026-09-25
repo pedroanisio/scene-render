@@ -256,6 +256,134 @@ static void test_unknown_effect_id(sr_test_ctx *t)
     free(message);
 }
 
+
+/* Group effects run before the group's own masks cut the result: a shape
+ * outside a rect group mask whose drop shadow falls inside the mask
+ * leaves shadow pixels inside it (the shape itself stays masked out). */
+static void test_group_mask_after_effects(sr_test_ctx *t)
+{
+    const char *xml =
+        "<scene version=\"1.0\">" PROJECT "<composition>"
+        "<group id=\"g\" effects=\"shadow\">"
+        "<mask type=\"rect\" x=\"30\" y=\"0\" width=\"30\" height=\"32\"/>"
+        "<shape id=\"a\" shape=\"rect\" width=\"10\" height=\"10\" x=\"10\" y=\"10\" fill=\"#FFFFFF\"/>"
+        "</group></composition><effects>"
+        "<effect id=\"shadow\" type=\"drop-shadow\" offsetX=\"22\" offsetY=\"0\" radius=\"0\""
+        " color=\"#000000\" intensity=\"1\"/>"
+        "</effects></scene>";
+    SrScene scene;
+    if (st_load(t, "fx-mask-shadow.xml", xml, &scene, NULL) != SR_OK) { SR_FAIL(t, "load"); return; }
+    SrFrame frame = {0};
+    if (render_fx(t, &scene, 0.0, &frame)) {
+        CHECK_NEAR(t, st_px(&frame, 36, 15)[3], 1.0, 1e-6);   /* shadow in mask */
+        CHECK_NEAR(t, st_px(&frame, 15, 15)[3], 0.0, 0.0);    /* shape masked */
+        CHECK_NEAR(t, st_px(&frame, 28, 15)[3], 0.0, 0.0);    /* outside mask */
+    }
+    sr_frame_free(&frame);
+    sr_scene_free(&scene);
+}
+
+/* A light far beyond the XML bound (set directly) over black: the effect
+ * leaves every channel finite (0 x inf used to give NaN color). */
+static void test_huge_light_stays_finite(sr_test_ctx *t)
+{
+    const char *xml =
+        "<scene version=\"1.0\">" PROJECT "<composition>"
+        "<group id=\"g\" effects=\"lit\">"
+        "<shape id=\"black\" shape=\"rect\" width=\"32\" height=\"32\" fill=\"#000000\"/>"
+        "<shape id=\"grey\" shape=\"rect\" width=\"32\" height=\"32\" x=\"32\" fill=\"#808080\"/>"
+        "</group></composition>"
+        "<lights><light id=\"sun\" type=\"ambient\" intensity=\"1000000\"/></lights>"
+        "<effects><effect id=\"lit\" type=\"lighting\" lights=\"sun\"/></effects></scene>";
+    SrScene scene;
+    if (st_load(t, "fx-huge-light.xml", xml, &scene, NULL) != SR_OK) { SR_FAIL(t, "load"); return; }
+    scene.lights[0].intensity.base = 1e100;
+    SrFrame frame = {0};
+    if (render_fx(t, &scene, 0.0, &frame)) {
+        bool finite = true;
+        for (size_t i = 0; i < (size_t)64 * 32 * 4; ++i) finite = finite && isfinite(frame.px[i]);
+        CHECK(t, finite);
+        CHECK_NEAR(t, st_px(&frame, 10, 10)[0], 0.0, 0.0);    /* black stays black */
+        CHECK_NEAR(t, st_px(&frame, 10, 10)[3], 1.0, 0.0);    /* alpha untouched */
+        CHECK_NEAR(t, st_px(&frame, 40, 10)[3], 1.0, 0.0);
+    }
+    sr_frame_free(&frame);
+    sr_scene_free(&scene);
+}
+
+/* Offsets far beyond the XML bound (set directly) stay defined: the
+ * shadow simply leaves the frame. */
+static void test_huge_shadow_offset_defined(sr_test_ctx *t)
+{
+    const char *xml =
+        "<scene version=\"1.0\">" PROJECT "<composition>"
+        "<group id=\"g\" effects=\"shadow\">"
+        "<shape id=\"a\" shape=\"rect\" width=\"10\" height=\"10\" x=\"10\" y=\"10\" fill=\"#FFFFFF\"/>"
+        "</group></composition><effects>"
+        "<effect id=\"shadow\" type=\"drop-shadow\" radius=\"3\"/></effects></scene>";
+    SrScene scene;
+    if (st_load(t, "fx-huge-offset.xml", xml, &scene, NULL) != SR_OK) { SR_FAIL(t, "load"); return; }
+    scene.effects[0].offset_x.base = 1e30;
+    scene.effects[0].offset_y.base = -1e30;
+    scene.effects[0].radius.base = 1e300;
+    SrFrame frame = {0};
+    if (render_fx(t, &scene, 0.0, &frame)) {
+        CHECK_NEAR(t, st_px(&frame, 15, 15)[3], 1.0, 1e-6);   /* content kept */
+        CHECK_NEAR(t, st_px(&frame, 40, 20)[3], 0.0, 0.0);    /* no shadow */
+    }
+    sr_frame_free(&frame);
+    sr_scene_free(&scene);
+}
+
+/* Attribute values are rejected by the embedded XSD before the loader runs,
+ * so those cases match the element/attribute context; keyframe values are
+ * checked by the loader and match its message. */
+static void expect_rejected(sr_test_ctx *t, const char *body, const char *needle)
+{
+    char xml[1024];
+    snprintf(xml, sizeof xml, "<scene version=\"1.0\">" PROJECT
+             "<composition/>%s</scene>", body);
+    SrScene scene;
+    char *message = NULL;
+    if (st_load(t, "fx-bounds.xml", xml, &scene, &message) == SR_OK) {
+        SR_FAIL(t, "accepted: %s", body);
+        sr_scene_free(&scene);
+    } else {
+        CHECK_CONTAINS(t, message, needle);
+    }
+    free(message);
+}
+
+/* XML bounds: light intensity <= 1e6 (attribute and keys), spotAngle in
+ * [0.5, 179], effect offsets within +-1e5 px and radii <= 4096 px. */
+static void test_light_and_effect_bounds(sr_test_ctx *t)
+{
+    expect_rejected(t, "<lights><light id=\"l\" type=\"point\" intensity=\"2e6\"/></lights>",
+                    "<light> @intensity");
+    expect_rejected(t, "<lights><light id=\"l\" type=\"point\"><animate property=\"intensity\">"
+                    "<key time=\"0\" value=\"1e100\"/></animate></light></lights>", "at most 1e6");
+    expect_rejected(t, "<lights><light id=\"l\" type=\"spot\" spotAngle=\"1e-9\"/></lights>",
+                    "<light> @spotAngle");
+    expect_rejected(t, "<lights><light id=\"l\" type=\"spot\" spotAngle=\"179.5\"/></lights>",
+                    "<light> @spotAngle");
+    expect_rejected(t, "<effects><effect id=\"e\" type=\"drop-shadow\" offsetX=\"1e30\"/></effects>",
+                    "<effect> @offsetX");
+    expect_rejected(t, "<effects><effect id=\"e\" type=\"drop-shadow\"><animate property=\"offsetY\">"
+                    "<key time=\"0\" value=\"-200000\"/></animate></effect></effects>", "+-1e5");
+    expect_rejected(t, "<effects><effect id=\"e\" type=\"blur\" radius=\"5000\"/></effects>",
+                    "<effect> @radius");
+    expect_rejected(t, "<effects><effect id=\"e\" type=\"blur\"><animate property=\"radius\">"
+                    "<key time=\"0\" value=\"4097\"/></animate></effect></effects>", "4096");
+    const char *good = "<scene version=\"1.0\">" PROJECT "<composition/>"
+        "<lights><light id=\"l\" type=\"spot\" spotAngle=\"0.5\" intensity=\"1e6\"/>"
+        "<light id=\"m\" type=\"spot\" spotAngle=\"179\"/></lights>"
+        "<effects><effect id=\"e\" type=\"drop-shadow\" offsetX=\"-1e5\" offsetY=\"1e5\""
+        " radius=\"4096\"/></effects></scene>";
+    SrScene scene;
+    if (st_load(t, "fx-bounds-good.xml", good, &scene, NULL) == SR_OK) sr_scene_free(&scene);
+    else SR_FAIL(t, "boundary values must load");
+}
+
 const sr_test_case sr_tests_fx[] = {
     {"group_effect_only_inside_group", test_group_effect_only_inside_group},
     {"unreferenced_effect_whole_frame", test_unreferenced_effect_whole_frame},
@@ -266,5 +394,9 @@ const sr_test_case sr_tests_fx[] = {
     {"relief_brightens_lit_side", test_relief_brightens_lit_side},
     {"animated_effect_param", test_animated_effect_param},
     {"unknown_effect_id", test_unknown_effect_id},
+    {"group_mask_after_effects", test_group_mask_after_effects},
+    {"huge_light_stays_finite", test_huge_light_stays_finite},
+    {"huge_shadow_offset_defined", test_huge_shadow_offset_defined},
+    {"light_and_effect_bounds", test_light_and_effect_bounds},
     {NULL, NULL},
 };

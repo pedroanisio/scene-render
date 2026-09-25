@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -130,9 +131,10 @@ void sr_xml_start_project(ParseContext *ctx, const XML_Char **attrs) {
         SR_XML_FAIL_RETURN(ctx, "project", "fps",
                            "expected N or N/D with positive integers");
     if (!sr_parse_double(duration, &ctx->scene->project.duration) ||
-        ctx->scene->project.duration <= 0.0)
+        ctx->scene->project.duration <= 0.0 ||
+        ctx->scene->project.duration > SR_MAX_DURATION)
         SR_XML_FAIL_RETURN(ctx, "project", "duration",
-                           "expected a positive duration in seconds");
+                           "expected a positive duration of at most 1e6 seconds");
     const char *value;
     if ((value = sr_xml_attr(attrs, "seed")) &&
         !sr_parse_u64(value, &ctx->scene->project.seed))
@@ -470,6 +472,19 @@ void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs) {
                                "expected a color (#RRGGBB, #RRGGBBAA, or r,g,b[,a])");
     } else if (!sr_parse_double(value_text, &key.value))
         SR_XML_FAIL_RETURN(ctx, "key", "value", "expected a finite decimal number");
+    if (p->light && p->anim == &p->light->intensity &&
+        key.value > SR_MAX_LIGHT_INTENSITY)
+        SR_XML_FAIL_RETURN(ctx, "key", "value",
+                           "light intensity must be at most 1e6");
+    if (p->effect && (p->anim == &p->effect->offset_x ||
+                      p->anim == &p->effect->offset_y) &&
+        fabs(key.value) > SR_MAX_EFFECT_OFFSET)
+        SR_XML_FAIL_RETURN(ctx, "key", "value",
+                           "effect offsets must be within +-1e5 px");
+    if (p->effect && p->anim == &p->effect->radius &&
+        key.value > SR_MAX_EFFECT_RADIUS)
+        SR_XML_FAIL_RETURN(ctx, "key", "value",
+                           "effect radius must be at most 4096 px");
     const char *curve = sr_xml_attr(attrs, "interpolation");
     if (curve && !sr_curve_parse(curve, &key.curve))
         SR_XML_FAIL_RETURN(ctx, "key", "interpolation",

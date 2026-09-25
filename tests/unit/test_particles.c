@@ -165,11 +165,148 @@ static void test_emission_time_parameters(sr_test_ctx *t)
     sr_scene_free(&scene);
 }
 
+
+/* Reference for animated rates: the whole-history trapezoid grid from the
+ * emitter start (the original algorithm), births linear inside each cell.
+ * Fills births[] newest first for indices alive-candidate at `now`. */
+static size_t reference_births(const SrNode *node, double now, double longest,
+                               double *index, double *birth, size_t capacity)
+{
+    const double step = 1.0 / 240.0;
+    size_t cells = (size_t)ceil(now / step) + 1, count = 0;
+    double *total = calloc(cells + 1, sizeof(*total));
+    if (!total) return 0;
+    double previous = fmax(0.0, sr_anim_eval(&node->particle_rate, node->start_time));
+    for (size_t k = 0; k < cells; ++k) {
+        double next = fmax(0.0, sr_anim_eval(&node->particle_rate,
+            node->start_time + (double)(k + 1) * step));
+        total[k + 1] = total[k] + 0.5 * (previous + next) * step;
+        previous = next;
+    }
+    for (size_t k = cells; k-- > 0;) {
+        double t0 = (double)k * step;
+        if (t0 + step < now - longest) break;
+        double n0 = total[k], n1 = total[k + 1];
+        if (!(n1 > n0)) continue;
+        for (double i = ceil(n1) - 1.0; i >= ceil(n0); i -= 1.0) {
+            double b = t0 + (i - n0) / (n1 - n0) * step;
+            if (b > now || now - b > longest || count == capacity) continue;
+            index[count] = i;
+            birth[count++] = b;
+        }
+    }
+    free(total);
+    return count;
+}
+
+/* With speed s, direction 0 and no spread, variance, gravity or emitter
+ * size, a particle's x is s * age: its birth is now - x / s. The segment
+ * cache (bit-identical grid between keys, closed form outside them)
+ * reproduces the whole-history grid: exactly between the keys, to
+ * rounding before the first key and after the last. */
+static void test_keyed_rate_matches_grid(sr_test_ctx *t)
+{
+    const char *xml =
+        "<scene version=\"1.0\"><project width=\"64\" height=\"64\" fps=\"30\" duration=\"8\"/>"
+        "<composition>"
+        "<particleEmitter id=\"a\" start=\"0.25\" rate=\"1\" lifetime=\"0.93\" direction=\"0\" "
+        "speed=\"100\" spread=\"0\" maxParticles=\"100000\">"
+        "<animate property=\"rate\"><key time=\"0\" value=\"30\"/><key time=\"0.37\" value=\"400\"/>"
+        "<key time=\"1.1\" value=\"0\"/><key time=\"1.3\" value=\"0\"/><key time=\"2.05\" value=\"90\"/></animate>"
+        "</particleEmitter>"
+        "<particleEmitter id=\"b\" rate=\"1\" lifetime=\"0.93\" direction=\"0\" speed=\"100\" "
+        "spread=\"0\" maxParticles=\"100000\">"
+        "<animate property=\"rate\"><key time=\"1.013\" value=\"50\"/><key time=\"2.5\" value=\"300\"/></animate>"
+        "</particleEmitter>"
+        "</composition></scene>";
+    SrScene scene;
+    if (st_load(t, "particles-grid.xml", xml, &scene, NULL) != SR_OK) { SR_FAIL(t, "load"); return; }
+    static const char *const ids[] = {"a", "b"};
+    static const double times[] = {0.3, 0.8, 1.2, 1.7, 2.2, 3.0, 5.5, 7.9};
+    double index[4096], birth[4096];
+    for (size_t e = 0; e < 2; ++e) {
+        const SrNode *node = sr_scene_find_node(&scene, ids[e]);
+        for (size_t k = 0; k < sizeof(times) / sizeof(times[0]); ++k) {
+            double now = times[k] - node->start_time;
+            size_t expected = reference_births(node, now, 0.93, index, birth, 4096);
+            SrParticle *particles = NULL;
+            size_t count = 0;
+            CHECK(t, sr_particles_eval(&scene, node, times[k], &particles, &count) == SR_OK);
+            if (count != expected) {
+                SR_FAIL(t, "%s at %g: %zu particles, reference %zu", ids[e], times[k],
+                        count, expected);
+            } else {
+                for (size_t i = 0; i < count; ++i) {
+                    /* particles are oldest first, the reference newest first */
+                    const SrParticle *p = &particles[count - 1 - i];
+                    if ((double)p->index != index[i] ||
+                        fabs((now - p->x / 100.0) - birth[i]) > 1e-9)
+                        SR_FAIL(t, "%s at %g: particle %zu differs", ids[e], times[k], i);
+                }
+            }
+            free(particles);
+        }
+    }
+    sr_scene_free(&scene);
+}
+
+/* The per-evaluation work no longer grows with time: after the last key
+ * the count is closed form, so an evaluation at 1e6 s is as fast as at
+ * 10 s and yields the same live population; the review's 9.6e15 s time
+ * (whose grid would need 2^61 cells) returns promptly. */
+static void test_keyed_rate_bounded_late_time(sr_test_ctx *t)
+{
+    const char *xml =
+        "<scene version=\"1.0\"><project width=\"64\" height=\"64\" fps=\"30\" duration=\"1000000\"/>"
+        "<composition><particleEmitter id=\"p\" rate=\"1\" lifetime=\"1\" direction=\"0\" "
+        "speed=\"10\" spread=\"0\">"
+        "<animate property=\"rate\"><key time=\"0\" value=\"40\"/><key time=\"1\" value=\"100\"/></animate>"
+        "</particleEmitter></composition></scene>";
+    SrScene scene;
+    if (st_load(t, "particles-late.xml", xml, &scene, NULL) != SR_OK) { SR_FAIL(t, "load"); return; }
+    const SrNode *node = scene.root->children[0];
+    SrParticle *particles = NULL;
+    size_t early = 0, late = 0;
+    CHECK(t, sr_particles_eval(&scene, node, 10.0, &particles, &early) == SR_OK);
+    free(particles);
+    CHECK(t, sr_particles_eval(&scene, node, 999999.5, &particles, &late) == SR_OK);
+    free(particles);
+    CHECK(t, early >= 99 && early <= 101);
+    CHECK(t, late >= 99 && late <= 101);
+    size_t huge = 0;
+    CHECK(t, sr_particles_eval(&scene, node, 9607679205057058.0, &particles, &huge) == SR_OK);
+    free(particles);
+    sr_scene_free(&scene);
+}
+
+/* Project durations are bounded (the keyed-rate work is bounded by it). */
+static void test_duration_bound(sr_test_ctx *t)
+{
+    SrScene scene;
+    char *message = NULL;
+    CHECK(t, st_load(t, "duration-huge.xml",
+                     "<scene version=\"1.0\"><project width=\"8\" height=\"8\" fps=\"30\" "
+                     "duration=\"1000001\"/><composition/></scene>", &scene, &message) == SR_ERR_XML);
+    /* The XSD bound fires first; the loader repeats it for callers
+     * that bypass schema validation. */
+    CHECK_CONTAINS(t, message, "<project> @duration");
+    free(message);
+    if (st_load(t, "duration-max.xml",
+                "<scene version=\"1.0\"><project width=\"8\" height=\"8\" fps=\"30\" "
+                "duration=\"1000000\"/><composition/></scene>", &scene, NULL) == SR_OK)
+        sr_scene_free(&scene);
+    else
+        SR_FAIL(t, "a 1e6 s duration must load");
+}
+
 const sr_test_case sr_tests_particles[] = {
     {"frame_independent", test_frame_independent},
     {"thread_invariant", test_thread_invariant},
     {"max_particles_caps", test_max_particles_caps},
     {"presets_produce_particles", test_presets_produce_particles},
     {"emission_time_parameters", test_emission_time_parameters},
+    {"keyed_rate_matches_grid", test_keyed_rate_matches_grid},
+    {"keyed_rate_bounded_late_time", test_keyed_rate_bounded_late_time},
+    {"duration_bound", test_duration_bound},
     {NULL, NULL},
 };

@@ -4,6 +4,22 @@
 #include "scene_render/common.h"
 #include "scene_render/timeline.h"
 
+/* XML validation limits: project duration (s), light intensity, effect
+ * offsets and radii (px); animated keys are held to the same bounds. */
+#define SR_MAX_DURATION 1e6
+#define SR_MAX_LIGHT_INTENSITY 1e6
+#define SR_MAX_EFFECT_OFFSET 1e5
+#define SR_MAX_EFFECT_RADIUS 4096.0
+
+/* The one double -> int conversion for pixel, texel and loop bounds:
+ * clamped to [low, high] in double first (NaN gives `low`), so the cast is
+ * always defined. */
+static inline int sr_clamp_int(double value, int low, int high) {
+    if (!(value > (double)low)) return low;
+    if (value >= (double)high) return high;
+    return (int)value;
+}
+
 typedef enum {
     SR_BLEND_NORMAL,
     SR_BLEND_ADD,
@@ -272,6 +288,9 @@ typedef struct SrNode {
     double particle_wobble;
     double particle_wobble_frequency;
     bool particle_grow;
+    /* Cumulative emission counts at the rate track's key boundaries, built
+     * on first use by src/particles.c (one allocation, owned by the node). */
+    struct SrParticleRateCache *particle_rate_cache;
     /* Group effects: ids from the `effects` attribute, resolved to
      * scene->effects entries (applied in order to the isolated buffer). */
     char **effect_ids;

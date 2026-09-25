@@ -290,14 +290,23 @@ static bool allocate_samples(BodyState *states, size_t count,
     return true;
 }
 
+/* Cached payload values must be finite and plausible; anything else (a
+ * damaged or tampered cache) is re-simulated rather than replayed. */
+#define CACHE_VALUE_LIMIT 1e9
+
+static bool cache_value_ok(double value) {
+    return isfinite(value) && fabs(value) <= CACHE_VALUE_LIMIT;
+}
+
 static bool load_cache(SrScene *scene, BodyState *states, size_t count,
                        SrNode *const *softs, size_t soft_count,
-                       uint64_t samples, uint64_t expected) {
+                       uint64_t samples, uint64_t expected, SrDiagnostics *diag) {
     char *path = cache_path(scene, expected);
     if (!path) return false;
     FILE *file = fopen(path, "rb"); free(path);
     if (!file) return false;
     CacheHeader header;
+    bool invalid = false;
     bool ok = fread(&header, sizeof(header), 1, file) == 1 &&
         memcmp(header.magic, "SRPHYS1", 8) == 0 &&
         header.version == PHYSICS_CACHE_VERSION &&
@@ -309,6 +318,8 @@ static bool load_cache(SrScene *scene, BodyState *states, size_t count,
         for (uint64_t s = 0; s < samples; ++s) {
             double pose[3];
             if (fread(pose, sizeof(pose), 1, file) != 1) { ok = false; break; }
+            if (!cache_value_ok(pose[0]) || !cache_value_ok(pose[1]) ||
+                !cache_value_ok(pose[2])) { invalid = true; ok = false; break; }
             SrPhysicsSample *sample = &states[i].node->physics_samples[s];
             sample->enabled = true;
             sample->x.base = pose[0];
@@ -320,9 +331,14 @@ static bool load_cache(SrScene *scene, BodyState *states, size_t count,
         SrSoftBody *soft = &softs[i]->soft_body;
         size_t values = (size_t)soft->rows * soft->cols * 2 * samples;
         if (fread(soft->offsets, sizeof(double), values, file) != values) ok = false;
+        for (size_t v = 0; ok && v < values; ++v)
+            if (!cache_value_ok(soft->offsets[v])) { invalid = true; ok = false; }
     }
     fclose(file);
     if (!ok) release_samples(states, count, softs, soft_count);
+    if (invalid)
+        sr_diag_info(diag, "physics cache holds non-finite or out-of-range "
+                           "samples; discarding it and re-simulating");
     return ok;
 }
 
@@ -701,6 +717,18 @@ static void soft_record(const SoftState *soft, double *out) {
     }
 }
 
+double sr_soft_body_substeps(const SrSoftBody *body, bool rigid,
+                             double fixed_step) {
+    double m = body->mass / ((double)body->rows * (double)body->cols);
+    double k = body->stiffness;
+    double c = 2.0 * body->damping * sqrt(k * m);
+    double springs_per_node = rigid ? 9.0 : 8.0;
+    double omega = sqrt(springs_per_node * k / m);
+    double substeps = fmax(ceil(omega * fixed_step / 0.25),
+                           ceil(springs_per_node * c * fixed_step / (m * 0.5)));
+    return isnan(substeps) ? INFINITY : fmax(1.0, substeps);
+}
+
 /* One fixed step of the grid: gravity and fields, springs with damping
  * ratio `damping`, area-preserving pressure, anchor springs to the node's
  * rigid pose (when it has a rigid body), pins, and frame-bound collisions;
@@ -710,11 +738,9 @@ static void soft_step(const SrScene *scene, SoftState *soft, double t) {
     double dt = scene->physics.fixed_step, m = soft->node_mass;
     double k = body->stiffness, zeta = body->damping;
     double c = 2.0 * zeta * sqrt(k * m);
-    double springs_per_node = soft->rigid ? 9.0 : 8.0;
-    double omega = sqrt(springs_per_node * k / m);
-    double substeps = fmax(ceil(omega * dt / 0.25),
-                           ceil(springs_per_node * c * dt / (m * 0.5)));
-    int steps = (int)fmin(256.0, fmax(1.0, substeps));
+    /* Validation rejects bodies needing more than SR_SOFT_MAX_SUBSTEPS. */
+    int steps = sr_clamp_int(sr_soft_body_substeps(body, soft->rigid != NULL, dt),
+                             1, SR_SOFT_MAX_SUBSTEPS);
     double h = dt / steps, decay = exp(-body->damping * h);
     double width = scene->project.width, height = scene->project.height;
     double *fx = sr_alloc(soft->count * sizeof(double));
@@ -792,6 +818,46 @@ static void soft_step(const SrScene *scene, SoftState *soft, double t) {
 
 /* ---- driver ---------------------------------------------------------------- */
 
+static bool rigid_finite(const BodyState *state) {
+    return isfinite(state->x) && isfinite(state->y) && isfinite(state->angle) &&
+           isfinite(state->vx) && isfinite(state->vy) &&
+           isfinite(state->angular_velocity);
+}
+
+static bool soft_finite(const SoftState *soft) {
+    for (size_t i = 0; i < soft->count; ++i)
+        if (!isfinite(soft->px[i]) || !isfinite(soft->py[i]) ||
+            !isfinite(soft->vx[i]) || !isfinite(soft->vy[i]))
+            return false;
+    return true;
+}
+
+/* Reports the first body whose state is no longer finite (the simulation
+ * diverged); true when every state is finite. */
+static bool states_finite(BodyState *states, size_t count,
+                          const SoftState *soft_states, size_t soft_count,
+                          double t, SrDiagnostics *diag) {
+    for (size_t i = 0; i < count; ++i) {
+        if (rigid_finite(&states[i])) continue;
+        const SrNode *node = states[i].node;
+        sr_diag_error(diag, node->source_line, "rigidBody", NULL,
+                      "physics simulation of '%s' diverged (non-finite state "
+                      "at t=%.6g s); reduce forces or fixedStep",
+                      node->id ? node->id : "", t);
+        return false;
+    }
+    for (size_t i = 0; i < soft_count; ++i) {
+        if (soft_finite(&soft_states[i])) continue;
+        const SrNode *node = soft_states[i].node;
+        sr_diag_error(diag, node->source_line, "softBody", "stiffness/mass",
+                      "soft body '%s' diverged (non-finite state at t=%.6g s); "
+                      "lower stiffness or pressure, raise mass, or reduce "
+                      "fixedStep", node->id ? node->id : "", t);
+        return false;
+    }
+    return true;
+}
+
 SrStatus sr_physics_prepare(SrScene *scene, SrDiagnostics *diag) {
     BodyState *states = NULL;
     size_t count = 0, capacity = 0;
@@ -815,7 +881,7 @@ SrStatus sr_physics_prepare(SrScene *scene, SrDiagnostics *diag) {
     }
     uint64_t samples = (uint64_t)exact_samples;
     uint64_t hash = signature(scene, states, count, softs, soft_count);
-    if (load_cache(scene, states, count, softs, soft_count, samples, hash)) {
+    if (load_cache(scene, states, count, softs, soft_count, samples, hash, diag)) {
         scene->physics.cache_hit = true;
         sr_diag_info(diag, "loaded physics cache");
         free(states); free(softs); return SR_OK;
@@ -834,6 +900,13 @@ SrStatus sr_physics_prepare(SrScene *scene, SrDiagnostics *diag) {
     }
     double dt = scene->physics.fixed_step;
     for (uint64_t s = 0; s < samples; ++s) {
+        if (!states_finite(states, count, soft_states, soft_count,
+                           (double)s * dt, diag)) {
+            release_samples(states, count, softs, soft_count);
+            for (size_t i = 0; i < soft_count; ++i) soft_free(&soft_states[i]);
+            free(soft_states); free(states); free(softs);
+            return SR_ERR_RENDER;
+        }
         for (size_t i = 0; i < count; ++i) {
             SrPhysicsSample *sample = &states[i].node->physics_samples[s];
             sample->enabled = true;
