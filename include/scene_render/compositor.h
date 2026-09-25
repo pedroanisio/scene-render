@@ -33,11 +33,14 @@ typedef struct {
  * (allocated lazily once per depth and reused, never per frame), the
  * worker count used for row-parallel draws and, for scenes with depth
  * cards, the shared depth buffer and a second pool for the plane buffers
- * of perspective-warped cards (see sr_compositor_render_scene). */
+ * of perspective-warped cards (see sr_compositor_render_scene). Draw ops
+ * are recorded in `queue` and executed band by band (every pixel still
+ * receives the ops in submission order); it is empty between renders. */
 typedef struct SrCompositor {
     SrGroupBuffer **pool;
     size_t pool_count;
     unsigned threads;
+    struct SrOpQueue *queue;
     SrDepthBuffer *depth;           /* NULL: cards are not depth tested */
     SrDepthBuffer depth_store;      /* owned by sr_compositor_render_scene */
     struct SrCompositor *plane;     /* lazily allocated plane-buffer pool */

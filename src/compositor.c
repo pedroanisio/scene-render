@@ -47,31 +47,39 @@ typedef struct {
     SrGroupBuffer *buffer;  /* non-NULL when drawing into an isolated group */
 } SrTarget;
 
-typedef enum { SR_OP_IMAGE, SR_OP_SHAPE, SR_OP_BUFFER } SrOpKind;
+/* SR_OP_CLEAR zeroes its bounds (a pooled buffer's previous dirty rect). */
+typedef enum {
+    SR_OP_IMAGE, SR_OP_SHAPE, SR_OP_BUFFER, SR_OP_DISC, SR_OP_CLEAR
+} SrOpKind;
 
 /* Per-sample depth test of a card composite (SR_OP_BUFFER): a sample is
  * visible where the card plane lies inside [near, far] and not behind the
  * shared depth buffer; `write` stores the card depth where the composited
- * alpha reaches 0.5 (only for composites straight into the frame). */
+ * alpha reaches 0.5 (only for composites straight into the frame). The
+ * pose is held by value so a queued composite does not point into its
+ * caller's stack frame (the view outlives every queued op: the queue is
+ * flushed before a render returns). */
 typedef struct {
     SrDepthBuffer *depth;       /* NULL: near/far clipping only */
     const SrCardView *view;
-    const SrCardPose *pose;
+    SrCardPose pose;
     bool write;
 } SrCardTest;
 
 /* Grid deformations evaluated once per draw: the offsets of every
  * mesh-warp modifier (NULL entries for the other modifier types) and of
- * the simulated soft body. */
+ * the simulated soft body, plus every modifier's amount, frequency and
+ * phase (the values the per-pixel evaluation gave). */
 typedef struct {
     double **mesh;
     double *storage;            /* owns every mesh[i] grid */
     double *soft;
+    double *params;             /* 3 per modifier */
 } SrDeformState;
 
 typedef struct {
     SrOpKind kind;
-    const SrTarget *target;
+    SrTarget target;          /* by value: queued ops outlive the caller */
     SrBlendMode blend;
     float opacity;
     SrMat3 inverse;
@@ -87,10 +95,24 @@ typedef struct {
     float fill[4];
     float stroke[4];
     double half_stroke;
+    SrVec2 center;            /* SR_OP_DISC: one particle, color in fill */
+    double radius;
+    bool square;
     const SrGroupBuffer *buffer;
-    const SrCardTest *card;
+    bool has_card;            /* SR_OP_BUFFER: depth test with `card` */
+    SrCardTest card;
     SrClip bounds;
+    void *owned;              /* queued copy of the mask chain, or NULL */
 } SrDrawOp;
+
+/* Recorded draw ops awaiting execution (see sr_queue_flush). */
+struct SrOpQueue {
+    SrDrawOp *ops;
+    size_t count, capacity;
+    size_t pixels;            /* total op area, for the serial threshold */
+    uint32_t *order;          /* band dealing order, see sr_queue_flush */
+    size_t order_capacity;
+};
 
 typedef struct {
     SrCompositor *compositor;
@@ -176,7 +198,30 @@ void sr_compositor_free(SrCompositor *compositor) {
         free(compositor->pool[i]);
     }
     free(compositor->pool);
+    if (compositor->queue) {
+        for (size_t i = 0; i < compositor->queue->count; ++i)
+            free(compositor->queue->ops[i].owned);
+        free(compositor->queue->ops);
+        free(compositor->queue->order);
+        free(compositor->queue);
+    }
     *compositor = (SrCompositor){0};
+}
+
+static SrStatus sr_queue_flush(SrCompositor *compositor);
+static SrStatus sr_op_submit(SrCompositor *compositor, const SrDrawOp *op,
+                             bool immediate);
+
+/* Drops every queued op unrun (after a failure), here and in the
+ * plane-buffer pool. */
+static void sr_queue_discard(SrCompositor *compositor) {
+    for (; compositor; compositor = compositor->plane) {
+        struct SrOpQueue *queue = compositor->queue;
+        if (!queue) continue;
+        for (size_t i = 0; i < queue->count; ++i) free(queue->ops[i].owned);
+        queue->count = 0;
+        queue->pixels = 0;
+    }
 }
 
 static void sr_buffer_mark(SrGroupBuffer *buffer, SrClip clip) {
@@ -193,7 +238,10 @@ static void sr_buffer_mark(SrGroupBuffer *buffer, SrClip clip) {
 }
 
 /* Returns the cleared buffer for `depth`, allocating it on first use. Only
- * the dirty rectangle of the previous use needs clearing. */
+ * the dirty rectangle of the previous use needs clearing. Queued ops may
+ * still write or read the previous use, so the clear is queued behind them
+ * as an SR_OP_CLEAR (each pixel is still zeroed after its last use and
+ * before its next), and a buffer is only freed after a flush. */
 static SrStatus sr_pool_get(SrCompositor *compositor, size_t depth,
                             uint32_t width, uint32_t height,
                             SrGroupBuffer **out) {
@@ -208,6 +256,8 @@ static SrStatus sr_pool_get(SrCompositor *compositor, size_t depth,
     SrGroupBuffer *buffer = compositor->pool[depth];
     if (buffer && (buffer->frame.width != width ||
                    buffer->frame.height != height)) {
+        SrStatus flushed = sr_queue_flush(compositor);
+        if (flushed != SR_OK) return flushed;
         sr_frame_free(&buffer->frame);
         free(buffer);
         buffer = compositor->pool[depth] = NULL;
@@ -221,10 +271,12 @@ static SrStatus sr_pool_get(SrCompositor *compositor, size_t depth,
         }
         compositor->pool[depth] = buffer;
     } else if (buffer->x1 > buffer->x0 && buffer->y1 > buffer->y0) {
-        size_t row = (size_t)(buffer->x1 - buffer->x0) * 4 * sizeof(float);
-        for (int y = buffer->y0; y < buffer->y1; ++y)
-            memset(buffer->frame.px + ((size_t)y * width + (size_t)buffer->x0) * 4,
-                   0, row);
+        SrDrawOp clear = {.kind = SR_OP_CLEAR,
+                          .target = {buffer->frame.px, width, height, NULL},
+                          .bounds = {buffer->x0, buffer->y0, buffer->x1,
+                                     buffer->y1}};
+        SrStatus status = sr_op_submit(compositor, &clear, false);
+        if (status != SR_OK) return status;
     }
     buffer->x0 = buffer->y0 = buffer->x1 = buffer->y1 = 0;
     *out = buffer;
@@ -251,25 +303,27 @@ static SrMat3 sr_node_matrix(const SrScene *scene, const SrNode *node, double ti
 }
 
 /* Source point of `point` under the node's deformations; false when a
- * grid has no source there (the pixel stays empty). */
+ * grid has no source there (the pixel stays empty). The modifier
+ * parameters come from state->params (see sr_deform_prepare). */
 static bool sr_deform_inverse(const SrNode *node, SrVec2 *io,
-                              double width, double height, double time,
+                              double width, double height,
                               const SrDeformState *state) {
     SrVec2 point = *io;
     double cx = width * 0.5, cy = height * 0.5;
     for (size_t index = node->modifier_count; index > 0; --index) {
         const SrModifier *modifier = &node->modifiers[index - 1];
         if (modifier->type == SR_MOD_MESH_WARP) {
-            if (state && state->mesh && state->mesh[index - 1] &&
+            if (state->mesh && state->mesh[index - 1] &&
                 !sr_grid_warp_inverse(state->mesh[index - 1], modifier->rows,
                                       modifier->cols, width, height, point,
                                       &point))
                 return false;
             continue;
         }
-        double amount = sr_anim_eval(&modifier->amount, time);
-        double frequency = sr_anim_eval(&modifier->frequency, time);
-        double phase = sr_anim_eval(&modifier->phase, time);
+        const double *param = state->params + (index - 1) * 3;
+        double amount = param[0];
+        double frequency = param[1];
+        double phase = param[2];
         if (modifier->type == SR_MOD_WAVE) {
             if (modifier->axis == 'x')
                 point.x -= amount * sin(point.y / fmax(height, 1.0) *
@@ -290,8 +344,9 @@ static bool sr_deform_inverse(const SrNode *node, SrVec2 *io,
             double radius = hypot(dx / fmax(width, 1.0),
                                   dy / fmax(height, 1.0));
             double angle = -amount * radius * SR_PI / 180.0;
-            point.x = cx + dx * cos(angle) - dy * sin(angle);
-            point.y = cy + dx * sin(angle) + dy * cos(angle);
+            double ca = cos(angle), sa = sin(angle);
+            point.x = cx + dx * ca - dy * sa;
+            point.y = cy + dx * sa + dy * ca;
         } else if (modifier->type == SR_MOD_SQUASH) {
             double factor = fmax(0.05, 1.0 - amount);
             point.y = cy + (point.y - cy) / factor;
@@ -302,7 +357,7 @@ static bool sr_deform_inverse(const SrNode *node, SrVec2 *io,
             point.x = cx + (point.x - cx) * factor;
         }
     }
-    if (state && state->soft &&
+    if (state->soft &&
         !sr_grid_warp_inverse(state->soft, node->soft_body.rows,
                               node->soft_body.cols, width, height, point, &point))
         return false;
@@ -319,6 +374,7 @@ static void sr_deform_free(SrDeformState *state) {
     free(state->mesh);
     free(state->storage);
     free(state->soft);
+    free(state->params);
     *state = (SrDeformState){0};
 }
 
@@ -326,6 +382,20 @@ static void sr_deform_free(SrDeformState *state) {
 static SrStatus sr_deform_prepare(const SrScene *scene, const SrNode *node,
                                   double time, SrDeformState *state) {
     *state = (SrDeformState){0};
+    if (node->modifier_count) {
+        state->params = sr_alloc(node->modifier_count * 3 *
+                                 sizeof(*state->params));
+        if (!state->params) return SR_ERR_MEMORY;
+        for (size_t i = 0; i < node->modifier_count; ++i) {
+            const SrModifier *modifier = &node->modifiers[i];
+            double *param = state->params + i * 3;
+            param[0] = param[1] = param[2] = 0.0;
+            if (modifier->type == SR_MOD_MESH_WARP) continue;
+            param[0] = sr_anim_eval(&modifier->amount, time);
+            param[1] = sr_anim_eval(&modifier->frequency, time);
+            param[2] = sr_anim_eval(&modifier->phase, time);
+        }
+    }
     size_t total = 0;
     for (size_t i = 0; i < node->modifier_count; ++i)
         if (node->modifiers[i].type == SR_MOD_MESH_WARP)
@@ -467,15 +537,23 @@ static void sr_masks_eval(const SrNode *node, double time, SrMaskEval *out) {
     }
 }
 
+/* sr_mat_point, inlined: the same products and sums in the same order. */
+static inline SrVec2 sr_mat_apply(const SrMat3 *m, double x, double y) {
+    return (SrVec2){m->m00 * x + m->m01 * y + m->m02,
+                    m->m10 * x + m->m11 * y + m->m12};
+}
+
 static float sr_link_coverage(const SrMaskLink *link, double cx, double cy) {
     float coverage = 1.0f;
     for (; link && coverage > 0.0f; link = link->parent) {
-        SrVec2 local = sr_mat_point(link->inverse, (SrVec2){cx, cy});
+        SrVec2 local = sr_mat_apply(&link->inverse, cx, cy);
         for (size_t i = 0; i < link->count && coverage > 0.0f; ++i) {
             const SrMaskEval *m = &link->masks[i];
-            float c = sr_shape_coverage(m->type, m->x, m->y, m->width,
-                                        m->height, m->radius, local.x,
-                                        local.y, link->aa);
+            float c = sr_distance_coverage_inline(
+                sr_shape_distance_inline(m->type, m->x, m->y, m->width,
+                                         m->height, m->radius, local.x,
+                                         local.y),
+                link->aa);
             coverage *= m->invert ? 1.0f - c : c;
         }
     }
@@ -529,6 +607,49 @@ static void sr_image_sample(const SrImage *image, double lx, double ly,
     sr_texel(image, ix1, iy1, tx * ty, out);
 }
 
+/* The row half of sr_image_sample at local y `ly`: the two texel rows and
+ * the vertical weight, with the same operations sr_image_sample uses. The
+ * image must be at least 1x1 (then every clamped index is in range and
+ * sr_texel's bounds test always passes). */
+static inline void sr_image_rows(const SrImage *image, double ly,
+                                 const float **row0, const float **row1,
+                                 float *ty) {
+    double sy = sr_clamp(ly - 0.5, 0.0, (double)image->height - 1.0);
+    double fy = floor(sy);
+    int iy = sr_clamp_int(fy, 0, (int)image->height - 1);
+    int iy1 = iy + 1 < (int)image->height ? iy + 1 : iy;
+    *ty = (float)(sy - fy);
+    *row0 = image->px + (size_t)iy * image->width * 4;
+    *row1 = image->px + (size_t)iy1 * image->width * 4;
+}
+
+static inline void sr_texel_at(const float *row, int x, float weight,
+                               float acc[4]) {
+    if (weight == 0.0f) return;
+    const float *p = row + (size_t)x * 4;
+    acc[0] += p[0] * weight;
+    acc[1] += p[1] * weight;
+    acc[2] += p[2] * weight;
+    acc[3] += p[3] * weight;
+}
+
+/* The column half of sr_image_sample: identical taps, weights and
+ * accumulation order. */
+static inline void sr_image_sample_rows(const float *row0, const float *row1,
+                                        int width, float ty, double lx,
+                                        float out[4]) {
+    double sx = sr_clamp(lx - 0.5, 0.0, (double)width - 1.0);
+    double fx = floor(sx);
+    int ix = sr_clamp_int(fx, 0, width - 1);
+    int ix1 = ix + 1 < width ? ix + 1 : ix;
+    float tx = (float)(sx - fx);
+    out[0] = out[1] = out[2] = out[3] = 0.0f;
+    sr_texel_at(row0, ix, (1.0f - tx) * (1.0f - ty), out);
+    sr_texel_at(row0, ix1, tx * (1.0f - ty), out);
+    sr_texel_at(row1, ix, (1.0f - tx) * ty, out);
+    sr_texel_at(row1, ix1, tx * ty, out);
+}
+
 /* Fraction of pixel (x, y)'s depth samples at which the card is visible;
  * writes the card depth into visible samples when `alpha` (the composited
  * card alpha) reaches 0.5. Samples of one pixel row belong to one depth
@@ -541,7 +662,7 @@ static float sr_card_visibility(const SrCardTest *test, int x, int y,
     bool write = test->write && depth && alpha >= 0.5f;
     for (int j = 0; j < n; ++j) for (int i = 0; i < n; ++i) {
         double z;
-        if (!sr_card_depth_at(test->view, test->pose, x + (i + .5) / n,
+        if (!sr_card_depth_at(test->view, &test->pose, x + (i + .5) / n,
                               y + (j + .5) / n, &z) ||
             z < test->view->near_plane || z > test->view->far_plane)
             continue;
@@ -549,8 +670,11 @@ static float sr_card_visibility(const SrCardTest *test, int x, int y,
             double *slot = &depth->z[((size_t)y * (size_t)n + (size_t)j) *
                                      depth->width + (size_t)x * (size_t)n +
                                      (size_t)i];
-            /* Ties go to the later draw, as ordinary compositing does. */
-            if (z > *slot + 1e-9 * fmax(1.0, fabs(z))) continue;
+            /* Ties go to the later draw, as ordinary compositing does.
+             * (az > 1.0 ? az : 1.0) is fmax(1.0, az): az is never -0.0
+             * and a NaN az gives 1.0 either way. */
+            double az = fabs(z);
+            if (z > *slot + 1e-9 * (az > 1.0 ? az : 1.0)) continue;
             if (write && z < *slot) *slot = z;
         }
         ++visible;
@@ -558,58 +682,277 @@ static float sr_card_visibility(const SrCardTest *test, int x, int y,
     return (float)visible / (float)(n * n);
 }
 
-/* Rows are offsets from bounds.y0 so sr_parallel_for can split [0, rows). */
-static void sr_op_rows(void *opaque, size_t begin, size_t end) {
-    const SrDrawOp *op = opaque;
-    const SrTarget *target = op->target;
-    bool deform = sr_node_deforms(op->node);
-    for (size_t y = (size_t)op->bounds.y0 + begin;
-         y < (size_t)op->bounds.y0 + end; ++y) {
-        double cy = (double)y + 0.5;
-        float *d = target->px +
-                   ((size_t)y * target->width + (size_t)op->bounds.x0) * 4;
-        for (int x = op->bounds.x0; x < op->bounds.x1; ++x, d += 4) {
-            double cx = (double)x + 0.5;
-            float coverage = op->opacity * sr_link_coverage(op->masks, cx, cy);
-            if (!(coverage > 0.0f)) continue;
+/* The per-pixel body of every draw op but particles. The op's invariants
+ * are copied into locals first (the float stores into the target could
+ * otherwise alias the op's fields and force re-reads), and the flags that
+ * are constant per op (kind, shape, normal blend, masks, deformation, card
+ * test) are passed as compile-time constants by sr_op_rows so each
+ * combination gets its own branch-free loop. Every pixel still evaluates
+ * exactly the same float and double operations in the same order as the
+ * generic formulation (sr_mat_point, sr_shape_coverage, sr_image_sample,
+ * sr_blend_px):
+ *  - without masks the coverage opacity * 1.0f is opacity itself;
+ *  - the inverse transform keeps (m00*cx + m01*cy) + m02, only the
+ *    row-constant product m01*cy (m11*cy) is computed once per row;
+ *  - `axis` (inverse with m10 == 0 and a non-degenerate box): m10*cx is
+ *    then the same signed zero for every cx > 0, so local y, and every term
+ *    of the rect/ellipse distance and of the bilinear sample that depends
+ *    only on it, is a row constant computed once per row with the very
+ *    same operations;
+ *  - a buffer pixel whose alpha is not positive is skipped before the
+ *    masks: the composite of such a pixel is a no-op in sr_blend_px (the
+ *    scaled alpha is not positive either) and it never reaches the 0.5
+ *    alpha at which a card writes depth. */
+static inline __attribute__((always_inline)) void sr_op_rows_impl(
+    const SrDrawOp *op, size_t begin, size_t end, SrOpKind kind,
+    SrMaskType shape, bool normal, bool masked, bool deform, bool axis,
+    bool card) {
+    float *const base = op->target.px;
+    const size_t stride = op->target.width;
+    const int x0 = op->bounds.x0, x1 = op->bounds.x1;
+    const size_t y0 = (size_t)op->bounds.y0;
+    const SrBlendMode blend = normal ? SR_BLEND_NORMAL : op->blend;
+    const float opacity = op->opacity;
+    const SrMaskLink *const masks = masked ? op->masks : NULL;
+    const SrMat3 inv = op->inverse;
+    const double aa = op->aa;
+    const float *const buffer_px =
+        kind == SR_OP_BUFFER ? op->buffer->frame.px : NULL;
+    const SrCardTest *const test = card ? &op->card : NULL;
+    const SrImage *const image = kind == SR_OP_IMAGE ? op->image : NULL;
+    const int image_w = kind == SR_OP_IMAGE ? (int)image->width : 0;
+    /* sr_shape_distance(RECT or shape, 0, 0, w, h, 0, lx, ly) pieces; an
+     * image covers the rect of its own size. */
+    const double shape_w = kind == SR_OP_IMAGE ? (double)image->width
+                                               : op->width;
+    const double shape_h = kind == SR_OP_IMAGE ? (double)image->height
+                                               : op->height;
+    const SrMaskType dist_shape = kind == SR_OP_IMAGE ? SR_MASK_RECT : shape;
+    const double half_stroke = op->half_stroke;
+    const float fill[4] = {op->fill[0], op->fill[1], op->fill[2], op->fill[3]};
+    const float stroke[4] = {op->stroke[0], op->stroke[1], op->stroke[2],
+                             op->stroke[3]};
+    const SrNode *const node = op->node;
+    const SrDeformState *const deform_state = op->deform;
+    const double deform_w = op->deform_width, deform_h = op->deform_height;
+    const double hw = 0.5 * shape_w, hh = 0.5 * shape_h;
+    const double center_x = 0.0 + hw, center_y = 0.0 + hh;
+    const double half_x = hw - 0.0, half_y = hh - 0.0;  /* r = 0 */
+    const double ellipse_min = -(hw < hh ? hw : hh);
+    if (!masked && !(opacity > 0.0f)) return;
+    for (size_t y = y0 + begin; y < y0 + end; ++y) {
+        const double cy = (double)y + 0.5;
+        const double row_x = inv.m01 * cy, row_y = inv.m11 * cy;
+        float *restrict d = base + (y * stride + (size_t)x0) * 4;
+        /* axis: ellipse row_a = uy*uy, row_b = gy*gy; rect row_a = qy,
+         * row_b = oy*oy; images also get their texel rows. */
+        double row_a = 0.0, row_b = 0.0;
+        const float *img0 = NULL, *img1 = NULL;
+        float img_ty = 0.0f;
+        if (axis) {
+            double ly = inv.m10 * 0.5 + row_y + inv.m12;
+            double py = ly - center_y;
+            if (dist_shape == SR_MASK_ELLIPSE) {
+                double uy = py / hh;
+                double gy = uy / hh;
+                row_a = uy * uy;
+                row_b = gy * gy;
+            } else {
+                double qy = fabs(py) - half_y;
+                double oy = qy > 0.0 ? qy : 0.0;
+                row_a = qy;
+                row_b = oy * oy;
+            }
+            if (kind == SR_OP_IMAGE)
+                sr_image_rows(image, ly, &img0, &img1, &img_ty);
+        }
+        for (int x = x0; x < x1; ++x, d += 4) {
+            const double cx = (double)x + 0.5;
+            const float *src = NULL;
+            if (kind == SR_OP_BUFFER) {
+                src = buffer_px + (d - base);
+                if (!(src[3] > 0.0f)) continue;
+            }
+            float coverage =
+                masked ? opacity * sr_link_coverage(masks, cx, cy) : opacity;
+            if (masked && !(coverage > 0.0f)) continue;
             float s[4];
-            if (op->kind == SR_OP_BUFFER) {
-                memcpy(s, op->buffer->frame.px + (d - target->px), sizeof(s));
-                if (op->card) {
-                    coverage *= sr_card_visibility(op->card, x, (int)y,
+            if (kind == SR_OP_BUFFER) {
+                memcpy(s, src, sizeof(s));
+                if (card) {
+                    coverage *= sr_card_visibility(test, x, (int)y,
                                                    coverage * s[3]);
                     if (!(coverage > 0.0f)) continue;
                 }
-            } else {
-                SrVec2 local = sr_mat_point(op->inverse, (SrVec2){cx, cy});
-                if (deform &&
-                    !sr_deform_inverse(op->node, &local, op->deform_width,
-                                       op->deform_height, op->time, op->deform))
-                    continue;
-                if (op->kind == SR_OP_IMAGE) {
-                    coverage *= sr_shape_coverage(
-                        SR_MASK_RECT, 0.0, 0.0, op->image->width,
-                        op->image->height, 0.0, local.x, local.y, op->aa);
-                    if (!(coverage > 0.0f)) continue;
-                    sr_image_sample(op->image, local.x, local.y, s);
+            } else if (axis) {
+                double px = inv.m00 * cx + row_x + inv.m02 - center_x;
+                double sd;
+                if (dist_shape == SR_MASK_ELLIPSE) {
+                    double ux = px / hw;
+                    double k0 = sqrt(ux * ux + row_a);
+                    double gx = ux / hw;
+                    double k1 = sqrt(gx * gx + row_b);
+                    sd = k1 > 1e-12 ? k0 * (k0 - 1.0) / k1 : ellipse_min;
                 } else {
-                    double sd = sr_shape_distance(op->shape, 0.0, 0.0,
-                                                  op->width, op->height, 0.0,
-                                                  local.x, local.y);
-                    float cf = sr_distance_coverage(sd, op->aa);
-                    float cs = op->half_stroke > 0.0
-                        ? sr_distance_coverage(fabs(sd) - op->half_stroke,
-                                               op->aa)
+                    double qx = fabs(px) - half_x;
+                    double ox = qx > 0.0 ? qx : 0.0;
+                    double inside = qx > row_a ? qx : row_a;
+                    sd = sqrt(ox * ox + row_b) +
+                         (inside < 0.0 ? inside : 0.0) - 0.0;
+                }
+                if (kind == SR_OP_IMAGE) {
+                    coverage *= sr_distance_coverage_inline(sd, aa);
+                    if (!(coverage > 0.0f)) continue;
+                    sr_image_sample_rows(img0, img1, image_w, img_ty,
+                                         inv.m00 * cx + row_x + inv.m02, s);
+                } else {
+                    float cf = sr_distance_coverage_inline(sd, aa);
+                    float cs = half_stroke > 0.0
+                        ? sr_distance_coverage_inline(fabs(sd) - half_stroke,
+                                                      aa)
                         : 0.0f;
-                    float keep = 1.0f - cs * op->stroke[3];
+                    float keep = 1.0f - cs * stroke[3];
                     for (int c = 0; c < 4; ++c)
-                        s[c] = op->stroke[c] * cs + op->fill[c] * cf * keep;
+                        s[c] = stroke[c] * cs + fill[c] * cf * keep;
+                }
+            } else {
+                SrVec2 local = {inv.m00 * cx + row_x + inv.m02,
+                                inv.m10 * cx + row_y + inv.m12};
+                if (deform &&
+                    !sr_deform_inverse(node, &local, deform_w, deform_h,
+                                       deform_state))
+                    continue;
+                double sd = sr_shape_distance_inline(dist_shape, 0.0, 0.0,
+                                                     shape_w, shape_h, 0.0,
+                                                     local.x, local.y);
+                if (kind == SR_OP_IMAGE) {
+                    coverage *= sr_distance_coverage_inline(sd, aa);
+                    if (!(coverage > 0.0f)) continue;
+                    const float *r0, *r1;
+                    float ty;
+                    sr_image_rows(image, local.y, &r0, &r1, &ty);
+                    sr_image_sample_rows(r0, r1, image_w, ty, local.x, s);
+                } else {
+                    float cf = sr_distance_coverage_inline(sd, aa);
+                    float cs = half_stroke > 0.0
+                        ? sr_distance_coverage_inline(fabs(sd) - half_stroke,
+                                                      aa)
+                        : 0.0f;
+                    float keep = 1.0f - cs * stroke[3];
+                    for (int c = 0; c < 4; ++c)
+                        s[c] = stroke[c] * cs + fill[c] * cf * keep;
                 }
             }
             s[0] *= coverage; s[1] *= coverage;
             s[2] *= coverage; s[3] *= coverage;
-            sr_blend_px(op->blend, d, s);
+            sr_blend_px_inline(blend, d, s);
         }
+    }
+}
+
+/* Deforming draws are rare and dominated by the inverse warp: one generic
+ * loop with runtime flags. */
+static void sr_op_rows_deform(const SrDrawOp *op, size_t begin, size_t end) {
+    sr_op_rows_impl(op, begin, end, op->kind, op->shape,
+                    op->blend == SR_BLEND_NORMAL, op->masks != NULL, true,
+                    false, false);
+}
+
+#define SR_OP_ROWS_VARIANTS(kind, shape, axis, card)                         \
+    do {                                                                     \
+        if (masked) {                                                        \
+            if (normal)                                                      \
+                sr_op_rows_impl(op, begin, end, kind, shape, true, true,     \
+                                false, axis, card);                          \
+            else                                                             \
+                sr_op_rows_impl(op, begin, end, kind, shape, false, true,    \
+                                false, axis, card);                          \
+        } else {                                                             \
+            if (normal)                                                      \
+                sr_op_rows_impl(op, begin, end, kind, shape, true, false,    \
+                                false, axis, card);                          \
+            else                                                             \
+                sr_op_rows_impl(op, begin, end, kind, shape, false, false,   \
+                                false, axis, card);                          \
+        }                                                                    \
+    } while (0)
+
+/* One anti-aliased particle disc (or axis-aligned square); the same
+ * per-pixel arithmetic the particles always used. */
+static void sr_disc_rows(const SrDrawOp *op, size_t begin, size_t end) {
+    float *const base = op->target.px;
+    const size_t stride = op->target.width;
+    const int x0 = op->bounds.x0, x1 = op->bounds.x1;
+    const SrBlendMode blend = op->blend;
+    const float opacity = op->opacity;
+    const SrMaskLink *const masks = op->masks;
+    const SrVec2 center = op->center;
+    const double radius = op->radius;
+    const bool square = op->square;
+    const float color[4] = {op->fill[0], op->fill[1], op->fill[2],
+                            op->fill[3]};
+    for (int y = op->bounds.y0 + (int)begin; y < op->bounds.y0 + (int)end;
+         ++y) {
+        float *restrict d = base + ((size_t)y * stride + (size_t)x0) * 4;
+        double dy = y + 0.5 - center.y;
+        for (int x = x0; x < x1; ++x, d += 4) {
+            double dx = x + 0.5 - center.x;
+            double distance = square ? fmax(fabs(dx), fabs(dy)) - radius
+                                     : sqrt(dx * dx + dy * dy) - radius;
+            float coverage = sr_distance_coverage_inline(distance, 1.0);
+            if (!(coverage > 0.0f)) continue;
+            coverage *= opacity * sr_link_coverage(masks, x + 0.5, y + 0.5);
+            if (!(coverage > 0.0f)) continue;
+            float s[4] = {color[0] * coverage, color[1] * coverage,
+                          color[2] * coverage, color[3] * coverage};
+            sr_blend_px_inline(blend, d, s);
+        }
+    }
+}
+
+/* Rows are offsets from bounds.y0 so sr_parallel_for can split [0, rows). */
+static void sr_op_rows(void *opaque, size_t begin, size_t end) {
+    const SrDrawOp *op = opaque;
+    if (op->kind == SR_OP_DISC) {
+        sr_disc_rows(op, begin, end);
+        return;
+    }
+    if (op->kind == SR_OP_CLEAR) {
+        size_t row = (size_t)(op->bounds.x1 - op->bounds.x0) * 4 * sizeof(float);
+        for (size_t y = (size_t)op->bounds.y0 + begin;
+             y < (size_t)op->bounds.y0 + end; ++y)
+            memset(op->target.px + (y * op->target.width +
+                                    (size_t)op->bounds.x0) * 4, 0, row);
+        return;
+    }
+    if (op->kind != SR_OP_BUFFER && sr_node_deforms(op->node)) {
+        sr_op_rows_deform(op, begin, end);
+        return;
+    }
+    bool masked = op->masks != NULL;
+    bool normal = op->blend == SR_BLEND_NORMAL;
+    if (op->kind == SR_OP_BUFFER) {
+        if (op->has_card)
+            SR_OP_ROWS_VARIANTS(SR_OP_BUFFER, SR_MASK_RECT, false, true);
+        else
+            SR_OP_ROWS_VARIANTS(SR_OP_BUFFER, SR_MASK_RECT, false, false);
+    } else if (op->kind == SR_OP_IMAGE) {
+        if (op->inverse.m10 == 0.0 && op->image->width > 0 &&
+            op->image->height > 0)
+            SR_OP_ROWS_VARIANTS(SR_OP_IMAGE, SR_MASK_RECT, true, false);
+        else
+            SR_OP_ROWS_VARIANTS(SR_OP_IMAGE, SR_MASK_RECT, false, false);
+    } else {
+        bool axis = op->inverse.m10 == 0.0 && op->width > 0.0 &&
+                    op->height > 0.0;
+        if (op->shape == SR_MASK_ELLIPSE && axis)
+            SR_OP_ROWS_VARIANTS(SR_OP_SHAPE, SR_MASK_ELLIPSE, true, false);
+        else if (op->shape == SR_MASK_ELLIPSE)
+            SR_OP_ROWS_VARIANTS(SR_OP_SHAPE, SR_MASK_ELLIPSE, false, false);
+        else if (axis)
+            SR_OP_ROWS_VARIANTS(SR_OP_SHAPE, SR_MASK_RECT, true, false);
+        else
+            SR_OP_ROWS_VARIANTS(SR_OP_SHAPE, SR_MASK_RECT, false, false);
     }
 }
 
@@ -618,14 +961,163 @@ static unsigned sr_op_threads(const SrCompositor *compositor, SrClip bounds) {
     return area < SR_PARALLEL_MIN_PIXELS ? 1U : compositor->threads;
 }
 
-static SrStatus sr_op_execute(const SrCompositor *compositor,
-                              const SrDrawOp *op) {
+/* ---- op queue ------------------------------------------------------------
+ * Draw ops are recorded and executed in batches: the covered rows are cut
+ * into bands of SR_BAND_ROWS rows, and each worker runs the whole op list,
+ * in submission order, over its bands. A band stays in cache across the
+ * ops instead of the full frame streaming through memory once per op, and
+ * there is one fork/join per batch instead of one per op.
+ * Correctness: an op writes only its own pixel and reads only that same
+ * pixel (the backdrop, for SR_OP_BUFFER the buffer at the same coordinates
+ * and, for a card composite, that pixel's own depth samples), so every
+ * pixel receives exactly the ops it received before, in the same order,
+ * whatever the band split or thread count (clearing a reused pool buffer
+ * is an op too). Anything that reads or writes pixels or depth samples
+ * elsewhere flushes the queue first: freeing a pool buffer, group and card
+ * effects, the perspective warp, every 3D object draw, and the end of the
+ * render. Ops whose inputs do not outlive the
+ * call (deformation state, video frames the decoder may recycle) run
+ * immediately after a flush. */
+
+#define SR_BAND_ROWS 8
+
+typedef struct {
+    const SrDrawOp *ops;
+    size_t count;
+    int y0, y1;
+    const uint32_t *order;    /* work item -> band, or NULL for identity */
+} SrBandJob;
+
+static void sr_band_rows(void *opaque, size_t begin, size_t end) {
+    const SrBandJob *job = opaque;
+    for (size_t item = begin; item < end; ++item) {
+        size_t band = job->order ? job->order[item] : item;
+        int r0 = job->y0 + (int)band * SR_BAND_ROWS;
+        int r1 = r0 + SR_BAND_ROWS < job->y1 ? r0 + SR_BAND_ROWS : job->y1;
+        for (size_t i = 0; i < job->count; ++i) {
+            const SrDrawOp *op = &job->ops[i];
+            int a = op->bounds.y0 > r0 ? op->bounds.y0 : r0;
+            int b = op->bounds.y1 < r1 ? op->bounds.y1 : r1;
+            if (a < b)
+                sr_op_rows((void *)op, (size_t)(a - op->bounds.y0),
+                           (size_t)(b - op->bounds.y0));
+        }
+    }
+}
+
+static SrStatus sr_queue_flush(SrCompositor *compositor) {
+    struct SrOpQueue *queue = compositor->queue;
+    if (!queue || queue->count == 0) return SR_OK;
+    int y0 = queue->ops[0].bounds.y0, y1 = queue->ops[0].bounds.y1;
+    for (size_t i = 1; i < queue->count; ++i) {
+        if (queue->ops[i].bounds.y0 < y0) y0 = queue->ops[i].bounds.y0;
+        if (queue->ops[i].bounds.y1 > y1) y1 = queue->ops[i].bounds.y1;
+    }
+    SrBandJob job = {queue->ops, queue->count, y0, y1, NULL};
+    size_t bands = ((size_t)(y1 - y0) + SR_BAND_ROWS - 1) / SR_BAND_ROWS;
+    unsigned threads = queue->pixels < SR_PARALLEL_MIN_PIXELS
+                           ? 1U : compositor->threads;
+    /* sr_parallel_for hands each worker a contiguous run of work items;
+     * dealing the bands round-robin instead spreads dense regions of the
+     * frame over all workers. Which worker runs a band never changes its
+     * pixels. */
+    unsigned workers = sr_parallel_thread_count(threads, bands);
+    if (workers > 1) {
+        if (queue->order_capacity < bands) {
+            uint32_t *order = sr_realloc(queue->order,
+                                         bands * sizeof(*order));
+            if (!order) return SR_ERR_MEMORY;
+            queue->order = order;
+            queue->order_capacity = bands;
+        }
+        size_t item = 0;
+        for (size_t first = 0; first < workers; ++first)
+            for (size_t band = first; band < bands; band += workers)
+                queue->order[item++] = (uint32_t)band;
+        job.order = queue->order;
+    }
+    SrStatus status = sr_parallel_for(bands, threads, sr_band_rows, &job);
+    for (size_t i = 0; i < queue->count; ++i) free(queue->ops[i].owned);
+    queue->count = 0;
+    queue->pixels = 0;
+    return status;
+}
+
+/* Copies a mask chain (links and their evaluated masks) into one block so
+ * a queued op does not point into its caller's stack frames. */
+static SrStatus sr_mask_chain_copy(SrDrawOp *op) {
+    size_t links = 0, masks = 0;
+    for (const SrMaskLink *link = op->masks; link; link = link->parent) {
+        ++links;
+        masks += link->count;
+    }
+    SrMaskLink *copy = sr_alloc(links * sizeof(*copy) +
+                                masks * sizeof(SrMaskEval));
+    if (!copy) return SR_ERR_MEMORY;
+    SrMaskEval *evals = (SrMaskEval *)(copy + links);
+    size_t i = 0;
+    for (const SrMaskLink *link = op->masks; link; link = link->parent, ++i) {
+        copy[i] = *link;
+        if (link->count)
+            memcpy(evals, link->masks, link->count * sizeof(*evals));
+        copy[i].masks = evals;
+        copy[i].parent = link->parent ? &copy[i + 1] : NULL;
+        evals += link->count;
+    }
+    op->masks = copy;
+    op->owned = copy;
+    return SR_OK;
+}
+
+/* Records `op` (or, with `immediate`, flushes the queue and runs it now,
+ * row-parallel on its own). `shared`, when given, lets a run of ops with
+ * the same mask chain (one particle emitter) share one queued copy:
+ * *shared starts NULL and receives the first copy made. */
+static SrStatus sr_op_submit_shared(SrCompositor *compositor,
+                                    const SrDrawOp *op, bool immediate,
+                                    const SrMaskLink **shared) {
     if (op->bounds.x1 <= op->bounds.x0 || op->bounds.y1 <= op->bounds.y0)
         return SR_OK;
-    if (op->target->buffer) sr_buffer_mark(op->target->buffer, op->bounds);
-    return sr_parallel_for((size_t)(op->bounds.y1 - op->bounds.y0),
-                           sr_op_threads(compositor, op->bounds), sr_op_rows,
-                           (void *)op);
+    if (op->target.buffer) sr_buffer_mark(op->target.buffer, op->bounds);
+    if (immediate) {
+        SrStatus status = sr_queue_flush(compositor);
+        if (status != SR_OK) return status;
+        return sr_parallel_for((size_t)(op->bounds.y1 - op->bounds.y0),
+                               sr_op_threads(compositor, op->bounds),
+                               sr_op_rows, (void *)op);
+    }
+    struct SrOpQueue *queue = compositor->queue;
+    if (!queue) {
+        queue = compositor->queue = sr_alloc(sizeof(*queue));
+        if (!queue) return SR_ERR_MEMORY;
+        *queue = (struct SrOpQueue){0};
+    }
+    if (queue->count == queue->capacity) {
+        size_t capacity = queue->capacity ? queue->capacity * 2 : 64;
+        SrDrawOp *ops = sr_realloc(queue->ops, capacity * sizeof(*ops));
+        if (!ops) return SR_ERR_MEMORY;
+        queue->ops = ops;
+        queue->capacity = capacity;
+    }
+    SrDrawOp *slot = &queue->ops[queue->count];
+    *slot = *op;
+    slot->owned = NULL;
+    if (slot->masks && shared && *shared) {
+        slot->masks = *shared;
+    } else if (slot->masks) {
+        SrStatus status = sr_mask_chain_copy(slot);
+        if (status != SR_OK) return status;
+        if (shared) *shared = slot->masks;
+    }
+    ++queue->count;
+    queue->pixels += (size_t)(op->bounds.x1 - op->bounds.x0) *
+                     (size_t)(op->bounds.y1 - op->bounds.y0);
+    return SR_OK;
+}
+
+static SrStatus sr_op_submit(SrCompositor *compositor, const SrDrawOp *op,
+                             bool immediate) {
+    return sr_op_submit_shared(compositor, op, immediate, NULL);
 }
 
 /* ---- nodes -------------------------------------------------------------- */
@@ -654,7 +1146,7 @@ static SrDrawOp sr_op_base(const SrDrawContext *context, const SrNode *node,
                            const SrTarget *target, SrMat3 inverse,
                            double opacity, double time,
                            const SrMaskLink *masks) {
-    return (SrDrawOp){.target = target, .blend = sr_node_blend(context, node),
+    return (SrDrawOp){.target = *target, .blend = sr_node_blend(context, node),
                       .opacity = (float)opacity, .inverse = inverse,
                       .aa = sr_pixel_footprint(inverse), .masks = masks,
                       .node = node, .time = time};
@@ -688,7 +1180,12 @@ static SrStatus sr_draw_image(SrDrawContext *context, const SrNode *node,
         sr_deformed_bounds(node, world, image->width, image->height,
                             sr_node_deforms(node) ? op.aa : 0.0,
                             context->time, &deform, target), clip);
-    status = sr_op_execute(context->compositor, &op);
+    /* The deformation state is freed below and a video frame may be
+     * recycled by the next decode, so those draws cannot be queued. */
+    bool immediate = sr_node_deforms(node) ||
+                     node->asset->type == SR_ASSET_VIDEO;
+    if (!immediate) op.deform = NULL;
+    status = sr_op_submit(context->compositor, &op, immediate);
     sr_deform_free(&deform);
     return status;
 }
@@ -719,42 +1216,16 @@ static SrStatus sr_draw_shape(SrDrawContext *context, const SrNode *node,
         sr_deformed_bounds(node, world, node->shape_width, node->shape_height,
                             op.half_stroke + (sr_node_deforms(node) ? op.aa : 0.0),
                             context->time, &deform, target), clip);
-    status = sr_op_execute(context->compositor, &op);
+    bool immediate = sr_node_deforms(node);  /* the state is freed below */
+    if (!immediate) op.deform = NULL;
+    status = sr_op_submit(context->compositor, &op, immediate);
     sr_deform_free(&deform);
     return status;
 }
 
-/* One anti-aliased disc (or axis-aligned square) per particle, drawn in
- * order on this thread (particles are small and may overlap, so order
- * matters). */
-static void sr_draw_disc(const SrTarget *target, SrBlendMode blend,
-                         float opacity, SrVec2 center, double radius,
-                         bool square, const float color[4], SrClip clip,
-                         const SrMaskLink *masks, SrGroupBuffer *buffer) {
-    SrClip bounds = {sr_clamp_int(floor(center.x - radius - 1.0), clip.x0, clip.x1),
-                     sr_clamp_int(floor(center.y - radius - 1.0), clip.y0, clip.y1),
-                     sr_clamp_int(ceil(center.x + radius + 1.0), clip.x0, clip.x1),
-                     sr_clamp_int(ceil(center.y + radius + 1.0), clip.y0, clip.y1)};
-    bounds = sr_clip_intersect(bounds, clip);
-    if (bounds.x1 <= bounds.x0 || bounds.y1 <= bounds.y0) return;
-    if (buffer) sr_buffer_mark(buffer, bounds);
-    for (int y = bounds.y0; y < bounds.y1; ++y) {
-        float *d = target->px + ((size_t)y * target->width + (size_t)bounds.x0) * 4;
-        for (int x = bounds.x0; x < bounds.x1; ++x, d += 4) {
-            double dx = x + 0.5 - center.x, dy = y + 0.5 - center.y;
-            double distance = square ? fmax(fabs(dx), fabs(dy)) - radius
-                                     : sqrt(dx * dx + dy * dy) - radius;
-            float coverage = sr_distance_coverage(distance, 1.0);
-            if (!(coverage > 0.0f)) continue;
-            coverage *= opacity * sr_link_coverage(masks, x + 0.5, y + 0.5);
-            if (!(coverage > 0.0f)) continue;
-            float s[4] = {color[0] * coverage, color[1] * coverage,
-                          color[2] * coverage, color[3] * coverage};
-            sr_blend_px(blend, d, s);
-        }
-    }
-}
-
+/* One anti-aliased disc (or axis-aligned square) per particle, queued as
+ * SR_OP_DISC ops in particle order (particles are small and may overlap,
+ * so order matters; the queue keeps it per pixel). */
 static SrStatus sr_draw_particles(SrDrawContext *context, const SrNode *node,
                                   SrMat3 world, double opacity, SrClip clip,
                                   const SrTarget *target,
@@ -764,18 +1235,28 @@ static SrStatus sr_draw_particles(SrDrawContext *context, const SrNode *node,
     SrStatus status = sr_particles_eval(context->scene, node, context->time,
                                         &particles, &count);
     if (status != SR_OK) return status;
-    bool square = node->particle_shape == SR_PARTICLE_SQUARE;
-    for (size_t i = 0; i < count; ++i) {
+    SrDrawOp op = {.kind = SR_OP_DISC, .target = *target,
+                   .blend = sr_node_blend(context, node),
+                   .opacity = (float)opacity, .masks = masks,
+                   .square = node->particle_shape == SR_PARTICLE_SQUARE};
+    const SrMaskLink *shared = NULL;
+    for (size_t i = 0; i < count && status == SR_OK; ++i) {
         const SrParticle *particle = &particles[i];
         SrVec2 center = sr_mat_point(world, (SrVec2){particle->x, particle->y});
-        float premultiplied[4];
-        sr_color_to_blend(&context->scene->project, particle->color, premultiplied);
-        sr_draw_disc(target, sr_node_blend(context, node), (float)opacity,
-                     center, particle->radius * context->particle_scale, square,
-                     premultiplied, clip, masks, target->buffer);
+        double radius = particle->radius * context->particle_scale;
+        sr_color_to_blend(&context->scene->project, particle->color, op.fill);
+        op.center = center;
+        op.radius = radius;
+        SrClip bounds = {
+            sr_clamp_int(floor(center.x - radius - 1.0), clip.x0, clip.x1),
+            sr_clamp_int(floor(center.y - radius - 1.0), clip.y0, clip.y1),
+            sr_clamp_int(ceil(center.x + radius + 1.0), clip.x0, clip.x1),
+            sr_clamp_int(ceil(center.y + radius + 1.0), clip.y0, clip.y1)};
+        op.bounds = sr_clip_intersect(bounds, clip);
+        status = sr_op_submit_shared(context->compositor, &op, false, &shared);
     }
     free(particles);
-    return SR_OK;
+    return status;
 }
 
 static SrStatus sr_draw_node(SrDrawContext *context, const SrNode *node,
@@ -867,8 +1348,13 @@ static SrStatus sr_draw_children(SrDrawContext *context, const SrNode *node,
                                   depth, masks);
         } else {
             /* Consecutive objects share one resolve, so their samples keep
-             * correct coverage against each other. */
-            status = sr_lighting_draw_object(context->lighting, items[i].object, true);
+             * correct coverage against each other. The object writes the
+             * frame and the depth buffer anywhere, so every queued card
+             * draw runs first. */
+            status = sr_queue_flush(context->compositor);
+            if (status == SR_OK)
+                status = sr_lighting_draw_object(context->lighting,
+                                                 items[i].object, true);
             if (status == SR_OK && (i + 1 == count || items[i + 1].node))
                 sr_lighting_flush(context->lighting, false);
         }
@@ -941,6 +1427,8 @@ static SrStatus sr_draw_group(SrDrawContext *context, const SrNode *node,
             status = sr_draw_children(context, node, world, fill, &group,
                                       depth + 1, NULL);
         }
+        if (status == SR_OK && node->effect_ref_count)
+            status = sr_queue_flush(context->compositor);  /* effects read */
         if (status == SR_OK && node->effect_ref_count) {
             SrEffectRect rect = {buffer->x0, buffer->y0, buffer->x1, buffer->y1};
             status = sr_effects_apply_group(context->scene, node->effect_refs,
@@ -952,13 +1440,13 @@ static SrStatus sr_draw_group(SrDrawContext *context, const SrNode *node,
             buffer->x1 = rect.x1; buffer->y1 = rect.y1;
         }
         if (status == SR_OK) {
-            SrDrawOp op = {.kind = SR_OP_BUFFER, .target = target,
+            SrDrawOp op = {.kind = SR_OP_BUFFER, .target = *target,
                            .blend = node->blend, .opacity = (float)opacity,
                            .inverse = inverse, .aa = link.aa,
                            .masks = chain, .buffer = buffer};
             op.bounds = sr_clip_intersect(inner, (SrClip){buffer->x0,
                 buffer->y0, buffer->x1, buffer->y1});
-            status = sr_op_execute(context->compositor, &op);
+            status = sr_op_submit(context->compositor, &op, false);
         }
     }
     if (masks != local_masks) free(masks);
@@ -1287,6 +1775,9 @@ static SrStatus sr_card_projective(SrDrawContext *context, const SrNode *node,
     inner.particle_scale = context->particle_scale * s;
     status = sr_draw_content(&inner, node, sr_mat_multiply(to_buffer, plane),
                              (SrClip){0, 0, (int)bw, (int)bh}, &target, 1);
+    /* The warp reads the plane buffer and writes the card buffer directly. */
+    if (status == SR_OK) status = sr_queue_flush(pool);
+    if (status == SR_OK) status = sr_queue_flush(context->compositor);
     if (status != SR_OK) return status;
     SrWarp warp = {pose, view, {bw, bh, buffer->frame.px}, s, u0, v0, card,
                    screen};
@@ -1342,6 +1833,10 @@ static SrStatus sr_draw_card(SrDrawContext *context, const SrNode *node,
                                     plane);
         status = sr_card_projective(context, node, plane, &pose, &card, clip);
     }
+    /* The effects and the blur read and write the card buffer in place. */
+    double blur = view->camera ? sr_card_blur_radius(view, pose.pivot_depth) : 0.0;
+    if (status == SR_OK && (node->effect_ref_count || blur > 1e-3))
+        status = sr_queue_flush(context->compositor);
     if (status != SR_OK) return status;
     SrEffectRect rect = {buffer->x0, buffer->y0, buffer->x1, buffer->y1};
     if (node->effect_ref_count)
@@ -1349,20 +1844,21 @@ static SrStatus sr_draw_card(SrDrawContext *context, const SrNode *node,
                                         node->effect_ref_count, time,
                                         &buffer->frame, to_canvas, &rect,
                                         context->compositor->threads);
-    double blur = view->camera ? sr_card_blur_radius(view, pose.pivot_depth) : 0.0;
     if (status == SR_OK && blur > 1e-3 && rect.x1 > rect.x0 && rect.y1 > rect.y0)
         status = sr_effects_blur_rect(&buffer->frame, &rect, blur,
                                       context->compositor->threads);
     if (status != SR_OK) return status;
     buffer->x0 = rect.x0; buffer->y0 = rect.y0;
     buffer->x1 = rect.x1; buffer->y1 = rect.y1;
-    SrCardTest test = {context->compositor->depth, view, &pose, !target->buffer};
-    SrDrawOp op = {.kind = SR_OP_BUFFER, .target = target, .blend = node->blend,
+    SrDrawOp op = {.kind = SR_OP_BUFFER, .target = *target, .blend = node->blend,
                    .opacity = (float)opacity, .inverse = sr_mat_identity(),
-                   .aa = 1.0, .masks = outer, .buffer = buffer, .card = &test};
+                   .aa = 1.0, .masks = outer, .buffer = buffer,
+                   .has_card = true,
+                   .card = {context->compositor->depth, view, pose,
+                            !target->buffer}};
     op.bounds = sr_clip_intersect(clip, (SrClip){buffer->x0, buffer->y0,
                                                  buffer->x1, buffer->y1});
-    return sr_op_execute(context->compositor, &op);
+    return sr_op_submit(context->compositor, &op, false);
 }
 
 SrStatus sr_compositor_render(SrCompositor *compositor, SrScene *scene,
@@ -1379,7 +1875,12 @@ SrStatus sr_compositor_render(SrCompositor *compositor, SrScene *scene,
                              NULL};
     SrStatus status = sr_draw_node(&context, scene->root, sr_mat_identity(),
                                    clip, &target, 0, NULL);
-    if (status != SR_OK) return status;
+    /* Run whatever is still queued; on failure it is discarded unrun. */
+    if (status == SR_OK) status = sr_queue_flush(compositor);
+    if (status != SR_OK) {
+        sr_queue_discard(compositor);
+        return status;
+    }
     return diag && diag->errors > errors ? SR_ERR_ASSET : SR_OK;
 }
 
@@ -1395,7 +1896,8 @@ SrStatus sr_compositor_render_scene(SrCompositor *compositor, SrScene *scene,
     if (!compositor || !scene || !scene->root || !frame || !frame->px)
         return SR_ERR_ARGUMENT;
     if (!scene->has_cards) {
-        SrStatus status = sr_lighting_render(scene, time, frame, diag);
+        SrStatus status = sr_lighting_render_threads(scene, time, frame,
+                                                     compositor->threads, diag);
         return status == SR_OK
             ? sr_compositor_render(compositor, scene, time, frame, diag) : status;
     }
@@ -1415,7 +1917,8 @@ SrStatus sr_compositor_render_scene(SrCompositor *compositor, SrScene *scene,
     for (size_t i = 0, count = (size_t)dw * dh; i < count; ++i)
         depth->z[i] = INFINITY;
     SrLightingPass *pass = NULL;
-    SrStatus status = sr_lighting_begin(scene, time, frame, depth, diag, &pass);
+    SrStatus status = sr_lighting_begin(scene, time, frame, depth,
+                                        compositor->threads, diag, &pass);
     if (status != SR_OK) return status;
     if (pass && !sr_root_has_cards(scene)) {
         sr_lighting_draw_blobs(pass);
@@ -1435,6 +1938,10 @@ SrStatus sr_compositor_render_scene(SrCompositor *compositor, SrScene *scene,
                              pass};
     status = sr_draw_node(&context, scene->root, sr_mat_identity(), clip,
                           &target, 0, NULL);
+    /* Queued card composites test against the depth buffer: they run
+     * before any remaining 3D object; on failure they are discarded. */
+    if (status == SR_OK) status = sr_queue_flush(compositor);
+    if (status != SR_OK) sr_queue_discard(compositor);
     compositor->depth = NULL;
     /* A root card run that was not visible still owes the 3D objects. */
     if (status == SR_OK && context.lighting) {

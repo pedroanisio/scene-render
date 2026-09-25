@@ -265,7 +265,8 @@ static SrStatus sr_render_frame(SrScene *scene, uint64_t index,
         sr_stage_end(times, SR_STAGE_COMPOSITE, mark);
     } else {
         mark = sr_stage_begin();
-        status = sr_lighting_render(scene, time, composition, diag);
+        status = sr_lighting_render_threads(scene, time, composition, threads,
+                                            diag);
         sr_stage_end(times, SR_STAGE_LIGHTING, mark);
         if (status == SR_OK) {
             mark = sr_stage_begin();
@@ -1023,6 +1024,7 @@ cleanup:
     /* Effect scratch and transfer tables are cached per thread across
      * frames; release them so a finished render leaves nothing live. */
     sr_effects_release();
+    sr_lighting_release();
     sr_color_output_free(&state.color);
     free(state.pixels);
     sr_frame_free(&viewport);
