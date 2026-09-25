@@ -36,6 +36,8 @@ typedef enum {
 } SrNodeType;
 
 typedef enum { SR_SHAPE_RECT, SR_SHAPE_ELLIPSE, SR_SHAPE_PATH } SrShapeType;
+/* Vector fill rule; evenodd is the default to preserve pre-1.2 output. */
+typedef enum { SR_FILL_EVENODD, SR_FILL_NONZERO } SrFillRule;
 typedef enum { SR_MASK_RECT, SR_MASK_ELLIPSE, SR_MASK_ROUNDED_RECT } SrMaskType;
 typedef enum { SR_BODY_NONE, SR_BODY_STATIC, SR_BODY_KINEMATIC, SR_BODY_DYNAMIC } SrBodyType;
 typedef enum { SR_COLLIDER_BOX, SR_COLLIDER_CIRCLE } SrColliderType;
@@ -48,10 +50,12 @@ typedef enum { SR_COLOR_SRGB, SR_COLOR_DISPLAY_P3,
 typedef enum { SR_EFFECT_GLOW, SR_EFFECT_BLOOM, SR_EFFECT_BLUR, SR_EFFECT_COLOR_GRADE,
                SR_EFFECT_VIGNETTE, SR_EFFECT_LENS_FLARE } SrEffectType;
 
+/* Float premultiplied RGBA in the project blend space: 4 floats per pixel,
+ * row-major and tightly packed. See docs/architecture.md. */
 typedef struct SrImage {
     uint32_t width;
     uint32_t height;
-    uint8_t *rgba;
+    float *px;
 } SrImage;
 
 typedef struct {
@@ -92,6 +96,9 @@ typedef struct {
     SrColor color;
     SrShapeType vector_shape;
     char *vector_path;
+    SrFillRule vector_fill_rule;
+    SrColor vector_stroke;
+    double vector_stroke_width;
     SrMesh *mesh;
     char *audio_cache_path;
     uint64_t audio_frames;
@@ -112,14 +119,13 @@ typedef struct {
 } SrTransform;
 
 typedef struct {
-    bool enabled;
     bool invert;
     SrMaskType type;
-    double x;
-    double y;
-    double width;
-    double height;
-    double radius;
+    SrAnimValue x;
+    SrAnimValue y;
+    SrAnimValue width;
+    SrAnimValue height;
+    SrAnimValue radius;
 } SrMask;
 
 typedef struct {
@@ -171,7 +177,9 @@ typedef struct SrNode {
     SrAnimValue opacity;
     SrTransform transform;
     SrBlendMode blend;
-    SrMask mask;
+    SrMask *masks;
+    size_t mask_count;
+    size_t mask_capacity;
     char *asset_id;
     SrAsset *asset;
     double clip_in;
@@ -398,6 +406,7 @@ SrAsset *sr_scene_find_asset(SrScene *scene, const char *id);
 SrNode *sr_node_create(SrScene *scene, SrNodeType type);
 SrStatus sr_node_add_child(SrNode *parent, SrNode *child);
 SrStatus sr_node_add_modifier(SrNode *node, SrModifier modifier);
+SrStatus sr_node_add_mask(SrNode *node, SrMask mask);
 void sr_node_free(SrNode *node);
 void sr_node_sort_children(SrNode *node);
 SrNode *sr_scene_find_node(SrScene *scene, const char *id);

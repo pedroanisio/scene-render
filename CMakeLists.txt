@@ -39,6 +39,7 @@ set(SCENE_RENDER_SOURCES
     src/common.c
     src/parallel.c
     src/color.c
+    src/raster.c
     src/vector_path.c
     src/mesh.c
     src/gpu.c
@@ -80,7 +81,7 @@ sr_configure_target(scene-render)
 include(CTest)
 if(BUILD_TESTING)
     set(SR_UNIT_SUITES timeline geometry compositor color vector mesh scene xml
-                       camera physics)
+                       camera physics blend group raster mask path image)
     file(GLOB SR_UNIT_SOURCES CONFIGURE_DEPENDS
          ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/*.c)
     add_executable(sr-unit-tests ${SR_UNIT_SOURCES})

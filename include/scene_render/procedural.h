@@ -4,6 +4,8 @@
 #include "scene_render/diagnostics.h"
 #include "scene_render/scene.h"
 
-SrStatus sr_procedural_asset(SrAsset *asset, SrDiagnostics *diag);
+/* Rasterizes a vector asset into asset->decoded (blend space). */
+SrStatus sr_procedural_asset(const SrProject *project, SrAsset *asset,
+                             SrDiagnostics *diag);
 
 #endif

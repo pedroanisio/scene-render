@@ -1,4 +1,5 @@
 #include "scene_render/lighting.h"
+#include "scene_render/color.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -76,7 +77,7 @@ static double view_depth(const SrScene *scene,Vec3 point,double time){
     return point.z;
 }
 
-static void over(SrFrame *frame,int x,int y,SrColor color,double alpha);
+static void over(const SrProject *project,SrFrame *frame,int x,int y,SrColor color,double alpha);
 static SrColor shade(const SrScene *scene,const SrObject3D *object,
                      Vec3 point,Vec3 normal,double time);
 
@@ -148,18 +149,19 @@ static void render_mesh(const SrScene *scene,const SrObject3D *object,double tim
             Vec3 normal=normalize((Vec3){a*v[0].normal.x+b*v[1].normal.x+c*v[2].normal.x,
                 a*v[0].normal.y+b*v[1].normal.y+c*v[2].normal.y,
                 a*v[0].normal.z+b*v[1].normal.z+c*v[2].normal.z});
-            over(frame,x,y,shade(scene,object,point,normal,time),1);}
+            over(&scene->project,frame,x,y,shade(scene,object,point,normal,time),1);}
     }
 }
 
-static void over(SrFrame *frame, int x, int y, SrColor color, double alpha) {
+/* Premultiplied source-over of a straight working-space color. */
+static void over(const SrProject *project, SrFrame *frame, int x, int y,
+                 SrColor color, double alpha) {
     if (x < 0 || y < 0 || x >= (int)frame->width || y >= (int)frame->height) return;
-    size_t at=((size_t)y*frame->width+(size_t)x)*4;
-    double a=clamp01(alpha*color.a), inv=1.0-a;
-    frame->rgba[at]=(uint8_t)lrint(clamp01(color.r*a+frame->rgba[at]/255.0*inv)*255);
-    frame->rgba[at+1]=(uint8_t)lrint(clamp01(color.g*a+frame->rgba[at+1]/255.0*inv)*255);
-    frame->rgba[at+2]=(uint8_t)lrint(clamp01(color.b*a+frame->rgba[at+2]/255.0*inv)*255);
-    frame->rgba[at+3]=255;
+    color.a = clamp01(alpha * color.a);
+    float source[4];
+    sr_color_to_blend(project, color, source);
+    sr_blend_px(SR_BLEND_NORMAL, &frame->px[((size_t)y*frame->width+(size_t)x)*4],
+                source);
 }
 
 static SrColor shade(const SrScene *scene, const SrObject3D *object,
@@ -203,7 +205,7 @@ static void shadow(const SrScene *scene,const SrObject3D *object,double time,SrF
     double radius=object->radius*fabs(sr_anim_eval(&object->transform.scale_x,time))*projection_scale;
     for(int py=(int)(y-radius*.3);py<=(int)(y+radius*.3);++py)for(int px=(int)(x-radius);px<=(int)(x+radius);++px){
         double dx=(px-x)/fmax(radius,1.0),dy=(py-y)/fmax(radius*.3,1.0);
-        if(dx*dx+dy*dy<=1.0)over(frame,px,py,(SrColor){0,0,0,1},.3);}
+        if(dx*dx+dy*dy<=1.0)over(&scene->project,frame,px,py,(SrColor){0,0,0,1},.3);}
 }
 
 SrStatus sr_lighting_render(SrScene *scene,double time,SrFrame *frame,SrDiagnostics *diag){
@@ -240,7 +242,7 @@ SrStatus sr_lighting_render(SrScene *scene,double time,SrFrame *frame,SrDiagnost
             if(object_depth>=depth[at])continue;
             depth[at]=object_depth;
             SrColor color = shade(scene, object, point, normal, time);
-            over(frame, x, y, color, 1);
+            over(&scene->project, frame, x, y, color, 1);
         }
     }
     free(depth);return SR_OK;

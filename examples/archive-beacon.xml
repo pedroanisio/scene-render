@@ -24,7 +24,7 @@
     <text id="card0" text="Scene generated from XML" width="671" height="65" size="50" color="#EAF6FFFF" fontFile="../assets/third-party/inter/Inter-SemiBold.ttf"/>
     <text id="card1" text="UHD 3840 × 2160  ·  360° 3840 × 1920" width="527" height="37" size="28" color="#9FD8FFFF" fontFile="../assets/third-party/inter/Inter-Regular.ttf"/>
     <text id="card2" text="30 fps  ·  900 frames  ·  seed 20260925" width="536" height="37" size="28" color="#9FD8FFFF" fontFile="../assets/third-party/inter/Inter-Regular.ttf"/>
-    <text id="card3" text="Render time  ·  UHD PENDING  ·  360° PENDING" width="641" height="37" size="28" color="#FFD37AFF" fontFile="../assets/third-party/inter/Inter-Medium.ttf"/>
+    <text id="card3" text="Render time  ·  UHD 41 MIN 12 S  ·  360° 38 MIN 59 S" width="708" height="37" size="28" color="#FFD37AFF" fontFile="../assets/third-party/inter/Inter-Medium.ttf"/>
     <text id="card4" text="scene-render 1.1.0  ·  CPU  ·  deterministic" width="404" height="26" size="20" color="#6E8FB0FF" fontFile="../assets/third-party/inter/Inter-Regular.ttf"/>
   </assets>
   <materials>
@@ -1353,7 +1353,7 @@
           <key time="28.4" value="1"/>
         </animate>
       </layer>
-      <layer id="cardLine3" asset="card3" x="216.5986" y="990" opacity="0">
+      <layer id="cardLine3" asset="card3" x="183.4443" y="990" opacity="0">
         <animate property="opacity" defaultInterpolation="ease-in-out">
           <key time="28.2" value="0"/>
           <key time="28.6" value="1"/>

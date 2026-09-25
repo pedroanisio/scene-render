@@ -46,6 +46,9 @@ int main(int argc, char **argv)
         {"vector", sr_tests_vector},     {"mesh", sr_tests_mesh},
         {"scene", sr_tests_scene},       {"xml", sr_tests_xml},
         {"camera", sr_tests_camera},     {"physics", sr_tests_physics},
+        {"blend", sr_tests_blend},       {"group", sr_tests_group},
+        {"raster", sr_tests_raster},     {"mask", sr_tests_mask},
+        {"path", sr_tests_path},         {"image", sr_tests_image},
     };
     if (argc > 2) {
         fprintf(stderr, "usage: %s [SUITE]\n", argv[0]);

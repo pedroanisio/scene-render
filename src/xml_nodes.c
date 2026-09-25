@@ -12,7 +12,9 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
     const char *allowed[26];
     memcpy(allowed, common, sizeof(common));
     size_t count = sizeof(common) / sizeof(common[0]);
-    if (type == SR_NODE_MEDIA) {
+    if (type == SR_NODE_GROUP) {
+        allowed[count++] = "blend";
+    } else if (type == SR_NODE_MEDIA) {
         allowed[count++] = "asset";
         allowed[count++] = "blend";
         allowed[count++] = "clipIn";
@@ -50,7 +52,13 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
         sr_node_free(node);
         SR_XML_FAIL_RETURN(ctx, name, "id", "node id must be unique");
     }
-    if (type == SR_NODE_MEDIA) {
+    if (type == SR_NODE_GROUP) {
+        const char *blend = sr_xml_attr(attrs, "blend");
+        if (blend && !sr_blend_parse(blend, &node->blend)) {
+            sr_node_free(node);
+            SR_XML_FAIL_RETURN(ctx, name, "blend", "unsupported blend mode");
+        }
+    } else if (type == SR_NODE_MEDIA) {
         const char *asset = sr_xml_required(ctx, name, attrs, "asset");
         if (!asset || !(node->asset_id = sr_strdup(asset))) {
             sr_node_free(node);

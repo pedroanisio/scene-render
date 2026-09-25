@@ -235,7 +235,7 @@ static void XMLCALL on_start(void *user, const XML_Char *name,
     }
     if (strcmp(name, "animate") == 0 &&
         (p->kind == E_GROUP || p->kind == E_LAYER || p->kind == E_PARTICLES ||
-         p->kind == E_CAMERA ||
+         p->kind == E_CAMERA || p->kind == E_MASK ||
          p->kind == E_LIGHT || p->kind == E_EFFECT || p->kind == E_MODIFIER ||
          p->kind == E_OBJECT3D)) {
         sr_xml_start_animate(ctx, attrs);

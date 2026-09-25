@@ -61,7 +61,9 @@ static const char kernel_source[]=
 "float enc(float v,int s){v=clamp(v,0.f,1.f);if(s==2||s==3){float a=s==2?1.0992968268f:1.099f,b=s==2?.0180539685f:.018f;return v<b?v*4.5f:a*pow(v,.45f)-(a-1.f);}return v<=.0031308f?v*12.92f:1.055f*pow(v,1.f/2.4f)-.055f;}"
 "float3 xyz(float3 v,int s){if(s==1)return(float3)(dot(v,(float3)(.48657095f,.26566769f,.19821729f)),dot(v,(float3)(.22897456f,.69173852f,.07928691f)),dot(v,(float3)(0.f,.04511338f,1.04394437f)));if(s==2)return(float3)(dot(v,(float3)(.63695805f,.14461690f,.16888098f)),dot(v,(float3)(.26270021f,.67799807f,.05930172f)),dot(v,(float3)(0.f,.02807269f,1.06098506f)));return(float3)(dot(v,(float3)(.4124564f,.3575761f,.1804375f)),dot(v,(float3)(.2126729f,.7151522f,.072175f)),dot(v,(float3)(.0193339f,.119192f,.9503041f)));}"
 "float3 rgb(float3 v,int s){if(s==1)return(float3)(dot(v,(float3)(2.4934969f,-.9313836f,-.4027108f)),dot(v,(float3)(-.829489f,1.762664f,.0236247f)),dot(v,(float3)(.0358458f,-.0761724f,.9568845f)));if(s==2)return(float3)(dot(v,(float3)(1.7166512f,-.3556708f,-.2533663f)),dot(v,(float3)(-.6666844f,1.6164812f,.0157685f)),dot(v,(float3)(.0176399f,-.0427706f,.9421031f)));return(float3)(dot(v,(float3)(3.2404542f,-1.5371385f,-.4985314f)),dot(v,(float3)(-.969266f,1.8760108f,.041556f)),dot(v,(float3)(.0556434f,-.2040259f,1.0572252f)));}"
-"__kernel void convert(__global uchar4*p,int source,int target,uint count){uint i=get_global_id(0);if(i>=count||source==target)return;uchar4 q=p[i];float3 v=convert_float3(q.xyz)/255.f;v=(float3)(dec(v.x,source),dec(v.y,source),dec(v.z,source));v=rgb(xyz(v,source),target);v=(float3)(enc(v.x,target),enc(v.y,target),enc(v.z,target));q.xyz=convert_uchar3_sat_rte(v*255.f);p[i]=q;}";
+"int samegamut(int a,int b){return a==b||((a==0||a==3)&&(b==0||b==3));}"
+"uchar code(float v){return convert_uchar_sat(floor(clamp(v,0.f,1.f)*255.f+.5f));}"
+"__kernel void convert(__global const float4*in,__global uchar4*out,int linear,int working,int target,uint count){uint i=get_global_id(0);if(i>=count)return;float4 p=in[i];uchar alpha=code(p.w);if(!(p.w>0.f)){out[i]=(uchar4)(0,0,0,alpha);return;}float3 v=p.xyz/p.w;if(!linear&&working==target){out[i]=(uchar4)(code(v.x),code(v.y),code(v.z),alpha);return;}if(!linear){v=clamp(v,0.f,1.f);v=(float3)(dec(v.x,working),dec(v.y,working),dec(v.z,working));}if(!samegamut(working,target))v=rgb(xyz(v,working),target);v=(float3)(enc(v.x,target),enc(v.y,target),enc(v.z,target));out[i]=(uchar4)(code(v.x),code(v.y),code(v.z),alpha);}";
 
 static bool symbol(void *library, const char *name, void *target, size_t size) {
     void *value = dlsym(library, name);
@@ -118,33 +120,40 @@ bool sr_gpu_open(SrGpu *gpu,SrDiagnostics *diag){if(!gpu)return false;*gpu=(SrGp
 void sr_gpu_close(SrGpu *gpu){if(gpu&&gpu->implementation){release_impl(gpu->implementation);gpu->implementation=NULL;}}
 const char *sr_gpu_device_name(const SrGpu *gpu){GpuImpl *impl=gpu?gpu->implementation:NULL;return impl?impl->device_name:"unavailable";}
 
-SrStatus sr_gpu_convert_frame(SrGpu *gpu,SrFrame *frame,SrColorSpace source,
-                              SrColorSpace target,SrDiagnostics *diag){
-    GpuImpl *impl=gpu?gpu->implementation:NULL;if(!impl||!frame||!frame->rgba)return SR_ERR_ARGUMENT;
-    if(source==target)return SR_OK;
+SrStatus sr_gpu_convert_frame(SrGpu *gpu,const SrFrame *frame,uint8_t *rgba8,
+                              const SrProject *project,SrColorSpace target,
+                              SrDiagnostics *diag){
+    GpuImpl *impl=gpu?gpu->implementation:NULL;
+    if(!impl||!frame||!frame->px||!rgba8||!project)return SR_ERR_ARGUMENT;
     size_t pixels=(size_t)frame->width*frame->height;
     if(pixels>UINT32_MAX){
         sr_diag_warning(diag,0,NULL,NULL,"OpenCL frame exceeds 32-bit work-item limit");
         return SR_ERR_RENDER;
     }
-    size_t bytes=pixels*4;ClInt error=0;
-    ClMemory memory=impl->create_buffer(impl->context,CL_MEM_READ_WRITE,bytes,NULL,&error);
-    uint8_t *converted=sr_alloc(bytes);
-    if(!memory||error!=CL_SUCCESS||!converted){
-        if(memory)impl->release_memory(memory);
-        free(converted);
+    size_t in_bytes=pixels*4*sizeof(float),out_bytes=pixels*4;ClInt error=0,out_error=0;
+    ClMemory input=impl->create_buffer(impl->context,CL_MEM_READ_WRITE,in_bytes,NULL,&error);
+    ClMemory output=impl->create_buffer(impl->context,CL_MEM_READ_WRITE,out_bytes,NULL,&out_error);
+    if(!input||!output||error!=CL_SUCCESS||out_error!=CL_SUCCESS){
+        if(input)impl->release_memory(input);
+        if(output)impl->release_memory(output);
         sr_diag_warning(diag,0,NULL,NULL,"OpenCL frame buffer allocation failed");
         return SR_ERR_RENDER;
     }
-    ClUInt count=(ClUInt)pixels;int source_value=source,target_value=target;
-    error=impl->write_buffer(impl->queue,memory,CL_TRUE,0,bytes,frame->rgba,0,NULL,NULL);
-    error|=impl->set_argument(impl->kernel,0,sizeof(memory),&memory);
-    error|=impl->set_argument(impl->kernel,1,sizeof(source_value),&source_value);
-    error|=impl->set_argument(impl->kernel,2,sizeof(target_value),&target_value);
-    error|=impl->set_argument(impl->kernel,3,sizeof(count),&count);size_t global=count;
+    ClUInt count=(ClUInt)pixels;
+    int linear=project->linear_light?1:0,working=project->working_color_space,target_value=target;
+    error=impl->write_buffer(impl->queue,input,CL_TRUE,0,in_bytes,frame->px,0,NULL,NULL);
+    error|=impl->set_argument(impl->kernel,0,sizeof(input),&input);
+    error|=impl->set_argument(impl->kernel,1,sizeof(output),&output);
+    error|=impl->set_argument(impl->kernel,2,sizeof(linear),&linear);
+    error|=impl->set_argument(impl->kernel,3,sizeof(working),&working);
+    error|=impl->set_argument(impl->kernel,4,sizeof(target_value),&target_value);
+    error|=impl->set_argument(impl->kernel,5,sizeof(count),&count);size_t global=count;
     error|=impl->run_kernel(impl->queue,impl->kernel,1,NULL,&global,NULL,0,NULL,NULL);
-    error|=impl->read_buffer(impl->queue,memory,CL_TRUE,0,bytes,converted,0,NULL,NULL);
-    error|=impl->finish(impl->queue);impl->release_memory(memory);
-    if(error!=CL_SUCCESS){free(converted);sr_diag_warning(diag,0,NULL,NULL,"OpenCL frame conversion failed (%d)",error);return SR_ERR_RENDER;}
-    memcpy(frame->rgba,converted,bytes);free(converted);
+    /* Read into the caller's buffer only once everything succeeded. */
+    uint8_t *converted=error==CL_SUCCESS?sr_alloc(out_bytes):NULL;
+    if(converted)error|=impl->read_buffer(impl->queue,output,CL_TRUE,0,out_bytes,converted,0,NULL,NULL);
+    error|=impl->finish(impl->queue);
+    impl->release_memory(input);impl->release_memory(output);
+    if(error!=CL_SUCCESS||!converted){free(converted);sr_diag_warning(diag,0,NULL,NULL,"OpenCL frame conversion failed (%d)",error);return SR_ERR_RENDER;}
+    memcpy(rgba8,converted,out_bytes);free(converted);
     return SR_OK;}

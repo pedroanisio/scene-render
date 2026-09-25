@@ -44,8 +44,23 @@ static bool sr_token_u32(FILE *file, uint32_t *value) {
     return sr_ppm_token(file, token, sizeof(token)) && sr_parse_u32(token, value);
 }
 
-static SrStatus sr_load_ppm(const char *path, SrAsset *asset,
-                            SrDiagnostics *diag) {
+/* Wraps decoded 8-bit straight RGBA (consumed) as a blend-space image. */
+static SrImage *sr_image_from_rgba8(const SrScene *scene, SrColorSpace space,
+                                    uint8_t *rgba, uint32_t width,
+                                    uint32_t height) {
+    SrImage *image = sr_alloc(sizeof(*image));
+    if (image && sr_color_image_from_rgba8(&scene->project, space, rgba,
+                                           (size_t)width * 4, width, height,
+                                           image) != SR_OK) {
+        free(image);
+        image = NULL;
+    }
+    free(rgba);
+    return image;
+}
+
+static SrStatus sr_load_ppm(const SrScene *scene, const char *path,
+                            SrAsset *asset, SrDiagnostics *diag) {
     FILE *file = fopen(path, "rb");
     if (!file) {
         return SR_ERR_ASSET;
@@ -71,11 +86,8 @@ static SrStatus sr_load_ppm(const char *path, SrAsset *asset,
         fclose(file);
         return SR_ERR_MEMORY;
     }
-    SrImage *image = sr_alloc(sizeof(*image));
     uint8_t *rgba = sr_alloc(pixels * 4);
-    if (!image || !rgba) {
-        free(image);
-        free(rgba);
+    if (!rgba) {
         fclose(file);
         return SR_ERR_MEMORY;
     }
@@ -110,18 +122,16 @@ static SrStatus sr_load_ppm(const char *path, SrAsset *asset,
     fclose(file);
     if (!ok) {
         free(rgba);
-        free(image);
         return SR_ERR_ASSET;
     }
-    image->width = width;
-    image->height = height;
-    image->rgba = rgba;
-    asset->decoded = image;
-    return SR_OK;
+    asset->decoded = sr_image_from_rgba8(scene, asset->source_color_space,
+                                         rgba, width, height);
+    return asset->decoded ? SR_OK : SR_ERR_MEMORY;
 }
 
-static SrImage *sr_decode_ffmpeg(const char *path, SrAsset *asset,
-                                 double timestamp, SrDiagnostics *diag) {
+static SrImage *sr_decode_ffmpeg(const SrScene *scene, const char *path,
+                                 SrAsset *asset, double timestamp,
+                                 SrDiagnostics *diag) {
     int output[2];
     if (pipe(output) != 0) {
         return NULL;
@@ -166,11 +176,8 @@ static SrImage *sr_decode_ffmpeg(const char *path, SrAsset *asset,
         return NULL;
     }
     size_t size = pixels * 4;
-    SrImage *image = sr_alloc(sizeof(*image));
     uint8_t *rgba = sr_alloc(size);
-    if (!image || !rgba) {
-        free(image);
-        free(rgba);
+    if (!rgba) {
         close(output[0]);
         waitpid(pid, NULL, 0);
         return NULL;
@@ -198,14 +205,11 @@ static SrImage *sr_decode_ffmpeg(const char *path, SrAsset *asset,
                       asset->type == SR_ASSET_VIDEO ? "video" : "image", "src",
                       "FFmpeg could not decode '%s' as %ux%u RGBA", path,
                       asset->width, asset->height);
-        free(image);
         free(rgba);
         return NULL;
     }
-    image->width = asset->width;
-    image->height = asset->height;
-    image->rgba = rgba;
-    return image;
+    return sr_image_from_rgba8(scene, asset->source_color_space, rgba,
+                               asset->width, asset->height);
 }
 
 static bool sr_font_name_valid(const char *name) {
@@ -214,16 +218,6 @@ static bool sr_font_name_valid(const char *name) {
         if (!isalnum(*p) && *p!=' ' && *p!='_' && *p!='-' && *p!='.')
             return false;
     return true;
-}
-
-static SrStatus sr_convert_media_image(const SrScene *scene,
-                                       const SrAsset *asset, SrImage *image) {
-    if (!image || asset->source_color_space ==
-                  scene->project.working_color_space) return SR_OK;
-    SrFrame frame = {.width = image->width, .height = image->height,
-                     .rgba = image->rgba};
-    return sr_color_convert_frame(&frame, asset->source_color_space,
-                                  scene->project.working_color_space, 1);
 }
 
 static char *sr_filter_escape(const char *text) {
@@ -271,15 +265,17 @@ static SrImage *sr_render_text_ffmpeg(const SrScene *scene,SrAsset *asset,
         pixels > SIZE_MAX / 4) {
         close(output[0]);waitpid(pid,NULL,0);unlink(temporary);return NULL;
     }
-    size_t size=pixels*4;SrImage *image=sr_alloc(sizeof(*image));uint8_t *rgba=sr_alloc(size);
-    if(!image||!rgba){free(image);free(rgba);close(output[0]);waitpid(pid,NULL,0);unlink(temporary);return NULL;}
+    size_t size=pixels*4;uint8_t *rgba=sr_alloc(size);
+    if(!rgba){close(output[0]);waitpid(pid,NULL,0);unlink(temporary);return NULL;}
     size_t received=0;while(received<size){ssize_t amount=read(output[0],rgba+received,size-received);
         if(amount>0)received+=(size_t)amount;else if(amount<0&&errno==EINTR)continue;else break;}
     close(output[0]);int status=0;pid_t waited;do{waited=waitpid(pid,&status,0);}while(waited<0&&errno==EINTR);
     unlink(temporary);if(received!=size||waited<0||!WIFEXITED(status)||WEXITSTATUS(status)!=0){
         sr_diag_error(diag,asset->source_line,"text",asset->font_file?"fontFile":"font",
-                      "FFmpeg drawtext could not shape the UTF-8 text");free(image);free(rgba);return NULL;}
-    image->width=asset->width;image->height=asset->height;image->rgba=rgba;return image;
+                      "FFmpeg drawtext could not shape the UTF-8 text");free(rgba);return NULL;}
+    /* Text colors are working-space values, like every XML color. */
+    return sr_image_from_rgba8(scene,scene->project.working_color_space,rgba,
+                               asset->width,asset->height);
 }
 
 SrStatus sr_assets_load(SrScene *scene, SrDiagnostics *diag) {
@@ -304,7 +300,7 @@ SrStatus sr_assets_load(SrScene *scene, SrDiagnostics *diag) {
             continue;
         }
         if (asset->type == SR_ASSET_VECTOR) {
-            SrStatus status = sr_procedural_asset(asset, diag);
+            SrStatus status = sr_procedural_asset(&scene->project, asset, diag);
             if (status != SR_OK) return status;
             continue;
         }
@@ -317,14 +313,12 @@ SrStatus sr_assets_load(SrScene *scene, SrDiagnostics *diag) {
         SrStatus status = extension && asset->type == SR_ASSET_IMAGE &&
                                   (strcmp(extension, ".ppm") == 0 ||
                                    strcmp(extension, ".pnm") == 0)
-                              ? sr_load_ppm(path, asset, diag)
+                              ? sr_load_ppm(scene, path, asset, diag)
                               : SR_OK;
         if (status == SR_OK && !asset->decoded) {
-            asset->decoded = sr_decode_ffmpeg(path, asset, -1.0, diag);
+            asset->decoded = sr_decode_ffmpeg(scene, path, asset, -1.0, diag);
             status = asset->decoded ? SR_OK : SR_ERR_ASSET;
         }
-        if (status == SR_OK && asset->decoded)
-            status = sr_convert_media_image(scene, asset, asset->decoded);
         if (status != SR_OK && diag->errors == 0) {
             sr_diag_error(diag, asset->source_line, "image", "src",
                           "unable to decode '%s'", path);
@@ -341,14 +335,14 @@ void sr_assets_unload(SrScene *scene) {
     for (size_t i = 0; i < scene->asset_count; ++i) {
         SrImage *image = scene->assets[i].decoded;
         if (image) {
-            free(image->rgba);
+            free(image->px);
             free(image);
             scene->assets[i].decoded = NULL;
         }
         for (size_t j = 0; j < 4; ++j) {
             image = scene->assets[i].video_cache[j].image;
             if (image) {
-                free(image->rgba);
+                free(image->px);
                 free(image);
                 scene->assets[i].video_cache[j].image = NULL;
             }
@@ -384,21 +378,16 @@ SrImage *sr_asset_get_frame(SrScene *scene, SrAsset *asset, double source_time,
     }
     SrVideoCacheEntry *entry = &asset->video_cache[victim];
     if (entry->image) {
-        free(entry->image->rgba);
+        free(entry->image->px);
         free(entry->image);
+        entry->image = NULL;
     }
     char *path = sr_path_join(scene->base_dir, asset->source);
     if (!path) return NULL;
     double timestamp = (double)index * asset->fps_den / asset->fps_num;
-    entry->image = sr_decode_ffmpeg(path, asset, timestamp, diag);
+    entry->image = sr_decode_ffmpeg(scene, path, asset, timestamp, diag);
     free(path);
     if (!entry->image) return NULL;
-    if (sr_convert_media_image(scene, asset, entry->image) != SR_OK) {
-        free(entry->image->rgba);
-        free(entry->image);
-        entry->image = NULL;
-        return NULL;
-    }
     entry->frame_index = index;
     entry->age = ++asset->cache_clock;
     return entry->image;

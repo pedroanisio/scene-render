@@ -49,7 +49,7 @@ before rendering.
 | `video` | `id`, `src`, `width`, `height`, `fps`, `duration` | `colorSpace` |
 | `audio` | `id`, `src` | — |
 | `text` | `id`, `text`, `width`, `height`, `size` | `color`, `font`, `fontFile` |
-| `vector` | `id`, `shape`, `width`, `height` | `fill`, `path` |
+| `vector` | `id`, `shape`, `width`, `height` | `fill`, `path`, `fillRule`, `stroke`, `strokeWidth` |
 | `mesh` | `id`, `src` | — |
 
 Declared video geometry/FPS/duration make frame indexing explicit and
@@ -61,8 +61,14 @@ UTF-8 and bidirectional scripts are supported. `fontFile` paths are resolved
 relative to the XML file.
 
 Vectors use `shape="rect|ellipse|path"`. Path data supports absolute and
-relative `M`, `L`, `H`, `V`, `C`, `Q`, and `Z` commands with deterministic
-2x2 antialiasing and even-odd filling. Meshes load Wavefront OBJ vertices,
+relative `M`, `L`, `H`, `V`, `C`, `Q`, and `Z` commands in asset pixel
+coordinates; every subpath needs at least two points. Coverage is the exact
+area of each pixel inside the shape (signed-area scanline accumulation), with
+`fillRule="evenodd"` (default) or `"nonzero"`. `stroke` (default transparent)
+and `strokeWidth` (default 0, off) draw a stroke centred on the outline with
+round joins and caps, over the fill; open subpaths are stroked open and filled
+as if closed. Rect and ellipse vectors fill the asset box with one pixel of
+anti-aliasing; half of their stroke lies outside the box and is clipped. Meshes load Wavefront OBJ vertices,
 normals, and polygonal faces; faces are fan-triangulated and missing normals
 are generated.
 
@@ -71,7 +77,12 @@ are generated.
 Groups and drawable 2D nodes accept `id`, `z`, `visible`, `opacity`, `start`,
 `end`, `x`, `y`, `rotation`, `scaleX`, `scaleY`, `anchorX`, and `anchorY`.
 Lower `z` draws first; equal `z` retains XML order. A group applies its
-transform and opacity recursively.
+transform recursively and accepts `blend`. A group with `blend` other than
+`normal`, `opacity` below 1 (at that time) or any mask is *isolated*: its
+children render into a transparent buffer that is then composited once with
+the group's blend, opacity, and masks (children blend against that buffer,
+not against what lies below the group). Otherwise the group is a
+pass-through and its children draw directly into the parent.
 
 `layer` additionally requires `asset` and accepts `blend`, `clipIn`, `clipOut`,
 `loop`, `reverse`, `speed`, and `timeStretch`. `loop="0"` means one play;
@@ -79,7 +90,9 @@ positive N means N total plays. An animated `source.time` track bypasses the
 implicit clip/speed mapping.
 
 `shape` requires `shape="rect|ellipse"`, `width`, and `height`; it accepts
-`fill`, `stroke`, `strokeWidth`, and `blend`.
+`fill`, `stroke`, `strokeWidth`, and `blend`. Edges are anti-aliased from a
+signed distance at the node's pixel footprint; the stroke is `strokeWidth`
+wide and centred on the outline, drawn over the fill.
 
 `particleEmitter` requires `preset="smoke|sparks|dust|rain"`; it accepts
 `rate`, `lifetime`, `speed`, `spread` in degrees, `size`, `color`, and `blend`.
@@ -88,8 +101,13 @@ are animatable.
 
 `mask` supports `type="rect|ellipse|rounded-rect"`, `x`, `y`, `width`,
 `height`, `radius`, and `invert`. Masks may be placed on drawable nodes or
-groups. Group masks compose through nested world transforms, including
-inverted masks.
+groups, and a node may carry any number of them: every `mask` child is kept
+in document order and the coverage is the product of each mask's
+anti-aliased coverage (`1 - coverage` when inverted), evaluated in the node's
+inverse world transform. `x`, `y`, `width`, `height`, and `radius` are
+animatable with nested `<animate property="x|y|width|height|radius">`.
+Group masks apply when the isolated group is composited, so they compose
+through nested world transforms.
 
 ## Animation
 
@@ -199,10 +217,13 @@ damping, and pressure and produces a documented procedural approximation.
 
 ## Colors and time
 
-Colors are `#RRGGBB`, `#RRGGBBAA`, or normalized `r,g,b[,a]`. Named color
-spaces are sRGB, Rec.709, Display-P3, and Rec.2020. Assets are decoded from their source
-space into the project working space, blending optionally uses decoded linear
-light, and the final frame is converted to the output space with matching
-FFmpeg primaries/transfer/matrix/range tags. Times and durations are decimal
+Colors are `#RRGGBB`, `#RRGGBBAA`, or normalized `r,g,b[,a]`, written as
+transfer-encoded values of the project working space. Named color spaces are
+sRGB, Rec.709, Display-P3, and Rec.2020. Assets are decoded from their source
+space into the blend space (the working gamut, linear light when
+`linearLight="true"`, premultiplied float), blending follows the W3C
+separable formulas there (`add` is not clamped until output), and the final
+frame is converted to 8-bit in the output space with matching FFmpeg
+primaries/transfer/matrix/range tags. Times and durations are decimal
 seconds. Frames are selected on a half-open interval; frame N occurs exactly
 at `N × fps_den / fps_num`.

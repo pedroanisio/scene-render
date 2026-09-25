@@ -37,24 +37,24 @@ static const SrCamera *active_camera(const SrScene *scene) {
  * covers [i, i+1) x [j, j+1), so its center sits at (i + 0.5, j + 0.5).
  * Shift by half a pixel so integer coordinates address centers, then wrap
  * x around the 360-degree seam and clamp y at the poles. */
-static void sample_wrap(const SrFrame *image, double x, double y, uint8_t out[4]) {
+static void sample_wrap(const SrFrame *image, double x, double y, float out[4]) {
     x -= 0.5;
     y -= 0.5;
     x = fmod(x, image->width);
     if (x < 0.0) x += image->width;
     y = fmax(0.0, fmin((double)image->height - 1.0, y));
     uint32_t x0 = (uint32_t)floor(x), y0 = (uint32_t)floor(y);
+    if (x0 >= image->width) x0 = image->width - 1;
     uint32_t x1 = (x0 + 1) % image->width;
     uint32_t y1 = y0 + 1 < image->height ? y0 + 1 : y0;
-    double tx = x - x0, ty = y - y0;
-    for (size_t c = 0; c < 4; ++c) {
-        double a = image->rgba[((size_t)y0 * image->width + x0) * 4 + c];
-        double b = image->rgba[((size_t)y0 * image->width + x1) * 4 + c];
-        double d = image->rgba[((size_t)y1 * image->width + x0) * 4 + c];
-        double e = image->rgba[((size_t)y1 * image->width + x1) * 4 + c];
-        out[c] = (uint8_t)lrint((a + (b - a) * tx) * (1.0 - ty) +
-                                (d + (e - d) * tx) * ty);
-    }
+    float tx = (float)(x - x0), ty = (float)(y - y0);
+    const float *a = &image->px[((size_t)y0 * image->width + x0) * 4];
+    const float *b = &image->px[((size_t)y0 * image->width + x1) * 4];
+    const float *d = &image->px[((size_t)y1 * image->width + x0) * 4];
+    const float *e = &image->px[((size_t)y1 * image->width + x1) * 4];
+    for (size_t c = 0; c < 4; ++c)
+        out[c] = (a[c] + (b[c] - a[c]) * tx) * (1.0f - ty) +
+                 (d[c] + (e[c] - d[c]) * tx) * ty;
 }
 
 typedef struct {
@@ -83,7 +83,7 @@ static void *render_rows(void *argument) {
             double px = (longitude / (2.0 * SR_PI) + 0.5) * panorama->width;
             double py = (0.5 - latitude / SR_PI) * panorama->height;
             sample_wrap(panorama, px, py,
-                        &viewport->rgba[((size_t)y * viewport->width + x) * 4]);
+                        &viewport->px[((size_t)y * viewport->width + x) * 4]);
         }
     }
     return NULL;

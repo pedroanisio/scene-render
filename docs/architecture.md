@@ -17,12 +17,13 @@ in mature external components rather than being reimplemented.
 | `xml*` | Expat callbacks, dynamic element stack, typed attributes, semantic/reference validation |
 | `timeline` | stable key ordering and six interpolation curves |
 | `assets`, `procedural` | shared still/text/vector cache and lazy video-frame LRU |
-| `vector_path`, `mesh` | SVG-style filled paths and Wavefront OBJ loading |
-| `parallel`, `color` | deterministic row jobs and sRGB/Display-P3/Rec.2020 conversion |
+| `vector_path`, `mesh` | exact-area SVG-style path fill/stroke coverage and Wavefront OBJ loading |
+| `parallel`, `color` | deterministic row jobs; 8-bit input to blend space and blend space to 8-bit output conversion |
+| `raster` | premultiplied W3C blend kernel and signed-distance anti-aliased coverage |
 | `audio` | FFmpeg decode to disk streams and bounded C mixer |
 | `physics` | fixed-step 2D solver, contacts, constraints, and atomic cache serialization |
 | `lighting` | CPU primitive/triangle rasterization, depth, material lighting, approximate shadows |
-| `compositor` | hierarchy, nested masks, deformation, sampling, blends, and particles |
+| `compositor` | hierarchy, isolated group buffers, masks, deformation, sampling, and particles |
 | `camera` | equirectangular viewport mapping and deterministic row workers |
 | `effects` | parallel blur, glow/bloom, grade, vignette, and lens-flare approximation |
 | `gpu` | optional OpenCL 1.2 final color-conversion kernel and capability probe |
@@ -37,12 +38,21 @@ in mature external components rather than being reimplemented.
 - `sr_scene_load_xml` owns every allocation reachable from `SrScene`;
   `sr_scene_free` releases it.
 - Layer instances reference shared assets. A still/text/vector asset holds one
-  cached RGBA image; a video has four LRU entries keyed by source-frame index.
+  cached blend-space image; a video has four LRU entries keyed by
+  source-frame index, each converted to blend space once when decoded.
 - A mesh asset owns one parsed vertex/normal/triangle set reused by every mesh
   object instance.
 - Decoded and mixed audio use temporary disk streams, mixed in 4096-frame
   blocks. Cleanup covers normal and error exits.
 - The renderer keeps current working/output surfaces, not the entire movie.
+  Frames are float premultiplied RGBA (16 bytes per pixel): a 3840x2160
+  frame is 126.6 MiB. The compositor keeps one isolated-group buffer per
+  nesting depth, allocated lazily on first use and reused for every later
+  group and frame (no per-frame allocation); only the dirty rectangle (union
+  of the children's clipped bounds) of a buffer is cleared or composited. A
+  4K scene with one level of isolated groups therefore holds two float
+  frames plus the 8-bit output buffer (31.6 MiB) handed to the encoder,
+  resume cache, and PPM preview.
 - Each worker receives disjoint rows. No floating-point reduction depends on
   scheduling, so CPU output is byte-identical across supported thread counts.
 
@@ -67,17 +77,36 @@ animation takes precedence.
 
 ## Color and compositing
 
-Decoded image/video assets are converted from their declared sRGB, Rec.709,
-Display-P3, or Rec.2020 source space into the selected working space. Straight-alpha
-source-over implements normal, add, multiply, screen, overlay, and difference.
-With `linearLight="true"`, blend operands are transfer-decoded and encoded in
-the working gamut. The final frame is converted to the output color space and
-FFmpeg receives matching primaries, transfer, matrix, and range flags.
+All compositing happens in the *blend space*: the project working gamut,
+linear light when `linearLight="true"`, otherwise the working space's
+transfer-encoded values, stored as float premultiplied RGBA. Decoded 8-bit
+image/video/text/vector pixels are converted once (per cached video frame)
+through a 256-entry transfer-decode table, the source-to-working gamut
+matrix, a re-encode when not linear, and premultiplication. XML colors are
+working-space values and are converted the same way.
 
-Group and drawable masks are evaluated in their inverse world transforms.
-Rectangular, elliptical, rounded-rect, inverted, and nested masks therefore
-remain stable under parent transformations. Deformation is an inverse sample
-warp, avoiding holes in the destination.
+Blending uses the W3C Compositing Level 1 separable formula on premultiplied
+values for normal, add, multiply, screen, overlay, and difference;
+colors are unpremultiplied only to evaluate the blend function, `add` is not
+clamped, and opacity and mask coverage scale the premultiplied source. The
+final frame is unpremultiplied, linearized, mapped to the output gamut,
+transfer-encoded through a 65536-entry table, clamped, and rounded half up to
+8-bit straight RGBA, in parallel rows; the OpenCL kernel performs the same
+conversion when selected. FFmpeg receives matching primaries, transfer,
+matrix, and range flags.
+
+Groups with a non-normal blend, opacity below one, or masks render into an
+isolated buffer composited once with their blend, opacity, and masks; other
+groups pass their children through to the parent target. Rect, ellipse, and
+rounded-rect shapes and masks get anti-aliased coverage from a signed
+distance divided by the local pixel footprint (`sqrt(|det|)` of the inverse
+world transform); strokes are centred on the outline. A node's masks
+multiply, each evaluated in the node's inverse world transform, so nested and
+inverted masks remain stable under parent transformations. Images are
+sampled bilinearly on premultiplied texels at pixel centres with a
+transparent border, so edges fall off smoothly. Deformation is an inverse
+sample warp, avoiding holes in the destination. Every draw is split into
+disjoint row ranges, so results are identical for any thread count.
 
 ## 3D, lighting, and physical behavior
 

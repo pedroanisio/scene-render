@@ -317,26 +317,32 @@ void sr_xml_start_mask(ParseContext *ctx, const XML_Char **attrs) {
     ParseFrame *p = sr_xml_parent(ctx);
     const char *type = sr_xml_required(ctx, "mask", attrs, "type");
     if (!p || !p->node || !type) return;
-    SrMask *mask = &p->node->mask;
-    mask->enabled = true;
-    if (!strcmp(type,"rect")) mask->type=SR_MASK_RECT;
-    else if (!strcmp(type,"ellipse")) mask->type=SR_MASK_ELLIPSE;
-    else if (!strcmp(type,"rounded-rect")) mask->type=SR_MASK_ROUNDED_RECT;
+    SrMask mask = {0};
+    if (!strcmp(type,"rect")) mask.type=SR_MASK_RECT;
+    else if (!strcmp(type,"ellipse")) mask.type=SR_MASK_ELLIPSE;
+    else if (!strcmp(type,"rounded-rect")) mask.type=SR_MASK_ROUNDED_RECT;
     else SR_XML_FAIL_RETURN(ctx,"mask","type",
                             "expected rect, ellipse, or rounded-rect");
-    if (!sr_xml_parse_double_attr(ctx, "mask", attrs, "x", &mask->x) ||
-        !sr_xml_parse_double_attr(ctx, "mask", attrs, "y", &mask->y) ||
-        !sr_xml_parse_double_attr(ctx, "mask", attrs, "width", &mask->width) ||
-        !sr_xml_parse_double_attr(ctx, "mask", attrs, "height", &mask->height) ||
-        !sr_xml_parse_double_attr(ctx, "mask", attrs, "radius", &mask->radius)) return;
-    if (mask->width <= 0.0 || mask->height <= 0.0)
+    if (!sr_xml_parse_double_attr(ctx, "mask", attrs, "x", &mask.x.base) ||
+        !sr_xml_parse_double_attr(ctx, "mask", attrs, "y", &mask.y.base) ||
+        !sr_xml_parse_double_attr(ctx, "mask", attrs, "width", &mask.width.base) ||
+        !sr_xml_parse_double_attr(ctx, "mask", attrs, "height", &mask.height.base) ||
+        !sr_xml_parse_double_attr(ctx, "mask", attrs, "radius", &mask.radius.base)) return;
+    if (mask.width.base <= 0.0 || mask.height.base <= 0.0)
         SR_XML_FAIL_RETURN(ctx, "mask", "width/height", "expected positive dimensions");
-    if (mask->radius < 0.0)
+    if (mask.radius.base < 0.0)
         SR_XML_FAIL_RETURN(ctx,"mask","radius","expected a non-negative radius");
     const char *invert = sr_xml_attr(attrs, "invert");
-    if (invert && !sr_parse_bool(invert, &mask->invert))
+    if (invert && !sr_parse_bool(invert, &mask.invert))
         SR_XML_FAIL_RETURN(ctx, "mask", "invert", "expected true or false");
+    /* Every mask is kept in document order; coverage multiplies. */
+    if (sr_node_add_mask(p->node, mask) != SR_OK)
+        SR_XML_FAIL_RETURN(ctx, "mask", NULL, "out of memory");
+    /* Valid until the next sibling mask is added, i.e. for this element's
+     * nested <animate> children. */
+    SrMask *stored = &p->node->masks[p->node->mask_count - 1];
     sr_xml_push(ctx, (ParseFrame){.kind = E_MASK, .node = p->node,
+                                  .mask = stored,
                                   .curve = SR_CURVE_LINEAR}, "mask");
 }
 
@@ -346,7 +352,15 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
     ParseFrame *p = sr_xml_parent(ctx);
     const char *property = sr_xml_required(ctx, "animate", attrs, "property");
     if (!p || !property) return;
-    SrAnimValue *anim = p->node ? sr_node_property(p->node, property) : NULL;
+    SrAnimValue *anim = p->node && p->kind != E_MASK
+        ? sr_node_property(p->node, property) : NULL;
+    if (p->kind == E_MASK && p->mask) {
+        if (strcmp(property, "x") == 0) anim = &p->mask->x;
+        else if (strcmp(property, "y") == 0) anim = &p->mask->y;
+        else if (strcmp(property, "width") == 0) anim = &p->mask->width;
+        else if (strcmp(property, "height") == 0) anim = &p->mask->height;
+        else if (strcmp(property, "radius") == 0) anim = &p->mask->radius;
+    }
     if (p->camera) {
         if (strcmp(property, "position.x") == 0) anim = &p->camera->x;
         else if (strcmp(property, "position.y") == 0) anim = &p->camera->y;
@@ -398,7 +412,7 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
     sr_xml_push(ctx, (ParseFrame){.kind = E_ANIMATE, .node = p->node,
         .anim = anim, .camera = p->camera, .light = p->light,
         .effect = p->effect, .modifier = p->modifier,
-        .object3d = p->object3d, .curve = curve}, "animate");
+        .object3d = p->object3d, .mask = p->mask, .curve = curve}, "animate");
 }
 
 void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs) {

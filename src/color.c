@@ -2,6 +2,7 @@
 #include "scene_render/parallel.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef struct { double value[3][3]; } Matrix3;
@@ -73,28 +74,6 @@ double sr_color_encode(double value, SrColorSpace space) {
     return value <= .0031308 ? value*12.92 : 1.055*pow(value,1.0/2.4)-.055;
 }
 
-typedef struct {
-    SrFrame *frame;
-    SrColorSpace source;
-    SrColorSpace target;
-    Matrix3 matrix;
-} ConvertContext;
-
-static void convert_worker(void *opaque, size_t begin, size_t end) {
-    ConvertContext *context = opaque;
-    for (size_t pixel=begin; pixel<end; ++pixel) {
-        double input[3], output[3] = {0};
-        for (size_t channel=0; channel<3; ++channel)
-            input[channel] = sr_color_decode(
-                context->frame->rgba[pixel*4+channel]/255.0, context->source);
-        for (size_t row=0; row<3; ++row) for (size_t column=0; column<3; ++column)
-            output[row] += context->matrix.value[row][column] * input[column];
-        for (size_t channel=0; channel<3; ++channel)
-            context->frame->rgba[pixel*4+channel] = (uint8_t)lrint(
-                sr_color_encode(output[channel], context->target)*255.0);
-    }
-}
-
 bool sr_color_space_parse(const char *text, SrColorSpace *space) {
     if (!text || !space) return false;
     if (!strcmp(text,"srgb")) *space=SR_COLOR_SRGB;
@@ -112,14 +91,190 @@ const char *sr_color_space_name(SrColorSpace space) {
     return "srgb";
 }
 
-SrStatus sr_color_convert_frame(SrFrame *frame, SrColorSpace source,
-                                SrColorSpace target, unsigned threads) {
-    if (!frame || !frame->rgba) return SR_ERR_ARGUMENT;
-    if (source == target) return SR_OK;
-    ConvertContext context = {
-        frame, source, target,
-        multiply(inverse(rgb_to_xyz(target)), rgb_to_xyz(source))
-    };
-    return sr_parallel_for((size_t)frame->width*frame->height, threads,
-                           convert_worker, &context);
+static Matrix3 gamut_matrix(SrColorSpace source, SrColorSpace target) {
+    return multiply(inverse(rgb_to_xyz(target)), rgb_to_xyz(source));
+}
+
+static bool same_gamut(SrColorSpace a, SrColorSpace b) {
+    /* Rec.709 and sRGB share primaries and white point. */
+    bool a_srgb = a == SR_COLOR_SRGB || a == SR_COLOR_REC709;
+    bool b_srgb = b == SR_COLOR_SRGB || b == SR_COLOR_REC709;
+    return a == b || (a_srgb && b_srgb);
+}
+
+static double clamp_unit(double value) {
+    return value > 0.0 ? (value < 1.0 ? value : 1.0) : 0.0;
+}
+
+void sr_color_to_blend(const SrProject *project, SrColor color, float out[4]) {
+    double alpha = clamp_unit(color.a);
+    double rgb[3] = {color.r, color.g, color.b};
+    for (size_t c = 0; c < 3; ++c) {
+        double value = clamp_unit(rgb[c]);
+        if (project->linear_light)
+            value = sr_color_decode(value, project->working_color_space);
+        out[c] = (float)(value * alpha);
+    }
+    out[3] = (float)alpha;
+}
+
+SrStatus sr_color_image_from_rgba8(const SrProject *project,
+                                   SrColorSpace source,
+                                   const uint8_t *rgba8, size_t stride,
+                                   uint32_t width, uint32_t height,
+                                   SrImage *out) {
+    if (!project || !rgba8 || !out || !width || !height) return SR_ERR_ARGUMENT;
+    *out = (SrImage){0};
+    size_t pixels = (size_t)width * height;
+    if (pixels / height != width || pixels > SIZE_MAX / (4 * sizeof(float)) ||
+        stride < (size_t)width * 4)
+        return SR_ERR_MEMORY;
+    float *px = sr_alloc(pixels * 4 * sizeof(float));
+    if (!px) return SR_ERR_MEMORY;
+    SrColorSpace working = project->working_color_space;
+    bool linear = project->linear_light;
+    bool direct = source == working;
+    Matrix3 matrix = gamut_matrix(source, working);
+    /* Transfer decode table for the source's 8-bit codes. For a same-space
+     * source it already yields blend-space values. */
+    float table[256];
+    double linear_table[256];
+    for (int i = 0; i < 256; ++i) {
+        linear_table[i] = sr_color_decode(i / 255.0, source);
+        table[i] = direct && !linear ? (float)(i / 255.0)
+                                     : (float)linear_table[i];
+    }
+    for (uint32_t y = 0; y < height; ++y) {
+        const uint8_t *row = rgba8 + (size_t)y * stride;
+        float *target = px + (size_t)y * width * 4;
+        for (uint32_t x = 0; x < width; ++x) {
+            const uint8_t *s = row + (size_t)x * 4;
+            float *d = target + (size_t)x * 4;
+            float alpha = (float)(s[3] / 255.0);
+            if (direct) {
+                for (size_t c = 0; c < 3; ++c) d[c] = table[s[c]] * alpha;
+            } else {
+                double in[3] = {linear_table[s[0]], linear_table[s[1]],
+                                linear_table[s[2]]};
+                for (size_t row_index = 0; row_index < 3; ++row_index) {
+                    double value = 0.0;
+                    for (size_t k = 0; k < 3; ++k)
+                        value += matrix.value[row_index][k] * in[k];
+                    value = clamp_unit(value);
+                    if (!linear) value = sr_color_encode(value, working);
+                    d[row_index] = (float)value * alpha;
+                }
+            }
+            d[3] = alpha;
+        }
+    }
+    out->width = width;
+    out->height = height;
+    out->px = px;
+    return SR_OK;
+}
+
+static uint8_t round_code(double value) {
+    double scaled = floor(clamp_unit(value) * 255.0 + 0.5);
+    return (uint8_t)(scaled > 255.0 ? 255.0 : scaled);
+}
+
+SrStatus sr_color_output_init(SrColorOutput *output, const SrProject *project,
+                              SrColorSpace target) {
+    if (!output || !project) return SR_ERR_ARGUMENT;
+    *output = (SrColorOutput){0};
+    SrColorSpace working = project->working_color_space;
+    output->linear_light = project->linear_light;
+    output->passthrough = !project->linear_light && working == target;
+    output->identity_gamut = same_gamut(working, target);
+    Matrix3 matrix = gamut_matrix(working, target);
+    memcpy(output->matrix, matrix.value, sizeof(output->matrix));
+    if (output->passthrough) return SR_OK;
+    output->encode = sr_alloc(SR_COLOR_LUT_SIZE);
+    if (!output->encode) return SR_ERR_MEMORY;
+    for (size_t i = 0; i < SR_COLOR_LUT_SIZE; ++i)
+        output->encode[i] = round_code(sr_color_encode(
+            (double)i / (SR_COLOR_LUT_SIZE - 1), target));
+    if (!project->linear_light) {
+        output->decode = sr_alloc(SR_COLOR_LUT_SIZE * sizeof(float));
+        if (!output->decode) {
+            sr_color_output_free(output);
+            return SR_ERR_MEMORY;
+        }
+        for (size_t i = 0; i < SR_COLOR_LUT_SIZE; ++i)
+            output->decode[i] = (float)sr_color_decode(
+                (double)i / (SR_COLOR_LUT_SIZE - 1), working);
+    }
+    return SR_OK;
+}
+
+void sr_color_output_free(SrColorOutput *output) {
+    if (!output) return;
+    free(output->decode);
+    free(output->encode);
+    *output = (SrColorOutput){0};
+}
+
+static inline int lut_index(float value) {
+    if (!(value > 0.0f)) return 0;
+    if (value >= 1.0f) return SR_COLOR_LUT_SIZE - 1;
+    return (int)(value * (float)(SR_COLOR_LUT_SIZE - 1) + 0.5f);
+}
+
+static inline uint8_t direct_code(float value) {
+    if (!(value > 0.0f)) return 0;
+    if (value >= 1.0f) return 255;
+    return (uint8_t)(value * 255.0f + 0.5f);
+}
+
+typedef struct {
+    const SrColorOutput *output;
+    const SrFrame *frame;
+    uint8_t *rgba8;
+} ConvertContext;
+
+static void convert_rows(void *opaque, size_t begin, size_t end) {
+    const ConvertContext *context = opaque;
+    const SrColorOutput *output = context->output;
+    uint32_t width = context->frame->width;
+    for (size_t y = begin; y < end; ++y) {
+        const float *s = context->frame->px + y * width * 4;
+        uint8_t *d = context->rgba8 + y * width * 4;
+        for (uint32_t x = 0; x < width; ++x, s += 4, d += 4) {
+            float alpha = s[3];
+            d[3] = direct_code(alpha);
+            if (!(alpha > 0.0f)) {
+                d[0] = d[1] = d[2] = 0;
+                continue;
+            }
+            float inv = 1.0f / alpha;
+            float c[3] = {s[0] * inv, s[1] * inv, s[2] * inv};
+            if (output->passthrough) {
+                for (size_t i = 0; i < 3; ++i) d[i] = direct_code(c[i]);
+                continue;
+            }
+            if (!output->linear_light)
+                for (size_t i = 0; i < 3; ++i)
+                    c[i] = output->decode[lut_index(c[i])];
+            if (!output->identity_gamut) {
+                float m[3];
+                for (size_t row = 0; row < 3; ++row)
+                    m[row] = (float)(output->matrix[row][0] * c[0] +
+                                     output->matrix[row][1] * c[1] +
+                                     output->matrix[row][2] * c[2]);
+                memcpy(c, m, sizeof(c));
+            }
+            for (size_t i = 0; i < 3; ++i)
+                d[i] = output->encode[lut_index(c[i])];
+        }
+    }
+}
+
+SrStatus sr_color_convert_frame(const SrColorOutput *output,
+                                const SrFrame *frame, uint8_t *rgba8,
+                                unsigned threads) {
+    if (!output || !frame || !frame->px || !rgba8) return SR_ERR_ARGUMENT;
+    if (!output->passthrough && !output->encode) return SR_ERR_ARGUMENT;
+    ConvertContext context = {output, frame, rgba8};
+    return sr_parallel_for(frame->height, threads, convert_rows, &context);
 }

@@ -77,5 +77,11 @@ extern const sr_test_case sr_tests_scene[];
 extern const sr_test_case sr_tests_xml[];
 extern const sr_test_case sr_tests_camera[];
 extern const sr_test_case sr_tests_physics[];
+extern const sr_test_case sr_tests_blend[];
+extern const sr_test_case sr_tests_group[];
+extern const sr_test_case sr_tests_raster[];
+extern const sr_test_case sr_tests_mask[];
+extern const sr_test_case sr_tests_path[];
+extern const sr_test_case sr_tests_image[];
 
 #endif

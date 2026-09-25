@@ -24,6 +24,7 @@ typedef struct {
     SrEffect *effect;
     SrModifier *modifier;
     SrObject3D *object3d;
+    SrMask *mask;
     SrCurve curve;
 } ParseFrame;
 

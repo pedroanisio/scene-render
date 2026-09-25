@@ -24,7 +24,7 @@ static void transform_free(SrTransform *transform) {
 
 static void image_free(SrImage *image) {
     if (!image) return;
-    free(image->rgba);
+    free(image->px);
     free(image);
 }
 
@@ -209,6 +209,18 @@ SrStatus sr_node_add_modifier(SrNode *node, SrModifier modifier) {
     return SR_OK;
 }
 
+SrStatus sr_node_add_mask(SrNode *node, SrMask mask) {
+    if (node->mask_count == node->mask_capacity) {
+        size_t capacity = node->mask_capacity ? node->mask_capacity * 2 : 2;
+        SrMask *items = sr_realloc(node->masks, capacity * sizeof(*items));
+        if (!items) return SR_ERR_MEMORY;
+        node->masks = items;
+        node->mask_capacity = capacity;
+    }
+    node->masks[node->mask_count++] = mask;
+    return SR_OK;
+}
+
 void sr_node_free(SrNode *node) {
     if (!node) return;
     for (size_t i = 0; i < node->child_count; ++i) sr_node_free(node->children[i]);
@@ -217,6 +229,14 @@ void sr_node_free(SrNode *node) {
         anim_free(&node->modifiers[i].frequency);
         anim_free(&node->modifiers[i].phase);
     }
+    for (size_t i = 0; i < node->mask_count; ++i) {
+        anim_free(&node->masks[i].x);
+        anim_free(&node->masks[i].y);
+        anim_free(&node->masks[i].width);
+        anim_free(&node->masks[i].height);
+        anim_free(&node->masks[i].radius);
+    }
+    free(node->masks);
     free(node->children); free(node->modifiers); free(node->physics_samples);
     free(node->id); free(node->asset_id); free(node->particle_preset);
     anim_free(&node->opacity); anim_free(&node->source_time);

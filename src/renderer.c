@@ -76,16 +76,25 @@ SrStatus sr_write_ppm(const char *path, uint32_t width, uint32_t height,
     return SR_OK;
 }
 
+typedef struct {
+    SrCompositor compositor;
+    SrColorOutput color;
+    uint8_t *rgba8;     /* 8-bit straight RGBA handed to encoder/cache/PPM */
+} SrFrameState;
+
 static SrStatus sr_render_frame(SrScene *scene, uint64_t index,
-                                SrFrame *composition, SrFrame *output,
-                                unsigned threads, SrGpu *gpu, double *seconds,
-                                SrDiagnostics *diag) {
+                                SrFrameState *state, SrFrame *composition,
+                                SrFrame *output, unsigned threads, SrGpu *gpu,
+                                double *seconds, SrDiagnostics *diag) {
     double start = sr_monotonic_seconds();
-    sr_frame_clear(composition, scene->project.background);
+    float background[4];
+    sr_color_to_blend(&scene->project, scene->project.background, background);
+    sr_frame_clear(composition, background, threads);
     double time = (double)index * scene->project.fps_den / scene->project.fps_num;
     SrStatus status = sr_lighting_render(scene, time, composition, diag);
     if (status == SR_OK)
-        status = sr_composite_scene(scene, time, composition, diag);
+        status = sr_compositor_render(&state->compositor, scene, time,
+                                      composition, diag);
     if (status == SR_OK && scene->project.mode == SR_MODE_VIEWPORT)
         status = sr_camera_extract_viewport(scene, time, composition, output,
                                             threads, diag);
@@ -93,21 +102,19 @@ static SrStatus sr_render_frame(SrScene *scene, uint64_t index,
         status = sr_effects_apply(scene, time, output, threads, diag);
     if (status == SR_OK) {
         if (gpu && gpu->implementation) {
-            status = sr_gpu_convert_frame(gpu, output,
-                scene->project.working_color_space, scene->output.color_space,
-                diag);
+            status = sr_gpu_convert_frame(gpu, output, state->rgba8,
+                                          &scene->project,
+                                          scene->output.color_space, diag);
             if (status != SR_OK) {
                 sr_diag_warning(diag, 0, NULL, NULL,
                                 "OpenCL conversion failed; using CPU fallback");
                 sr_gpu_close(gpu);
-                status = sr_color_convert_frame(output,
-                    scene->project.working_color_space,
-                    scene->output.color_space, threads);
+                status = sr_color_convert_frame(&state->color, output,
+                                                state->rgba8, threads);
             }
         } else
-            status = sr_color_convert_frame(output,
-                scene->project.working_color_space, scene->output.color_space,
-                threads);
+            status = sr_color_convert_frame(&state->color, output,
+                                            state->rgba8, threads);
     }
     *seconds += sr_monotonic_seconds() - start;
     return status;
@@ -147,9 +154,11 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
     uint32_t canvas_height = scene->project.mode == SR_MODE_VIEWPORT
         ? scene->scene360.height : scene->project.height;
     SrFrame composition = {0}, viewport = {0};
+    SrFrameState state = {0};
+    sr_compositor_init(&state.compositor, options->encoder_threads);
     status = sr_frame_init(&composition, canvas_width, canvas_height);
     if (status != SR_OK) {
-        sr_diag_error(diag, 0, NULL, NULL, "cannot allocate %ux%u RGBA frame",
+        sr_diag_error(diag, 0, NULL, NULL, "cannot allocate %ux%u float RGBA frame",
                       canvas_width, canvas_height);
         sr_gpu_close(&gpu);
         return status;
@@ -160,6 +169,14 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
                                scene->project.height);
         if (status != SR_OK) goto cleanup;
         frame = &viewport;
+    }
+    status = sr_color_output_init(&state.color, &scene->project,
+                                  scene->output.color_space);
+    if (status != SR_OK) goto cleanup;
+    state.rgba8 = sr_alloc((size_t)frame->width * frame->height * 4);
+    if (!state.rgba8) {
+        status = SR_ERR_MEMORY;
+        goto cleanup;
     }
     double exact_frames = scene->project.duration * scene->project.fps_num /
                           scene->project.fps_den;
@@ -184,12 +201,12 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
             status = SR_ERR_ARGUMENT;
             goto cleanup;
         }
-        status = sr_render_frame(scene, options->preview_frame, &composition,
-                                 frame, options->encoder_threads, &gpu,
-                                 &metrics->render_seconds, diag);
+        status = sr_render_frame(scene, options->preview_frame, &state,
+                                 &composition, frame, options->encoder_threads,
+                                 &gpu, &metrics->render_seconds, diag);
         if (status == SR_OK) {
             status = sr_write_ppm(options->preview_path, frame->width,
-                                  frame->height, frame->rgba, diag);
+                                  frame->height, state.rgba8, diag);
         }
         metrics->frames = status == SR_OK ? 1 : 0;
         goto cleanup;
@@ -216,15 +233,15 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
     if (status == SR_OK) {
         size_t bytes = (size_t)frame->width * frame->height * 4;
         for (uint64_t index = first; index < end; ++index) {
-            bool reused = sr_resume_load(&resume, index, frame->rgba, diag);
+            bool reused = sr_resume_load(&resume, index, state.rgba8, diag);
             if (!reused)
-                status = sr_render_frame(scene, index, &composition, frame,
-                                         options->encoder_threads, &gpu,
+                status = sr_render_frame(scene, index, &state, &composition,
+                                         frame, options->encoder_threads, &gpu,
                                          &metrics->render_seconds, diag);
             if (status == SR_OK && !reused)
-                status = sr_resume_store(&resume, index, frame->rgba, diag);
+                status = sr_resume_store(&resume, index, state.rgba8, diag);
             if (status != SR_OK) break;
-            status = sr_encoder_write(&encoder, frame->rgba, bytes, diag);
+            status = sr_encoder_write(&encoder, state.rgba8, bytes, diag);
             if (status != SR_OK) break;
             ++metrics->frames;
             if (diag->verbose && (metrics->frames % 30 == 0)) {
@@ -248,6 +265,9 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
 
 cleanup:
     sr_gpu_close(&gpu);
+    sr_compositor_free(&state.compositor);
+    sr_color_output_free(&state.color);
+    free(state.rgba8);
     sr_frame_free(&viewport);
     sr_frame_free(&composition);
     metrics->wall_seconds = sr_monotonic_seconds() - wall_start;
