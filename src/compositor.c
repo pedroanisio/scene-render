@@ -69,7 +69,6 @@ typedef struct {
     SrScene *scene;
     SrDiagnostics *diag;
     double time;
-    SrStatus status;
 } SrDrawContext;
 
 static double sr_clamp(double value, double low, double high) {
@@ -356,22 +355,24 @@ static void sr_texel(const SrImage *image, int x, int y, float weight,
     acc[3] += p[3] * weight;
 }
 
-/* Bilinear filter on premultiplied texels with a transparent border;
- * texel (i, j) is centred at (i + 0.5, j + 0.5). */
+/* Bilinear filter on premultiplied texels, clamped to the edge texels;
+ * texel (i, j) is centred at (i + 0.5, j + 0.5). Edge anti-aliasing comes
+ * from the geometric coverage of the image rectangle instead (see
+ * sr_op_rows), so the fade is about one output pixel at any scale. */
 static void sr_image_sample(const SrImage *image, double lx, double ly,
                             float out[4]) {
-    double sx = lx - 0.5, sy = ly - 0.5;
+    double sx = sr_clamp(lx - 0.5, 0.0, (double)image->width - 1.0);
+    double sy = sr_clamp(ly - 0.5, 0.0, (double)image->height - 1.0);
     double fx = floor(sx), fy = floor(sy);
-    out[0] = out[1] = out[2] = out[3] = 0.0f;
-    if (fx < -2.0 || fy < -2.0 || fx > (double)image->width + 1.0 ||
-        fy > (double)image->height + 1.0)
-        return;
     int ix = (int)fx, iy = (int)fy;
+    int ix1 = ix + 1 < (int)image->width ? ix + 1 : ix;
+    int iy1 = iy + 1 < (int)image->height ? iy + 1 : iy;
     float tx = (float)(sx - fx), ty = (float)(sy - fy);
+    out[0] = out[1] = out[2] = out[3] = 0.0f;
     sr_texel(image, ix, iy, (1.0f - tx) * (1.0f - ty), out);
-    sr_texel(image, ix + 1, iy, tx * (1.0f - ty), out);
-    sr_texel(image, ix, iy + 1, (1.0f - tx) * ty, out);
-    sr_texel(image, ix + 1, iy + 1, tx * ty, out);
+    sr_texel(image, ix1, iy, tx * (1.0f - ty), out);
+    sr_texel(image, ix, iy1, (1.0f - tx) * ty, out);
+    sr_texel(image, ix1, iy1, tx * ty, out);
 }
 
 /* Rows are offsets from bounds.y0 so sr_parallel_for can split [0, rows). */
@@ -397,6 +398,10 @@ static void sr_op_rows(void *opaque, size_t begin, size_t end) {
                     local = sr_deform_inverse(op->node, local, op->deform_width,
                                               op->deform_height, op->time);
                 if (op->kind == SR_OP_IMAGE) {
+                    coverage *= sr_shape_coverage(
+                        SR_MASK_RECT, 0.0, 0.0, op->image->width,
+                        op->image->height, 0.0, local.x, local.y, op->aa);
+                    if (!(coverage > 0.0f)) continue;
                     sr_image_sample(op->image, local.x, local.y, s);
                 } else {
                     double sd = sr_shape_distance(op->shape, 0.0, 0.0,
@@ -597,30 +602,35 @@ static void sr_draw_particles(SrDrawContext *context, const SrNode *node,
 
 static SrStatus sr_draw_node(SrDrawContext *context, const SrNode *node,
                              SrMat3 parent, SrClip clip,
-                             const SrTarget *target, size_t depth);
+                             const SrTarget *target, size_t depth,
+                             const SrMaskLink *outer);
 
 static SrStatus sr_draw_children(SrDrawContext *context, const SrNode *node,
                                  SrMat3 world, SrClip clip,
-                                 const SrTarget *target, size_t depth) {
+                                 const SrTarget *target, size_t depth,
+                                 const SrMaskLink *masks) {
     for (size_t i = 0; i < node->child_count; ++i) {
         SrStatus status = sr_draw_node(context, node->children[i], world, clip,
-                                       target, depth);
+                                       target, depth, masks);
         if (status != SR_OK) return status;
     }
     return SR_OK;
 }
 
-/* A group renders into an isolated buffer iff it has a non-normal blend,
- * opacity below one, or any mask; otherwise its children draw straight into
- * the parent target. The isolated buffer is composited once with the
- * group's blend, opacity and masks. */
+/* A group renders into an isolated buffer iff it has a non-normal blend or
+ * opacity below one; the buffer is composited once with the group's blend,
+ * opacity and masks (plus any masks inherited from pass-through ancestors).
+ * Otherwise the group is a pass-through: its children draw straight into the
+ * parent target against the real backdrop, and its masks join the chain
+ * applied to every child draw. */
 static SrStatus sr_draw_group(SrDrawContext *context, const SrNode *node,
                               SrMat3 world, double opacity, SrClip clip,
-                              const SrTarget *target, size_t depth) {
-    bool isolated = node->blend != SR_BLEND_NORMAL || opacity < 1.0 ||
-                    node->mask_count > 0;
-    if (!isolated)
-        return sr_draw_children(context, node, world, clip, target, depth);
+                              const SrTarget *target, size_t depth,
+                              const SrMaskLink *outer) {
+    bool isolated = node->blend != SR_BLEND_NORMAL || opacity < 1.0;
+    if (!isolated && node->mask_count == 0)
+        return sr_draw_children(context, node, world, clip, target, depth,
+                                outer);
     SrMat3 inverse;
     if (!sr_mat_inverse(world, &inverse)) return SR_OK;
     SrMaskEval local_masks[8];
@@ -629,26 +639,32 @@ static SrStatus sr_draw_group(SrDrawContext *context, const SrNode *node,
     if (!masks) return SR_ERR_MEMORY;
     sr_masks_eval(node, context->time, masks);
     SrMaskLink link = {masks, node->mask_count, inverse,
-                       sr_pixel_footprint(inverse), NULL};
+                       sr_pixel_footprint(inverse), outer};
+    const SrMaskLink *chain = node->mask_count ? &link : outer;
     SrClip inner = sr_mask_clip(clip, masks, node->mask_count, world, target);
-    SrGroupBuffer *buffer = NULL;
-    SrStatus status = sr_pool_get(context->compositor, depth, target->width,
-                                  target->height, &buffer);
-    if (status == SR_OK) {
-        SrTarget group = {buffer->frame.px, target->width, target->height,
-                          buffer};
-        status = sr_draw_children(context, node, world, inner, &group,
-                                  depth + 1);
-    }
-    if (status == SR_OK) {
-        SrDrawOp op = {.kind = SR_OP_BUFFER, .target = target,
-                       .blend = node->blend, .opacity = (float)opacity,
-                       .inverse = inverse, .aa = link.aa,
-                       .masks = node->mask_count ? &link : NULL,
-                       .buffer = buffer};
-        op.bounds = sr_clip_intersect(inner, (SrClip){buffer->x0, buffer->y0,
-                                                      buffer->x1, buffer->y1});
-        status = sr_op_execute(context->compositor, &op);
+    SrStatus status = SR_OK;
+    if (!isolated) {
+        status = sr_draw_children(context, node, world, inner, target, depth,
+                                  chain);
+    } else {
+        SrGroupBuffer *buffer = NULL;
+        status = sr_pool_get(context->compositor, depth, target->width,
+                             target->height, &buffer);
+        if (status == SR_OK) {
+            SrTarget group = {buffer->frame.px, target->width, target->height,
+                              buffer};
+            status = sr_draw_children(context, node, world, inner, &group,
+                                      depth + 1, NULL);
+        }
+        if (status == SR_OK) {
+            SrDrawOp op = {.kind = SR_OP_BUFFER, .target = target,
+                           .blend = node->blend, .opacity = (float)opacity,
+                           .inverse = inverse, .aa = link.aa,
+                           .masks = chain, .buffer = buffer};
+            op.bounds = sr_clip_intersect(inner, (SrClip){buffer->x0,
+                buffer->y0, buffer->x1, buffer->y1});
+            status = sr_op_execute(context->compositor, &op);
+        }
     }
     if (masks != local_masks) free(masks);
     return status;
@@ -656,7 +672,8 @@ static SrStatus sr_draw_group(SrDrawContext *context, const SrNode *node,
 
 static SrStatus sr_draw_node(SrDrawContext *context, const SrNode *node,
                              SrMat3 parent, SrClip clip,
-                             const SrTarget *target, size_t depth) {
+                             const SrTarget *target, size_t depth,
+                             const SrMaskLink *outer) {
     double time = context->time;
     if (!node->visible || time < node->start_time || time >= node->end_time)
         return SR_OK;
@@ -665,7 +682,8 @@ static SrStatus sr_draw_node(SrDrawContext *context, const SrNode *node,
     double opacity = sr_clamp(sr_anim_eval(&node->opacity, time), 0.0, 1.0);
     if (opacity <= 0.0) return SR_OK;
     if (node->type == SR_NODE_GROUP)
-        return sr_draw_group(context, node, world, opacity, clip, target, depth);
+        return sr_draw_group(context, node, world, opacity, clip, target, depth,
+                             outer);
     SrMat3 inverse;
     if (!sr_mat_inverse(world, &inverse)) return SR_OK;
     SrMaskEval local_masks[8];
@@ -674,8 +692,8 @@ static SrStatus sr_draw_node(SrDrawContext *context, const SrNode *node,
     if (!masks) return SR_ERR_MEMORY;
     sr_masks_eval(node, time, masks);
     SrMaskLink link = {masks, node->mask_count, inverse,
-                       sr_pixel_footprint(inverse), NULL};
-    const SrMaskLink *chain = node->mask_count ? &link : NULL;
+                       sr_pixel_footprint(inverse), outer};
+    const SrMaskLink *chain = node->mask_count ? &link : outer;
     clip = sr_mask_clip(clip, masks, node->mask_count, world, target);
     SrStatus status = SR_OK;
     if (node->type == SR_NODE_MEDIA)
@@ -699,9 +717,9 @@ SrStatus sr_compositor_render(SrCompositor *compositor, SrScene *scene,
     SrTarget target = {frame->px, frame->width, frame->height, NULL};
     SrClip clip = {0, 0, (int)frame->width, (int)frame->height};
     size_t errors = diag ? diag->errors : 0;
-    SrDrawContext context = {compositor, scene, diag, time, SR_OK};
+    SrDrawContext context = {compositor, scene, diag, time};
     SrStatus status = sr_draw_node(&context, scene->root, sr_mat_identity(),
-                                   clip, &target, 0);
+                                   clip, &target, 0, NULL);
     if (status != SR_OK) return status;
     return diag && diag->errors > errors ? SR_ERR_ASSET : SR_OK;
 }

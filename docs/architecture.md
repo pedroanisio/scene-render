@@ -95,16 +95,19 @@ transfer-encoded through a 65536-entry table, clamped, and rounded half up to
 conversion when selected. FFmpeg receives matching primaries, transfer,
 matrix, and range flags.
 
-Groups with a non-normal blend, opacity below one, or masks render into an
-isolated buffer composited once with their blend, opacity, and masks; other
-groups pass their children through to the parent target. Rect, ellipse, and
+Groups with a non-normal blend or opacity below one render into an isolated
+buffer composited once with their blend, opacity, and masks; other groups
+pass their children through to the parent target, and their masks join the
+mask chain whose coverage multiplies into every child draw. Rect, ellipse, and
 rounded-rect shapes and masks get anti-aliased coverage from a signed
 distance divided by the local pixel footprint (`sqrt(|det|)` of the inverse
 world transform); strokes are centred on the outline. A node's masks
 multiply, each evaluated in the node's inverse world transform, so nested and
 inverted masks remain stable under parent transformations. Images are
-sampled bilinearly on premultiplied texels at pixel centres with a
-transparent border, so edges fall off smoothly. Deformation is an inverse
+sampled bilinearly on premultiplied texels at pixel centres, clamped to the
+edge texels, and multiplied by the geometric coverage of the image rectangle
+(signed distance at the pixel footprint), so edges fade over about one output
+pixel at any magnification. Deformation is an inverse
 sample warp, avoiding holes in the destination. Every draw is split into
 disjoint row ranges, so results are identical for any thread count.
 

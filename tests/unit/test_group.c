@@ -124,7 +124,46 @@ static void test_pool_reuse(sr_test_ctx *t)
     sr_scene_free(&scene);
 }
 
+/* Masks alone do not isolate: a masked normal group with an ADD child adds
+ * against the real backdrop inside the mask and leaves the background
+ * untouched outside it. */
+static void test_masked_group_passes_through(sr_test_ctx *t)
+{
+    const float backdrop[4] = {0.5f, 0.4f, 0.3f, 1.0f};
+    SrScene plain, masked;
+    fx_scene(&plain, 20, 4);
+    fx_scene(&masked, 20, 4);
+    SrNode *a = fx_add(&plain, NULL, SR_NODE_GROUP);
+    SrNode *b = fx_add(&masked, NULL, SR_NODE_GROUP);
+    CHECK(t, a && b);
+    if (!a || !b) { sr_scene_free(&plain); sr_scene_free(&masked); return; }
+    SrNode *ca = fx_rect(&plain, a, 0, 0, 20, 4, (SrColor){0.3, 0.2, 0.1, 1}, 1.0);
+    SrNode *cb = fx_rect(&masked, b, 0, 0, 20, 4, (SrColor){0.3, 0.2, 0.1, 1}, 1.0);
+    if (ca) ca->blend = SR_BLEND_ADD;
+    if (cb) cb->blend = SR_BLEND_ADD;
+    SrMask mask = {0};
+    mask.type = SR_MASK_RECT;
+    mask.width.base = 10.0;
+    mask.height.base = 4.0;
+    CHECK(t, sr_node_add_mask(b, mask) == SR_OK);
+    SrFrame fa = {0}, fb = {0};
+    if (fx_render(t, &plain, 0.0, backdrop, &fa) &&
+        fx_render(t, &masked, 0.0, backdrop, &fb)) {
+        CHECK_NEAR(t, fx_px(&fa, 5, 2)[0], 0.8, 1e-6);  /* added, not replaced */
+        for (uint32_t x = 0; x < 20; ++x) {
+            const float *expected = x < 10 ? fx_px(&fa, x, 2) : backdrop;
+            if (memcmp(fx_px(&fb, x, 2), expected, 4 * sizeof(float)) != 0)
+                SR_FAIL(t, "pixel %u differs", x);
+        }
+    }
+    sr_frame_free(&fa);
+    sr_frame_free(&fb);
+    sr_scene_free(&plain);
+    sr_scene_free(&masked);
+}
+
 const sr_test_case sr_tests_group[] = {
+    {"masked_group_passes_through", test_masked_group_passes_through},
     {"isolated_opacity", test_isolated_opacity},
     {"isolated_blend", test_isolated_blend},
     {"pass_through_equals_direct", test_pass_through_equals_direct},

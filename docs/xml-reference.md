@@ -78,11 +78,12 @@ Groups and drawable 2D nodes accept `id`, `z`, `visible`, `opacity`, `start`,
 `end`, `x`, `y`, `rotation`, `scaleX`, `scaleY`, `anchorX`, and `anchorY`.
 Lower `z` draws first; equal `z` retains XML order. A group applies its
 transform recursively and accepts `blend`. A group with `blend` other than
-`normal`, `opacity` below 1 (at that time) or any mask is *isolated*: its
-children render into a transparent buffer that is then composited once with
-the group's blend, opacity, and masks (children blend against that buffer,
-not against what lies below the group). Otherwise the group is a
-pass-through and its children draw directly into the parent.
+`normal` or `opacity` below 1 (at that time) is *isolated*: its children
+render into a transparent buffer that is then composited once with the
+group's blend, opacity, and masks (children blend against that buffer, not
+against what lies below the group). Otherwise the group is a pass-through:
+its children draw directly into the parent against the real backdrop, and
+the group's masks (if any) scale each child's coverage.
 
 `layer` additionally requires `asset` and accepts `blend`, `clipIn`, `clipOut`,
 `loop`, `reverse`, `speed`, and `timeStretch`. `loop="0"` means one play;
@@ -106,8 +107,9 @@ in document order and the coverage is the product of each mask's
 anti-aliased coverage (`1 - coverage` when inverted), evaluated in the node's
 inverse world transform. `x`, `y`, `width`, `height`, and `radius` are
 animatable with nested `<animate property="x|y|width|height|radius">`.
-Group masks apply when the isolated group is composited, so they compose
-through nested world transforms.
+Group masks apply when an isolated group is composited, or to every child
+draw of a pass-through group, so they compose through nested world
+transforms.
 
 ## Animation
 
