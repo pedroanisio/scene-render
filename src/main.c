@@ -102,6 +102,17 @@ static void print_metrics(const SrRenderMetrics *metrics) {
     fputc('\n', stderr);
 }
 
+/* Flushes stdout; a failed write anywhere before is an I/O error (7). */
+static SrStatus finish_stdout(SrStatus status) {
+    if (fflush(stdout) != 0 || ferror(stdout)) {
+        if (status == SR_OK) {
+            fprintf(stderr, "error: cannot write to standard output\n");
+            return SR_ERR_IO;
+        }
+    }
+    return status;
+}
+
 int main(int argc, char **argv) {
     SrCliOptions options;
     char error[256];
@@ -111,17 +122,17 @@ int main(int argc, char **argv) {
     }
     if (options.help) {
         fputs(sr_cli_usage(), stdout);
-        return SR_OK;
+        return finish_stdout(SR_OK);
     }
     if (options.version) {
         printf("scene-render %s\n", SR_VERSION);
-        return SR_OK;
+        return finish_stdout(SR_OK);
     }
     if (options.print_schema) {
         size_t length = 0;
         const char *xsd = sr_scene_schema_text(&length);
-        return fwrite(xsd, 1, length, stdout) == length && fflush(stdout) == 0
-                   ? SR_OK : SR_ERR_IO;
+        return finish_stdout(fwrite(xsd, 1, length, stdout) == length
+                                 ? SR_OK : SR_ERR_IO);
     }
     SrDiagnostics diag;
     sr_diag_init(&diag, options.scene_path, stderr);
@@ -152,6 +163,7 @@ int main(int argc, char **argv) {
         printf("%s %016llx\n", options.render.preview_path,
                (unsigned long long)metrics.preview_hash);
     }
+    status = finish_stdout(status);
     if (options.metrics) print_metrics(&metrics);
     sr_scene_free(&scene);
     return status;

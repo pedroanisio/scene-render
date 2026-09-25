@@ -269,6 +269,14 @@ void sr_font_cache_free(SrFontCache *cache) {
     free(cache);
 }
 
+size_t sr_font_cache_count(const SrFontCache *cache) {
+    return cache ? cache->font_count : 0;
+}
+
+const char *sr_font_cache_path(const SrFontCache *cache, size_t i) {
+    return cache && i < cache->font_count ? cache->fonts[i].path : NULL;
+}
+
 static SrStatus cache_family(SrFontCache *cache, const char *family,
                              const char **path, int *index, char *err,
                              size_t errlen) {

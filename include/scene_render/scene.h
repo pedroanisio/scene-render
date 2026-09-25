@@ -491,6 +491,8 @@ typedef struct {
 typedef struct {
     char *source_path;
     char *base_dir;
+    uint64_t source_hash;       /* FNV-1a 64 of the exact bytes the XML loader
+                                   parsed (the --resume scene fingerprint) */
     SrProject project;
     SrOutput output;
     SrAsset *assets;

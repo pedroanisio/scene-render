@@ -13,7 +13,7 @@ dynamically, so it is optional at runtime.
 | Component | Exact verified version | Use | License |
 |---|---:|---|---|
 | Expat / `libexpat1-dev` | 2.6.1-2ubuntu0.3 | XML tokenization through the C API | MIT |
-| libxml2 (`libxml-2.0`) | ≥ 2.9.1 (pkg-config); P6 verified with 2.14.6 (Freedesktop SDK 25.08); callbacks handle both the pre-2.12 `xmlErrorPtr` and the 2.12+ `const xmlError *` signatures | runtime XSD validation of scene documents against the embedded `schema/scene-v1.xsd` (`src/xml_schema.c`); no network, no external entities | MIT |
+| libxml2 (`libxml-2.0`) | ≥ 2.9.14 (pkg-config and a compile-time check; older releases can load external parameter entities); verified with 2.14.6 (Freedesktop SDK 25.08); callbacks handle both the pre-2.12 `xmlErrorPtr` and the 2.12+ `const xmlError *` signatures | runtime XSD validation of scene documents against the embedded `schema/scene-v1.xsd` (`src/xml_schema.c`); no network, no external entities | MIT |
 | FFmpeg libraries | libavformat ≥ 60, libavcodec ≥ 60, libavutil ≥ 58, libswscale ≥ 7, libswresample ≥ 4 (pkg-config); P1/P2 verified with 61.7.100 / 61.19.101 / 59.39.100 / 8.3.100 / 5.3.100 (Freedesktop SDK 25.08) | in-process demux/decode, swscale color conversion, swresample, H.264/H.265/FFV1/AAC encode, PNG preview encode, MP4/Matroska mux | LGPL-2.1-or-later normally; GPL when built with libx264/libx265 |
 | libx264 | 0.164.3108+git31e19f9-1 | H.264 encoder exposed by libavcodec | GPL-2.0-or-later |
 | libx265 | 3.5-2build1 | H.265 encoder exposed by libavcodec | GPL-2.0-or-later |

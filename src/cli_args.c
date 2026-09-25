@@ -94,6 +94,23 @@ static bool is(const char *arg, const char *name) {
     return strcmp(arg, name) == 0;
 }
 
+/* Every option; aliases share a slot so repeating either is a duplicate. */
+static const char *const option_names[] = {
+    "--validate", "--print-schema", "--hash", "--resume", "--keep-parts",
+    "--metrics", "--verbose", "--version", "--help",
+    "--scene", "--output", "--frame-range", "--preview-frame", "--preview-out",
+    "--mode", "--resolution", "--fps", "--quality", "--threads", "--renderer",
+    "--metrics-trace", "--segment-frames", "--physics-cache"};
+enum { OPTION_COUNT = sizeof(option_names) / sizeof(option_names[0]) };
+
+static int option_slot(const char *arg) {
+    if (is(arg, "-h")) arg = "--help";
+    if (is(arg, "--frame")) arg = "--preview-frame";
+    for (int k = 0; k < OPTION_COUNT; ++k)
+        if (is(arg, option_names[k])) return k;
+    return -1;
+}
+
 SrStatus sr_cli_parse(int argc, char *const *argv, SrCliOptions *out,
                       char *error, size_t error_size) {
     if (error && error_size) error[0] = '\0';
@@ -101,8 +118,14 @@ SrStatus sr_cli_parse(int argc, char *const *argv, SrCliOptions *out,
     SrCliOptions o = {0};
     o.render.segment_frames = SR_RESUME_DEFAULT_SEGMENT_FRAMES;
     bool segment_given = false;
+    bool seen[OPTION_COUNT] = {false};
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
+        int slot = option_slot(arg);
+        if (slot < 0) return fail(error, error_size, "error: unknown option '%s'", arg);
+        if (seen[slot])
+            return fail(error, error_size, "error: %s given more than once", arg);
+        seen[slot] = true;
         /* Flags without a value. */
         if (is(arg, "--validate")) { o.render.validate_only = true; continue; }
         if (is(arg, "--print-schema")) { o.print_schema = true; continue; }
@@ -117,18 +140,13 @@ SrStatus sr_cli_parse(int argc, char *const *argv, SrCliOptions *out,
         if (is(arg, "--verbose")) { o.verbose = true; continue; }
         if (is(arg, "--version")) { o.version = true; continue; }
         if (is(arg, "--help") || is(arg, "-h")) { o.help = true; continue; }
-        /* Options with one value. */
-        static const char *const valued[] = {
-            "--scene", "--output", "--frame-range", "--preview-frame", "--frame",
-            "--preview-out", "--mode", "--resolution", "--fps", "--quality",
-            "--threads", "--renderer", "--metrics-trace", "--segment-frames",
-            "--physics-cache"};
-        bool known = false;
-        for (size_t k = 0; k < sizeof(valued) / sizeof(valued[0]); ++k)
-            known |= is(arg, valued[k]);
-        if (!known) return fail(error, error_size, "error: unknown option '%s'", arg);
-        if (i + 1 >= argc)
+        /* Options with one value: the next argument, unless it is itself
+         * an option ("--scene --validate" is a missing value, not a file
+         * named --validate). */
+        if (i + 1 >= argc || strncmp(argv[i + 1], "--", 2) == 0)
             return fail(error, error_size, "error: %s requires a value", arg);
+        if (!argv[i + 1][0])
+            return fail(error, error_size, "error: %s expects a non-empty value", arg);
         const char *value = argv[++i];
         if (is(arg, "--scene")) {
             o.scene_path = value;
