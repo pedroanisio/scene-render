@@ -1,6 +1,6 @@
 # Dusk parallax layers
 
-Used by `examples/dusk-parallax.xml`. Both works are dedicated to the public
+Used by `examples/dusk-parallax.xml` and `examples/dusk-depth.xml`. Both works are dedicated to the public
 domain under **CC0 1.0 Universal**
 (<https://creativecommons.org/publicdomain/zero/1.0/>). No attribution is
 required; it is given here anyway. These files are not covered by the

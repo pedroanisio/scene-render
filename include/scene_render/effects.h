@@ -23,6 +23,14 @@ SrStatus sr_effects_apply_group(const SrScene *scene, SrEffect *const *effects,
                                 SrMat3 to_canvas, SrEffectRect *rect,
                                 unsigned threads);
 
+/* Depth-of-field blur of the pixels in *rect (grown by the kernel reach,
+ * clipped to the frame, and returned in *rect): three box passes giving a
+ * near-Gaussian of standard deviation radius / 2, the fractional part
+ * blended between the neighbouring integer kernels so animated radii vary
+ * smoothly. The deviation saturates at 64 px. */
+SrStatus sr_effects_blur_rect(SrFrame *frame, SrEffectRect *rect,
+                              double radius, unsigned threads);
+
 /* How far, in pixels, `effect` at `time` can move content outward: the
  * blur radius for glow/bloom/blur, offset plus radius plus one for
  * drop-shadow, zero for per-pixel effects. */

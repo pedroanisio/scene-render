@@ -1,0 +1,59 @@
+<?xml version="1.0"?>
+<!-- Depth cards golden: parallax planes under an animated camera (truck,
+     yaw, zoom), a perspective floor card, a 3D sphere interleaved between
+     cards, depth of field, particles inside a card, antialias3d 2. -->
+<scene version="1.0">
+  <project width="320" height="180" fps="12" duration="1" seed="2525"
+           background="#10081CFF" antialias3d="2"/>
+  <output path="../build/test-artifacts/depth.mp4" codec="h264"
+          pixelFormat="yuv420p" preset="ultrafast" crf="30"/>
+  <assets>
+    <image id="checker" src="../examples/assets/checker.ppm" width="8" height="8"
+           colorSpace="srgb"/>
+  </assets>
+  <materials>
+    <material id="moon" baseColor="#F0E6D0FF" roughness="0.9" emissive="#302820FF"/>
+  </materials>
+  <composition>
+    <camera id="cam" x="0" y="0" z="-400" zoom="400" yaw="0"
+            focusDistance="400" aperture="6">
+      <animate property="position.x" defaultInterpolation="linear">
+        <key time="0" value="-40"/><key time="1" value="40"/>
+      </animate>
+      <animate property="yaw" defaultInterpolation="ease-in-out">
+        <key time="0" value="-4"/><key time="1" value="4"/>
+      </animate>
+      <animate property="zoom" defaultInterpolation="linear">
+        <key time="0" value="400"/><key time="1" value="440"/>
+      </animate>
+    </camera>
+    <shape id="sky" shape="rect" x="-480" y="-300" width="1280" height="700"
+           fill="#3A2350FF" depth="1600"/>
+    <group id="farRidge" depth="800">
+      <shape id="peakA" shape="ellipse" x="-60" y="90" width="260" height="160"
+             fill="#5A3A6AFF"/>
+      <shape id="peakB" shape="ellipse" x="150" y="80" width="300" height="180"
+             fill="#4E3060FF"/>
+    </group>
+    <object3D id="orb" primitive="sphere" material="moon" x="60" y="40" z="250"
+              radius="36"/>
+    <group id="nearRidge" depth="150">
+      <shape id="hill" shape="ellipse" x="-100" y="120" width="360" height="160"
+             fill="#2A1A36FF"/>
+      <particleEmitter id="flies" preset="dust" x="60" y="140" rate="30"
+                       lifetime="2" speed="60" spread="180" size="3"
+                       color="#FFE9A8FF" blend="add"/>
+    </group>
+    <layer id="floor" asset="checker" x="160" y="170" anchorX="4" anchorY="4"
+           scaleX="40" scaleY="40" rotationX="78" depth="60" opacity="0.85"/>
+    <shape id="title" shape="rect" x="200" y="20" width="90" height="40"
+           fill="#FFB547DD" stroke="#FFFFFFFF" strokeWidth="3" depth="-80"
+           rotationY="-25"/>
+    <shape id="hud" shape="rect" x="8" y="8" width="40" height="6"
+           fill="#FFFFFFFF"/>
+  </composition>
+  <lights>
+    <light id="amb" type="ambient" intensity="0.35"/>
+    <light id="key" type="directional" yaw="-30" pitch="-20" intensity="1.2"/>
+  </lights>
+</scene>

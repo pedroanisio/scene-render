@@ -13,7 +13,8 @@
 | Vector assets | Implemented | Rect, ellipse, and antialiased filled paths using M/L/H/V/C/Q/Z (absolute or relative) |
 | 2D shapes | Implemented | Rectangles/ellipses, fill/stroke, transforms, animation, physics, deformation |
 | 3D objects | Implemented visual renderer | Lit sphere/box/plane plus triangulated Wavefront OBJ with vertex normals or generated face normals |
-| 3D visibility | Implemented | CPU depth buffer across imported meshes and primitives |
+| 3D visibility | Implemented | CPU depth buffer across imported meshes and primitives; perspective-correct mesh depth, camera-facing sphere depth |
+| Depth cards (2.5D) | Implemented | Camera-projected 2D planes: affine fast path, perspective warp (plane buffer ≤ 4096 px side / 8 Mpx), far-to-near run sort, per-sample depth shared with 3D, alpha ≥ 0.5 depth writes, DOF blur (σ ≤ 64 px); crossing translucent cards blend in draw order; standard mode only |
 | Nested layers | Implemented | Dynamic arrays and dynamic XML nesting; memory-limited rather than fixed layer count |
 | Masks/clipping | Implemented | Rect, ellipse, rounded rectangle, inversion, nested group transforms |
 | Blend/alpha | Implemented | Normal/add/multiply/screen/overlay/difference with straight alpha |
@@ -21,7 +22,7 @@
 | Linear-light compositing | Implemented | Uses the active working-space transfer; selectable per project |
 | Keyframes | Implemented | Step, linear, ease-in, ease-out, ease-in-out, cubic Bézier |
 | Media time | Implemented | Trim, finite loop, reverse, speed, stretch, explicit source-time remap |
-| Camera | Implemented | Perspective/orthographic 3D and spherical viewport motion |
+| Camera | Implemented | Perspective/orthographic 3D, depth cards, and spherical viewport motion; `zoom` focal length |
 | Lights/materials | Implemented visual model | Ambient/directional/point/spot; base/emissive/metallic/roughness controls; animation |
 | Shadows | Implemented approximation | Screen-space ground shadow plus bounding-volume inter-object occlusion |
 | Effects | Implemented | Glow, bloom, sliding box blur, grade, vignette, lens-flare-style |

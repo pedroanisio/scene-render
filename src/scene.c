@@ -81,6 +81,8 @@ static void camera_free(SrCamera *camera) {
     anim_free(&camera->x); anim_free(&camera->y); anim_free(&camera->z);
     anim_free(&camera->yaw); anim_free(&camera->pitch);
     anim_free(&camera->roll); anim_free(&camera->fov);
+    anim_free(&camera->zoom); anim_free(&camera->focus_distance);
+    anim_free(&camera->aperture);
 }
 
 static void light_free(SrLight *light) {
@@ -363,6 +365,9 @@ SrAnimValue *sr_node_property(SrNode *node, const char *name) {
     if (strcmp(name, "anchor.x") == 0) return &node->transform.anchor_x;
     if (strcmp(name, "anchor.y") == 0) return &node->transform.anchor_y;
     if (strcmp(name, "source.time") == 0) return &node->source_time;
+    if (strcmp(name, "depth") == 0) return &node->transform.z;
+    if (strcmp(name, "rotation.x") == 0) return &node->transform.rotation_x;
+    if (strcmp(name, "rotation.y") == 0) return &node->transform.rotation_y;
     if (node->type == SR_NODE_PARTICLES) {
         if (strcmp(name, "rate") == 0) return &node->particle_rate;
         if (strcmp(name, "lifetime") == 0) return &node->particle_lifetime;

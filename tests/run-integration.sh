@@ -128,6 +128,17 @@ production_b="$work/production-b.ppm"
 cmp "$production_a" "$production_b"
 golden production "$production_a"
 
+# Depth cards: camera-projected planes, a perspective floor, a 3D sphere
+# interleaved between cards, depth of field, antialias3d 2.
+depth_a="$work/depth-a.ppm"
+depth_b="$work/depth-b.ppm"
+"$binary" --scene "$root/tests/data-depth.xml" --preview-frame 6 \
+    --preview-out "$depth_a" --threads 1
+"$binary" --scene "$root/tests/data-depth.xml" --preview-frame 6 \
+    --preview-out "$depth_b" --threads 4
+cmp "$depth_a" "$depth_b"
+golden depth "$depth_a"
+
 video="$work/integration.mp4"
 "$binary" --scene "$root/examples/keyframe-curves.xml" --resolution 320x180 \
     --fps 12 --frame-range 0:12 --output "$video" --threads 1 --quality low

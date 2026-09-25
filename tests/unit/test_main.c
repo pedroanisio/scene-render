@@ -55,7 +55,7 @@ int main(int argc, char **argv)
         {"audio", sr_tests_audio},       {"video", sr_tests_video},
         {"fx", sr_tests_fx},             {"anim_color", sr_tests_anim_color},
         {"particles", sr_tests_particles}, {"deform", sr_tests_deform},
-        {"shadow", sr_tests_shadow},
+        {"shadow", sr_tests_shadow},     {"depth", sr_tests_depth},
         {"text", sr_tests_text},         {"args", sr_tests_args},
         {"resume", sr_tests_resume},
     };
