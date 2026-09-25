@@ -1,235 +1,127 @@
+#include "scene_render/cli_args.h"
 #include "scene_render/renderer.h"
 #include "scene_render/xml.h"
 
 #include <libavutil/log.h>
 
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct {
-    const char *scene_path;
-    SrRenderOptions render;
-    bool verbose;
-    bool metrics;
-    bool override_resolution;
-    uint32_t width, height;
-    bool override_fps;
-    uint32_t fps_num, fps_den;
-    const char *quality;
-    bool override_mode;
-    SrRenderMode mode;
-} CliOptions;
-
-static void usage(FILE *stream) {
-    fprintf(stream,
-            "scene-render %s\n"
-            "Usage: scene-render --scene FILE [options]\n\n"
-            "  --output FILE            Override XML output path\n"
-            "  --validate               Validate without decoding or rendering\n"
-            "  --frame-range A:B        Render half-open frame range [A,B)\n"
-            "  --preview-frame N        Write one deterministic preview frame\n"
-            "  --preview-out FILE       Preview path (default build/preview.ppm);\n"
-            "                           a .png name writes PNG, anything else PPM\n"
-            "  --mode standard|equirectangular|viewport\n"
-            "                           Override project mode (360 modes need scene360)\n"
-            "  --resolution WIDTHxHEIGHT\n"
-            "  --fps N or N/D           Override frame rate\n"
-            "  --quality low|medium|high\n"
-            "  --threads auto|N         Render/encoder worker count\n"
-            "  --renderer cpu|gpu       Select backend (gpu falls back to CPU)\n"
-            "  --resume                  Reuse deterministic cached RGBA frames\n"
-            "  --metrics                 Print timing, CPU, per-stage and memory metrics\n"
-            "  --metrics-trace FILE      Write per-frame stage timings as JSON Lines\n"
-            "  --verbose                 Verbose diagnostics\n"
-            "  --version                 Print version\n",
-            SR_VERSION);
-}
-
-static bool parse_pair(const char *text, char separator, uint64_t *a,
-                       uint64_t *b) {
-    char *copy = sr_strdup(text);
-    if (!copy) return false;
-    char *middle = strchr(copy, separator);
-    bool ok = false;
-    if (middle) {
-        *middle++ = '\0';
-        ok = sr_parse_u64(copy, a) && sr_parse_u64(middle, b);
-    }
-    free(copy);
-    return ok;
-}
-
-static bool parse_resolution(const char *text, uint32_t *width,
-                             uint32_t *height) {
-    uint64_t a, b;
-    if (!parse_pair(text, 'x', &a, &b) || a == 0 || b == 0 ||
-        a > UINT32_MAX || b > UINT32_MAX) {
-        return false;
-    }
-    *width = (uint32_t)a;
-    *height = (uint32_t)b;
-    return true;
-}
-
-static bool parse_fps(const char *text, uint32_t *num, uint32_t *den) {
-    uint64_t a, b = 1;
-    const char *slash = strchr(text, '/');
-    if (slash) {
-        if (!parse_pair(text, '/', &a, &b)) return false;
-    } else if (!sr_parse_u64(text, &a)) {
-        return false;
-    }
-    if (a == 0 || b == 0 || a > UINT32_MAX || b > UINT32_MAX) return false;
-    *num = (uint32_t)a;
-    *den = (uint32_t)b;
-    return true;
-}
-
-static bool require_value(int argc, char **argv, int *index, const char **value) {
-    if (*index + 1 >= argc) {
-        fprintf(stderr, "error: %s requires a value\n", argv[*index]);
-        return false;
-    }
-    *value = argv[++*index];
-    return true;
-}
-
-static int parse_cli(int argc, char **argv, CliOptions *options) {
-    *options = (CliOptions){0};
-    options->render.preview_path = "build/preview.ppm";
-    for (int i = 1; i < argc; ++i) {
-        const char *value = NULL;
-        if (strcmp(argv[i], "--scene") == 0) {
-            if (!require_value(argc, argv, &i, &options->scene_path)) return 2;
-        } else if (strcmp(argv[i], "--output") == 0) {
-            if (!require_value(argc, argv, &i, &options->render.output_override)) return 2;
-        } else if (strcmp(argv[i], "--validate") == 0) {
-            options->render.validate_only = true;
-        } else if (strcmp(argv[i], "--frame-range") == 0) {
-            if (!require_value(argc, argv, &i, &value) ||
-                !parse_pair(value, ':', &options->render.first_frame,
-                            &options->render.end_frame)) {
-                fprintf(stderr, "error: --frame-range expects A:B\n");
-                return 2;
-            }
-            options->render.has_range = true;
-        } else if (strcmp(argv[i], "--preview-frame") == 0) {
-            if (!require_value(argc, argv, &i, &value) ||
-                !sr_parse_u64(value, &options->render.preview_frame)) {
-                fprintf(stderr, "error: --preview-frame expects an integer\n");
-                return 2;
-            }
-            options->render.preview = true;
-        } else if (strcmp(argv[i], "--preview-out") == 0) {
-            if (!require_value(argc, argv, &i, &options->render.preview_path)) return 2;
-        } else if (strcmp(argv[i], "--mode") == 0) {
-            if (!require_value(argc, argv, &i, &value)) return 2;
-            if (strcmp(value, "standard") == 0) {
-                options->mode = SR_MODE_STANDARD;
-            } else if (strcmp(value, "equirectangular") == 0) {
-                options->mode = SR_MODE_EQUIRECTANGULAR;
-            } else if (strcmp(value, "viewport") == 0) {
-                options->mode = SR_MODE_VIEWPORT;
-            } else {
-                fprintf(stderr, "error: --mode expects standard, equirectangular, or viewport\n");
-                return 2;
-            }
-            options->override_mode = true;
-        } else if (strcmp(argv[i], "--resolution") == 0) {
-            if (!require_value(argc, argv, &i, &value) ||
-                !parse_resolution(value, &options->width, &options->height)) {
-                fprintf(stderr, "error: --resolution expects WIDTHxHEIGHT\n");
-                return 2;
-            }
-            options->override_resolution = true;
-        } else if (strcmp(argv[i], "--fps") == 0) {
-            if (!require_value(argc, argv, &i, &value) ||
-                !parse_fps(value, &options->fps_num, &options->fps_den)) {
-                fprintf(stderr, "error: --fps expects N or N/D\n");
-                return 2;
-            }
-            options->override_fps = true;
-        } else if (strcmp(argv[i], "--quality") == 0) {
-            if (!require_value(argc, argv, &i, &options->quality)) return 2;
-        } else if (strcmp(argv[i], "--threads") == 0) {
-            if (!require_value(argc, argv, &i, &value)) return 2;
-            if (strcmp(value, "auto") == 0) {
-                options->render.encoder_threads = 0;
-            } else {
-                uint32_t count;
-                if (!sr_parse_u32(value, &count) || count == 0) {
-                    fprintf(stderr, "error: --threads expects auto or a positive integer\n");
-                    return 2;
-                }
-                options->render.encoder_threads = count;
-            }
-        } else if (strcmp(argv[i], "--renderer") == 0) {
-            if (!require_value(argc, argv, &i, &value)) return 2;
-            if (strcmp(value, "gpu") == 0) {
-                options->render.request_gpu = true;
-            } else if (strcmp(value, "cpu") != 0) {
-                fprintf(stderr, "error: --renderer expects cpu or gpu\n");
-                return 2;
-            }
-        } else if (strcmp(argv[i], "--resume") == 0) {
-            options->render.resume = true;
-        } else if (strcmp(argv[i], "--metrics-trace") == 0) {
-            if (!require_value(argc, argv, &i, &options->render.trace_path)) return 2;
-        } else if (strcmp(argv[i], "--metrics") == 0) {
-            options->metrics = true;
-            options->render.report_metrics = true;
-        } else if (strcmp(argv[i], "--verbose") == 0) {
-            options->verbose = true;
-        } else if (strcmp(argv[i], "--version") == 0) {
-            printf("scene-render %s\n", SR_VERSION);
-            return 1;
-        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            usage(stdout);
-            return 1;
-        } else {
-            fprintf(stderr, "error: unknown option '%s'\n", argv[i]);
-            return 2;
-        }
-    }
-    if (!options->scene_path) {
-        fprintf(stderr, "error: --scene is required\n");
-        return 2;
-    }
-    return 0;
-}
-
-static bool apply_quality(SrScene *scene, const char *quality) {
-    if (!quality) return true;
+static SrStatus apply_quality(SrScene *scene, SrQuality quality) {
     const char *preset;
-    if (strcmp(quality, "low") == 0) {
-        scene->output.crf = 28;
-        preset = "veryfast";
-    } else if (strcmp(quality, "medium") == 0) {
-        scene->output.crf = 23;
-        preset = "medium";
-    } else if (strcmp(quality, "high") == 0) {
-        scene->output.crf = 18;
-        preset = "slow";
-    } else {
-        return false;
+    switch (quality) {
+    case SR_QUALITY_LOW: scene->output.crf = 28; preset = "veryfast"; break;
+    case SR_QUALITY_MEDIUM: scene->output.crf = 23; preset = "medium"; break;
+    case SR_QUALITY_HIGH: scene->output.crf = 18; preset = "slow"; break;
+    case SR_QUALITY_KEEP:
+    default: return SR_OK;
     }
     char *copy = sr_strdup(preset);
-    if (!copy) return false;
+    if (!copy) return SR_ERR_MEMORY;
     free(scene->output.preset);
     scene->output.preset = copy;
     scene->output.bitrate = 0;
-    return true;
+    return SR_OK;
+}
+
+/* Command-line overrides of the loaded scene. */
+static SrStatus apply_overrides(SrScene *scene, const SrCliOptions *options) {
+    if (options->override_mode) {
+        if (options->mode != SR_MODE_STANDARD && !scene->scene360.enabled) {
+            fprintf(stderr, "error: --mode %s requires a scene360 element\n",
+                    options->mode == SR_MODE_VIEWPORT ? "viewport" : "equirectangular");
+            return SR_ERR_ARGUMENT;
+        }
+        scene->project.mode = options->mode;
+        if (options->mode == SR_MODE_EQUIRECTANGULAR) {
+            scene->project.width = scene->scene360.width;
+            scene->project.height = scene->scene360.height;
+        }
+    }
+    if (options->override_resolution) {
+        scene->project.width = options->width;
+        scene->project.height = options->height;
+        if (scene->project.mode == SR_MODE_EQUIRECTANGULAR) {
+            if ((uint64_t)options->width != (uint64_t)options->height * 2U) {
+                fprintf(stderr, "error: equirectangular --resolution must be 2:1\n");
+                return SR_ERR_ARGUMENT;
+            }
+            scene->scene360.width = options->width;
+            scene->scene360.height = options->height;
+        }
+    }
+    if (options->override_fps) {
+        scene->project.fps_num = options->fps_num;
+        scene->project.fps_den = options->fps_den;
+    }
+    if (options->physics_cache_dir) {
+        char *dir = sr_strdup(options->physics_cache_dir);
+        if (!dir) return SR_ERR_MEMORY;
+        free(scene->physics.cache_dir);
+        scene->physics.cache_dir = dir;
+    }
+    return apply_quality(scene, options->quality);
+}
+
+static void print_metrics(const SrRenderMetrics *metrics) {
+    double fps = metrics->wall_seconds > 0.0
+                     ? metrics->frames / metrics->wall_seconds
+                     : 0.0;
+    /* Encoding runs in-process, so peak_rss_kib is the whole cost. */
+    fprintf(stderr,
+            "metrics: frames=%llu render_s=%.6f encode_s=%.6f "
+            "wall_s=%.6f fps=%.3f peak_rss_kib=%ld "
+            "self_peak_rss_kib=%ld "
+            "user_s=%.3f sys_s=%.3f setup_s=%.3f audio_samples=%llu\n",
+            (unsigned long long)metrics->frames, metrics->render_seconds,
+            metrics->encode_seconds, metrics->wall_seconds, fps,
+            metrics->peak_rss_kib, metrics->peak_self_rss_kib,
+            metrics->user_seconds, metrics->system_seconds,
+            metrics->setup_wall_seconds,
+            (unsigned long long)metrics->audio_samples);
+    fprintf(stderr,
+            "video: sources=%zu requests=%llu cache_hits=%llu "
+            "decoded=%llu seeks=%llu\n",
+            metrics->video_sources,
+            (unsigned long long)metrics->video_requests,
+            (unsigned long long)metrics->video_cache_hits,
+            (unsigned long long)metrics->video_decoded,
+            (unsigned long long)metrics->video_seeks);
+    fprintf(stderr, "physics: steps=%llu cache_hit=%d\n",
+            (unsigned long long)metrics->physics_steps,
+            (int)metrics->physics_cache_hit);
+    fprintf(stderr, "resume: segments_rendered=%llu segments_reused=%llu\n",
+            (unsigned long long)metrics->segments_rendered,
+            (unsigned long long)metrics->segments_reused);
+    /* Per stage: total wall seconds / total engine CPU seconds. */
+    fputs("stages:", stderr);
+    for (int stage = 0; stage < SR_STAGE_COUNT; ++stage)
+        fprintf(stderr, " %s=%.3f/%.3f", sr_stage_name((SrStage)stage),
+                metrics->stages.wall[stage], metrics->stages.cpu[stage]);
+    fputc('\n', stderr);
 }
 
 int main(int argc, char **argv) {
-    CliOptions options;
-    int parsed = parse_cli(argc, argv, &options);
-    if (parsed == 1) return 0;
-    if (parsed != 0) {
-        usage(stderr);
-        return parsed;
+    SrCliOptions options;
+    char error[256];
+    if (sr_cli_parse(argc, argv, &options, error, sizeof(error)) != SR_OK) {
+        fprintf(stderr, "%s\n\n%s", error, sr_cli_usage());
+        return SR_ERR_ARGUMENT;
+    }
+    if (options.help) {
+        fputs(sr_cli_usage(), stdout);
+        return SR_OK;
+    }
+    if (options.version) {
+        printf("scene-render %s\n", SR_VERSION);
+        return SR_OK;
+    }
+    if (options.print_schema) {
+        size_t length = 0;
+        const char *xsd = sr_scene_schema_text(&length);
+        return fwrite(xsd, 1, length, stdout) == length && fflush(stdout) == 0
+                   ? SR_OK : SR_ERR_IO;
     }
     SrDiagnostics diag;
     sr_diag_init(&diag, options.scene_path, stderr);
@@ -238,43 +130,17 @@ int main(int argc, char **argv) {
     av_log_set_level(options.verbose ? AV_LOG_INFO : AV_LOG_ERROR);
     SrScene scene;
     SrStatus status = sr_scene_load_xml(options.scene_path, &scene, &diag);
+    if (status != SR_OK) return status;
+    status = apply_overrides(&scene, &options);
     if (status != SR_OK) {
+        sr_scene_free(&scene);
         return status;
     }
-    if (options.override_mode) {
-        if (options.mode != SR_MODE_STANDARD && !scene.scene360.enabled) {
-            fprintf(stderr, "error: --mode %s requires a scene360 element\n",
-                    options.mode == SR_MODE_VIEWPORT ? "viewport" : "equirectangular");
-            sr_scene_free(&scene);
-            return SR_ERR_ARGUMENT;
-        }
-        scene.project.mode = options.mode;
-        if (options.mode == SR_MODE_EQUIRECTANGULAR) {
-            scene.project.width = scene.scene360.width;
-            scene.project.height = scene.scene360.height;
-        }
-    }
-    if (options.override_resolution) {
-        scene.project.width = options.width;
-        scene.project.height = options.height;
-        if (scene.project.mode == SR_MODE_EQUIRECTANGULAR) {
-            if ((uint64_t)options.width != (uint64_t)options.height * 2U) {
-                fprintf(stderr, "error: equirectangular --resolution must be 2:1\n");
-                sr_scene_free(&scene);
-                return SR_ERR_ARGUMENT;
-            }
-            scene.scene360.width = options.width;
-            scene.scene360.height = options.height;
-        }
-    }
-    if (options.override_fps) {
-        scene.project.fps_num = options.fps_num;
-        scene.project.fps_den = options.fps_den;
-    }
-    if (!apply_quality(&scene, options.quality)) {
-        fprintf(stderr, "error: --quality expects low, medium, or high\n");
-        sr_scene_free(&scene);
-        return SR_ERR_ARGUMENT;
+    char preview_name[40];
+    if (options.render.preview && !options.render.preview_path) {
+        snprintf(preview_name, sizeof(preview_name), "frame-%06llu.png",
+                 (unsigned long long)options.render.preview_frame);
+        options.render.preview_path = preview_name;
     }
     SrRenderMetrics metrics;
     status = sr_render(&scene, &options.render, &metrics, &diag);
@@ -282,37 +148,11 @@ int main(int argc, char **argv) {
         printf("valid: %s (%zu assets, %zu top-level layers)\n",
                options.scene_path, scene.asset_count, scene.root->child_count);
     }
-    if (options.metrics) {
-        double fps = metrics.wall_seconds > 0.0
-                         ? metrics.frames / metrics.wall_seconds
-                         : 0.0;
-        /* Encoding runs in-process, so peak_rss_kib is the whole cost. */
-        fprintf(stderr,
-                "metrics: frames=%llu render_s=%.6f encode_s=%.6f "
-                "wall_s=%.6f fps=%.3f peak_rss_kib=%ld "
-                "self_peak_rss_kib=%ld "
-                "user_s=%.3f sys_s=%.3f setup_s=%.3f audio_samples=%llu\n",
-                (unsigned long long)metrics.frames, metrics.render_seconds,
-                metrics.encode_seconds, metrics.wall_seconds, fps,
-                metrics.peak_rss_kib, metrics.peak_self_rss_kib,
-                metrics.user_seconds, metrics.system_seconds,
-                metrics.setup_wall_seconds,
-                (unsigned long long)metrics.audio_samples);
-        fprintf(stderr,
-                "video: sources=%zu requests=%llu cache_hits=%llu "
-                "decoded=%llu seeks=%llu\n",
-                metrics.video_sources,
-                (unsigned long long)metrics.video_requests,
-                (unsigned long long)metrics.video_cache_hits,
-                (unsigned long long)metrics.video_decoded,
-                (unsigned long long)metrics.video_seeks);
-        /* Per stage: total wall seconds / total engine CPU seconds. */
-        fputs("stages:", stderr);
-        for (int stage = 0; stage < SR_STAGE_COUNT; ++stage)
-            fprintf(stderr, " %s=%.3f/%.3f", sr_stage_name((SrStage)stage),
-                    metrics.stages.wall[stage], metrics.stages.cpu[stage]);
-        fputc('\n', stderr);
+    if (status == SR_OK && options.render.preview) {
+        printf("%s %016llx\n", options.render.preview_path,
+               (unsigned long long)metrics.preview_hash);
     }
+    if (options.metrics) print_metrics(&metrics);
     sr_scene_free(&scene);
     return status;
 }

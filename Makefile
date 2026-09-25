@@ -46,8 +46,15 @@ TEXT_LIBS := $(shell $(PKG_CONFIG) --libs $(TEXT_MODULES))
 ifeq ($(TEXT_LIBS),)
 $(error text development files not found: need $(TEXT_MODULES))
 endif
-CPPFLAGS += $(LIBAV_CFLAGS) $(TEXT_CFLAGS)
-LDLIBS += $(LIBAV_LIBS) $(TEXT_LIBS) -lexpat -lm -pthread -ldl
+# Runtime XSD validation of scene documents (src/xml_schema.c).
+XML2_MODULES := 'libxml-2.0 >= 2.9.1'
+XML2_CFLAGS := $(shell $(PKG_CONFIG) --cflags $(XML2_MODULES))
+XML2_LIBS := $(shell $(PKG_CONFIG) --libs $(XML2_MODULES))
+ifeq ($(XML2_LIBS),)
+$(error libxml2 development files not found: need $(XML2_MODULES))
+endif
+CPPFLAGS += $(LIBAV_CFLAGS) $(TEXT_CFLAGS) $(XML2_CFLAGS)
+LDLIBS += $(LIBAV_LIBS) $(TEXT_LIBS) $(XML2_LIBS) -lexpat -lm -pthread -ldl
 # libav fault injection for tests/unit/test_encode_faults.c.
 TEST_WRAPS := avformat_alloc_output_context2 avcodec_find_encoder_by_name \
 	avcodec_alloc_context3 avcodec_open2 avformat_new_stream \
@@ -70,14 +77,15 @@ CORE_SOURCES := src/common.c src/parallel.c src/color.c src/raster.c src/vector_
 	src/xml_elements.c src/xml_nodes.c src/xml_resolve.c src/xml_audio.c \
 	src/xml_camera.c \
 	src/xml_visual.c \
-	src/xml_physics.c
-CORE_OBJECTS := $(CORE_SOURCES:src/%.c=$(BUILD)/%.o)
+	src/xml_physics.c src/xml_schema.c src/cli_args.c
+# The embedded XSD (generated below) is part of the core library.
+CORE_OBJECTS := $(CORE_SOURCES:src/%.c=$(BUILD)/%.o) $(BUILD)/schema_data.o
 APP_OBJECT := $(BUILD)/main.o
 TEST_SOURCES := $(sort $(wildcard tests/unit/*.c))
 TEST_OBJECTS := $(TEST_SOURCES:tests/unit/%.c=$(BUILD)/unit/%.o)
 UNIT_SUITES := timeline geometry compositor color vector mesh scene xml \
 	camera physics blend group raster mask path image encode encode_faults \
-	audio video fx anim_color particles deform shadow text
+	audio video fx anim_color particles deform shadow text args
 TEST_CPPFLAGS := -DSR_TEST_DATA_DIR='"$(CURDIR)"' \
 	-DSR_TEST_TMP_DIR='"$(CURDIR)/$(BUILD)/test_tmp"'
 DEPS := $(CORE_OBJECTS:.o=.d) $(APP_OBJECT:.o=.d) $(TEST_OBJECTS:.o=.d)
@@ -98,6 +106,21 @@ $(BUILD)/sr-probe: tests/tools/sr-probe.c
 $(BUILD)/%.o: src/%.c
 	@mkdir -p $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
+
+# schema/scene-v1.xsd as a C byte array (the CMake build does the same with
+# cmake/schema_data.c.in); od and sed are POSIX, so no CMake or xxd needed.
+$(BUILD)/schema_data.c: schema/scene-v1.xsd
+	@mkdir -p $(BUILD)
+	{ echo '/* Generated from schema/scene-v1.xsd by the Makefile. Do not edit. */'; \
+	  echo '#include "schema_data.h"'; \
+	  echo 'const unsigned char sr_schema_xsd[] = {'; \
+	  od -An -v -tx1 schema/scene-v1.xsd | sed -e 's/[0-9a-f][0-9a-f]/0x&,/g'; \
+	  echo '0x00};'; \
+	  echo 'const size_t sr_schema_xsd_len = sizeof sr_schema_xsd - 1;'; \
+	} > $@.tmp && mv $@.tmp $@
+
+$(BUILD)/schema_data.o: $(BUILD)/schema_data.c src/schema_data.h
+	$(CC) $(CPPFLAGS) -Isrc $(CFLAGS) -c $< -o $@
 
 $(BUILD)/unit/%.o: tests/unit/%.c
 	@mkdir -p $(BUILD)/unit
@@ -129,7 +152,7 @@ perf-check: $(BUILD)/scene-render
 
 clean:
 	rm -f $(BUILD)/*.o $(BUILD)/*.d $(BUILD)/scene-render $(BUILD)/sr-unit-tests \
-		$(BUILD)/sr-probe
+		$(BUILD)/sr-probe $(BUILD)/schema_data.c
 	rm -rf $(BUILD)/unit $(BUILD)/test-artifacts $(BUILD)/test_tmp
 
 -include $(DEPS)

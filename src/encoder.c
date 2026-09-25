@@ -41,6 +41,10 @@ struct SrEncoder {
     uint32_t channels;
     int audio_frame_size;   /* fixed codec frame (padded tail); 0 = none */
     bool matroska;
+    /* Pass-through video (sr_encoder_open_copy): no video codec; packets
+     * of finished segments are copied with shifted timestamps. */
+    AVCodecParameters *copy_par;
+    AVRational frame_tb;    /* 1/fps: the frame index time base */
     bool header_written;
     bool trailer_written;
     bool closing;           /* sr_encoder_finish has started */
@@ -353,16 +357,20 @@ static SrStatus add_spherical(SrEncoder *e, SrDiagnostics *diag) {
 
 static SrStatus open_streams(SrEncoder *e, const SrScene *scene,
                              const char *path, const char *container,
-                             SrDiagnostics *diag) {
+                             bool spherical, SrDiagnostics *diag) {
     e->vstream = avformat_new_stream(e->fmt, NULL);
     if (!e->vstream) return av_fail(diag, AVERROR(ENOMEM), "cannot add video stream");
-    e->vstream->time_base = e->video->time_base;
-    e->vstream->avg_frame_rate = e->video->framerate;
-    int rc = avcodec_parameters_from_context(e->vstream->codecpar, e->video);
+    e->vstream->time_base = e->frame_tb;
+    e->vstream->avg_frame_rate = (AVRational){e->frame_tb.den, e->frame_tb.num};
+    int rc = e->copy_par
+        ? avcodec_parameters_copy(e->vstream->codecpar, e->copy_par)
+        : avcodec_parameters_from_context(e->vstream->codecpar, e->video);
     if (rc < 0) return av_fail(diag, rc, "cannot configure video stream");
+    /* A copied tag belongs to the segment's container; let the muxer pick. */
+    e->vstream->codecpar->codec_tag = 0;
     if (scene->output.codec == SR_CODEC_H265 && strcmp(container, "matroska"))
         e->vstream->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
-    if (scene->project.mode == SR_MODE_EQUIRECTANGULAR &&
+    if (spherical && scene->project.mode == SR_MODE_EQUIRECTANGULAR &&
         scene->output.spherical_metadata) {
         SrStatus status = add_spherical(e, diag);
         if (status != SR_OK) return status;
@@ -392,9 +400,52 @@ static SrStatus open_streams(SrEncoder *e, const SrScene *scene,
     return SR_OK;
 }
 
-SrStatus sr_encoder_open(SrEncoder **out, const SrScene *scene,
-                         const char *path, unsigned threads,
-                         const SrEncoderAudio *audio, SrDiagnostics *diag) {
+typedef enum { OPEN_FULL, OPEN_SEGMENT, OPEN_COPY } OpenMode;
+
+/* Stream parameters of the video stream of `path` (a finished segment). */
+static SrStatus read_video_params(SrEncoder *e, const SrScene *scene,
+                                  const char *path, SrDiagnostics *diag) {
+    AVFormatContext *in = NULL;
+    int rc = avformat_open_input(&in, path, NULL, NULL);
+    if (rc >= 0) rc = avformat_find_stream_info(in, NULL);
+    int index = rc >= 0 ? av_find_best_stream(in, AVMEDIA_TYPE_VIDEO, -1, -1,
+                                              NULL, 0) : rc;
+    SrStatus status = SR_OK;
+    if (index < 0) {
+        char message[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(index, message, sizeof(message));
+        sr_diag_error(diag, 0, NULL, NULL, "cannot read segment '%s': %s",
+                      path, message);
+        status = index == AVERROR(ENOMEM) ? SR_ERR_MEMORY : SR_ERR_ENCODER;
+    } else {
+        const AVCodecParameters *par = in->streams[index]->codecpar;
+        if (par->width != (int)scene->project.width ||
+            par->height != (int)scene->project.height) {
+            sr_diag_error(diag, 0, NULL, NULL,
+                          "segment '%s' is %dx%d, expected %ux%u", path,
+                          par->width, par->height, scene->project.width,
+                          scene->project.height);
+            status = SR_ERR_ENCODER;
+        } else {
+            e->copy_par = avcodec_parameters_alloc();
+            rc = e->copy_par ? avcodec_parameters_copy(e->copy_par, par)
+                             : AVERROR(ENOMEM);
+            if (rc < 0) status = av_fail(diag, rc, "cannot copy segment parameters");
+            /* The demuxer measured the segment's bit rate; declare what the
+             * encoder itself declares (the configured rate, or none). */
+            else
+                e->copy_par->bit_rate = scene->output.codec == SR_CODEC_FFV1
+                    ? 0 : (int64_t)scene->output.bitrate;
+        }
+    }
+    avformat_close_input(&in);
+    return status;
+}
+
+static SrStatus open_encoder(SrEncoder **out, const SrScene *scene,
+                             const char *path, unsigned threads,
+                             const SrEncoderAudio *audio, OpenMode mode,
+                             const char *video_template, SrDiagnostics *diag) {
     if (!out) return SR_ERR_ARGUMENT;
     *out = NULL;
     if (!scene || !path || !scene->project.width || !scene->project.height ||
@@ -423,6 +474,8 @@ SrStatus sr_encoder_open(SrEncoder **out, const SrScene *scene,
     e->width = scene->project.width;
     e->height = scene->project.height;
     e->matroska = strcmp(container, "matroska") == 0;
+    e->frame_tb = (AVRational){(int)scene->project.fps_den,
+                               (int)scene->project.fps_num};
     SrStatus status = SR_OK;
     int rc = avformat_alloc_output_context2(&e->fmt, NULL, container, path);
     if (rc < 0 || !e->fmt)
@@ -433,18 +486,119 @@ SrStatus sr_encoder_open(SrEncoder **out, const SrScene *scene,
         e->pkt = av_packet_alloc();
         if (!e->pkt) status = av_fail(diag, AVERROR(ENOMEM), "cannot allocate packet");
     }
-    if (status == SR_OK) status = open_video(e, scene, threads, diag);
-    if (status == SR_OK && audio && audio->channels)
+    if (status == SR_OK)
+        status = mode == OPEN_COPY
+            ? read_video_params(e, scene, video_template, diag)
+            : open_video(e, scene, threads, diag);
+    if (status == SR_OK && mode != OPEN_SEGMENT && audio && audio->channels)
         status = open_audio(e, scene, audio, diag);
-    if (status == SR_OK) status = open_streams(e, scene, path, container, diag);
+    if (status == SR_OK)
+        status = open_streams(e, scene, path, container, mode != OPEN_SEGMENT,
+                              diag);
     if (status != SR_OK) {
         sr_encoder_destroy(e);
         return status;
     }
-    sr_diag_info(diag, "encoding in-process: %s %s -> %s", e->video->codec->name,
+    sr_diag_info(diag, "encoding in-process: %s %s -> %s", sr_encoder_name(e),
                  scene->output.pixel_format, container);
     *out = e;
     return SR_OK;
+}
+
+SrStatus sr_encoder_open(SrEncoder **out, const SrScene *scene,
+                         const char *path, unsigned threads,
+                         const SrEncoderAudio *audio, SrDiagnostics *diag) {
+    return open_encoder(out, scene, path, threads, audio, OPEN_FULL, NULL, diag);
+}
+
+SrStatus sr_encoder_open_segment(SrEncoder **out, const SrScene *scene,
+                                 const char *path, unsigned threads,
+                                 SrDiagnostics *diag) {
+    return open_encoder(out, scene, path, threads, NULL, OPEN_SEGMENT, NULL,
+                        diag);
+}
+
+SrStatus sr_encoder_open_copy(SrEncoder **out, const SrScene *scene,
+                              const char *path, const char *video_template,
+                              const SrEncoderAudio *audio, SrDiagnostics *diag) {
+    if (!video_template) {
+        if (out) *out = NULL;
+        return SR_ERR_ARGUMENT;
+    }
+    return open_encoder(out, scene, path, 1, audio, OPEN_COPY, video_template,
+                        diag);
+}
+
+SrStatus sr_encoder_copy_video(SrEncoder *e, const char *segment_path,
+                               uint64_t first_frame, uint64_t frame_count,
+                               SrDiagnostics *diag) {
+    if (!e || e->closing || !e->copy_par || !segment_path ||
+        first_frame > (uint64_t)INT64_MAX / 2 || frame_count > (uint64_t)INT32_MAX)
+        return SR_ERR_ARGUMENT;
+    double start = sr_monotonic_seconds();
+    AVFormatContext *in = NULL;
+    int rc = avformat_open_input(&in, segment_path, NULL, NULL);
+    if (rc >= 0) rc = avformat_find_stream_info(in, NULL);
+    int index = rc >= 0 ? av_find_best_stream(in, AVMEDIA_TYPE_VIDEO, -1, -1,
+                                              NULL, 0) : rc;
+    if (index < 0) {
+        char message[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(index, message, sizeof(message));
+        sr_diag_error(diag, 0, NULL, NULL, "cannot read segment '%s': %s",
+                      segment_path, message);
+        avformat_close_input(&in);
+        e->seconds += sr_monotonic_seconds() - start;
+        return index == AVERROR(ENOMEM) ? SR_ERR_MEMORY : SR_ERR_ENCODER;
+    }
+    const AVCodecParameters *par = in->streams[index]->codecpar;
+    const AVCodecParameters *want = e->copy_par;
+    SrStatus status = SR_OK;
+    if (par->codec_id != want->codec_id || par->width != want->width ||
+        par->height != want->height || par->format != want->format ||
+        par->extradata_size != want->extradata_size ||
+        (want->extradata_size &&
+         memcmp(par->extradata, want->extradata, (size_t)want->extradata_size))) {
+        sr_diag_error(diag, 0, NULL, NULL,
+                      "segment '%s' has different stream parameters than the first",
+                      segment_path);
+        status = SR_ERR_ENCODER;
+    }
+    AVRational in_tb = in->streams[index]->time_base;
+    uint64_t packets = 0;
+    /* Timestamps go to frame units first (rounding absorbs the segment
+     * container's time base), are shifted by the segment's first frame,
+     * then land in the output stream's time base exactly as encoded
+     * packets do; every packet lasts one frame. */
+    while (status == SR_OK && (rc = av_read_frame(in, e->pkt)) >= 0) {
+        if (e->pkt->stream_index != index) {
+            av_packet_unref(e->pkt);
+            continue;
+        }
+        int64_t offset = (int64_t)first_frame;
+        if (e->pkt->pts != AV_NOPTS_VALUE)
+            e->pkt->pts = av_rescale_q(e->pkt->pts, in_tb, e->frame_tb) + offset;
+        if (e->pkt->dts != AV_NOPTS_VALUE)
+            e->pkt->dts = av_rescale_q(e->pkt->dts, in_tb, e->frame_tb) + offset;
+        e->pkt->duration = 1;
+        e->pkt->pos = -1;
+        av_packet_rescale_ts(e->pkt, e->frame_tb, e->vstream->time_base);
+        e->pkt->stream_index = e->vstream->index;
+        ++packets;
+        rc = av_interleaved_write_frame(e->fmt, e->pkt);
+        if (rc < 0) status = av_fail(diag, rc, "cannot write copied video packet");
+    }
+    if (status == SR_OK && rc != AVERROR_EOF)
+        status = av_fail(diag, rc, "cannot read segment packets");
+    if (status == SR_OK && packets != frame_count) {
+        sr_diag_error(diag, 0, NULL, NULL,
+                      "segment '%s' holds %llu frames, expected %llu", segment_path,
+                      (unsigned long long)packets, (unsigned long long)frame_count);
+        status = SR_ERR_ENCODER;
+    }
+    av_packet_unref(e->pkt);
+    avformat_close_input(&in);
+    e->seconds += sr_monotonic_seconds() - start;
+    return status;
 }
 
 unsigned sr_encoder_bits(const SrEncoder *encoder) {
@@ -456,6 +610,7 @@ double sr_encoder_seconds(const SrEncoder *encoder) {
 }
 
 const char *sr_encoder_name(const SrEncoder *encoder) {
+    if (encoder && encoder->copy_par) return "copy";
     return encoder && encoder->video && encoder->video->codec
                ? encoder->video->codec->name : "none";
 }
@@ -509,7 +664,7 @@ static int drain(SrEncoder *e, AVCodecContext *codec, AVStream *stream) {
 
 SrStatus sr_encoder_write_video(SrEncoder *e, const void *rgba,
                                 SrDiagnostics *diag) {
-    if (!e || e->closing || !rgba) return SR_ERR_ARGUMENT;
+    if (!e || e->closing || !rgba || !e->video) return SR_ERR_ARGUMENT;
     double start = sr_monotonic_seconds();
     int rc = av_frame_make_writable(e->frame);
     if (rc < 0) return av_fail(diag, rc, "cannot prepare video frame");
@@ -588,9 +743,12 @@ SrStatus sr_encoder_finish(SrEncoder *e, SrDiagnostics *diag) {
     /* Every step runs even after an earlier one failed, so the container
      * is still closed properly; the first failure is the one returned. */
     SrStatus status = SR_OK;
-    int rc = avcodec_send_frame(e->video, NULL);
-    if (rc >= 0) rc = drain(e, e->video, e->vstream);
-    if (rc < 0) status = av_fail(diag, rc, "cannot flush video encoder");
+    int rc = 0;
+    if (e->video) {
+        rc = avcodec_send_frame(e->video, NULL);
+        if (rc >= 0) rc = drain(e, e->video, e->vstream);
+        if (rc < 0) status = av_fail(diag, rc, "cannot flush video encoder");
+    }
     if (e->audio) {
         rc = e->staged > 0 ? flush_stage(e) : 0;
         if (rc >= 0) rc = avcodec_send_frame(e->audio, NULL);
@@ -629,6 +787,7 @@ void sr_encoder_destroy(SrEncoder *e) {
     av_frame_free(&e->frame);
     av_frame_free(&e->aframe);
     av_packet_free(&e->pkt);
+    avcodec_parameters_free(&e->copy_par);
     free(e->stage);
     free(e);
 }

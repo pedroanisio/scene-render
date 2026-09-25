@@ -4,6 +4,8 @@
 #include "scene_render/diagnostics.h"
 #include "scene_render/scene.h"
 
+#include <stdio.h>
+
 /* Per-frame pipeline stages timed by the renderer, in execution order. */
 typedef enum {
     SR_STAGE_CLEAR,
@@ -23,6 +25,8 @@ typedef struct {
     double cpu[SR_STAGE_COUNT];
 } SrStageTimes;
 
+#define SR_RESUME_DEFAULT_SEGMENT_FRAMES 150u
+
 typedef struct {
     bool validate_only;
     bool preview;
@@ -35,7 +39,19 @@ typedef struct {
     unsigned encoder_threads;
     bool request_gpu;
     bool report_metrics;
+    /* Segmented resume: the range is rendered in independently encoded,
+     * video-only segments of segment_frames frames under OUTPUT.parts/,
+     * reused by a rerun with an identical manifest, then muxed into the
+     * output by packet copy with one audio encode over the whole range. */
     bool resume;
+    uint32_t segment_frames;    /* 0 means SR_RESUME_DEFAULT_SEGMENT_FRAMES */
+    bool keep_parts;            /* keep OUTPUT.parts/ after success */
+    /* Hash mode: render the range without encoding and print
+     * "<frame> <FNV-1a 64 hex>" per frame over the exact bytes the encoder
+     * would receive, then "audio <hex>" over the range's mixed float PCM
+     * when the scene has audio. NULL hash_stream means stdout. */
+    bool hash;
+    FILE *hash_stream;
     const char *trace_path; /* JSONL: one row per frame plus a summary row */
 } SrRenderOptions;
 
@@ -54,6 +70,11 @@ typedef struct {
     uint64_t audio_samples;      /* per channel, handed to the encoder */
     size_t video_sources;        /* open video decoders */
     uint64_t video_requests, video_cache_hits, video_decoded, video_seeks;
+    uint64_t preview_hash;       /* FNV-1a 64 of the 8-bit preview RGBA */
+    uint64_t segments_rendered;  /* --resume: encoded by this run */
+    uint64_t segments_reused;    /* --resume: kept from an earlier run */
+    uint64_t physics_steps;      /* fixed steps simulated by this run */
+    bool physics_cache_hit;      /* samples restored from the physics cache */
 } SrRenderMetrics;
 
 const char *sr_stage_name(SrStage stage);

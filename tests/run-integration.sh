@@ -153,17 +153,21 @@ awk -v v="$video_duration" -v a="$audio_duration" 'BEGIN {
     d = a - v; if (d < 0) d = -d
     if (d > 1024 / 48000) { printf "A/V duration mismatch: video=%s audio=%s\n", v, a; exit 1 } }'
 
+# Segmented resume: two segments (4 + 2 frames) kept, then a rerun that
+# reuses both must reproduce the same bytes and remove the parts directory.
 viewport_video="$work/viewport.mp4"
+rm -rf "$viewport_video.parts"
 "$binary" --scene "$root/tests/data-viewport.xml" --output "$viewport_video" \
-    --threads 4 --resume
-"$binary" --scene "$root/tests/data-viewport.xml" --output "$viewport_video" \
-    --threads 4 --resume
+    --threads 4 --resume --segment-frames 4 --keep-parts
 version=$("$binary" --version | awk '{print $2}')
-manifest=$(find "$viewport_video.resume" -name manifest.txt -type f \
-    -exec grep -l "scene-render=$version" {} \; | head -n 1)
-test -n "$manifest"
-cache_dir=$(dirname "$manifest")
-test "$(find "$cache_dir" -name '*.rgba' | wc -l)" -eq 6
+grep -q "^version=$version\$" "$viewport_video.parts/manifest"
+test "$(find "$viewport_video.parts" -name 'seg-*.mp4' | wc -l)" -eq 2
+test "$(field "$viewport_video" video frames)" = "6"
+cp "$viewport_video" "$work/viewport-first.mp4"
+"$binary" --scene "$root/tests/data-viewport.xml" --output "$viewport_video" \
+    --threads 4 --resume --segment-frames 4
+cmp "$viewport_video" "$work/viewport-first.mp4"
+test ! -e "$viewport_video.parts"
 
 "$binary" --scene "$root/tests/data-equirect.xml" \
     --output "$work/equirect.mkv" --threads 1
@@ -189,6 +193,12 @@ if b"sv3d" not in data:
     raise SystemExit("MP4 sv3d box missing")
 PY
 test "$(field "$spatial" video spherical)" = "equirectangular"
+# A segmented resume of the same scene keeps the spherical metadata (the
+# segments carry none; the final mux adds both kinds).
+"$binary" --scene "$root/tests/data-spatial.xml" --output "$work/spatial-resume.mp4" \
+    --threads 1 --resume --segment-frames 1
+test "$(field "$work/spatial-resume.mp4" video spherical)" = "equirectangular"
+grep -q 'GSpherical:ProjectionType="equirectangular"' "$work/spatial-resume.mp4"
 color="$(field "$spatial" video range),$(field "$spatial" video space),$(field "$spatial" video transfer),$(field "$spatial" video primaries)"
 test "$color" = "tv,bt709,iec61966-2-1,bt709" || {
     echo "unexpected spatial color tags: $color" >&2

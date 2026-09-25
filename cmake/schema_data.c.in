@@ -1,0 +1,5 @@
+/* Generated from schema/scene-v1.xsd at configure time. Do not edit. */
+#include "schema_data.h"
+
+const unsigned char sr_schema_xsd[] = {@SR_XSD_BYTES@ 0x00};
+const size_t sr_schema_xsd_len = sizeof sr_schema_xsd - 1;

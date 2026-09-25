@@ -30,6 +30,28 @@ unsigned sr_encoder_input_bits(const char *pixel_format);
 SrStatus sr_encoder_open(SrEncoder **out, const SrScene *scene,
                          const char *path, unsigned threads,
                          const SrEncoderAudio *audio, SrDiagnostics *diag);
+/* Video-only encoder for one --resume segment: like sr_encoder_open without
+ * an audio stream and without spherical metadata (the final mux adds it). */
+SrStatus sr_encoder_open_segment(SrEncoder **out, const SrScene *scene,
+                                 const char *path, unsigned threads,
+                                 SrDiagnostics *diag);
+/* Pass-through mode for concatenating segments: the video stream takes its
+ * parameters (codec, size, extradata) from the video stream of the finished
+ * segment `video_template` and receives packets only through
+ * sr_encoder_copy_video; audio (when requested) is encoded as usual and the
+ * scene's spherical metadata is attached. sr_encoder_write_video is
+ * refused. */
+SrStatus sr_encoder_open_copy(SrEncoder **out, const SrScene *scene,
+                              const char *path, const char *video_template,
+                              const SrEncoderAudio *audio, SrDiagnostics *diag);
+/* Copies every video packet of `segment_path` into a pass-through encoder,
+ * timestamps shifted by `first_frame` frames (1/fps units, relative to the
+ * output's first frame). Fails with SR_ERR_ENCODER when the segment cannot
+ * be read, its stream parameters differ from the template's, or it does not
+ * hold exactly `frame_count` packets. */
+SrStatus sr_encoder_copy_video(SrEncoder *encoder, const char *segment_path,
+                               uint64_t first_frame, uint64_t frame_count,
+                               SrDiagnostics *diag);
 /* Bits per component this encoder expects in sr_encoder_write_video. */
 unsigned sr_encoder_bits(const SrEncoder *encoder);
 /* One frame: width*height*4 components of 8 or 16 bits, tightly packed. */
@@ -53,7 +75,8 @@ SrStatus sr_encoder_finish(SrEncoder *encoder, SrDiagnostics *diag);
 void sr_encoder_destroy(SrEncoder *encoder);
 /* Seconds spent inside write/finish calls (colour conversion + encode). */
 double sr_encoder_seconds(const SrEncoder *encoder);
-/* Name of the libavcodec video encoder in use ("none" for NULL). */
+/* Name of the libavcodec video encoder in use ("none" for NULL, "copy" in
+ * pass-through mode). */
 const char *sr_encoder_name(const SrEncoder *encoder);
 /* True when libavcodec has an encoder of this name. */
 bool sr_encoder_available(const char *name);

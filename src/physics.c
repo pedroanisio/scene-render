@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 typedef struct {
@@ -233,7 +234,20 @@ static uint64_t signature(const SrScene *scene, const BodyState *states,
 
 /* ---- cache ---------------------------------------------------------------- */
 
-static char *cache_path(const SrScene *scene) {
+/* --physics-cache DIR names the file by the simulation signature inside
+ * DIR (created when missing); otherwise the XML path is relative to the
+ * scene file. */
+static char *cache_path(const SrScene *scene, uint64_t signature) {
+    const char *dir = scene->physics.cache_dir;
+    if (dir) {
+        if (mkdir(dir, 0775) != 0 && errno != EEXIST) return NULL;
+        size_t length = strlen(dir) + 40;
+        char *path = sr_alloc(length);
+        if (path)
+            snprintf(path, length, "%s/physics-%016llx.bin", dir,
+                     (unsigned long long)signature);
+        return path;
+    }
     return scene->physics.cache_path ?
         sr_path_join(scene->base_dir, scene->physics.cache_path) : NULL;
 }
@@ -279,7 +293,7 @@ static bool allocate_samples(BodyState *states, size_t count,
 static bool load_cache(SrScene *scene, BodyState *states, size_t count,
                        SrNode *const *softs, size_t soft_count,
                        uint64_t samples, uint64_t expected) {
-    char *path = cache_path(scene);
+    char *path = cache_path(scene, expected);
     if (!path) return false;
     FILE *file = fopen(path, "rb"); free(path);
     if (!file) return false;
@@ -315,7 +329,7 @@ static bool load_cache(SrScene *scene, BodyState *states, size_t count,
 static void save_cache(const SrScene *scene, BodyState *states, size_t count,
                        SrNode *const *softs, size_t soft_count,
                        uint64_t samples, uint64_t hash, SrDiagnostics *diag) {
-    char *path = cache_path(scene); if (!path) return;
+    char *path = cache_path(scene, hash); if (!path) return;
     size_t length = strlen(path) + 16;
     char *temporary = sr_alloc(length);
     if (!temporary) { free(path); return; }
@@ -783,6 +797,8 @@ SrStatus sr_physics_prepare(SrScene *scene, SrDiagnostics *diag) {
     size_t count = 0, capacity = 0;
     SrNode **softs = NULL;
     size_t soft_count = 0, soft_capacity = 0;
+    scene->physics.steps_simulated = 0;
+    scene->physics.cache_hit = false;
     if (scene->physics.enabled &&
         !collect(scene->root, &states, &count, &capacity)) {
         free(states); return SR_ERR_MEMORY;
@@ -800,6 +816,7 @@ SrStatus sr_physics_prepare(SrScene *scene, SrDiagnostics *diag) {
     uint64_t samples = (uint64_t)exact_samples;
     uint64_t hash = signature(scene, states, count, softs, soft_count);
     if (load_cache(scene, states, count, softs, soft_count, samples, hash)) {
+        scene->physics.cache_hit = true;
         sr_diag_info(diag, "loaded physics cache");
         free(states); free(softs); return SR_OK;
     }
@@ -836,6 +853,7 @@ SrStatus sr_physics_prepare(SrScene *scene, SrDiagnostics *diag) {
         }
     }
     save_cache(scene, states, count, softs, soft_count, samples, hash, diag);
+    scene->physics.steps_simulated = samples - 1;
     sr_diag_info(diag, "simulated %llu fixed physics steps",
                  (unsigned long long)(samples - 1));
     for (size_t i = 0; i < soft_count; ++i) soft_free(&soft_states[i]);

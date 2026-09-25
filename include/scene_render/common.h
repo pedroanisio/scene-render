@@ -49,6 +49,10 @@ char *sr_path_dirname(const char *path);
 char *sr_path_join(const char *base, const char *path);
 double sr_monotonic_seconds(void);
 
+/* 64-bit FNV-1a: start from SR_FNV_OFFSET and feed bytes in order. */
+#define SR_FNV_OFFSET UINT64_C(14695981039346656037)
+uint64_t sr_fnv1a64(uint64_t hash, const void *data, size_t size);
+
 SrMat3 sr_mat_identity(void);
 SrMat3 sr_mat_multiply(SrMat3 a, SrMat3 b);
 SrMat3 sr_mat_translate(double x, double y);

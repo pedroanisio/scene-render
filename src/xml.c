@@ -1,6 +1,7 @@
 #include "scene_render/xml.h"
 
 #include "xml_internal.h"
+#include "xml_schema.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -368,6 +369,13 @@ SrStatus sr_scene_load_xml(const char *path, SrScene *scene,
         sr_scene_free(scene);
         return SR_ERR_IO;
     }
+    SrSchemaDeferral deferral;
+    SrStatus schema = sr_xml_schema_check(path, diag, &deferral);
+    if (schema != SR_OK) {
+        fclose(file);
+        sr_scene_free(scene);
+        return schema;
+    }
     XML_Parser parser = XML_ParserCreate(NULL);
     if (!parser) {
         fclose(file);
@@ -398,6 +406,10 @@ SrStatus sr_scene_load_xml(const char *path, SrScene *scene,
     }
     fclose(file);
     XML_ParserFree(parser);
+    if (!ctx.failed && deferral.deferred) {
+        sr_diag_error(diag, deferral.line, NULL, NULL, "%s", deferral.message);
+        ctx.failed = true;
+    }
     if (!ctx.failed && (!ctx.seen_project || !ctx.seen_composition)) {
         sr_diag_error(diag, 1, "scene", NULL,
                       "scene requires exactly one project and one composition");

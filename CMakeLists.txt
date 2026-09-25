@@ -47,6 +47,16 @@ pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET
 # rasterization, all in-process (src/text.c).
 pkg_check_modules(TEXT REQUIRED IMPORTED_TARGET
     freetype2 harfbuzz>=2.8.2 fribidi>=1.0 fontconfig>=2.13)
+# Runtime XSD validation of scene documents (src/xml_schema.c).
+pkg_check_modules(LIBXML2 REQUIRED IMPORTED_TARGET libxml-2.0>=2.9.1)
+
+# Embed the XSD so the schema the loader enforces is the schema we ship.
+set(SR_XSD ${CMAKE_CURRENT_SOURCE_DIR}/schema/scene-v1.xsd)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SR_XSD})
+file(READ ${SR_XSD} SR_XSD_HEX HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," SR_XSD_BYTES "${SR_XSD_HEX}")
+configure_file(cmake/schema_data.c.in
+               ${CMAKE_CURRENT_BINARY_DIR}/generated/schema_data.c @ONLY)
 
 set(SCENE_RENDER_SOURCES
     src/common.c
@@ -82,15 +92,18 @@ set(SCENE_RENDER_SOURCES
     src/xml_audio.c
     src/xml_camera.c
     src/xml_visual.c
-    src/xml_physics.c)
+    src/xml_physics.c
+    src/xml_schema.c
+    src/cli_args.c
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/schema_data.c)
 
 add_library(scene_render_core STATIC ${SCENE_RENDER_SOURCES})
-target_include_directories(scene_render_core PUBLIC include)
+target_include_directories(scene_render_core PUBLIC include PRIVATE src)
 target_compile_definitions(scene_render_core PUBLIC _POSIX_C_SOURCE=200809L)
 sr_configure_target(scene_render_core)
 find_package(Threads REQUIRED)
 target_link_libraries(scene_render_core PUBLIC EXPAT::EXPAT PkgConfig::LIBAV
-                      PkgConfig::TEXT m
+                      PkgConfig::TEXT PkgConfig::LIBXML2 m
                       Threads::Threads ${CMAKE_DL_LIBS})
 
 add_executable(scene-render src/main.c)
@@ -102,7 +115,7 @@ if(BUILD_TESTING)
     set(SR_UNIT_SUITES timeline geometry compositor color vector mesh scene xml
                        camera physics blend group raster mask path image
                        encode encode_faults audio video
-                       fx anim_color particles deform shadow text)
+                       fx anim_color particles deform shadow text args)
     file(GLOB SR_UNIT_SOURCES CONFIGURE_DEPENDS
          ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/*.c)
     add_executable(sr-unit-tests ${SR_UNIT_SOURCES})
@@ -143,6 +156,67 @@ if(BUILD_TESTING)
                         ${CMAKE_CURRENT_SOURCE_DIR} $<TARGET_FILE:scene-render>
                         ${CMAKE_BINARY_DIR}/test-artifacts
                         $<TARGET_FILE:sr-probe>)
+
+    # Command-line contract: exit codes, output formats, --hash, --resume and
+    # --physics-cache, driven through cmake -P scripts in tests/cli/.
+    set(SR_CLI $<TARGET_FILE:scene-render>)
+    set(SR_CLI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli)
+    set(SR_CLI_TMP ${CMAKE_BINARY_DIR}/test_tmp/cli)
+    set(SR_MEDIA ${CMAKE_CURRENT_SOURCE_DIR}/tests/data-media.xml)
+    file(MAKE_DIRECTORY ${SR_CLI_TMP})
+    function(sr_cli_exit name expect regex)
+        string(REPLACE ";" "|" args "${ARGN}")
+        add_test(NAME cli.${name} COMMAND ${CMAKE_COMMAND} -DCMD=${SR_CLI}
+                 "-DARGS=${args}" -DEXPECT=${expect} "-DOUTPUT_REGEX=${regex}"
+                 -P ${SR_CLI_DIR}/expect_exit.cmake)
+    endfunction()
+    add_test(NAME cli.help COMMAND scene-render --help)
+    set_tests_properties(cli.help PROPERTIES PASS_REGULAR_EXPRESSION
+        "--scene.*--print-schema.*--hash.*--resume.*--segment-frames.*--keep-parts.*--physics-cache")
+    add_test(NAME cli.version COMMAND scene-render --version)
+    set_tests_properties(cli.version PROPERTIES PASS_REGULAR_EXPRESSION
+        "^scene-render ${PROJECT_VERSION}\n$")
+    add_test(NAME cli.print_schema COMMAND scene-render --print-schema)
+    set_tests_properties(cli.print_schema PROPERTIES PASS_REGULAR_EXPRESSION
+        "<xs:schema .*</xs:schema>")
+    sr_cli_exit(unknown_option 2 "unknown option '--frobnicate'" --frobnicate)
+    sr_cli_exit(validate_ok 0 "valid: [^\n]*data-media.xml \\(2 assets, 2 top-level layers\\)"
+                --validate --scene ${SR_MEDIA})
+    sr_cli_exit(validate_error 3
+                "schema-error.xml:5: error: <shape> @bogus: [^\n]*not allowed.*schema-error.xml:6: error: <shape> @opacity: "
+                --validate --scene ${SR_CLI_DIR}/schema-error.xml)
+    sr_cli_exit(invalid_scene_exit 3 "<project> @width"
+                --scene ${CMAKE_CURRENT_SOURCE_DIR}/tests/data-invalid.xml --hash)
+    sr_cli_exit(missing_asset_exit 4 "does-not-exist.ppm"
+                --scene ${SR_CLI_DIR}/missing-asset.xml --hash)
+    sr_cli_exit(frame_out_of_range 2 "preview frame 99 is outside \\[0, 12\\)"
+                --scene ${SR_MEDIA} --frame 99 --preview-out ${SR_CLI_TMP}/x.png)
+    sr_cli_exit(hash_with_resume 2 "--hash cannot be combined with --resume"
+                --scene ${SR_MEDIA} --hash --resume)
+    add_test(NAME cli.preview_png COMMAND scene-render --scene ${SR_MEDIA}
+             --frame 6 --preview-out ${SR_CLI_TMP}/preview.png)
+    set_tests_properties(cli.preview_png PROPERTIES PASS_REGULAR_EXPRESSION
+        "preview.png [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]\n")
+    add_test(NAME cli.preview_default_name COMMAND scene-render --scene ${SR_MEDIA}
+             --frame 1)
+    set_tests_properties(cli.preview_default_name PROPERTIES
+        WORKING_DIRECTORY ${SR_CLI_TMP}
+        PASS_REGULAR_EXPRESSION "^frame-000001.png [0-9a-f]+\n$")
+    add_test(NAME cli.hash_threads COMMAND ${CMAKE_COMMAND} -DCMD=${SR_CLI}
+             -DSCENE=${SR_MEDIA} -P ${SR_CLI_DIR}/hash_threads.cmake)
+    add_test(NAME cli.resume COMMAND ${CMAKE_COMMAND} -DCMD=${SR_CLI}
+             -DSCENE=${SR_MEDIA} -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+             -DWORK=${SR_CLI_TMP}/resume -P ${SR_CLI_DIR}/resume_check.cmake)
+    add_test(NAME cli.physics_cache COMMAND ${CMAKE_COMMAND} -DCMD=${SR_CLI}
+             -DSCENE=${CMAKE_CURRENT_SOURCE_DIR}/tests/data-advanced.xml
+             -DWORK=${SR_CLI_TMP}/physics -P ${SR_CLI_DIR}/physics_cache.cmake)
+    get_property(sr_all_tests DIRECTORY PROPERTY TESTS)
+    foreach(test IN LISTS sr_all_tests)
+        if(test MATCHES "^cli\\.")
+            set_tests_properties(${test} PROPERTIES FAIL_REGULAR_EXPRESSION
+                "runtime error:;ERROR: AddressSanitizer")
+        endif()
+    endforeach()
 endif()
 
 install(TARGETS scene-render scene_render_core
