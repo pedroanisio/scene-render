@@ -184,9 +184,11 @@ def main():
     rows.append(("TOTAL", baseline["total_cpu"], current["total_cpu"]))
     for name, base, now in rows:
         b, n = base["median"], now["median"]
-        change = (n - b) / b if b else 0.0
+        change = (n - b) / b if b else (float("inf") if n else 0.0)
         verdict = ""
-        if b >= NOISE_FLOOR_S or name == "TOTAL":
+        # Judge a stage when either side is material, so a stage that grows
+        # from ~0 (e.g. encoding moving in-process) is not waved through.
+        if max(b, n) >= NOISE_FLOOR_S or name == "TOTAL":
             if change > args.tolerance:
                 verdict = "REGRESSION"
                 status = status or 1
