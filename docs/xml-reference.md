@@ -29,8 +29,8 @@ are relative to the current working directory.
 
 ## Project and output
 
-`project` requires positive `width`, `height`, `duration`, and `fps` (`N` or
-`N/D`). Optional fields are `seed`, `linearLight`, `background`,
+`project` requires positive `width`, `height`, `duration` (at most 1e6 s),
+and `fps` (`N` or `N/D`). Optional fields are `seed`, `linearLight`, `background`,
 `workingColorSpace="srgb|rec709|display-p3|rec2020"`, `mode`: `standard`,
 `equirectangular`, or `viewport`, and `antialias3d="1|2|3|4"` (default 1):
 the 3D pass is rendered at N x N samples per pixel and box-filtered (memory
@@ -174,7 +174,9 @@ wide and centred on the outline, drawn over the fill.
 
 `particleEmitter` is parametric. Particle `i` (in emission order) is born at
 `i / rate` seconds after the emitter's `start` (with an animated `rate`, where
-the rate integrated from `start` on a fixed 1/240 s grid reaches `i`), and at
+the rate integrated from `start` on a fixed 1/240 s grid reaches `i`; the
+integral is cached per key segment and closed form before the first and
+after the last key, so evaluating late frames costs no more than early ones), and at
 age `a` of its lifetime `L` (fraction `f = a / L`) sits in the emitter's local
 space at
 
@@ -330,7 +332,8 @@ boxes, and planes are camera-facing sprites.
 
 Top-level `lights` contains `light` entries. Each requires `id` and
 `type="ambient|directional|point|spot"`, and accepts color (animatable),
-intensity, position, yaw/pitch, range, falloff, spot angle, `castShadow`, and
+intensity (0–1e6, also for animated keys), position, yaw/pitch, range,
+falloff, `spotAngle` (0.5–179 degrees, default 45), `castShadow`, and
 `shadowMapSize` (16–8192, default 2048). Light animation is nested normally.
 Lights referenced by a 2D `lighting` effect (below) are 2D lights: they do
 not light the 3D pass.
@@ -339,8 +342,9 @@ A directional or spot light with `castShadow="true"` renders a
 `shadowMapSize` x `shadowMapSize` depth map each frame, seen from the light:
 orthographic and fitted to the bounding sphere of all 3D objects for a
 directional light, perspective over the cone (10% margin) for a spot light.
-Every object with `castShadow` (default true) is written into it: spheres as
-ellipsoids, boxes and planes as the camera-facing quad that is drawn, meshes
+Every object with `castShadow` (default true) is written into it (a spot
+map bounds each caster by the exact tangent cone of its bounding sphere):
+spheres as ellipsoids, boxes and planes as the camera-facing quad that is drawn, meshes
 as their triangles. Objects with `receiveShadow` (default true) sample it with
 a 3 x 3 percentage-closer filter and a slope-scaled bias (1.5 texels plus 2
 per unit of surface tangent, capped at 10), so shadow edges are soft over
@@ -358,11 +362,13 @@ shadows.
 Each `effect` in top-level `effects` requires `id` and a type: `glow`,
 `bloom`, `blur`, `color-grade`, `vignette`, `lens-flare`, `drop-shadow`, or
 `lighting`. Common controls are `enabled`, `intensity` (default 1), `radius`
-(default 4), `threshold` (0.7), `saturation` (1), `contrast` (1),
+(default 4, at most 4096 px), `threshold` (0.7), `saturation` (1), `contrast` (1),
 `brightness` (0), and `color` (white; black for `drop-shadow`); irrelevant
 controls are ignored by a particular effect. Every numeric control and
-`color` animate with nested `<animate>`. An effect at zero intensity is an
-exact no-op.
+`color` animate with nested `<animate>` (keys obey the same bounds). An
+effect at zero intensity is an exact no-op. An effect never leaves a
+non-finite color channel in the frame: such a channel becomes 0 (alpha is
+kept).
 
 An effect that no group lists in its `effects` attribute applies to the
 whole final frame, in XML order, after the viewport projection. An effect
@@ -371,11 +377,16 @@ listed order, to the group's isolated buffer before it is composited (so it
 inherits the group's blend, opacity, and masks), independently for each
 group that lists it. Such a buffer's content area grows by each effect's
 reach (blur radius; drop-shadow offset plus radius plus one pixel), so
-effects are never clipped at the group's own bounds. Effect lengths
+effects are never clipped at the group's own bounds. The group's children
+are drawn for its effects without the group's own masks (only the
+ancestors' clip, grown by the effects' reach), and the masks cut the
+result when it is composited: a shadow cast into the mask by content
+outside it appears. Effect lengths
 (radius, offsets) are canvas pixels; light positions and ranges of
 `lighting` follow the group's transform.
 
-`drop-shadow` accepts `offsetX`, `offsetY` (default 8, 8), `radius` (box
+`drop-shadow` accepts `offsetX`, `offsetY` (default 8, 8; each within
+±1e5 px), `radius` (box
 blur radius, rounded; 0 for a hard shadow), `color`, and `intensity`
 (opacity, clamped to [0, 1]): the content's alpha, shifted (bilinearly for
 fractional offsets) and blurred, tinted with `color`, is placed under the
@@ -440,6 +451,14 @@ defaults when there is no `physics` element): world gravity and force fields
 apply, grid nodes that start inside the frame collide with its bounds (0 to
 the project width/height, restitution 0.2), and a node that also has a `rigidBody` anchors each grid
 node to its rigid pose with a spring, so it wobbles when the body stops.
+Each fixed step is integrated in as many substeps as the springs need to
+stay stable (from `stiffness`, the per-node mass and `fixedStep`); a body
+needing more than 4096 substeps per fixed step is rejected at validation
+with a diagnostic naming `stiffness`, `mass`, and `fixedStep` (the check
+assumes the rigid-body anchor spring). A simulation that still produces a
+non-finite state fails the render with a diagnostic instead of recording
+it, and a physics cache whose samples are not finite or exceed 1e9 in
+magnitude is discarded and re-simulated.
 The grid is cached with the rigid bodies, render samples interpolate between
 fixed steps like rigid poses, and the node's image is warped by the grid with
 the mesh-warp sampler. A node without a rigid body simulates in its static
@@ -452,9 +471,13 @@ the mesh-warp sampler. A node without a rigid body simulates in its static
 `<point row="r" col="c" x="dx" y="dy"/>` (`x`/`y` animate) offsetting control
 point (r, c) of a grid spanning the node's local box by (dx, dy) local
 pixels. The content is warped by the bilinear interpolation of the offsets
-(inverse-mapped per pixel by Newton iteration); a grid of zero offsets
-reproduces the undeformed node exactly, and the drawn area grows by the
-largest offset.
+(inverse-mapped per pixel by Newton iteration; when that does not converge
+to a forward residual below 1e-4 px, each grid cell containing the pixel is
+inverted analytically and the in-cell solution nearest the Newton start is
+used, and a pixel with no source stays transparent); a grid of zero offsets
+reproduces the undeformed node exactly, and the drawn area grows by the sum
+of the largest offsets of every grid (mesh-warp modifiers and the soft
+body compose).
 
 ## Audio
 

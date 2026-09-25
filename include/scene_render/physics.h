@@ -17,4 +17,15 @@ bool sr_physics_pose(const SrScene *scene, const SrNode *node, double time,
 bool sr_physics_soft_offsets(const SrScene *scene, const SrNode *node,
                              double time, double *out);
 
+/* Most integration substeps a soft body may take per fixed physics step;
+ * XML validation rejects bodies that would need more. */
+#define SR_SOFT_MAX_SUBSTEPS 4096
+
+/* Substeps per fixed step the soft-body integrator needs to stay stable
+ * for `body` (explicit spring stability omega*h < 0.25 and damping
+ * c*h/m < 0.5 over the 8 springs per node, 9 with a rigid body's anchor
+ * spring); +inf when not finite. */
+double sr_soft_body_substeps(const SrSoftBody *body, bool rigid,
+                             double fixed_step);
+
 #endif

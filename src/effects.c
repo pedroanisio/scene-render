@@ -2,6 +2,7 @@
 #include "scene_render/color.h"
 #include "scene_render/parallel.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -75,11 +76,11 @@ static Params params_eval(const SrEffect *effect, double time) {
 }
 
 static int blur_radius(double radius) {
-    return (int)fmin((double)MAX_RADIUS, fmax(1.0, radius));
+    return sr_clamp_int(radius, 1, MAX_RADIUS);
 }
 
 static int shadow_radius(double radius) {
-    return (int)fmin((double)MAX_RADIUS, fmax(0.0, floor(radius + 0.5)));
+    return sr_clamp_int(floor(radius + 0.5), 0, MAX_RADIUS);
 }
 
 int sr_effect_reach(const SrEffect *effect, double time) {
@@ -91,8 +92,8 @@ int sr_effect_reach(const SrEffect *effect, double time) {
     case SR_EFFECT_BLUR:
         return blur_radius(p.radius);
     case SR_EFFECT_DROP_SHADOW: {
-        double shift = fmin(1e6, fmax(fabs(p.offset_x), fabs(p.offset_y)));
-        return (int)ceil(shift) + shadow_radius(p.radius) + 1;
+        double shift = fmax(fabs(p.offset_x), fabs(p.offset_y));
+        return sr_clamp_int(ceil(shift), 0, 1000000) + shadow_radius(p.radius) + 1;
     }
     default:
         return 0;
@@ -386,7 +387,10 @@ static void shift_worker(void *opaque, size_t begin, size_t end) {
             double sx = (double)region->rect.x0 + (double)column - context->dx;
             double sy = (double)region->rect.y0 + (double)row - context->dy;
             double fx = floor(sx), fy = floor(sy);
-            int ix = (int)fx, iy = (int)fy;
+            /* Any tap beyond the frame reads 0, so clamping just outside
+             * it keeps huge offsets defined without changing the result. */
+            int ix = sr_clamp_int(fx, -2, (int)region->frame->width + 1);
+            int iy = sr_clamp_int(fy, -2, (int)region->frame->height + 1);
             float tx = (float)(sx - fx), ty = (float)(sy - fy);
             float a = frame_alpha(region->frame, ix, iy) * (1.0f - tx) * (1.0f - ty) +
                       frame_alpha(region->frame, ix + 1, iy) * tx * (1.0f - ty) +
@@ -516,7 +520,7 @@ static void light_worker(void *opaque, size_t begin, size_t end) {
                 m[2] += l->rgb[2] * f;
             }
             for (int c = 0; c < 3; ++c)
-                p[c] *= (float)(1.0 + (m[c] - 1.0) * context->mix);
+                p[c] *= (float)fmin(1.0 + (m[c] - 1.0) * context->mix, FLT_MAX);
         }
     }
 }
@@ -555,7 +559,8 @@ static SrStatus lighting(const SrScene *scene, const SrEffect *effect,
         sr_color_to_blend(&scene->project,
                           sr_anim_color_eval(&light->color, time), color);
         double intensity = fmax(0.0, sr_anim_eval(&light->intensity, time));
-        for (int c = 0; c < 3; ++c) l->rgb[c] = (float)(color[c] * intensity);
+        for (int c = 0; c < 3; ++c)
+            l->rgb[c] = (float)fmin(color[c] * intensity, FLT_MAX);
     }
     LightContext context = {region, lights, effect->light_count, effect->falloff,
                             params->relief, (float)fmin(1.0, params->intensity)};
@@ -566,6 +571,24 @@ static SrStatus lighting(const SrScene *scene, const SrEffect *effect,
 }
 
 /* ---- dispatch ------------------------------------------------------------ */
+
+/* Effects never leave non-finite color in a frame (a huge light over black
+ * computes 0 x inf): such channels become 0; alpha is left as written. */
+static void sanitize_worker(void *opaque, size_t begin, size_t end) {
+    const Region *region = opaque;
+    size_t width = region_width(region);
+    for (size_t row = begin; row < end; ++row) {
+        float *p = region_px(region, row, 0);
+        for (size_t x = 0; x < width; ++x, p += 4)
+            for (int c = 0; c < 3; ++c)
+                if (!isfinite(p[c])) p[c] = 0.0f;
+    }
+}
+
+static SrStatus run_one(const SrScene *scene, const SrEffect *effect,
+                        double time, const Region *region, SrMat3 to_canvas,
+                        const Params *params, Transfer *transfer,
+                        unsigned threads);
 
 static SrStatus apply_one(const SrScene *scene, const SrEffect *effect,
                           double time, const Region *region, SrMat3 to_canvas,
@@ -581,7 +604,19 @@ static SrStatus apply_one(const SrScene *scene, const SrEffect *effect,
         if (!*transfer) return SR_ERR_MEMORY;
         transfer_init(*transfer, &scene->project);
     }
-    PixelContext context = {region, &params, *transfer};
+    SrStatus status = run_one(scene, effect, time, region, to_canvas, &params,
+                              *transfer, threads);
+    if (status != SR_OK) return status;
+    return sr_parallel_for(region_height(region), threads, sanitize_worker,
+                           (void *)region);
+}
+
+static SrStatus run_one(const SrScene *scene, const SrEffect *effect,
+                        double time, const Region *region, SrMat3 to_canvas,
+                        const Params *params_in, Transfer *transfer,
+                        unsigned threads) {
+    Params params = *params_in;
+    PixelContext context = {region, &params, transfer};
     size_t rows = region_height(region);
     switch (effect->type) {
     case SR_EFFECT_COLOR_GRADE:
@@ -599,7 +634,7 @@ static SrStatus apply_one(const SrScene *scene, const SrEffect *effect,
         SrStatus status = blur_region(region, blur_radius(params.radius),
                                       threads, &blurred);
         if (status == SR_OK) {
-            MergeContext merge = {region, blurred, effect, &params, *transfer};
+            MergeContext merge = {region, blurred, effect, &params, transfer};
             status = sr_parallel_for(rows, threads, merge_worker, &merge);
         }
         free(blurred);

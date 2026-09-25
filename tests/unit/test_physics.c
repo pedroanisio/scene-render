@@ -278,6 +278,122 @@ static void test_circle_box_contact(sr_test_ctx *t)
     sr_scene_free(&scene);
 }
 
+
+/* A cache whose header matches but whose payload holds a non-finite soft
+ * offset is discarded (with a diagnostic) and the scene re-simulated. */
+static void test_cache_payload_validated(sr_test_ctx *t)
+{
+    const char *cache = sr_test_tmp_path("soft-bad.physics");
+    unlink(cache);
+    SrScene a, b;
+    if (st_load(t, "soft-bad-a.xml", SOFT_SCENE(" cache=\"soft-bad.physics\""), &a, NULL) != SR_OK) {
+        SR_FAIL(t, "load"); return;
+    }
+    char *info = NULL;
+    CHECK(t, prepare(t, &a, &info) == SR_OK);
+    free(info); info = NULL;
+    /* Overwrite the last payload double (a soft offset) with NaN. */
+    FILE *file = fopen(cache, "r+b");
+    CHECK(t, file != NULL);
+    if (file) {
+        double nan_value = NAN;
+        CHECK(t, fseek(file, -(long)sizeof(double), SEEK_END) == 0);
+        CHECK(t, fwrite(&nan_value, sizeof(nan_value), 1, file) == 1);
+        CHECK(t, fclose(file) == 0);
+    }
+    if (st_load(t, "soft-bad-b.xml", SOFT_SCENE(" cache=\"soft-bad.physics\""), &b, NULL) != SR_OK) {
+        SR_FAIL(t, "load"); sr_scene_free(&a); return;
+    }
+    if (prepare(t, &b, &info) == SR_OK) {
+        CHECK_CONTAINS(t, info, "discarding it and re-simulating");
+        CHECK_CONTAINS(t, info, "simulated");
+        const SrSoftBody *sa = &sr_scene_find_node(&a, "sheet")->soft_body;
+        const SrSoftBody *sb = &sr_scene_find_node(&b, "sheet")->soft_body;
+        CHECK_INT(t, sa->sample_count, sb->sample_count);
+        if (sa->sample_count == sb->sample_count && sb->offsets)
+            CHECK(t, memcmp(sa->offsets, sb->offsets, sa->sample_count * sa->rows *
+                            sa->cols * 2 * sizeof(double)) == 0);
+    }
+    free(info);
+    sr_scene_free(&a); sr_scene_free(&b);
+    unlink(cache);
+}
+
+/* The review's stiff sheet (2x2, mass 1, stiffness 1e12, default step)
+ * needs 188,562 substeps: validation rejects it naming stiffness, mass and
+ * fixedStep, whichever of <softBody> and <physics> comes first. */
+static void test_soft_body_substeps_validated(sr_test_ctx *t)
+{
+    const char *stiff =
+        "<scene version=\"1.0\"><project width=\"400\" height=\"300\" fps=\"30\" duration=\"1\"/>"
+        "<composition><shape id=\"sheet\" shape=\"rect\" width=\"60\" height=\"60\" x=\"100\" y=\"40\">"
+        "<softBody mass=\"1\" stiffness=\"1e12\" damping=\"0.1\" rows=\"2\" cols=\"2\" pin=\"top\"/>"
+        "</shape></composition></scene>";
+    SrSoftBody body = {.enabled = true, .mass = 1, .stiffness = 1e12, .damping = 0.1,
+                       .rows = 2, .cols = 2};
+    CHECK_NEAR(t, sr_soft_body_substeps(&body, false, 1.0 / 120.0), 188562.0, 0.0);
+    SrScene scene;
+    char *message = NULL;
+    CHECK(t, st_load(t, "soft-stiff.xml", stiff, &scene, &message) == SR_ERR_XML);
+    CHECK_CONTAINS(t, message, "stiffness 1e+12 with mass 1");
+    CHECK_CONTAINS(t, message, "fixedStep");
+    free(message); message = NULL;
+    /* Fine at the default step, too stiff for the step <physics> sets later. */
+    const char *late =
+        "<scene version=\"1.0\"><project width=\"400\" height=\"300\" fps=\"30\" duration=\"1\"/>"
+        "<composition><shape id=\"sheet\" shape=\"rect\" width=\"60\" height=\"60\" x=\"100\" y=\"40\">"
+        "<softBody mass=\"1\" stiffness=\"200000\" rows=\"2\" cols=\"2\" pin=\"top\"/>"
+        "</shape></composition><physics fixedStep=\"0.5\"/></scene>";
+    CHECK(t, st_load(t, "soft-late.xml", late, &scene, &message) == SR_ERR_XML);
+    CHECK_CONTAINS(t, message, "fixedStep 0.5");
+    free(message);
+    const char *fine =
+        "<scene version=\"1.0\"><project width=\"400\" height=\"300\" fps=\"30\" duration=\"1\"/>"
+        "<composition><shape id=\"sheet\" shape=\"rect\" width=\"60\" height=\"60\" x=\"100\" y=\"40\">"
+        "<softBody mass=\"1\" stiffness=\"200000\" rows=\"2\" cols=\"2\" pin=\"top\"/>"
+        "</shape></composition></scene>";
+    if (st_load(t, "soft-fine.xml", fine, &scene, NULL) == SR_OK) sr_scene_free(&scene);
+    else SR_FAIL(t, "a stable stiff sheet must load");
+}
+
+/* A simulation that diverges (an overflowing field) fails with a
+ * diagnostic instead of recording non-finite samples. */
+static void test_divergence_is_an_error(sr_test_ctx *t)
+{
+    static const char *const bodies[] = {
+        "<shape id=\"b\" shape=\"rect\" width=\"10\" height=\"10\" x=\"100\" y=\"40\">"
+        "<rigidBody/></shape>",
+        "<shape id=\"b\" shape=\"rect\" width=\"60\" height=\"60\" x=\"100\" y=\"40\">"
+        "<softBody rows=\"3\" cols=\"3\"/></shape>"};
+    static const char *const kinds[] = {"diverged", "soft body 'b' diverged"};
+    for (int i = 0; i < 2; ++i) {
+        char xml[1024];
+        snprintf(xml, sizeof xml,
+                 "<scene version=\"1.0\"><project width=\"400\" height=\"300\" fps=\"30\" "
+                 "duration=\"1\"/><composition>%s</composition><physics gravityY=\"1e308\">"
+                 "<forceField id=\"f\" type=\"directional\" forceY=\"1e308\"/>"
+                 "</physics></scene>", bodies[i]);
+        SrScene scene;
+        if (st_load(t, "diverge.xml", xml, &scene, NULL) != SR_OK) { SR_FAIL(t, "load"); continue; }
+        FILE *sink = tmpfile();
+        SrDiagnostics diag;
+        sr_diag_init(&diag, "physics", sink ? sink : stderr);
+        CHECK_INT(t, sr_physics_prepare(&scene, &diag), SR_ERR_RENDER);
+        if (sink) {
+            char text[1024] = {0};
+            fflush(sink);
+            rewind(sink);
+            if (fread(text, 1, sizeof text - 1, sink) == 0) text[0] = 0;
+            CHECK_CONTAINS(t, text, kinds[i]);
+            fclose(sink);
+        }
+        const SrNode *node = sr_scene_find_node(&scene, "b");
+        CHECK_INT(t, node->physics_sample_count, 0);
+        CHECK_INT(t, node->soft_body.sample_count, 0);
+        sr_scene_free(&scene);
+    }
+}
+
 const sr_test_case sr_tests_physics[] = {
     {"heavy_damping_never_flips_sign", test_heavy_damping_never_flips_sign},
     {"softbody_pinned_top_sags_and_rests", test_softbody_pinned_top_sags_and_rests},
@@ -286,5 +402,8 @@ const sr_test_case sr_tests_physics[] = {
     {"vortex_tangential", test_vortex_tangential},
     {"pin_holds_anchor", test_pin_holds_anchor},
     {"circle_box_contact", test_circle_box_contact},
+    {"cache_payload_validated", test_cache_payload_validated},
+    {"soft_body_substeps_validated", test_soft_body_substeps_validated},
+    {"divergence_is_an_error", test_divergence_is_an_error},
     {NULL, NULL},
 };

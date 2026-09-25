@@ -2,6 +2,7 @@
 #include "scene_render/vector_path.h"
 
 #include <ctype.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -257,10 +258,13 @@ void sr_xml_start_light(ParseContext *ctx, const XML_Char **attrs) {
         !decimal(ctx,"light",attrs,"z",&light->z.base) || !decimal(ctx,"light",attrs,"yaw",&light->yaw.base) ||
         !decimal(ctx,"light",attrs,"pitch",&light->pitch.base) || !decimal(ctx,"light",attrs,"range",&light->range) ||
         !decimal(ctx,"light",attrs,"falloff",&light->falloff) || !decimal(ctx,"light",attrs,"spotAngle",&light->spot_angle)) return;
-    if(light->intensity.base<0||light->range<=0||light->falloff<0||
-       light->spot_angle<=0||light->spot_angle>=180)
-        SR_XML_FAIL_RETURN(ctx,"light","intensity/range/falloff/spotAngle",
-                           "expected non-negative intensity/falloff, positive range, and 0 < spotAngle < 180");
+    if(light->intensity.base<0||light->range<=0||light->falloff<0)
+        SR_XML_FAIL_RETURN(ctx,"light","intensity/range/falloff",
+                           "expected non-negative intensity/falloff and positive range");
+    if(light->intensity.base>SR_MAX_LIGHT_INTENSITY)
+        SR_XML_FAIL_RETURN(ctx,"light","intensity","expected an intensity of at most 1e6");
+    if(light->spot_angle<0.5||light->spot_angle>179)
+        SR_XML_FAIL_RETURN(ctx,"light","spotAngle","expected a spot angle in [0.5, 179] degrees");
     value = sr_xml_attr(attrs,"castShadow");
     if (value && !sr_parse_bool(value,&light->cast_shadow)) SR_XML_FAIL_RETURN(ctx,"light","castShadow","expected true or false");
     value = sr_xml_attr(attrs,"shadowMapSize");
@@ -334,6 +338,10 @@ void sr_xml_start_effect(ParseContext *ctx, const XML_Char **attrs) {
        !anim_decimal(ctx,attrs,"contrast",&effect->contrast)||!anim_decimal(ctx,attrs,"brightness",&effect->brightness)||
        !anim_decimal(ctx,attrs,"offsetX",&effect->offset_x)||!anim_decimal(ctx,attrs,"offsetY",&effect->offset_y)||
        !anim_decimal(ctx,attrs,"relief",&effect->relief))return;
+    if(fabs(effect->offset_x.base)>SR_MAX_EFFECT_OFFSET||fabs(effect->offset_y.base)>SR_MAX_EFFECT_OFFSET)
+        SR_XML_FAIL_RETURN(ctx,"effect","offsetX/offsetY","expected offsets within +-1e5 px");
+    if(effect->radius.base>SR_MAX_EFFECT_RADIUS)
+        SR_XML_FAIL_RETURN(ctx,"effect","radius","expected a radius of at most 4096 px");
     if(effect->intensity.base<0||effect->radius.base<0||effect->threshold.base<0||
        effect->threshold.base>1||effect->saturation.base<0||effect->contrast.base<0||
        effect->relief.base<0)
