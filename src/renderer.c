@@ -19,6 +19,7 @@
 
 #include <errno.h>
 #include <math.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -325,6 +326,7 @@ typedef struct {
     float *audio;           /* one frame's mixed block */
     uint32_t channels;
     const SrResumeInputs *inputs;   /* --resume: fingerprinted input files */
+    size_t audio_values;    /* floats in one frame's block (run->audio) */
 } SrRun;
 
 static SrStatus sr_run_audio_open(SrRun *run) {
@@ -337,24 +339,26 @@ static SrStatus sr_run_audio_open(SrRun *run) {
                                                scene->project.fps_num,
                                                scene->project.fps_den) + 1);
     if (status == SR_OK) {
-        run->audio = sr_alloc(block * scene->audio.channels * sizeof(float));
+        run->audio_values = block * scene->audio.channels;
+        run->audio = sr_alloc(run->audio_values * sizeof(float));
         if (!run->audio) status = SR_ERR_MEMORY;
     }
     run->channels = scene->audio.channels;
     return status;
 }
 
-/* Mixes frame `index`'s samples [S(index), S(index+1)) into run->audio: the
- * blocks tile the range exactly, so the audio of [first, end) lasts exactly
- * S(end) - S(first) samples. Returns the sample count. */
-static size_t sr_run_mix(SrRun *run, uint64_t index) {
+/* Mixes frame `index`'s samples [S(index), S(index+1)) into `out` (room for
+ * run->audio_values floats): the blocks tile the range exactly, so the audio
+ * of [first, end) lasts exactly S(end) - S(first) samples. Returns the
+ * sample count. */
+static size_t sr_run_mix(SrRun *run, uint64_t index, float *out) {
     const SrScene *scene = run->scene;
     uint32_t rate = scene->audio.sample_rate;
     uint64_t from = sr_frame_to_sample(index, rate, scene->project.fps_num,
                                        scene->project.fps_den);
     uint64_t to = sr_frame_to_sample(index + 1, rate, scene->project.fps_num,
                                      scene->project.fps_den);
-    sr_mixer_mix(run->mixer, from, (size_t)(to - from), run->audio);
+    sr_mixer_mix(run->mixer, from, (size_t)(to - from), out);
     run->metrics->audio_samples += to - from;
     return (size_t)(to - from);
 }
@@ -391,7 +395,7 @@ static SrStatus sr_run_hash(SrRun *run, uint64_t first, uint64_t end) {
                 (unsigned long long)sr_fnv1a64(SR_FNV_OFFSET, run->state->pixels,
                                                run->frame_bytes));
         if (run->mixer) {
-            size_t samples = sr_run_mix(run, index);
+            size_t samples = sr_run_mix(run, index, run->audio);
             audio_hash = sr_fnv1a64(audio_hash, run->audio,
                                     samples * run->channels * sizeof(float));
         }
@@ -407,9 +411,160 @@ static SrStatus sr_run_hash(SrRun *run, uint64_t first, uint64_t end) {
     return status;
 }
 
-/* Renders [first, end) into an open encoder; audio too when `with_audio`. */
-static SrStatus sr_run_frames(SrRun *run, SrEncoder *encoder, uint64_t first,
-                              uint64_t end, uint64_t total, bool with_audio) {
+/* ---- frame writer ------------------------------------------------------
+ * A writer thread encodes frame N (video, then its audio block) while the
+ * render thread renders frame N+1. Frames reach the encoder in the same
+ * order, with the same bytes and the same encoder settings as a serial
+ * render, so the output file is identical. The render thread renders
+ * straight into a slot's buffer (state->pixels points at it) and mixes the
+ * frame's audio into the slot; the writer takes slots in queue order. */
+
+/* One slot being encoded, one queued, one being rendered into. */
+enum { SR_WRITE_SLOTS = 3 };
+
+typedef struct {
+    void *pixels;           /* frame_bytes of encoder input */
+    float *audio;           /* run->audio_values floats; NULL: no audio */
+    size_t samples;
+} SrWriteSlot;
+
+typedef struct {
+    SrEncoder *encoder;
+    SrWriteSlot slots[SR_WRITE_SLOTS];
+    bool owned[SR_WRITE_SLOTS];     /* buffers allocated by the writer */
+    unsigned head;          /* oldest queued slot: the one being encoded */
+    unsigned count;         /* queued slots, the one being encoded included */
+    bool closing;           /* no more frames will be queued */
+    SrStatus status;        /* first writer failure; SR_OK until then */
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+    pthread_t thread;
+    /* The writer reports into its own diagnostics (SrDiagnostics is not
+     * thread-safe); the text and counts are replayed after the join. */
+    SrDiagnostics diag;
+    FILE *log;
+    char *log_text;
+    size_t log_size;
+} SrWriter;
+
+static void *sr_writer_main(void *arg) {
+    SrWriter *w = arg;
+    pthread_mutex_lock(&w->lock);
+    for (;;) {
+        while (w->count == 0 && !w->closing) pthread_cond_wait(&w->cond, &w->lock);
+        if (w->count == 0) break;   /* closing and drained */
+        SrWriteSlot *slot = &w->slots[w->head];
+        pthread_mutex_unlock(&w->lock);
+        SrStatus status = sr_encoder_write_video(w->encoder, slot->pixels, &w->diag);
+        if (status == SR_OK && slot->audio)
+            status = sr_encoder_write_audio(w->encoder, slot->audio, slot->samples,
+                                            &w->diag);
+        pthread_mutex_lock(&w->lock);
+        w->head = (w->head + 1) % SR_WRITE_SLOTS;
+        --w->count;
+        if (status != SR_OK) w->status = status;
+        pthread_cond_broadcast(&w->cond);
+        if (status != SR_OK) break;   /* later frames are not encoded */
+    }
+    pthread_mutex_unlock(&w->lock);
+    return NULL;
+}
+
+static void sr_writer_free_buffers(SrWriter *w) {
+    for (unsigned i = 0; i < SR_WRITE_SLOTS; ++i) {
+        if (w->owned[i]) {
+            free(w->slots[i].pixels);
+            free(w->slots[i].audio);
+        }
+    }
+}
+
+/* Starts the writer; false (nothing to release) when it cannot run, and
+ * the caller then encodes serially. Slot 0 borrows the run's own buffers. */
+static bool sr_writer_start(SrWriter *w, SrRun *run, SrEncoder *encoder,
+                            bool with_audio) {
+    *w = (SrWriter){0};
+    w->encoder = encoder;
+    w->status = SR_OK;
+    bool ok = true;
+    for (unsigned i = 0; i < SR_WRITE_SLOTS && ok; ++i) {
+        SrWriteSlot *slot = &w->slots[i];
+        if (i == 0) {
+            slot->pixels = run->state->pixels;
+            slot->audio = with_audio ? run->audio : NULL;
+            continue;
+        }
+        w->owned[i] = true;
+        slot->pixels = malloc(run->frame_bytes);
+        slot->audio = with_audio ? malloc(run->audio_values * sizeof(float)) : NULL;
+        ok = slot->pixels && (!with_audio || slot->audio);
+    }
+    if (ok) {
+        w->log = open_memstream(&w->log_text, &w->log_size);
+        ok = w->log != NULL;
+    }
+    if (!ok) {
+        sr_writer_free_buffers(w);
+        return false;
+    }
+    sr_diag_init(&w->diag, run->diag->source, w->log);
+    w->diag.verbose = run->diag->verbose;
+    bool mutex = pthread_mutex_init(&w->lock, NULL) == 0;
+    bool cond = mutex && pthread_cond_init(&w->cond, NULL) == 0;
+    if (cond && pthread_create(&w->thread, NULL, sr_writer_main, w) == 0)
+        return true;
+    if (cond) pthread_cond_destroy(&w->cond);
+    if (mutex) pthread_mutex_destroy(&w->lock);
+    fclose(w->log);
+    free(w->log_text);
+    sr_writer_free_buffers(w);
+    return false;
+}
+
+/* The slot to render the next frame into (waits while every slot is
+ * queued); NULL once the writer has failed, with *status its failure. */
+static SrWriteSlot *sr_writer_acquire(SrWriter *w, SrStatus *status) {
+    pthread_mutex_lock(&w->lock);
+    while (w->count == SR_WRITE_SLOTS && w->status == SR_OK)
+        pthread_cond_wait(&w->cond, &w->lock);
+    *status = w->status;
+    SrWriteSlot *slot = w->status == SR_OK
+        ? &w->slots[(w->head + w->count) % SR_WRITE_SLOTS] : NULL;
+    pthread_mutex_unlock(&w->lock);
+    return slot;
+}
+
+/* Queues the slot sr_writer_acquire returned last. */
+static void sr_writer_submit(SrWriter *w) {
+    pthread_mutex_lock(&w->lock);
+    ++w->count;
+    pthread_cond_broadcast(&w->cond);
+    pthread_mutex_unlock(&w->lock);
+}
+
+/* Lets the writer encode every queued frame, joins it, replays its
+ * diagnostics into `diag` and releases it; returns its first failure. */
+static SrStatus sr_writer_finish(SrWriter *w, SrDiagnostics *diag) {
+    pthread_mutex_lock(&w->lock);
+    w->closing = true;
+    pthread_cond_broadcast(&w->cond);
+    pthread_mutex_unlock(&w->lock);
+    pthread_join(w->thread, NULL);
+    pthread_cond_destroy(&w->cond);
+    pthread_mutex_destroy(&w->lock);
+    if (fclose(w->log) == 0 && w->log_size)
+        fwrite(w->log_text, 1, w->log_size, diag->stream);
+    free(w->log_text);
+    diag->errors += w->diag.errors;
+    diag->warnings += w->diag.warnings;
+    sr_writer_free_buffers(w);
+    return w->status;
+}
+
+/* Renders [first, end) into an open encoder on this thread. */
+static SrStatus sr_run_frames_serial(SrRun *run, SrEncoder *encoder,
+                                     uint64_t first, uint64_t end,
+                                     uint64_t total, bool with_audio) {
     SrStatus status = SR_OK;
     for (uint64_t index = first; index < end && status == SR_OK; ++index) {
         SrStageTimes times = {0};
@@ -417,14 +572,50 @@ static SrStatus sr_run_frames(SrRun *run, SrEncoder *encoder, uint64_t first,
         if (status != SR_OK) break;
         SrStageMark mark = sr_stage_begin();
         status = sr_encoder_write_video(encoder, run->state->pixels, run->diag);
-        if (status == SR_OK && with_audio && run->mixer) {
-            size_t samples = sr_run_mix(run, index);
+        if (status == SR_OK && with_audio) {
+            size_t samples = sr_run_mix(run, index, run->audio);
             status = sr_encoder_write_audio(encoder, run->audio, samples, run->diag);
         }
         sr_stage_end(&times, SR_STAGE_ENCODE, mark);
         if (status == SR_OK) sr_run_account(run, index, total, &times);
     }
     return status;
+}
+
+/* Renders [first, end) into an open encoder; audio too when `with_audio`.
+ * Encoding runs on a writer thread unless --threads 1 asked for a single
+ * worker (or the writer cannot start). The encode stage is the time the
+ * render thread spends waiting for a free slot, mixing and queueing, plus
+ * the final drain; the encoder's own busy time is sr_encoder_seconds. */
+static SrStatus sr_run_frames(SrRun *run, SrEncoder *encoder, uint64_t first,
+                              uint64_t end, uint64_t total, bool with_audio) {
+    with_audio = with_audio && run->mixer;
+    SrWriter writer;
+    if (run->options->encoder_threads == 1 ||
+        !sr_writer_start(&writer, run, encoder, with_audio))
+        return sr_run_frames_serial(run, encoder, first, end, total, with_audio);
+    void *own_pixels = run->state->pixels;
+    SrStatus status = SR_OK;
+    for (uint64_t index = first; index < end; ++index) {
+        SrStageTimes times = {0};
+        SrStageMark mark = sr_stage_begin();
+        SrWriteSlot *slot = sr_writer_acquire(&writer, &status);
+        sr_stage_end(&times, SR_STAGE_ENCODE, mark);
+        if (!slot) break;
+        run->state->pixels = slot->pixels;
+        status = sr_run_render(run, index, &times);
+        if (status != SR_OK) break;
+        mark = sr_stage_begin();
+        if (with_audio) slot->samples = sr_run_mix(run, index, slot->audio);
+        sr_writer_submit(&writer);
+        sr_stage_end(&times, SR_STAGE_ENCODE, mark);
+        sr_run_account(run, index, total, &times);
+    }
+    run->state->pixels = own_pixels;
+    SrStageMark mark = sr_stage_begin();
+    SrStatus written = sr_writer_finish(&writer, run->diag);
+    sr_stage_end(&run->metrics->stages, SR_STAGE_ENCODE, mark);
+    return status != SR_OK ? status : written;
 }
 
 static SrEncoderAudio sr_run_audio_format(const SrRun *run) {
@@ -534,7 +725,7 @@ static SrStatus sr_run_assemble(SrRun *run, const SrResume *resume,
         free(segment);
         for (uint64_t index = from; status == SR_OK && run->mixer && index < to;
              ++index) {
-            size_t samples = sr_run_mix(run, index);
+            size_t samples = sr_run_mix(run, index, run->audio);
             status = sr_encoder_write_audio(encoder, run->audio, samples, run->diag);
         }
     }
@@ -796,7 +987,7 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
         goto cleanup;
     }
     SrRun run = {scene, options, metrics, diag, &state, &composition, frame,
-                 &gpu, trace, frame_bytes, NULL, NULL, 0, &inputs};
+                 &gpu, trace, frame_bytes, NULL, NULL, 0, &inputs, 0};
     status = sr_run_audio_open(&run);
     if (status == SR_OK) {
         if (options->hash) {
@@ -829,6 +1020,9 @@ cleanup:
     metrics->video_seeks = video_totals[3];
     sr_gpu_close(&gpu);
     sr_compositor_free(&state.compositor);
+    /* Effect scratch and transfer tables are cached per thread across
+     * frames; release them so a finished render leaves nothing live. */
+    sr_effects_release();
     sr_color_output_free(&state.color);
     free(state.pixels);
     sr_frame_free(&viewport);

@@ -15,9 +15,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Decoding forward is cheaper than seeking for short gaps; beyond this many
- * frames the source seeks to the nearest earlier keyframe instead. */
+/* When the keyframe positions are unknown: decoding forward is cheaper than
+ * seeking for short gaps; beyond this many frames the source seeks to the
+ * nearest earlier keyframe instead. */
 enum { FORWARD_DECODE_LIMIT = 48 };
+/* With known keyframes a forward request seeks only when a keyframe lies
+ * more than this many frames past the decoder position (and at or before
+ * the target): nearer keyframes save too little decoding to pay for the
+ * seek and the decoder flush. */
+enum { KEYFRAME_SEEK_MIN_GAIN = 2 };
 
 __extension__ typedef __int128 SrI128;
 
@@ -27,15 +33,39 @@ typedef struct {
     SrImage image;
 } CacheSlot;
 
-struct SrVideoSource {
+/* One demuxer + decoder and its position. A source keeps up to
+ * max_cursors of them, opened on demand: layers that show the same file at
+ * different times (a reversed or remapped duplicate) each keep a cursor
+ * that decodes forward instead of dragging a single decoder back and forth.
+ * Every cursor selects frames by the same rule and decoding is
+ * deterministic, so which cursor serves a request does not change the
+ * frame or its pixels. */
+typedef struct {
     AVFormatContext *fmt;
     AVCodecContext *dec;
-    AVPacket *pkt;
-    AVFrame *frame;       /* decoder output */
     AVFrame *prev;        /* latest decoded frame shown at or before the target */
     AVFrame *ahead;       /* decoded frame first shown after the target */
     int64_t prev_index;   /* first output index of prev / ahead */
     int64_t ahead_index;
+    int64_t counted;      /* frames decoded since the start (no timestamps) */
+    bool positioned;      /* decoder position follows prev/ahead */
+    bool at_start;        /* decoding began at the first frame */
+    uint64_t stamp;       /* last use, for choosing a cursor to reposition */
+} Cursor;
+
+/* Cursors per source by stream size: a decoder holds its reference frames,
+ * so large streams get fewer. */
+enum { MAX_CURSORS = 4 };
+
+static void close_cursor(Cursor *c);
+
+struct SrVideoSource {
+    Cursor cursors[MAX_CURSORS];
+    size_t cursor_count;  /* opened */
+    size_t max_cursors;
+    Cursor *cur;          /* the cursor serving the current request */
+    AVPacket *pkt;
+    AVFrame *frame;       /* decoder output (moved into cur->ahead) */
     struct SwsContext *sws;
     int sws_key[5];
     uint8_t *rgba;        /* width * height * 4 conversion buffer */
@@ -50,11 +80,16 @@ struct SrVideoSource {
     int64_t first_pts;    /* earliest frame pts */
     SrI128 eps_num;       /* selection tolerance, in frames */
     SrI128 eps_den;
-    int64_t counted;      /* frames decoded since the start (no timestamps) */
     bool no_timestamps;   /* no packet timestamps: count frames, never seek */
-    bool positioned;      /* decoder position follows prev/ahead */
-    bool at_start;        /* decoding began at the first frame */
     bool matrix_warned;
+    /* Keyframe packet timestamps (tb), ascending, recorded by scan(): a
+     * forward jump seeks only when one lies between the decoder position
+     * and the target. keys_known is false when they could not be recorded
+     * (the FORWARD_DECODE_LIMIT rule applies then). */
+    int64_t *keys;
+    size_t key_count;
+    size_t key_capacity;
+    bool keys_known;
     CacheSlot *slots;
     size_t slot_count;
     uint64_t clock;
@@ -182,29 +217,57 @@ static void set_tolerance(SrVideoSource *v) {
 /* Closes and reopens the demuxer: the only way back to the first frame of
  * a stream without timestamps, which demuxers cannot seek. */
 static int reopen(SrVideoSource *v) {
-    avformat_close_input(&v->fmt);
-    int rc = avformat_open_input(&v->fmt, v->path, NULL, NULL);
-    if (rc >= 0) rc = avformat_find_stream_info(v->fmt, NULL);
-    if (rc >= 0 && (v->stream >= (int)v->fmt->nb_streams ||
-                    v->fmt->streams[v->stream]->codecpar->codec_type !=
+    avformat_close_input(&v->cur->fmt);
+    int rc = avformat_open_input(&v->cur->fmt, v->path, NULL, NULL);
+    if (rc >= 0) rc = avformat_find_stream_info(v->cur->fmt, NULL);
+    if (rc >= 0 && (v->stream >= (int)v->cur->fmt->nb_streams ||
+                    v->cur->fmt->streams[v->stream]->codecpar->codec_type !=
                         AVMEDIA_TYPE_VIDEO))
         rc = AVERROR_INVALIDDATA;
-    if (rc < 0) avformat_close_input(&v->fmt);
+    if (rc < 0) avformat_close_input(&v->cur->fmt);
     return rc;
 }
 
+/* Records one keyframe timestamp; on allocation failure the list is
+ * dropped and *failed set, and scan() then fails the open with ENOMEM
+ * (allocation failures are reported, never silently degraded). */
+static void add_key(SrVideoSource *v, int64_t ts, bool *failed) {
+    if (*failed) return;
+    if (v->key_count == v->key_capacity) {
+        size_t capacity = v->key_capacity ? v->key_capacity * 2 : 64;
+        int64_t *keys = capacity <= SIZE_MAX / sizeof(*keys)
+                            ? realloc(v->keys, capacity * sizeof(*keys)) : NULL;
+        if (!keys) {
+            free(v->keys);
+            v->keys = NULL;
+            v->key_count = v->key_capacity = 0;
+            *failed = true;
+            return;
+        }
+        v->keys = keys;
+        v->key_capacity = capacity;
+    }
+    v->keys[v->key_count++] = ts;
+}
+
+static int compare_i64(const void *a, const void *b) {
+    int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
+    return (x > y) - (x < y);
+}
+
 /* Demuxes every packet once to find the pts of the first and last frames in
- * presentation order, which container metadata does not reliably give, and
- * the timeline origin (media_internal.h). */
+ * presentation order, which container metadata does not reliably give, the
+ * keyframe timestamps, and the timeline origin (media_internal.h). */
 static int scan(SrVideoSource *v) {
     int64_t packets = 0, first = INT64_MAX, last = INT64_MIN;
-    int64_t origin_us = sr_media_origin_us(v->fmt);
+    bool keys_failed = false;
+    int64_t origin_us = sr_media_origin_us(v->cur->fmt);
     int audio = -1;
     if (origin_us == AV_NOPTS_VALUE)
-        audio = av_find_best_stream(v->fmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+        audio = av_find_best_stream(v->cur->fmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
     int64_t fallback = AV_NOPTS_VALUE;
     int rc;
-    while ((rc = av_read_frame(v->fmt, v->pkt)) >= 0) {
+    while ((rc = av_read_frame(v->cur->fmt, v->pkt)) >= 0) {
         int s = v->pkt->stream_index;
         int64_t ts = v->pkt->pts != AV_NOPTS_VALUE ? v->pkt->pts : v->pkt->dts;
         if (s == v->stream) {
@@ -212,29 +275,37 @@ static int scan(SrVideoSource *v) {
             if (ts != AV_NOPTS_VALUE) {
                 first = ts < first ? ts : first;
                 last = ts > last ? ts : last;
+                if (v->pkt->flags & AV_PKT_FLAG_KEY) add_key(v, ts, &keys_failed);
             }
         }
         if (origin_us == AV_NOPTS_VALUE && (s == v->stream || (audio >= 0 && s == audio))) {
-            int64_t us = sr_media_start_us(v->fmt->streams[s], ts);
+            int64_t us = sr_media_start_us(v->cur->fmt->streams[s], ts);
             if (us != AV_NOPTS_VALUE && (fallback == AV_NOPTS_VALUE || us < fallback))
                 fallback = us;
         }
         av_packet_unref(v->pkt);
     }
     if (rc != AVERROR_EOF) return rc;
+    if (keys_failed) return AVERROR(ENOMEM);
     if (packets == 0) return AVERROR_INVALIDDATA;
     if (first == INT64_MAX) {
         /* No timestamps: one frame per packet, counted from the start. */
         v->no_timestamps = true;
+        /* Rare and only rewound by reopening: one cursor keeps it simple. */
+        v->max_cursors = 1;
         v->info.frame_count = packets;
         return reopen(v);
     }
     if (origin_us == AV_NOPTS_VALUE) origin_us = fallback != AV_NOPTS_VALUE ? fallback : 0;
-    v->origin = sr_media_origin_in(v->fmt->streams[v->stream], origin_us);
+    v->origin = sr_media_origin_in(v->cur->fmt->streams[v->stream], origin_us);
     v->first_pts = first;
+    if (!keys_failed && v->key_count) {
+        qsort(v->keys, v->key_count, sizeof(*v->keys), compare_i64);
+        v->keys_known = true;
+    }
     int64_t last_index = first_index(v, last);
     v->info.frame_count = last_index < 0 ? 1 : last_index + 1;
-    return avformat_seek_file(v->fmt, v->stream, INT64_MIN, first, first, 0);
+    return avformat_seek_file(v->cur->fmt, v->stream, INT64_MIN, first, first, 0);
 }
 
 static int alloc_cache(SrVideoSource *v, size_t cache_bytes) {
@@ -265,29 +336,32 @@ SrStatus sr_video_open(const char *path, const SrProject *project,
     v->project = project;
     v->source_space = source_space;
     v->frame_tb = (AVRational){(int)fps_den, (int)fps_num};
+    v->cur = &v->cursors[0];
+    v->cursor_count = 1;
+    v->max_cursors = 1;
     v->path = sr_strdup(path);
     const char *stage = "out of memory";
     int rc = v->path ? 0 : AVERROR(ENOMEM);
     if (rc >= 0) {
         stage = "cannot open file";
-        rc = avformat_open_input(&v->fmt, path, NULL, NULL);
+        rc = avformat_open_input(&v->cur->fmt, path, NULL, NULL);
     }
     if (rc >= 0) {
         stage = "cannot read stream information";
-        rc = avformat_find_stream_info(v->fmt, NULL);
+        rc = avformat_find_stream_info(v->cur->fmt, NULL);
     }
     if (rc >= 0) {
         stage = "no video stream";
-        rc = av_find_best_stream(v->fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+        rc = av_find_best_stream(v->cur->fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
         v->stream = rc;
     }
     if (rc >= 0) {
         stage = "cannot open decoder";
-        rc = open_decoder(v->fmt, v->stream, &v->dec);
+        rc = open_decoder(v->cur->fmt, v->stream, &v->cur->dec);
     }
     if (rc >= 0) {
         stage = "invalid video stream";
-        AVStream *st = v->fmt->streams[v->stream];
+        AVStream *st = v->cur->fmt->streams[v->stream];
         AVRational rate = st->avg_frame_rate.num > 0 ? st->avg_frame_rate
                                                      : st->r_frame_rate;
         v->info.rate_num = rate.num;
@@ -296,20 +370,23 @@ SrStatus sr_video_open(const char *path, const SrProject *project,
             st->codecpar->color_space == AVCOL_SPC_BT2020_CL;
         v->matrix_warned = v->info.matrix_approximated;   /* caller reports it */
         v->tb = st->time_base;
-        if (v->dec->width <= 0 || v->dec->height <= 0 || v->dec->width > 16384 ||
-            v->dec->height > 16384 || v->tb.num <= 0 || v->tb.den <= 0)
+        if (v->cur->dec->width <= 0 || v->cur->dec->height <= 0 || v->cur->dec->width > 16384 ||
+            v->cur->dec->height > 16384 || v->tb.num <= 0 || v->tb.den <= 0)
             rc = AVERROR_INVALIDDATA;
-        v->info.width = (uint32_t)(v->dec->width > 0 ? v->dec->width : 0);
-        v->info.height = (uint32_t)(v->dec->height > 0 ? v->dec->height : 0);
+        v->info.width = (uint32_t)(v->cur->dec->width > 0 ? v->cur->dec->width : 0);
+        v->info.height = (uint32_t)(v->cur->dec->height > 0 ? v->cur->dec->height : 0);
+        uint64_t pixels = (uint64_t)v->info.width * v->info.height;
+        v->max_cursors = pixels <= 2304u * 1296u ? MAX_CURSORS
+                       : pixels <= 4096u * 2304u ? 2 : 1;
     }
     if (rc >= 0) {
         set_tolerance(v);
         stage = "out of memory";
         v->pkt = av_packet_alloc();
         v->frame = av_frame_alloc();
-        v->prev = av_frame_alloc();
-        v->ahead = av_frame_alloc();
-        if (!v->pkt || !v->frame || !v->prev || !v->ahead) rc = AVERROR(ENOMEM);
+        v->cur->prev = av_frame_alloc();
+        v->cur->ahead = av_frame_alloc();
+        if (!v->pkt || !v->frame || !v->cur->prev || !v->cur->ahead) rc = AVERROR(ENOMEM);
     }
     if (rc >= 0) {
         stage = "cannot index frames";
@@ -332,15 +409,13 @@ void sr_video_close(SrVideoSource *v) {
     if (!v) return;
     for (size_t i = 0; i < v->slot_count; ++i) free(v->slots[i].image.px);
     free(v->slots);
+    free(v->keys);
     free(v->rgba);
     free(v->path);
     sws_freeContext(v->sws);
     av_frame_free(&v->frame);
-    av_frame_free(&v->prev);
-    av_frame_free(&v->ahead);
     av_packet_free(&v->pkt);
-    avcodec_free_context(&v->dec);
-    avformat_close_input(&v->fmt);
+    for (size_t i = 0; i < MAX_CURSORS; ++i) close_cursor(&v->cursors[i]);
     free(v);
 }
 
@@ -364,61 +439,157 @@ size_t sr_video_scene_minimum_bytes(const SrScene *scene) {
 
 /* First output index of decoded frame f. */
 static int64_t frame_index(SrVideoSource *v, const AVFrame *f) {
-    if (v->no_timestamps) return v->counted++;
+    if (v->no_timestamps) return v->cur->counted++;
     int64_t pts = f->best_effort_timestamp != AV_NOPTS_VALUE
                       ? f->best_effort_timestamp : f->pts;
     if (pts == AV_NOPTS_VALUE)   /* a lone untimed frame follows the last */
-        return v->prev->buf[0] ? v->prev_index + 1 : 0;
+        return v->cur->prev->buf[0] ? v->cur->prev_index + 1 : 0;
     return first_index(v, pts);
 }
 
 /* Next decoded frame into v->frame: 0, AVERROR_EOF at the end, or error. */
 static int decode_next(SrVideoSource *v) {
-    if (!v->fmt) return AVERROR(EINVAL);
+    if (!v->cur->fmt) return AVERROR(EINVAL);
     for (;;) {
-        int rc = avcodec_receive_frame(v->dec, v->frame);
+        int rc = avcodec_receive_frame(v->cur->dec, v->frame);
         if (rc == 0) {
             v->stats.decoded++;
             return 0;
         }
         if (rc != AVERROR(EAGAIN)) return rc;
-        rc = av_read_frame(v->fmt, v->pkt);
+        rc = av_read_frame(v->cur->fmt, v->pkt);
         if (rc == AVERROR_EOF) {
-            rc = avcodec_send_packet(v->dec, NULL);
+            rc = avcodec_send_packet(v->cur->dec, NULL);
             if (rc < 0 && rc != AVERROR_EOF) return rc;
             continue;
         }
         if (rc < 0) return rc;
-        if (v->pkt->stream_index == v->stream) rc = avcodec_send_packet(v->dec, v->pkt);
+        if (v->pkt->stream_index == v->stream) rc = avcodec_send_packet(v->cur->dec, v->pkt);
         av_packet_unref(v->pkt);
         if (rc < 0) return rc;
     }
+}
+
+/* Stream timestamp a seek for output index `index` aims at: its time on the
+ * file's timeline, rounded down to a tick. */
+static int64_t seek_target(const SrVideoSource *v, int64_t index) {
+    int64_t offset = av_rescale_q_rnd(index, v->frame_tb, v->tb,
+                                      AV_ROUND_DOWN | AV_ROUND_PASS_MINMAX);
+    return offset > INT64_MAX - v->origin ? INT64_MAX : v->origin + offset;
+}
+
+/* Whether a forward request for `index` should seek rather than decode on
+ * from the current position (`reached`: first index of the latest decoded
+ * frame). Only a choice of cost: both paths end on the same frame. With
+ * known keyframes the seek pays exactly when it lands past the position,
+ * i.e. the latest keyframe at or before the target lies (well) after the
+ * latest decoded frame; otherwise it would re-decode frames already passed. */
+static bool forward_seek_pays(const SrVideoSource *v, int64_t index,
+                              int64_t reached) {
+    if (!v->keys_known) return index - reached > FORWARD_DECODE_LIMIT;
+    /* Latest keyframe at or before the target: binary search. */
+    int64_t target = seek_target(v, index);
+    size_t lo = 0, hi = v->key_count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (v->keys[mid] <= target) lo = mid + 1;
+        else hi = mid;
+    }
+    if (lo == 0) return false;   /* none: a seek would land on the start */
+    int64_t key_index = first_index(v, v->keys[lo - 1]);
+    return key_index - reached > KEYFRAME_SEEK_MIN_GAIN;
+}
+
+/* Whether cursor c reaches `index` by decoding on from where it is (no
+ * seek); *reached (may be NULL) gets its position, the first index of its
+ * latest decoded frame. */
+static bool decodes_forward(SrVideoSource *v, Cursor *c, int64_t index,
+                            int64_t *reached_out) {
+    if (!c->positioned ||
+        !(c->prev->buf[0] ? c->prev_index <= index : c->at_start))
+        return false;
+    int64_t reached = c->ahead->buf[0] ? c->ahead_index
+                    : c->prev->buf[0] ? c->prev_index : 0;
+    if (reached_out) *reached_out = reached;
+    if (v->no_timestamps) return true;
+    return !forward_seek_pays(v, index, reached);
+}
+
+static void close_cursor(Cursor *c) {
+    av_frame_free(&c->prev);
+    av_frame_free(&c->ahead);
+    avcodec_free_context(&c->dec);
+    avformat_close_input(&c->fmt);
+}
+
+/* Opens another demuxer + decoder on the source's file (unpositioned). */
+static int open_cursor(SrVideoSource *v, Cursor *c) {
+    *c = (Cursor){0};
+    int rc = avformat_open_input(&c->fmt, v->path, NULL, NULL);
+    if (rc >= 0) rc = avformat_find_stream_info(c->fmt, NULL);
+    if (rc >= 0 && (v->stream >= (int)c->fmt->nb_streams ||
+                    c->fmt->streams[v->stream]->codecpar->codec_type !=
+                        AVMEDIA_TYPE_VIDEO))
+        rc = AVERROR_INVALIDDATA;
+    if (rc >= 0) rc = open_decoder(c->fmt, v->stream, &c->dec);
+    if (rc >= 0) {
+        c->prev = av_frame_alloc();
+        c->ahead = av_frame_alloc();
+        if (!c->prev || !c->ahead) rc = AVERROR(ENOMEM);
+    }
+    if (rc < 0) close_cursor(c);
+    return rc;
+}
+
+/* Points v->cur at the cursor to serve `index`: the one nearest behind it
+ * that decodes forward; else an unpositioned one, a newly opened one (up to
+ * max_cursors), or the least recently used one, which then seeks. */
+static void choose_cursor(SrVideoSource *v, int64_t index) {
+    Cursor *best = NULL, *idle = NULL, *oldest = NULL;
+    int64_t best_reached = 0;
+    for (size_t i = 0; i < v->cursor_count; ++i) {
+        Cursor *c = &v->cursors[i];
+        int64_t reached = 0;
+        if (decodes_forward(v, c, index, &reached)) {
+            if (!best || reached > best_reached) {
+                best = c;
+                best_reached = reached;
+            }
+        } else if (!c->positioned && !idle) {
+            idle = c;
+        }
+        if (!oldest || c->stamp < oldest->stamp) oldest = c;
+    }
+    Cursor *chosen = best ? best : idle;
+    if (!chosen && v->cursor_count < v->max_cursors &&
+        open_cursor(v, &v->cursors[v->cursor_count]) >= 0)
+        chosen = &v->cursors[v->cursor_count++];
+    v->cur = chosen ? chosen : oldest;
+    v->cur->stamp = ++v->clock;
 }
 
 /* Positions the decoder so that decoding forward reaches the frame shown
  * at `index`: a seek to the latest keyframe at or before its time, or to
  * the first frame; a stream without timestamps is reopened instead. */
 static int reposition(SrVideoSource *v, int64_t index) {
-    av_frame_unref(v->prev);
-    av_frame_unref(v->ahead);
-    v->positioned = false;
+    av_frame_unref(v->cur->prev);
+    av_frame_unref(v->cur->ahead);
+    v->cur->positioned = false;
     v->stats.seeks++;
     int rc;
     if (v->no_timestamps) {
         rc = reopen(v);
-        v->at_start = true;
-        v->counted = 0;
+        v->cur->at_start = true;
+        v->cur->counted = 0;
     } else {
-        int64_t offset = av_rescale_q_rnd(index, v->frame_tb, v->tb,
-                                          AV_ROUND_DOWN | AV_ROUND_PASS_MINMAX);
-        int64_t target = offset > INT64_MAX - v->origin ? INT64_MAX : v->origin + offset;
-        v->at_start = index <= 0 || target <= v->first_pts;
-        if (v->at_start) target = v->first_pts;
-        rc = avformat_seek_file(v->fmt, v->stream, INT64_MIN, target, target, 0);
+        int64_t target = seek_target(v, index);
+        v->cur->at_start = index <= 0 || target <= v->first_pts;
+        if (v->cur->at_start) target = v->first_pts;
+        rc = avformat_seek_file(v->cur->fmt, v->stream, INT64_MIN, target, target, 0);
     }
     if (rc < 0) return rc;
-    avcodec_flush_buffers(v->dec);
-    v->positioned = true;
+    avcodec_flush_buffers(v->cur->dec);
+    v->cur->positioned = true;
     return 0;
 }
 
@@ -480,39 +651,33 @@ static int convert(SrVideoSource *v, const AVFrame *f, int64_t index,
  * `index`, never a later one; forward decoding and seeking agree because
  * a seek lands on a keyframe at or before that frame. */
 static int produce(SrVideoSource *v, int64_t index, CacheSlot **out) {
-    bool forward = v->positioned &&
-                   (v->prev->buf[0] ? v->prev_index <= index : v->at_start);
-    if (forward && !v->no_timestamps) {
-        int64_t reached = v->ahead->buf[0] ? v->ahead_index
-                        : v->prev->buf[0] ? v->prev_index : 0;
-        if (index - reached > FORWARD_DECODE_LIMIT) forward = false;
-    }
+    bool forward = decodes_forward(v, v->cur, index, NULL);
     int rc;
     if (!forward && (rc = reposition(v, index)) < 0) return rc;
     bool restarted = false;
     for (;;) {
-        while (!v->ahead->buf[0] || v->ahead_index <= index) {
-            if (v->ahead->buf[0]) {
-                av_frame_unref(v->prev);
-                av_frame_move_ref(v->prev, v->ahead);
-                v->prev_index = v->ahead_index;
+        while (!v->cur->ahead->buf[0] || v->cur->ahead_index <= index) {
+            if (v->cur->ahead->buf[0]) {
+                av_frame_unref(v->cur->prev);
+                av_frame_move_ref(v->cur->prev, v->cur->ahead);
+                v->cur->prev_index = v->cur->ahead_index;
                 continue;
             }
             rc = decode_next(v);
             if (rc == AVERROR_EOF) break;    /* past the last frame: hold it */
             if (rc < 0) return rc;
-            v->ahead_index = frame_index(v, v->frame);
-            av_frame_move_ref(v->ahead, v->frame);
+            v->cur->ahead_index = frame_index(v, v->frame);
+            av_frame_move_ref(v->cur->ahead, v->frame);
         }
-        const AVFrame *shown = v->prev->buf[0] ? v->prev : NULL;
-        if (!shown && v->ahead->buf[0]) {
-            if (!v->at_start && !restarted) {
+        const AVFrame *shown = v->cur->prev->buf[0] ? v->cur->prev : NULL;
+        if (!shown && v->cur->ahead->buf[0]) {
+            if (!v->cur->at_start && !restarted) {
                 /* The seek landed after the target: start from frame 0. */
                 restarted = true;
                 if ((rc = reposition(v, 0)) < 0) return rc;
                 continue;
             }
-            shown = v->ahead;   /* before the first frame: the first frame */
+            shown = v->cur->ahead;   /* before the first frame: the first frame */
         }
         if (!shown) return AVERROR_INVALIDDATA;
         return convert(v, shown, index, out);
@@ -531,10 +696,11 @@ SrStatus sr_video_frame(SrVideoSource *v, int64_t index, const SrImage **out,
         v->stats.cache_hits++;
     } else {
         v->failure = NULL;
+        choose_cursor(v, index);
         int rc = produce(v, index, &slot);
         if (rc < 0) {
             /* Unknown decoder position: the next request repositions. */
-            v->positioned = false;
+            v->cur->positioned = false;
             set_err(err, errlen, v->failure ? v->failure : "cannot decode frame", rc);
             return averr_status(rc);
         }

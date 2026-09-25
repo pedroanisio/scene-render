@@ -145,6 +145,16 @@ struct SrParticleRateCache {
     uint64_t first_cell;        /* cells [0, first_cell) run at first_rate */
     uint64_t last_cell;         /* cells [last_cell, inf) run at last_rate */
     double first_rate, last_rate;
+    /* Walk checkpoints: N at cell[j] + b * WALK_BLOCK for the middle segment
+     * starting at boundary j, stored at marks[mark_offset[j] + b]; the first
+     * mark_ready[j] are computed. They are the very running sums the
+     * sequential trapezoid walk from cell[j] produces, so a walk may resume
+     * from them instead of re-integrating the segment from its start.
+     * mark_capacity is 0 when the key span is too long to keep them. */
+    uint64_t *mark_offset;
+    uint64_t *mark_ready;
+    double *marks;
+    uint64_t mark_capacity;
 };
 
 static pthread_mutex_t rate_cache_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -183,17 +193,33 @@ static struct SrParticleRateCache *rate_cache_build(const SrNode *node) {
                    (sizeof(uint64_t) + sizeof(double)) - 2)
         return NULL;
     size_t slots = keys + 2;
+    double first = track->keys[0].time;
+    uint64_t first_cell = first > node->start_time ? cell_at_or_before(node, first) : 0;
+    uint64_t last_cell = cell_at_or_after(node, track->keys[keys - 1].time);
+    if (last_cell < first_cell) last_cell = first_cell;
+    /* Each middle segment of length L keeps ceil(L / WALK_BLOCK) marks; the
+     * segments tile [first_cell, last_cell), so this bounds their sum. */
+    uint64_t mark_capacity = 0;
+    if (last_cell - first_cell <= MAX_RATE_CELLS)
+        mark_capacity = (last_cell - first_cell) / WALK_BLOCK + slots;
+    if (slots > (SIZE_MAX - sizeof(struct SrParticleRateCache) -
+                 mark_capacity * sizeof(double)) /
+                    (3 * sizeof(uint64_t) + sizeof(double)))
+        return NULL;
     struct SrParticleRateCache *cache = sr_alloc(
-        sizeof(*cache) + slots * (sizeof(uint64_t) + sizeof(double)));
+        sizeof(*cache) + slots * (3 * sizeof(uint64_t) + sizeof(double)) +
+        (size_t)mark_capacity * sizeof(double));
     if (!cache) return NULL;
     cache->cell = (uint64_t *)(void *)(cache + 1);
     cache->total = (double *)(void *)(cache->cell + slots);
+    cache->mark_offset = (uint64_t *)(void *)(cache->total + slots);
+    cache->mark_ready = cache->mark_offset + slots;
+    cache->marks = (double *)(void *)(cache->mark_ready + slots);
+    cache->mark_capacity = mark_capacity;
     cache->first_rate = fmax(0.0, track->keys[0].value);
     cache->last_rate = fmax(0.0, track->keys[keys - 1].value);
-    double first = track->keys[0].time;
-    cache->first_cell = first > node->start_time ? cell_at_or_before(node, first) : 0;
-    cache->last_cell = cell_at_or_after(node, track->keys[keys - 1].time);
-    if (cache->last_cell < cache->first_cell) cache->last_cell = cache->first_cell;
+    cache->first_cell = first_cell;
+    cache->last_cell = last_cell;
     cache->count = 0;
     cache->cell[cache->count++] = cache->first_cell;
     for (size_t i = 1; i + 1 < keys; ++i) {
@@ -203,6 +229,14 @@ static struct SrParticleRateCache *rate_cache_build(const SrNode *node) {
     }
     if (cache->last_cell > cache->cell[cache->count - 1])
         cache->cell[cache->count++] = cache->last_cell;
+    uint64_t offset = 0;
+    for (size_t j = 0; j < cache->count; ++j) {
+        cache->mark_offset[j] = offset;
+        cache->mark_ready[j] = 0;
+        if (j + 1 < cache->count)
+            offset += (cache->cell[j + 1] - cache->cell[j] + WALK_BLOCK - 1) / WALK_BLOCK;
+    }
+    if (offset > cache->mark_capacity) cache->mark_capacity = 0;
     double step = 0.5 * (cache->first_rate + cache->first_rate) * RATE_STEP;
     cache->total[0] = (double)cache->first_cell * step;
     cache->ready = 1;
@@ -250,6 +284,43 @@ static SrStatus rate_totals(const SrNode *node, size_t upto,
     return status;
 }
 
+/* Copies into `out` the walk checkpoints of middle segment `j` (whose N at
+ * cell[j] is total[j], already computed) for cells below `to`: the
+ * (to - cell[j] - 1) / WALK_BLOCK + 1 values integrate(cell[j], to,
+ * total[j], out) would store, extending the node's cache first when
+ * needed. Returns false when the cache keeps no checkpoints. */
+static bool segment_marks(const SrNode *node, size_t j, uint64_t to, double *out) {
+    bool ok = false;
+    pthread_mutex_lock(&rate_cache_lock);
+    struct SrParticleRateCache *cache = node->particle_rate_cache;
+    if (cache && cache->mark_capacity && j + 1 < cache->count && j < cache->ready &&
+        to > cache->cell[j] && to <= cache->cell[j + 1]) {
+        uint64_t from = cache->cell[j];
+        uint64_t needed = (to - from - 1) / WALK_BLOCK + 1;
+        double *marks = cache->marks + cache->mark_offset[j];
+        uint64_t ready = cache->mark_ready[j];
+        if (ready == 0) marks[ready++] = cache->total[j];
+        /* The same sequential sum as integrate(), resumed at the newest
+         * stored checkpoint: identical operations in identical order. */
+        while (ready < needed) {
+            uint64_t begin = from + (ready - 1) * WALK_BLOCK;
+            double value = marks[ready - 1];
+            double previous = rate_at(node, begin);
+            for (uint64_t k = begin; k < begin + WALK_BLOCK; ++k) {
+                double next = rate_at(node, k + 1);
+                value += 0.5 * (previous + next) * RATE_STEP;
+                previous = next;
+            }
+            marks[ready++] = value;
+        }
+        cache->mark_ready[j] = ready;
+        memcpy(out, marks, (size_t)needed * sizeof(*out));
+        ok = true;
+    }
+    pthread_mutex_unlock(&rate_cache_lock);
+    return ok;
+}
+
 typedef struct {
     const SrScene *scene;
     const SrNode *node;
@@ -289,13 +360,15 @@ static void walk_constant(Walk *walk, double low, double high, double n0,
 
 /* Newest first over the grid cells [from, to) of one middle segment whose
  * N at cell `from` is `value`. */
-static SrStatus walk_segment(Walk *walk, uint64_t from, uint64_t to, double value) {
+static SrStatus walk_segment(Walk *walk, size_t segment, uint64_t from,
+                             uint64_t to, double value) {
     uint64_t cells = to - from;
     size_t blocks = (size_t)(cells / WALK_BLOCK) + 1;
     double *marks = sr_alloc(blocks * sizeof(*marks));
     double *buffer = sr_alloc((WALK_BLOCK + 1) * sizeof(*buffer));
     if (!marks || !buffer) { free(marks); free(buffer); return SR_ERR_MEMORY; }
-    integrate(walk->node, from, to, value, marks);
+    if (!segment_marks(walk->node, segment, to, marks))
+        integrate(walk->node, from, to, value, marks);
     for (size_t b = blocks; b-- > 0 && !walk->done;) {
         uint64_t begin = from + (uint64_t)b * WALK_BLOCK;
         if (begin >= to) continue;
@@ -363,7 +436,7 @@ static SrStatus walk_keyed(Walk *walk) {
             uint64_t end = j + 1 < info.count && info.cell[j + 1] < top
                 ? info.cell[j + 1] : top;
             if (end > info.cell[j])
-                status = walk_segment(walk, info.cell[j], end, totals[j]);
+                status = walk_segment(walk, j, info.cell[j], end, totals[j]);
         }
         free(totals);
         if (status != SR_OK) return status;

@@ -14,9 +14,13 @@
  * i / fps (plus 1e-6 of a frame, or half a stream tick when timestamps are
  * coarser, e.g. Matroska milliseconds), never a later frame; indices before
  * the first frame show the first frame, indices past the last frame show
- * the last one. Sequential requests decode forward; backward or far jumps
- * seek to the latest keyframe at or before the target time and decode
- * forward, so both choose the same frame and reach bit-identical pixels.
+ * the last one. Sequential requests decode forward; backward jumps, and
+ * forward jumps past a keyframe (positions recorded while indexing), seek
+ * to the latest keyframe at or before the target time and decode forward,
+ * so both choose the same frame and reach bit-identical pixels. A source
+ * keeps up to four demuxer/decoder cursors (fewer for large frames),
+ * opened on demand, so interleaved requests at different times (e.g. a
+ * reversed duplicate layer) each decode forward from their own position.
  * A stream without packet timestamps is never seeked: its frames are
  * numbered from the start of the file (one per packet), and backward
  * access reopens the demuxer and decodes from the start.

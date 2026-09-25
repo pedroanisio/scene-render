@@ -238,8 +238,18 @@ static double segment_distance(Point a, Point b, double px, double py) {
     return hypot(px - (a.x + t * dx), py - (a.y + t * dy));
 }
 
-static void stroke_coverage(const Path *path, double half_width,
-                            uint32_t width, uint32_t height, float *stroke) {
+/* Overlap of a 1 px box across the stroke, [d-.5, d+.5], with the band
+ * [-half_width, half_width]: exact for straight runs, also for strokes
+ * thinner than a pixel. */
+static float stroke_value(double best, double half_width) {
+    double coverage = fmin(best + 0.5, half_width) -
+                      fmax(best - 0.5, -half_width);
+    return (float)fmin(fmax(coverage, 0.0), 1.0);
+}
+
+/* The reference evaluation: every pixel against every segment. */
+static void stroke_coverage_all(const Path *path, double half_width,
+                                uint32_t width, uint32_t height, float *stroke) {
     for (uint32_t y = 0; y < height; ++y) {
         for (uint32_t x = 0; x < width; ++x) {
             double px = x + 0.5, py = y + 0.5, best = HUGE_VAL;
@@ -254,15 +264,122 @@ static void stroke_coverage(const Path *path, double half_width,
                     if (d < best) best = d;
                 }
             }
-            /* Overlap of a 1 px box across the stroke, [d-.5, d+.5], with the
-             * band [-half_width, half_width]: exact for straight runs, also
-             * for strokes thinner than a pixel. */
-            double coverage = fmin(best + 0.5, half_width) -
-                              fmax(best - 0.5, -half_width);
-            stroke[(size_t)y * width + x] =
-                (float)fmin(fmax(coverage, 0.0), 1.0);
+            stroke[(size_t)y * width + x] = stroke_value(best, half_width);
         }
     }
+}
+
+/* Pixels are evaluated in STROKE_TILE x STROKE_TILE tiles against only the
+ * segments whose bounding box lies within `reach` of the tile's pixel
+ * centres. A skipped segment is farther than reach > half_width + 0.5 from
+ * every centre of the tile, so it cannot be the minimum unless the minimum
+ * itself yields zero coverage; and a minimum over any superset of the
+ * segments that can be nearest is the same value. Segments provably farther
+ * from every centre than some other segment (bounds via the tile centre)
+ * are skipped too. The result is therefore bit-identical to
+ * stroke_coverage_all. */
+#define STROKE_TILE 16u
+/* Coordinates beyond this (or non-finite) use the reference path, so the
+ * rounding slack below stays far under one pixel. */
+#define STROKE_COORD_LIMIT 1e12
+
+typedef struct { Point a, b; double x0, y0, x1, y1; } StrokeSegment;
+
+/* SR_ERR_MEMORY when the tile index cannot be allocated (reported, never
+ * silently degraded); out-of-range geometry uses the all-segments loop. */
+static SrStatus stroke_coverage(const Path *path, double half_width,
+                                uint32_t width, uint32_t height, float *stroke) {
+    size_t total = 0;
+    bool bounded = half_width < STROKE_COORD_LIMIT;
+    for (size_t c = 0; c < path->count && bounded; ++c) {
+        const Contour *contour = &path->items[c];
+        total += contour->closed ? contour->count : contour->count - 1;
+        for (size_t i = 0; i < contour->count; ++i)
+            if (!(fabs(contour->points[i].x) <= STROKE_COORD_LIMIT) ||
+                !(fabs(contour->points[i].y) <= STROKE_COORD_LIMIT))
+                bounded = false;
+    }
+    if (!bounded || total > UINT32_MAX) {
+        stroke_coverage_all(path, half_width, width, height, stroke);
+        return SR_OK;
+    }
+    StrokeSegment *segments = sr_alloc(total * sizeof(*segments));
+    uint32_t *band = segments ? sr_alloc(total * sizeof(*band)) : NULL;
+    uint32_t *tile = band ? sr_alloc(total * sizeof(*tile)) : NULL;
+    double *centre = tile ? sr_alloc(total * sizeof(*centre)) : NULL;
+    if (!centre) {
+        free(segments); free(band); free(tile); free(centre);
+        return SR_ERR_MEMORY;
+    }
+    /* Segments in the reference order (contour by contour, i -> i+1). */
+    size_t k = 0;
+    for (size_t c = 0; c < path->count; ++c) {
+        const Contour *contour = &path->items[c];
+        size_t n = contour->count;
+        size_t count = contour->closed ? n : n - 1;
+        for (size_t i = 0; i < count; ++i, ++k) {
+            StrokeSegment *s = &segments[k];
+            s->a = contour->points[i];
+            s->b = contour->points[(i + 1) % n];
+            s->x0 = fmin(s->a.x, s->b.x); s->x1 = fmax(s->a.x, s->b.x);
+            s->y0 = fmin(s->a.y, s->b.y); s->y1 = fmax(s->a.y, s->b.y);
+        }
+    }
+    /* One pixel of slack covers the rounding of segment_distance many
+     * times over at these magnitudes. */
+    double reach = half_width + 0.5 + 1.0;
+    for (uint32_t ty = 0; ty < height; ty += STROKE_TILE) {
+        uint32_t tyend = height - ty < STROKE_TILE ? height : ty + STROKE_TILE;
+        double cy0 = ty + 0.5 - reach, cy1 = (tyend - 1) + 0.5 + reach;
+        size_t bands = 0;
+        for (size_t i = 0; i < total; ++i)
+            if (segments[i].y1 >= cy0 && segments[i].y0 <= cy1)
+                band[bands++] = (uint32_t)i;
+        for (uint32_t tx = 0; tx < width; tx += STROKE_TILE) {
+            uint32_t txend = width - tx < STROKE_TILE ? width : tx + STROKE_TILE;
+            double cx0 = tx + 0.5 - reach, cx1 = (txend - 1) + 0.5 + reach;
+            /* Every pixel centre p of the tile is within `radius` of the
+             * tile centre c, so dist(p, s) >= dist(c, s) - radius. */
+            double hx = 0.5 * (double)(txend - 1 - tx), hy = 0.5 * (double)(tyend - 1 - ty);
+            double centre_x = tx + 0.5 + hx, centre_y = ty + 0.5 + hy;
+            double radius = hypot(hx, hy), limit = reach + radius;
+            size_t near = 0;
+            double nearest = HUGE_VAL;
+            for (size_t i = 0; i < bands; ++i) {
+                const StrokeSegment *s = &segments[band[i]];
+                if (!(s->x1 >= cx0 && s->x0 <= cx1)) continue;
+                double d = segment_distance(s->a, s->b, centre_x, centre_y);
+                if (d <= limit) {
+                    tile[near] = band[i];
+                    centre[near++] = d;
+                    if (d < nearest) nearest = d;
+                }
+            }
+            /* Every centre p also has some segment within nearest + radius,
+             * so a segment farther than that from all of them (with a pixel
+             * of slack for rounding) is never p's minimum. */
+            double keep = fmin(limit, nearest + 2.0 * radius + 1.0);
+            size_t tiles = 0;
+            for (size_t i = 0; i < near; ++i)
+                if (centre[i] <= keep) tile[tiles++] = tile[i];
+            for (uint32_t y = ty; y < tyend; ++y) {
+                for (uint32_t x = tx; x < txend; ++x) {
+                    double px = x + 0.5, py = y + 0.5, best = HUGE_VAL;
+                    for (size_t i = 0; i < tiles; ++i) {
+                        const StrokeSegment *s = &segments[tile[i]];
+                        double d = segment_distance(s->a, s->b, px, py);
+                        if (d < best) best = d;
+                    }
+                    stroke[(size_t)y * width + x] = stroke_value(best, half_width);
+                }
+            }
+        }
+    }
+    free(segments);
+    free(band);
+    free(tile);
+    free(centre);
+    return SR_OK;
 }
 
 SrStatus sr_vector_path_coverage(const char *text, SrFillRule rule,
@@ -290,7 +407,13 @@ SrStatus sr_vector_path_coverage(const char *text, SrFillRule rule,
     resolve(&acc, rule, fill);
     if (stroke) {
         if (stroke_width > 0.0) {
-            stroke_coverage(&path, stroke_width * 0.5, width, height, stroke);
+            SrStatus stroked = stroke_coverage(&path, stroke_width * 0.5,
+                                               width, height, stroke);
+            if (stroked != SR_OK) {
+                free(acc.cells);
+                path_free(&path);
+                return stroked;
+            }
         } else {
             memset(stroke, 0, (size_t)width * height * sizeof(float));
         }

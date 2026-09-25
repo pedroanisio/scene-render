@@ -1,24 +1,25 @@
 #include "scene_render/camera.h"
 
+#include "scene_render/parallel.h"
+
 #include <math.h>
-#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 typedef struct { double x, y, z; } Vec3;
 
-static Vec3 rotate_x(Vec3 p, double a) {
-    double c = cos(a), s = sin(a);
-    return (Vec3){p.x, p.y * c - p.z * s, p.y * s + p.z * c};
+/* Ray rotations with cos/sin evaluated once per frame instead of per pixel;
+ * the arithmetic and its order match the former per-pixel rotate_x/y/z. */
+typedef struct { double c, s; } SinCos;
+static SinCos sincos_of(double a) { return (SinCos){cos(a), sin(a)}; }
+static Vec3 rotate_x_cs(Vec3 p, SinCos r) {
+    return (Vec3){p.x, p.y * r.c - p.z * r.s, p.y * r.s + p.z * r.c};
 }
-static Vec3 rotate_y(Vec3 p, double a) {
-    double c = cos(a), s = sin(a);
-    return (Vec3){p.x * c + p.z * s, p.y, -p.x * s + p.z * c};
+static Vec3 rotate_y_cs(Vec3 p, SinCos r) {
+    return (Vec3){p.x * r.c + p.z * r.s, p.y, -p.x * r.s + p.z * r.c};
 }
-static Vec3 rotate_z(Vec3 p, double a) {
-    double c = cos(a), s = sin(a);
-    return (Vec3){p.x * c - p.y * s, p.x * s + p.y * c, p.z};
+static Vec3 rotate_z_cs(Vec3 p, SinCos r) {
+    return (Vec3){p.x * r.c - p.y * r.s, p.x * r.s + p.y * r.c, p.z};
 }
 
 static const SrCamera *active_camera(const SrScene *scene) {
@@ -60,13 +61,14 @@ static void sample_wrap(const SrFrame *image, double x, double y, float out[4]) 
 typedef struct {
     const SrFrame *panorama;
     SrFrame *viewport;
-    uint32_t y0, y1;
-    double yaw, pitch, roll, tan_half, aspect;
+    SinCos yaw, pitch, roll;
+    double tan_half, aspect;
 } ViewportJob;
 
-static void *render_rows(void *argument) {
+/* Rows are independent, so any row partition yields identical pixels. */
+static void render_rows(void *argument, size_t begin, size_t end) {
     ViewportJob *job = argument;
-    for (uint32_t y = job->y0; y < job->y1; ++y) {
+    for (uint32_t y = (uint32_t)begin; y < (uint32_t)end; ++y) {
         SrFrame *viewport = job->viewport;
         const SrFrame *panorama = job->panorama;
         double ny = 1.0 - 2.0 * (y + 0.5) / viewport->height;
@@ -74,9 +76,9 @@ static void *render_rows(void *argument) {
             double nx = 2.0 * (x + 0.5) / viewport->width - 1.0;
             Vec3 ray = {nx * job->aspect * job->tan_half,
                         ny * job->tan_half, 1.0};
-            ray = rotate_z(ray, job->roll);
-            ray = rotate_x(ray, job->pitch);
-            ray = rotate_y(ray, job->yaw);
+            ray = rotate_z_cs(ray, job->roll);
+            ray = rotate_x_cs(ray, job->pitch);
+            ray = rotate_y_cs(ray, job->yaw);
             double length = sqrt(ray.x * ray.x + ray.y * ray.y + ray.z * ray.z);
             double longitude = atan2(ray.x, ray.z);
             double latitude = asin(ray.y / length);
@@ -86,7 +88,6 @@ static void *render_rows(void *argument) {
                         &viewport->px[((size_t)y * viewport->width + x) * 4]);
         }
     }
-    return NULL;
 }
 
 SrStatus sr_camera_extract_viewport(const SrScene *scene, double time,
@@ -104,37 +105,11 @@ SrStatus sr_camera_extract_viewport(const SrScene *scene, double time,
                       "animated field of view must remain between 1 and 179 degrees");
         return SR_ERR_ARGUMENT;
     }
-    if (!threads) {
-        long detected = sysconf(_SC_NPROCESSORS_ONLN);
-        threads = detected > 0 ? (unsigned)detected : 1;
-    }
-    if (threads > 32) threads = 32;
-    if (threads > viewport->height) threads = viewport->height;
-    if (!threads) threads = 1;
-    ViewportJob *jobs = sr_alloc(threads * sizeof(*jobs));
-    pthread_t *workers = sr_alloc(threads * sizeof(*workers));
-    bool *started = sr_alloc(threads * sizeof(*started));
-    if (!jobs || !workers || !started) {
-        free(jobs); free(workers); free(started);
-        return SR_ERR_MEMORY;
-    }
-    ViewportJob base = {.panorama=panorama, .viewport=viewport,
-        .yaw=sr_anim_eval(&camera->yaw,time)*SR_PI/180.0,
-        .pitch=sr_anim_eval(&camera->pitch,time)*SR_PI/180.0,
-        .roll=sr_anim_eval(&camera->roll,time)*SR_PI/180.0,
+    ViewportJob job = {.panorama=panorama, .viewport=viewport,
+        .yaw=sincos_of(sr_anim_eval(&camera->yaw,time)*SR_PI/180.0),
+        .pitch=sincos_of(sr_anim_eval(&camera->pitch,time)*SR_PI/180.0),
+        .roll=sincos_of(sr_anim_eval(&camera->roll,time)*SR_PI/180.0),
         .tan_half=tan(fov*SR_PI/360.0),
         .aspect=(double)viewport->width/viewport->height};
-    for (unsigned i = 0; i < threads; ++i) {
-        jobs[i] = base;
-        jobs[i].y0 = (uint32_t)((uint64_t)viewport->height * i / threads);
-        jobs[i].y1 = (uint32_t)((uint64_t)viewport->height * (i + 1) / threads);
-        if (i + 1 < threads)
-            started[i] = pthread_create(&workers[i], NULL, render_rows,
-                                        &jobs[i]) == 0;
-        if (i + 1 == threads || !started[i]) render_rows(&jobs[i]);
-    }
-    for (unsigned i = 0; i + 1 < threads; ++i)
-        if (started[i]) pthread_join(workers[i], NULL);
-    free(started); free(workers); free(jobs);
-    return SR_OK;
+    return sr_parallel_for(viewport->height, threads, render_rows, &job);
 }

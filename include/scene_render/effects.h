@@ -31,6 +31,11 @@ SrStatus sr_effects_apply_group(const SrScene *scene, SrEffect *const *effects,
 SrStatus sr_effects_blur_rect(SrFrame *frame, SrEffectRect *rect,
                               double radius, unsigned threads);
 
+/* Frees the calling thread's cached effect scratch buffers and transfer
+ * tables (they are otherwise kept, grow-only, for reuse across frames and
+ * released at exit). Later effect calls reallocate them. */
+void sr_effects_release(void);
+
 /* How far, in pixels, `effect` at `time` can move content outward: the
  * blur radius for glow/bloom/blur, offset plus radius plus one for
  * drop-shadow, zero for per-pixel effects. */
