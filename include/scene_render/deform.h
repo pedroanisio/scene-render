@@ -12,12 +12,13 @@
  * returns q exactly. A Newton result whose forward residual is not below
  * 1e-4 px is replaced by an analytic per-cell inverse (the in-range
  * solution nearest the Newton start); when no cell maps onto q the call
- * returns false ("no source": the pixel stays transparent). */
+ * returns false ("no source": the pixel stays transparent). Non-finite
+ * queries and unrepresentable inverse results also return false. */
 bool sr_grid_warp_inverse(const double *offsets, uint32_t rows, uint32_t cols,
                           double width, double height, SrVec2 q, SrVec2 *p);
 
-/* Largest |dx| or |dy| among `count` grid nodes. Grids compose, so a
- * node's bounds padding is the sum of this over all of its grids. */
+/* Largest |dx| or |dy| among `count` grid nodes. Expand the current bounds
+ * by this displacement when applying each grid in modifier order. */
 double sr_grid_warp_extent(const double *offsets, size_t count);
 
 #endif

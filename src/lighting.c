@@ -60,6 +60,10 @@ static Vec3 normalize(Vec3 value) {
 }
 static double dot(Vec3 a, Vec3 b) { return a.x*b.x+a.y*b.y+a.z*b.z; }
 
+static double object_alpha(const SrObject3D *object) {
+    return object->material ? clamp01(object->material->base_color.a) : 1.0;
+}
+
 static double object_bound(const SrObject3D *object,double time){
     double scale=fmax(fabs(sr_anim_eval(&object->transform.scale_x,time)),
         fmax(fabs(sr_anim_eval(&object->transform.scale_y,time)),
@@ -73,7 +77,7 @@ static bool shadowed(const SrScene *scene,const SrObject3D *receiver,
                      Vec3 point,Vec3 direction,double maximum,double time){
     if(!receiver->receive_shadow)return false;
     for(size_t i=0;i<scene->object3d_count;++i){const SrObject3D *caster=&scene->objects3d[i];
-        if(caster==receiver||!caster->cast_shadow)continue;
+        if(caster==receiver||!caster->cast_shadow||object_alpha(caster)==0.0)continue;
         Vec3 center={sr_anim_eval(&caster->transform.x,time),
                      sr_anim_eval(&caster->transform.y,time),
                      sr_anim_eval(&caster->transform.z,time)};
@@ -445,7 +449,7 @@ static SrStatus map_build(const SrScene *scene, const View *view,
     for (size_t i = 0; i < texels; ++i) map->depth[i] = INFINITY;
     for (size_t index = 0; index < scene->object3d_count; ++index) {
         const SrObject3D *object = &scene->objects3d[index];
-        if (!object->cast_shadow) continue;
+        if (!object->cast_shadow || object_alpha(object) == 0.0) continue;
         if (object->primitive == SR_OBJECT_MESH) { map_mesh(map, object, time); continue; }
         SpriteFrame frame = sprite_frame(object, time);
         int i0, j0, i1, j1;
@@ -484,6 +488,12 @@ static double map_visibility(const ShadowMap *map, Vec3 p, Vec3 n) {
 /* ---- shading ------------------------------------------------------------- */
 
 typedef struct {
+    size_t pixel, order;
+    double depth;
+    float color[4];
+} Fragment;
+
+typedef struct {
     const SrScene *scene;
     double time;
     View view;
@@ -493,11 +503,61 @@ typedef struct {
     int samples;                /* antialias3d */
     SrFrame *target;            /* frame, or the supersampled buffer */
     double *depth;
+    bool translucent;
+    Fragment *fragments;
+    size_t fragment_count, fragment_capacity;
+    SrStatus status;
 } Pass;
 
-typedef struct { double x,y,depth; Vec3 world,normal; } MeshVertex;
+typedef struct { double x,y,depth; Vec3 world,normal,camera; } MeshVertex;
 
 static void over(const SrProject *project,SrFrame *frame,int x,int y,SrColor color,double alpha);
+
+/* Opaque geometry establishes visibility first. Translucent fragments keep
+ * their own depths and blend far-to-near afterwards, including intersecting
+ * meshes; they never hide subsequently visited geometry by writing depth. */
+static void store_sample(Pass *pass, size_t pixel, double depth, SrColor color) {
+    if (!(color.a > 0.0) || !isfinite(depth) || depth >= pass->depth[pixel]) return;
+    float source[4];
+    sr_color_to_blend(&pass->scene->project, color, source);
+    if (!pass->translucent) {
+        pass->depth[pixel] = depth;
+        sr_blend_px(SR_BLEND_NORMAL, pass->target->px + pixel * 4, source);
+        return;
+    }
+    if (pass->fragment_count == pass->fragment_capacity) {
+        size_t capacity = pass->fragment_capacity ? pass->fragment_capacity * 2 : 1024;
+        if (capacity < pass->fragment_capacity || capacity > SIZE_MAX / sizeof(Fragment)) {
+            pass->status = SR_ERR_MEMORY;
+            return;
+        }
+        Fragment *grown = sr_realloc(pass->fragments, capacity * sizeof(*grown));
+        if (!grown) { pass->status = SR_ERR_MEMORY; return; }
+        pass->fragments = grown;
+        pass->fragment_capacity = capacity;
+    }
+    Fragment *fragment = &pass->fragments[pass->fragment_count];
+    *fragment = (Fragment){.pixel = pixel, .order = pass->fragment_count, .depth = depth};
+    memcpy(fragment->color, source, sizeof source);
+    ++pass->fragment_count;
+}
+
+static int compare_fragments(const void *a, const void *b) {
+    const Fragment *fa = a, *fb = b;
+    if (fa->pixel != fb->pixel) return fa->pixel < fb->pixel ? -1 : 1;
+    if (fa->depth != fb->depth) return fa->depth > fb->depth ? -1 : 1;
+    return (fa->order > fb->order) - (fa->order < fb->order);
+}
+
+static void blend_fragments(Pass *pass) {
+    if (!pass->fragment_count) return;
+    qsort(pass->fragments, pass->fragment_count, sizeof(*pass->fragments), compare_fragments);
+    for (size_t i = 0; i < pass->fragment_count; ++i) {
+        const Fragment *fragment = &pass->fragments[i];
+        sr_blend_px(SR_BLEND_NORMAL, pass->target->px + fragment->pixel * 4,
+                    fragment->color);
+    }
+}
 
 /* `geometry` is the receiver's consistent world point and normal for
  * shadow-map lookups (NULL: unshadowed by maps). */
@@ -546,28 +606,63 @@ static SrColor shade(const Pass *pass, const SrObject3D *object,
     return (SrColor){clamp01(r),clamp01(g),clamp01(b),material->base_color.a};
 }
 
-static bool project_mesh_vertex(const SrScene *scene,const SrObject3D *object,
-                                const SrMeshTriangle *triangle,size_t corner,
-                                double time,MeshVertex *result){
-    result->world=mesh_world(object,triangle->position[corner],time);
-    result->normal=normalize(object_rotate(object,(Vec3){triangle->normal[corner][0],
-        triangle->normal[corner][1],triangle->normal[corner][2]},time));
-    const SrCamera *camera=scene_camera(scene);
-    if(!camera){result->x=result->world.x;result->y=result->world.y;
-        result->depth=-result->world.z;return true;}
-    Vec3 point={result->world.x-sr_anim_eval(&camera->x,time),
-                result->world.y-sr_anim_eval(&camera->y,time),
-                result->world.z-sr_anim_eval(&camera->z,time)};
-    point=rotate_y(point,-sr_anim_eval(&camera->yaw,time)*SR_PI/180.0);
-    point=rotate_x(point,-sr_anim_eval(&camera->pitch,time)*SR_PI/180.0);
-    point=rotate_z(point,-sr_anim_eval(&camera->roll,time)*SR_PI/180.0);
-    if(point.z<camera->near_plane||point.z>camera->far_plane)return false;
-    result->depth=point.z;
-    if(camera->orthographic){result->x=scene->project.width*.5+point.x;
-        result->y=scene->project.height*.5-point.y;return true;}
-    double focal=scene->project.height*.5/tan(sr_anim_eval(&camera->fov,time)*SR_PI/360.0);
-    result->x=scene->project.width*.5+point.x*focal/point.z;
-    result->y=scene->project.height*.5-point.y*focal/point.z;return true;
+static bool finite_vec(Vec3 v) {
+    return isfinite(v.x) && isfinite(v.y) && isfinite(v.z);
+}
+
+static MeshVertex mesh_vertex(const Pass *pass, const SrObject3D *object,
+                               const SrMeshTriangle *triangle, size_t corner) {
+    MeshVertex vertex = {0};
+    vertex.world = mesh_world(object, triangle->position[corner], pass->time);
+    vertex.normal = normalize(object_rotate(object,
+        (Vec3){triangle->normal[corner][0], triangle->normal[corner][1],
+               triangle->normal[corner][2]}, pass->time));
+    vertex.camera = vertex.world;
+    if (pass->view.camera) {
+        vertex.camera = v_sub(vertex.world, pass->view.eye);
+        vertex.camera = rotate_y(vertex.camera, -pass->view.yaw);
+        vertex.camera = rotate_x(vertex.camera, -pass->view.pitch);
+        vertex.camera = rotate_z(vertex.camera, -pass->view.roll);
+    }
+    return vertex;
+}
+
+/* Clip in camera space before dividing by z. Attributes at a cut edge
+ * are interpolated in world space, then perspective corrected at samples. */
+static size_t clip_mesh_plane(const MeshVertex *in, size_t count,
+                               MeshVertex *out, double plane, bool near_plane) {
+    size_t used = 0;
+    for (size_t i = 0; i < count; ++i) {
+        const MeshVertex *a = &in[(i + count - 1) % count], *b = &in[i];
+        bool a_in = near_plane ? a->camera.z >= plane : a->camera.z <= plane;
+        bool b_in = near_plane ? b->camera.z >= plane : b->camera.z <= plane;
+        if (a_in != b_in) {
+            double t = (plane - a->camera.z) / (b->camera.z - a->camera.z);
+            MeshVertex cut = {0};
+            cut.world = v_add(v_scale(a->world, 1.0 - t), v_scale(b->world, t));
+            cut.normal = v_add(v_scale(a->normal, 1.0 - t), v_scale(b->normal, t));
+            cut.camera = v_add(v_scale(a->camera, 1.0 - t), v_scale(b->camera, t));
+            cut.camera.z = plane;
+            out[used++] = cut;
+        }
+        if (b_in) out[used++] = *b;
+    }
+    return used;
+}
+
+static bool project_mesh_vertex(const View *view, MeshVertex *vertex) {
+    if (!finite_vec(vertex->world) || !finite_vec(vertex->camera)) return false;
+    if (!view->camera) {
+        vertex->x = vertex->world.x;
+        vertex->y = vertex->world.y;
+        vertex->depth = -vertex->world.z;
+    } else {
+        double scale = view->camera->orthographic ? 1.0 : view->focal / vertex->camera.z;
+        vertex->x = view->width * .5 + vertex->camera.x * scale;
+        vertex->y = view->height * .5 - vertex->camera.y * scale;
+        vertex->depth = vertex->camera.z;
+    }
+    return isfinite(vertex->x) && isfinite(vertex->y) && isfinite(vertex->depth);
 }
 
 static double edge(double ax,double ay,double bx,double by,double px,double py){
@@ -579,37 +674,86 @@ static double sample_at(int index, int samples) {
     return (index + .5) / samples;
 }
 
-static void render_mesh(const Pass *pass,const SrObject3D *object){
-    const SrScene *scene=pass->scene;double time=pass->time;
-    SrFrame *frame=pass->target;double *depth=pass->depth;int n=pass->samples;
-    if(!object->mesh_asset||!object->mesh_asset->mesh)return;
-    const SrMesh *mesh=object->mesh_asset->mesh;
-    for(size_t index=0;index<mesh->triangle_count;++index){MeshVertex v[3];
-        if(!project_mesh_vertex(scene,object,&mesh->triangles[index],0,time,&v[0])||
-           !project_mesh_vertex(scene,object,&mesh->triangles[index],1,time,&v[1])||
-           !project_mesh_vertex(scene,object,&mesh->triangles[index],2,time,&v[2]))continue;
-        double area=edge(v[0].x,v[0].y,v[1].x,v[1].y,v[2].x,v[2].y);
-        if(fabs(area)<1e-12)continue;
-        Vec3 face=normalize(v_cross(v_sub(v[1].world,v[0].world),v_sub(v[2].world,v[0].world)));
-        int fw=(int)frame->width,fh=(int)frame->height;
-        int min_x=sr_clamp_int(floor(fmin(v[0].x,fmin(v[1].x,v[2].x))*n),0,fw);
-        int max_x=sr_clamp_int(ceil(fmax(v[0].x,fmax(v[1].x,v[2].x))*n),-1,fw-1);
-        int min_y=sr_clamp_int(floor(fmin(v[0].y,fmin(v[1].y,v[2].y))*n),0,fh);
-        int max_y=sr_clamp_int(ceil(fmax(v[0].y,fmax(v[1].y,v[2].y))*n),-1,fh-1);
-        for(int y=min_y;y<=max_y;++y)for(int x=min_x;x<=max_x;++x){
-            double sx=sample_at(x,n),sy=sample_at(y,n);
-            double a=edge(v[1].x,v[1].y,v[2].x,v[2].y,sx,sy)/area;
-            double b=edge(v[2].x,v[2].y,v[0].x,v[0].y,sx,sy)/area;
-            double c=1.0-a-b;if(a<0||b<0||c<0)continue;double z=a*v[0].depth+b*v[1].depth+c*v[2].depth;
-            size_t at=(size_t)y*frame->width+(size_t)x;if(z>=depth[at])continue;depth[at]=z;
-            Vec3 point={a*v[0].world.x+b*v[1].world.x+c*v[2].world.x,
-                        a*v[0].world.y+b*v[1].world.y+c*v[2].world.y,
-                        a*v[0].world.z+b*v[1].world.z+c*v[2].world.z};
-            Vec3 normal=normalize((Vec3){a*v[0].normal.x+b*v[1].normal.x+c*v[2].normal.x,
+/* Half-open edge ownership prevents a translucent mesh (or a clipped fan)
+ * from blending twice at a shared edge. Winding is normalized beforehand. */
+static bool owns_edge(const MeshVertex *a, const MeshVertex *b) {
+    return b->y > a->y || (b->y == a->y && b->x < a->x);
+}
+
+static void render_triangle(Pass *pass, const SrObject3D *object,
+                            MeshVertex v[3], Vec3 face) {
+    double area = edge(v[0].x, v[0].y, v[1].x, v[1].y, v[2].x, v[2].y);
+    if (!isfinite(area) || fabs(area) < 1e-12) return;
+    if (area < 0.0) {
+        MeshVertex swap = v[1]; v[1] = v[2]; v[2] = swap;
+        area = -area;
+    }
+    SrFrame *frame = pass->target;
+    int n = pass->samples, fw = (int)frame->width, fh = (int)frame->height;
+    int min_x = sr_clamp_int(floor(fmin(v[0].x, fmin(v[1].x, v[2].x)) * n), 0, fw);
+    int max_x = sr_clamp_int(ceil(fmax(v[0].x, fmax(v[1].x, v[2].x)) * n), -1, fw - 1);
+    int min_y = sr_clamp_int(floor(fmin(v[0].y, fmin(v[1].y, v[2].y)) * n), 0, fh);
+    int max_y = sr_clamp_int(ceil(fmax(v[0].y, fmax(v[1].y, v[2].y)) * n), -1, fh - 1);
+    bool perspective = pass->view.camera && !pass->view.camera->orthographic;
+    bool owns_a = owns_edge(&v[1], &v[2]), owns_b = owns_edge(&v[2], &v[0]);
+    bool owns_c = owns_edge(&v[0], &v[1]);
+    for (int y = min_y; y <= max_y && pass->status == SR_OK; ++y) {
+        for (int x = min_x; x <= max_x && pass->status == SR_OK; ++x) {
+            double sx = sample_at(x, n), sy = sample_at(y, n);
+            double ea = edge(v[1].x, v[1].y, v[2].x, v[2].y, sx, sy);
+            double eb = edge(v[2].x, v[2].y, v[0].x, v[0].y, sx, sy);
+            double ec = edge(v[0].x, v[0].y, v[1].x, v[1].y, sx, sy);
+            if (ea < 0.0 || (ea == 0.0 && !owns_a) ||
+                eb < 0.0 || (eb == 0.0 && !owns_b) ||
+                ec < 0.0 || (ec == 0.0 && !owns_c)) continue;
+            double a = ea / area, b = eb / area, c = ec / area;
+            double z;
+            if (perspective) {
+                a /= v[0].depth; b /= v[1].depth; c /= v[2].depth;
+                z = 1.0 / (a + b + c);
+                a *= z; b *= z; c *= z;
+            } else {
+                z = a * v[0].depth + b * v[1].depth + c * v[2].depth;
+            }
+            size_t at = (size_t)y * frame->width + (size_t)x;
+            if (!isfinite(z) || z >= pass->depth[at]) continue;
+            Vec3 point = {a*v[0].world.x+b*v[1].world.x+c*v[2].world.x,
+                          a*v[0].world.y+b*v[1].world.y+c*v[2].world.y,
+                          a*v[0].world.z+b*v[1].world.z+c*v[2].world.z};
+            Vec3 normal = normalize((Vec3){a*v[0].normal.x+b*v[1].normal.x+c*v[2].normal.x,
                 a*v[0].normal.y+b*v[1].normal.y+c*v[2].normal.y,
                 a*v[0].normal.z+b*v[1].normal.z+c*v[2].normal.z});
-            Vec3 geometry[2]={point,face};
-            over(&scene->project,frame,x,y,shade(pass,object,point,normal,geometry),1);}
+            Vec3 geometry[2] = {point, face};
+            store_sample(pass, at, z, shade(pass, object, point, normal, geometry));
+        }
+    }
+}
+
+static void render_mesh(Pass *pass, const SrObject3D *object) {
+    if (!object->mesh_asset || !object->mesh_asset->mesh) return;
+    const SrMesh *mesh = object->mesh_asset->mesh;
+    for (size_t index = 0; index < mesh->triangle_count && pass->status == SR_OK; ++index) {
+        MeshVertex polygon[8], scratch[8];
+        bool finite = true;
+        for (size_t k = 0; k < 3; ++k) {
+            polygon[k] = mesh_vertex(pass, object, &mesh->triangles[index], k);
+            finite = finite && finite_vec(polygon[k].world) && finite_vec(polygon[k].camera);
+        }
+        if (!finite) continue;
+        Vec3 face = normalize(v_cross(v_sub(polygon[1].world, polygon[0].world),
+                                      v_sub(polygon[2].world, polygon[0].world)));
+        size_t count = 3;
+        if (pass->view.camera) {
+            count = clip_mesh_plane(polygon, count, scratch, pass->view.camera->near_plane, true);
+            count = clip_mesh_plane(scratch, count, polygon, pass->view.camera->far_plane, false);
+        }
+        for (size_t k = 0; k < count; ++k)
+            finite = project_mesh_vertex(&pass->view, &polygon[k]) && finite;
+        if (!finite) continue;
+        for (size_t k = 1; k + 1 < count && pass->status == SR_OK; ++k) {
+            MeshVertex triangle[3] = {polygon[0], polygon[k], polygon[k + 1]};
+            render_triangle(pass, object, triangle, face);
+        }
     }
 }
 
@@ -627,7 +771,7 @@ static void over(const SrProject *project, SrFrame *frame, int x, int y,
 /* Point lights keep the screen-space blob under shadow casters. */
 static void shadow_blob(const Pass *pass,const SrObject3D *object){
     const SrScene *scene=pass->scene;double time=pass->time;int n=pass->samples;
-    if(!pass->blob||!object->cast_shadow)return;
+    if(!pass->blob||!object->cast_shadow||object_alpha(object)==0.0)return;
     double x,y,projection_scale;if(!project(scene,object,time,&x,&y,&projection_scale))return;x+=25*projection_scale;y+=30*projection_scale;
     double radius=object->radius*fabs(sr_anim_eval(&object->transform.scale_x,time))*projection_scale;
     /* Pixels beyond the target are skipped by over(), so the loop bounds
@@ -640,7 +784,7 @@ static void shadow_blob(const Pass *pass,const SrObject3D *object){
         if(dx*dx+dy*dy<=1.0)over(&scene->project,pass->target,px,py,(SrColor){0,0,0,1},.3);}
 }
 
-static void render_sprite(const Pass *pass, const SrObject3D *object) {
+static void render_sprite(Pass *pass, const SrObject3D *object) {
     const SrScene *scene = pass->scene;
     double time = pass->time;
     SrFrame *frame = pass->target;
@@ -655,7 +799,7 @@ static void render_sprite(const Pass *pass, const SrObject3D *object) {
     int fw=(int)frame->width,fh=(int)frame->height;
     int y0=sr_clamp_int(floor((cy-ry)*n),-1,fh),y1=sr_clamp_int(ceil((cy+ry)*n),-1,fh);
     int x0=sr_clamp_int(floor((cx-rx)*n),-1,fw),x1=sr_clamp_int(ceil((cx+rx)*n),-1,fw);
-    for(int y=y0;y<=y1;++y)for(int x=x0;x<=x1;++x){
+    for(int y=y0;y<=y1&&pass->status==SR_OK;++y)for(int x=x0;x<=x1&&pass->status==SR_OK;++x){
         double px=sample_at(x,n),py=sample_at(y,n);
         double nx=(px-cx)/rx,ny=(py-cy)/ry;
         double angle=-sr_anim_eval(&object->transform.rotation,time)*SR_PI/180.0;
@@ -672,13 +816,12 @@ static void render_sprite(const Pass *pass, const SrObject3D *object) {
         size_t at=(size_t)y*frame->width+(size_t)x;
         double object_depth=view_depth(scene,point,time);
         if(object_depth>=pass->depth[at])continue;
-        pass->depth[at]=object_depth;
         Vec3 geometry[2];
         if (maps)
             sprite_surface(&pass->view, object, &sprite, cx, cy, projection_scale,
                            px, py, nx, ny, &geometry[0], &geometry[1]);
         SrColor color = shade(pass, object, point, normal, maps ? geometry : NULL);
-        over(&scene->project, frame, x, y, color, 1);
+        store_sample(pass, at, object_depth, color);
     }
 }
 
@@ -735,16 +878,23 @@ SrStatus sr_lighting_render(SrScene *scene,double time,SrFrame *frame,SrDiagnost
     if(!pass.depth){status=SR_ERR_MEMORY;goto done;}
     for(size_t i=0;i<pixels;++i)pass.depth[i]=INFINITY;
     for(size_t i=0;i<scene->object3d_count;++i)shadow_blob(&pass,&scene->objects3d[i]);
-    for(size_t i=0;i<scene->object3d_count;++i){SrObject3D *object=&scene->objects3d[i];
-        if(object->primitive==SR_OBJECT_MESH)render_mesh(&pass,object);
-        else render_sprite(&pass,object);
+    for (int phase = 0; phase < 2; ++phase) {
+        pass.translucent = phase == 1;
+        for(size_t i=0;i<scene->object3d_count;++i){SrObject3D *object=&scene->objects3d[i];
+            double alpha = object_alpha(object);
+            if (alpha == 0.0 || (alpha < 1.0) != pass.translucent) continue;
+            if(object->primitive==SR_OBJECT_MESH)render_mesh(&pass,object);
+            else render_sprite(&pass,object);
+            if (pass.status != SR_OK) { status = pass.status; goto done; }
+        }
     }
+    blend_fragments(&pass);
     if (n > 1) resolve(&pass, frame);
 done:
     if (status == SR_ERR_MEMORY)
         sr_diag_error(diag,0,NULL,NULL,"cannot allocate 3D pass buffers");
     for (size_t i = 0; pass.maps && i < scene->light_count; ++i) free(pass.maps[i].depth);
-    free(pass.maps); free(pass.light_color); free(pass.depth);
+    free(pass.maps); free(pass.light_color); free(pass.depth); free(pass.fragments);
     sr_frame_free(&supersampled);
     return status;
 }

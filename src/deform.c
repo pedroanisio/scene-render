@@ -12,6 +12,10 @@ static Field field_at(const double *offsets, uint32_t rows, uint32_t cols,
                       double width, double height, SrVec2 p) {
     double w = width > 0.0 ? width : 1.0, h = height > 0.0 ? height : 1.0;
     double u = p.x / w * (double)(cols - 1), v = p.y / h * (double)(rows - 1);
+    /* Newton steps and finite but extreme grids can overflow. Never turn
+     * a non-finite coordinate into an array index. */
+    if (!isfinite(u) || !isfinite(v))
+        return (Field){NAN, NAN, NAN, NAN, NAN, NAN};
     bool clamp_u = false, clamp_v = false;
     if (u < 0.0) { u = 0.0; clamp_u = true; }
     if (u > (double)(cols - 1)) { u = (double)(cols - 1); clamp_u = true; }
@@ -49,6 +53,7 @@ static SrVec2 forward(const double *offsets, uint32_t rows, uint32_t cols,
 static double residual(const double *offsets, uint32_t rows, uint32_t cols,
                        double width, double height, SrVec2 p, SrVec2 q) {
     SrVec2 f = forward(offsets, rows, cols, width, height, p);
+    if (!isfinite(f.x) || !isfinite(f.y)) return INFINITY;
     return fmax(fabs(f.x - q.x), fabs(f.y - q.y));
 }
 
@@ -199,16 +204,21 @@ static bool solve_cells(const double *offsets, uint32_t rows, uint32_t cols,
 
 bool sr_grid_warp_inverse(const double *offsets, uint32_t rows, uint32_t cols,
                           double width, double height, SrVec2 q, SrVec2 *out) {
+    if (!out || !isfinite(q.x) || !isfinite(q.y) ||
+        !isfinite(width) || !isfinite(height)) return false;
     if (!offsets || rows < 2 || cols < 2) { *out = q; return true; }
     Field start = field_at(offsets, rows, cols, width, height, q);
     SrVec2 initial = {q.x - start.dx, q.y - start.dy};
+    if (!isfinite(initial.x) || !isfinite(initial.y)) return false;
     SrVec2 p = initial;
     for (int iteration = 0; iteration < 12; ++iteration) {
+        if (!isfinite(p.x) || !isfinite(p.y)) break;
         Field f = field_at(offsets, rows, cols, width, height, p);
         double rx = p.x + f.dx - q.x, ry = p.y + f.dy - q.y;
         if (fabs(rx) < 1e-7 && fabs(ry) < 1e-7) break;
         double a = 1.0 + f.dxdx, b = f.dxdy, c = f.dydx, d = 1.0 + f.dydy;
         double det = a * d - b * c;
+        if (!isfinite(rx) || !isfinite(ry) || !isfinite(det)) break;
         if (fabs(det) < 1e-6) {
             p.x -= rx;           /* folded cell: plain fixed-point step */
             p.y -= ry;

@@ -12,5 +12,9 @@ void sr_assets_video_stats(const SrScene *scene, size_t *sources,
                            uint64_t totals[4]);
 SrImage *sr_asset_get_frame(SrScene *scene, SrAsset *asset, double source_time,
                             SrDiagnostics *diag);
+/* Select the frame immediately before a source-time boundary, for reverse
+ * playback and the exclusive end of a forward clip. */
+SrImage *sr_asset_get_frame_before(SrScene *scene, SrAsset *asset,
+                                   double source_time, SrDiagnostics *diag);
 
 #endif

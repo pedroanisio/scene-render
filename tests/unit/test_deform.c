@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* The mesh-warp modifier and the grid sampler it shares with soft bodies. */
 #include "scene_render/deform.h"
+#include "scene_render/assets.h"
 
 #include "scene_text.h"
 
@@ -206,7 +207,90 @@ static void test_malformed_mesh_warp_fails_cleanly(sr_test_ctx *t)
     }
 }
 
+/* Finite control values may overflow the Jacobian even though the XML
+ * parser rejects literal NaN/Inf. Failure must leave a finite result alone
+ * and never convert NaN to an integer index (float-cast-overflow sanitizer). */
+static void test_extreme_grid_is_defined(sr_test_ctx *t)
+{
+    const double grid[] = {1e308, 0, -1e308, 0, 1e308, 0, -1e308, 0};
+    SrVec2 out = {123, 456};
+    CHECK(t, !sr_grid_warp_inverse(grid, 2, 2, 20, 20, (SrVec2){1.5, 1.5}, &out));
+    CHECK(t, out.x == 123 && out.y == 456);
+    CHECK(t, !sr_grid_warp_inverse(grid, 2, 2, 20, 20, (SrVec2){INFINITY, 0}, &out));
+    CHECK(t, !sr_grid_warp_inverse(grid, 2, 2, 20, 20, (SrVec2){0, NAN}, &out));
+    CHECK(t, !sr_grid_warp_inverse(grid, 2, 2, 1e-300, 20, (SrVec2){1e308, 0}, &out));
+}
+
+/* Known interior samples past the original box, for every analytic
+ * modifier, on both shapes and images. A constant wave is a translation;
+ * the 90-degree twist maps (20,15) back inside the 40x10 source rectangle. */
+static void test_analytic_modifier_bounds(sr_test_ctx *t)
+{
+    static const struct {
+        const char *modifier;
+        int width, height, x, y;
+    } cases[] = {
+        {"type=\"wave\" axis=\"x\" amount=\"20\" frequency=\"0\" phase=\"1.5707963267948966\"", 20,20,55,40},
+        {"type=\"wave\" axis=\"y\" amount=\"20\" frequency=\"0\" phase=\"1.5707963267948966\"", 20,20,40,55},
+        {"type=\"bend\" axis=\"x\" amount=\"160\"", 20,20,65,31},
+        {"type=\"bend\" axis=\"y\" amount=\"160\"", 20,20,31,65},
+        {"type=\"squash\" amount=\".5\"", 20,20,55,40},
+        {"type=\"stretch\" amount=\"1\"", 20,20,40,55},
+        {"type=\"twist\" amount=\"90\"", 40,10,50,45},
+    };
+    for (int image = 0; image < 2; ++image) {
+        for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+            char xml[2048], attributes[128];
+            snprintf(attributes, sizeof attributes,
+                     "shape=\"rect\" width=\"%d\" height=\"%d\" fill=\"#FFFFFF\"",
+                     cases[i].width, cases[i].height);
+            const char *element = image ? "layer" : "shape";
+            snprintf(xml, sizeof xml,
+                "<scene version=\"1.0\"><project width=\"96\" height=\"80\" fps=\"10\" duration=\"1\"/>"
+                "<assets><vector id=\"v\" %s/></assets><composition>"
+                "<%s id=\"s\" %s x=\"30\" y=\"30\"><deform><modifier %s/></deform>"
+                "</%s></composition></scene>", attributes, element,
+                image ? "asset=\"v\"" : attributes, cases[i].modifier, element);
+            SrScene scene;
+            if (st_load(t, "analytic-bounds.xml", xml, &scene, NULL) != SR_OK) {
+                SR_FAIL(t, "load modifier %zu", i); continue;
+            }
+            CHECK_INT(t, sr_assets_load(&scene, NULL), SR_OK);
+            SrFrame frame = {0};
+            if (render(t, &scene, 0.0, &frame))
+                CHECK_NEAR(t, st_px(&frame, cases[i].x, cases[i].y)[3], 1.0, 1e-6);
+            sr_frame_free(&frame);
+            sr_scene_free(&scene);
+        }
+    }
+}
+
+/* Grid displacement happens before the stretch, so its 20px y offset
+ * becomes 40px. Bounds must follow modifier order. */
+static void test_mixed_modifier_bounds(sr_test_ctx *t)
+{
+    const char *xml = HEAD
+        "<shape id=\"s\" shape=\"rect\" width=\"20\" height=\"20\" x=\"30\" y=\"10\" fill=\"#FFFFFF\">"
+        "<deform><modifier type=\"mesh-warp\" rows=\"2\" cols=\"2\">"
+        "<point row=\"0\" col=\"0\" y=\"20\"/><point row=\"0\" col=\"1\" y=\"20\"/>"
+        "<point row=\"1\" col=\"0\" y=\"20\"/><point row=\"1\" col=\"1\" y=\"20\"/>"
+        "</modifier><modifier type=\"stretch\" amount=\"1\"/></deform>"
+        "</shape></composition></scene>";
+    SrScene scene;
+    if (st_load(t, "mixed-bounds.xml", xml, &scene, NULL) != SR_OK) { SR_FAIL(t, "load"); return; }
+    SrFrame frame = {0};
+    if (render(t, &scene, 0.0, &frame)) {
+        CHECK_NEAR(t, st_px(&frame, 40, 65)[3], 1.0, 1e-6);
+        CHECK_NEAR(t, st_px(&frame, 40, 25)[3], 0.0, 1e-6);
+    }
+    sr_frame_free(&frame);
+    sr_scene_free(&scene);
+}
+
 const sr_test_case sr_tests_deform[] = {
+    {"extreme_grid_is_defined", test_extreme_grid_is_defined},
+    {"analytic_modifier_bounds", test_analytic_modifier_bounds},
+    {"mixed_modifier_bounds", test_mixed_modifier_bounds},
     {"identity_grid_bit_exact", test_identity_grid_bit_exact},
     {"moved_point_displaces", test_moved_point_displaces},
     {"sampler_inverts_warp", test_sampler_inverts_warp},

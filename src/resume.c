@@ -173,7 +173,9 @@ static char *build_manifest(const SrScene *scene, const SrResume *resume,
     if (!out) return NULL;
     const SrProject *p = &scene->project;
     const SrOutput *o = &scene->output;
-    fprintf(out, "scene-render-resume 2\nversion=%s\nscene=%016llx\n", SR_VERSION,
+    /* Revision 3 invalidates segments rendered before the clipping, depth,
+     * transparency, deformation bounds and media-boundary corrections. */
+    fprintf(out, "scene-render-resume 3\nversion=%s\nscene=%016llx\n", SR_VERSION,
             (unsigned long long)scene->source_hash);
     for (size_t i = 0; inputs && i < inputs->count; ++i) {
         const SrResumeFile *f = &inputs->files[i];

@@ -187,6 +187,11 @@ the group's masks (if any) scale each child's coverage.
 positive N means N total plays. An animated `source.time` track bypasses the
 implicit clip/speed mapping.
 
+The implicit source interval is `[clipIn, clipOut)`. At a frame-aligned
+`clipOut`, reverse playback starts with the preceding frame; after the last
+play, forward playback holds that frame and reverse playback holds the
+frame at `clipIn`.
+
 `shape` requires `shape="rect|ellipse"`, `width`, and `height`; it accepts
 `fill`, `stroke`, `strokeWidth`, and `blend`. Edges are anti-aliased from a
 signed distance at the node's pixel footprint; the stroke is `strokeWidth`

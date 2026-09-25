@@ -8,6 +8,7 @@
 #include "harness.h"
 #include "media_synth.h"
 #include "scene_render/assets.h"
+#include "scene_render/compositor.h"
 #include "scene_render/audio.h"
 #include "scene_render/video.h"
 #include "scene_render/xml.h"
@@ -329,7 +330,60 @@ static void input_matrices(sr_test_ctx *t) {
     CHECK_INT(t, sr_video_sws_matrix(AVCOL_SPC_BT2020_CL, 2160, NULL), SWS_CS_BT2020);
 }
 
+/* The reverse clip is half-open: at 12 fps [0,1) starts backwards on 11,
+ * never the excluded frame 12. Check interior boundaries, loops, final
+ * holds, fractional cuts and a rational asset rate through the compositor. */
+static void clip_boundaries(sr_test_ctx *t) {
+    SrScene scene;
+    if (!media_scene(&scene)) { SR_FAIL(t, "load"); return; }
+    SrDiagnostics diag = sink_diag();
+    if (sr_assets_load(&scene, &diag) != SR_OK) {
+        SR_FAIL(t, "assets"); sr_scene_free(&scene); return;
+    }
+    SrNode *node = scene.root->children[0];
+    scene.root->children[1]->opacity.base = 0.0;
+    SrFrame frame = {0};
+    if (sr_frame_init(&frame, CLIP_W, CLIP_H) != SR_OK) {
+        SR_FAIL(t, "frame"); sr_scene_free(&scene); return;
+    }
+    static const struct { bool reverse; double time, in, out; int loops, expected; } cases[] = {
+        {true, 0, 0, 1, 1, 11}, {true, 1.0/12, 0, 1, 1, 10},
+        {true, 11.0/12, 0, 1, 1, 0}, {true, 1, 0, 1, 1, 0},
+        {true, .75, .25, 1, 2, 11}, {true, 1.5, .25, 1, 2, 3},
+        {true, 0, 0, 11.5/12, 1, 11}, {true, .5/12, 0, 11.5/12, 1, 10},
+        {false, 1, 0, 1, 1, 11}, {false, 1, 0, 1, 2, 0},
+        {false, 1.5, .25, 1, 2, 11}, {false, 0, .25, 1, 1, 3},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        node->reverse = cases[i].reverse;
+        node->clip_in = cases[i].in;
+        node->clip_out = cases[i].out;
+        node->loop_count = cases[i].loops;
+        node->end_time = 3.0;
+        const float clear[4] = {0,0,0,0};
+        sr_frame_clear(&frame, clear, 1);
+        CHECK_INT(t, sr_composite_scene(&scene, cases[i].time, &frame, &diag), SR_OK);
+        const SrImage *expected = NULL;
+        CHECK_INT(t, sr_video_frame(node->asset->video, cases[i].expected, &expected, NULL, 0), SR_OK);
+        if (expected) CHECK(t, !memcmp(frame.px, expected->px, CLIP_BYTES));
+    }
+    /* Fractional frame rate: exclusion happens in frame units. */
+    node->asset->fps_num = 30000; node->asset->fps_den = 1001;
+    double boundary = 12.0 * 1001 / 30000;
+    SrImage *before = sr_asset_get_frame_before(&scene, node->asset, boundary, &diag);
+    const SrImage *expected = NULL;
+    CHECK_INT(t, sr_video_frame(node->asset->video, 11, &expected, NULL, 0), SR_OK);
+    CHECK(t, before && expected && !memcmp(before->px, expected->px, CLIP_BYTES));
+    /* Explicit remapping still selects the frame at its boundary. */
+    SrImage *at = sr_asset_get_frame(&scene, node->asset, boundary, &diag);
+    CHECK_INT(t, sr_video_frame(node->asset->video, 12, &expected, NULL, 0), SR_OK);
+    CHECK(t, at && expected && !memcmp(at->px, expected->px, CLIP_BYTES));
+    sr_frame_free(&frame);
+    sr_scene_free(&scene);
+}
+
 const sr_test_case sr_tests_video[] = {
+    {"clip_boundaries", clip_boundaries},
     {"sequential_matches_seeking", sequential_matches_seeking},
     {"asset_frames_through_scene", asset_frames_through_scene},
     {"declared_dimensions_must_match", declared_dimensions_must_match},

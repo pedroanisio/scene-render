@@ -53,8 +53,6 @@ typedef struct {
     double **mesh;
     double *storage;            /* owns every mesh[i] grid */
     double *soft;
-    double extent;              /* sum of each grid's largest offset: the
-                                 * grids compose, so this bounds padding */
 } SrDeformState;
 
 typedef struct {
@@ -313,7 +311,6 @@ static SrStatus sr_deform_prepare(const SrScene *scene, const SrNode *node,
             state->mesh[i] = values;
             for (size_t j = 0; j < count; ++j)
                 values[j] = sr_anim_eval(&modifier->points[j], time);
-            state->extent += sr_grid_warp_extent(values, count / 2);
             values += count;
         }
     }
@@ -321,9 +318,7 @@ static SrStatus sr_deform_prepare(const SrScene *scene, const SrNode *node,
         size_t count = (size_t)node->soft_body.rows * node->soft_body.cols;
         state->soft = sr_alloc(count * 2 * sizeof(*state->soft));
         if (!state->soft) { sr_deform_free(state); return SR_ERR_MEMORY; }
-        if (sr_physics_soft_offsets(scene, node, time, state->soft))
-            state->extent += sr_grid_warp_extent(state->soft, count);
-        else {
+        if (!sr_physics_soft_offsets(scene, node, time, state->soft)) {
             free(state->soft);
             state->soft = NULL;
         }
@@ -363,6 +358,62 @@ static SrClip sr_bounds(SrMat3 matrix, double x, double y, double width,
     if (clip.x1 < clip.x0) clip.x1 = clip.x0;
     if (clip.y1 < clip.y0) clip.y1 = clip.y0;
     return clip;
+}
+
+/* Propagate a conservative local box through the forward modifiers in
+ * application order. In particular, a bend after a wave/grid must bound
+ * the already displaced box, not just the original node dimensions. */
+static SrClip sr_deformed_bounds(const SrNode *node, SrMat3 world,
+                                 double width, double height, double pad,
+                                 double time, const SrDeformState *state,
+                                 const SrTarget *target) {
+    double x0 = -pad, y0 = -pad, x1 = width + pad, y1 = height + pad;
+    double cx = width * .5, cy = height * .5;
+    if (state->soft) {
+        double extent = sr_grid_warp_extent(state->soft,
+                            (size_t)node->soft_body.rows * node->soft_body.cols);
+        x0 -= extent; y0 -= extent; x1 += extent; y1 += extent;
+    }
+    for (size_t i = 0; i < node->modifier_count; ++i) {
+        const SrModifier *modifier = &node->modifiers[i];
+        double amount = sr_anim_eval(&modifier->amount, time);
+        double dx = 0.0, dy = 0.0;
+        if (modifier->type == SR_MOD_MESH_WARP) {
+            if (state->mesh && state->mesh[i])
+                dx = dy = sr_grid_warp_extent(state->mesh[i],
+                                  (size_t)modifier->rows * modifier->cols);
+        } else if (modifier->type == SR_MOD_WAVE) {
+            if (modifier->axis == 'x') dx = fabs(amount);
+            else dy = fabs(amount);
+        } else if (modifier->type == SR_MOD_BEND) {
+            if (modifier->axis == 'x') {
+                double n = fmax(fabs(y0 - cy), fabs(y1 - cy)) / fmax(height, 1.0);
+                dx = fabs(amount) * n * n;
+            } else {
+                double n = fmax(fabs(x0 - cx), fabs(x1 - cx)) / fmax(width, 1.0);
+                dy = fabs(amount) * n * n;
+            }
+        } else if (modifier->type == SR_MOD_TWIST && amount != 0.0) {
+            /* The inverse twist preserves Euclidean distance from the
+             * centre, including for non-square source boxes. */
+            double radius = hypot(fmax(fabs(x0 - cx), fabs(x1 - cx)),
+                                  fmax(fabs(y0 - cy), fabs(y1 - cy)));
+            x0 = cx - radius; x1 = cx + radius;
+            y0 = cy - radius; y1 = cy + radius;
+        } else if (modifier->type == SR_MOD_SQUASH ||
+                   modifier->type == SR_MOD_STRETCH) {
+            double factor = fmax(.05, 1.0 +
+                (modifier->type == SR_MOD_SQUASH ? -amount : amount));
+            x0 = cx + (x0 - cx) / factor; x1 = cx + (x1 - cx) / factor;
+            y0 = cy + (y0 - cy) * factor; y1 = cy + (y1 - cy) * factor;
+        }
+        x0 -= dx; x1 += dx; y0 -= dy; y1 += dy;
+        if (!isfinite(x0) || !isfinite(x1) || !isfinite(y0) || !isfinite(y1))
+            return (SrClip){0, 0, (int)target->width, (int)target->height};
+    }
+    if (!isfinite(x1 - x0) || !isfinite(y1 - y0))
+        return (SrClip){0, 0, (int)target->width, (int)target->height};
+    return sr_bounds(world, x0, y0, x1 - x0, y1 - y0, target);
 }
 
 /* Local size of one canvas pixel: sqrt(|det|) of the inverse transform. */
@@ -515,7 +566,8 @@ static SrStatus sr_op_execute(const SrCompositor *compositor,
 
 /* ---- nodes -------------------------------------------------------------- */
 
-static double sr_media_time(const SrNode *node, double time) {
+static double sr_media_time(const SrNode *node, double time, bool *before) {
+    *before = false;
     if (node->source_time.track.count) return sr_anim_eval(&node->source_time, time);
     double local = (time - node->start_time) * node->speed /
                    fmax(node->time_stretch, 1e-12);
@@ -525,9 +577,13 @@ static double sr_media_time(const SrNode *node, double time) {
     if (span <= 0.0) return node->clip_in;
     int64_t plays = node->loop_count > 0 ? node->loop_count : 1;
     double maximum = span * (double)plays;
-    local = sr_clamp(local, 0.0, fmax(0.0, maximum - 1e-12));
-    local = fmod(local, span);
-    return node->reverse ? end - local - 1e-12 : node->clip_in + local;
+    if (local >= maximum) {
+        *before = !node->reverse;
+        return node->reverse ? node->clip_in : end;
+    }
+    local = fmod(fmax(0.0, local), span);
+    *before = node->reverse;
+    return node->reverse ? end - local : node->clip_in + local;
 }
 
 static SrDrawOp sr_op_base(const SrNode *node, const SrTarget *target,
@@ -543,9 +599,12 @@ static SrStatus sr_draw_image(SrDrawContext *context, const SrNode *node,
                               SrMat3 world, SrMat3 inverse, double opacity,
                               SrClip clip, const SrTarget *target,
                               const SrMaskLink *masks) {
-    const SrImage *image = sr_asset_get_frame(
-        context->scene, node->asset, sr_media_time(node, context->time),
-        context->diag);
+    bool before;
+    double source_time = sr_media_time(node, context->time, &before);
+    const SrImage *image = before
+        ? sr_asset_get_frame_before(context->scene, node->asset, source_time,
+                                    context->diag)
+        : sr_asset_get_frame(context->scene, node->asset, source_time, context->diag);
     if (!image) return SR_OK;  /* reported through diagnostics */
     SrDeformState deform;
     SrStatus status = sr_deform_prepare(context->scene, node, context->time,
@@ -558,11 +617,10 @@ static SrStatus sr_draw_image(SrDrawContext *context, const SrNode *node,
     op.deform_width = image->width;
     op.deform_height = image->height;
     op.deform = &deform;
-    /* Grid deformers can move content past the node box. */
-    double pad = ceil(deform.extent);
     op.bounds = sr_clip_intersect(
-        sr_bounds(world, -pad, -pad, image->width + 2.0 * pad,
-                  image->height + 2.0 * pad, target), clip);
+        sr_deformed_bounds(node, world, image->width, image->height,
+                            sr_node_deforms(node) ? op.aa : 0.0,
+                            context->time, &deform, target), clip);
     status = sr_op_execute(context->compositor, &op);
     sr_deform_free(&deform);
     return status;
@@ -590,10 +648,10 @@ static SrStatus sr_draw_shape(SrDrawContext *context, const SrNode *node,
                       sr_anim_color_eval(&node->fill, context->time), op.fill);
     sr_color_to_blend(&context->scene->project,
                       sr_anim_color_eval(&node->stroke, context->time), op.stroke);
-    double pad = op.half_stroke + ceil(deform.extent);
     op.bounds = sr_clip_intersect(
-        sr_bounds(world, -pad, -pad, node->shape_width + 2.0 * pad,
-                  node->shape_height + 2.0 * pad, target), clip);
+        sr_deformed_bounds(node, world, node->shape_width, node->shape_height,
+                            op.half_stroke + (sr_node_deforms(node) ? op.aa : 0.0),
+                            context->time, &deform, target), clip);
     status = sr_op_execute(context->compositor, &op);
     sr_deform_free(&deform);
     return status;

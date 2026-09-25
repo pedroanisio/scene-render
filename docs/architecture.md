@@ -82,6 +82,12 @@ FreeType. The engine starts no child processes.
   PPM/PNG preview.
 - Each worker receives disjoint rows. No floating-point reduction depends on
   scheduling, so CPU output is byte-identical across supported thread counts.
+- The 3D pass clips mesh triangles against the camera's near/far planes
+  before projection and uses perspective-correct depth and attributes.
+  Opaque surfaces fill the depth buffer first. Visible translucent samples
+  are stored for the current frame and blended far to near per pixel;
+  their temporary memory grows with translucent coverage and overdraw,
+  including supersamples. Fully transparent surfaces write no depth.
 
 ## Frame execution
 
@@ -103,6 +109,11 @@ streams; frame `N`'s audio block is samples
 computed in exact integer arithmetic. A layer without `source.time` maps local time through speed,
 time-stretch, trim, finite loop count, and reverse; an explicit `source.time`
 animation takes precedence.
+
+Implicit video trims are half-open: reverse playback starts on the frame
+immediately before `clipOut`, and a completed forward clip holds that same
+last included frame. Boundary tolerance is applied in source-frame units
+on the appropriate side of the boundary.
 
 ## Color and compositing
 

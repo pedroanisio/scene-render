@@ -10,6 +10,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int64_t sr_video_index(double value) {
+    if (!(value > 0.0)) return 0;
+    return value >= 0x1p63 ? INT64_MAX : (int64_t)value;
+}
+
 /* Wraps decoded 8-bit straight RGBA (consumed) as a blend-space image. */
 static SrImage *sr_image_from_rgba8(const SrScene *scene, SrColorSpace space,
                                     uint8_t *rgba, uint32_t width,
@@ -90,7 +95,7 @@ static SrStatus sr_open_video(SrScene *scene, const char *path, SrAsset *asset,
                         asset->fps_num, asset->fps_den, info->rate_num,
                         info->rate_den);
     double fps = (double)asset->fps_num / asset->fps_den;
-    int64_t declared = (int64_t)ceil(asset->duration * fps - 1e-12);
+    int64_t declared = sr_video_index(ceil(asset->duration * fps - 1e-12));
     if (declared != info->frame_count)
         sr_diag_warning(diag, asset->source_line, "video", "duration",
                         "declared %lld frames but the stream has %lld at the "
@@ -176,9 +181,8 @@ void sr_assets_video_stats(const SrScene *scene, size_t *sources,
     }
 }
 
-SrImage *sr_asset_get_frame(SrScene *scene, SrAsset *asset, double source_time,
-                            SrDiagnostics *diag) {
-    (void)scene;
+static SrImage *sr_asset_frame(SrAsset *asset, double source_time,
+                               bool before, SrDiagnostics *diag) {
     if (!asset) return NULL;
     if (asset->type != SR_ASSET_VIDEO) return asset->decoded;
     if (!asset->video) {
@@ -187,8 +191,12 @@ SrImage *sr_asset_get_frame(SrScene *scene, SrAsset *asset, double source_time,
         return NULL;
     }
     double fps = (double)asset->fps_num / asset->fps_den;
-    int64_t total = (int64_t)ceil(asset->duration * fps - 1e-12);
-    int64_t index = (int64_t)floor(fmax(0.0, source_time) * fps + 1e-9);
+    int64_t total = sr_video_index(ceil(asset->duration * fps - 1e-12));
+    double frame = fmax(0.0, source_time) * fps;
+    /* Apply the same frame-unit tolerance on either side of a boundary;
+     * a seconds-sized epsilon is lost by the normal selector's rounding. */
+    int64_t index = sr_video_index(before ? ceil(frame - 1e-9) - 1.0
+                                          : floor(frame + 1e-9));
     if (total > 0 && index >= total) index = total - 1;
     const SrImage *image = NULL;
     char err[256] = "";
@@ -199,4 +207,16 @@ SrImage *sr_asset_get_frame(SrScene *scene, SrAsset *asset, double source_time,
         return NULL;
     }
     return (SrImage *)image;
+}
+
+SrImage *sr_asset_get_frame(SrScene *scene, SrAsset *asset, double source_time,
+                            SrDiagnostics *diag) {
+    (void)scene;
+    return sr_asset_frame(asset, source_time, false, diag);
+}
+
+SrImage *sr_asset_get_frame_before(SrScene *scene, SrAsset *asset,
+                                   double source_time, SrDiagnostics *diag) {
+    (void)scene;
+    return sr_asset_frame(asset, source_time, true, diag);
 }
