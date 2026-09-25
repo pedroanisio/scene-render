@@ -20,13 +20,27 @@ typedef struct {
     int x0, y0, x1, y1;
 } SrGroupBuffer;
 
-/* Per-render state kept across frames: the isolated-group buffer pool
- * (allocated lazily once per depth and reused, never per frame) and the
- * worker count used for row-parallel draws. */
+/* Per-sample view depth shared by the 3D pass and depth cards: `samples`
+ * x `samples` entries per frame pixel (the antialias3d factor), INFINITY
+ * where nothing has been drawn. */
 typedef struct {
+    double *z;
+    uint32_t width, height;     /* frame size x samples */
+    int samples;
+} SrDepthBuffer;
+
+/* Per-render state kept across frames: the isolated-group buffer pool
+ * (allocated lazily once per depth and reused, never per frame), the
+ * worker count used for row-parallel draws and, for scenes with depth
+ * cards, the shared depth buffer and a second pool for the plane buffers
+ * of perspective-warped cards (see sr_compositor_render_scene). */
+typedef struct SrCompositor {
     SrGroupBuffer **pool;
     size_t pool_count;
     unsigned threads;
+    SrDepthBuffer *depth;           /* NULL: cards are not depth tested */
+    SrDepthBuffer depth_store;      /* owned by sr_compositor_render_scene */
+    struct SrCompositor *plane;     /* lazily allocated plane-buffer pool */
 } SrCompositor;
 
 SrStatus sr_frame_init(SrFrame *frame, uint32_t width, uint32_t height);
@@ -40,6 +54,14 @@ void sr_compositor_free(SrCompositor *compositor);
 SrStatus sr_compositor_render(SrCompositor *compositor, SrScene *scene,
                               double time, SrFrame *frame,
                               SrDiagnostics *diag);
+/* Draws the 3D pass and the scene graph over `frame`. Without depth cards
+ * this is exactly sr_lighting_render followed by sr_compositor_render.
+ * With cards, both share a per-sample depth buffer; if the composition has
+ * cards as direct children, the 3D objects are drawn one by one among the
+ * first run of them in far-to-near order, else before the scene graph. */
+SrStatus sr_compositor_render_scene(SrCompositor *compositor, SrScene *scene,
+                                    double time, SrFrame *frame,
+                                    SrDiagnostics *diag);
 /* One-shot single-threaded convenience wrapper around a temporary
  * compositor. */
 SrStatus sr_composite_scene(SrScene *scene, double time, SrFrame *frame,

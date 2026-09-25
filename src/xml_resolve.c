@@ -9,7 +9,16 @@ static SrEffect *find_effect(SrScene *scene, const char *id) {
     return NULL;
 }
 
-static bool resolve_nodes(ParseContext *ctx, SrNode *node) {
+static bool resolve_nodes(ParseContext *ctx, SrNode *node, bool in_card) {
+    if (node->card) {
+        if (in_card) {
+            sr_diag_error(ctx->diag, node->source_line, NULL, "depth",
+                          "depth card '%s' is inside another depth card; the "
+                          "outer card flattens its subtree", node->id);
+            return false;
+        }
+        ctx->scene->has_cards = true;
+    }
     if (node->effect_ref_count) {
         node->effect_refs = sr_alloc(node->effect_ref_count * sizeof(*node->effect_refs));
         if (!node->effect_refs) {
@@ -48,7 +57,8 @@ static bool resolve_nodes(ParseContext *ctx, SrNode *node) {
         }
     }
     for (size_t i = 0; i < node->child_count; ++i)
-        if (!resolve_nodes(ctx, node->children[i])) return false;
+        if (!resolve_nodes(ctx, node->children[i], in_card || node->card))
+            return false;
     return true;
 }
 
@@ -187,7 +197,7 @@ static bool resolve_physics(ParseContext *ctx) {
 
 
 bool sr_xml_resolve_scene(ParseContext *ctx) {
-    if (!resolve_nodes(ctx, ctx->scene->root)) return false;
+    if (!resolve_nodes(ctx, ctx->scene->root, false)) return false;
     if (!resolve_audio(ctx)) return false;
     if (!resolve_camera(ctx)) return false;
     if (!resolve_visual(ctx)) return false;

@@ -1,4 +1,5 @@
 #include "scene_render/lighting.h"
+#include "scene_render/card.h"
 #include "scene_render/color.h"
 #include "scene_render/effects.h"
 
@@ -42,8 +43,7 @@ static bool project(const SrScene *scene,const SrObject3D *object,double time,
     p=rotate_y(p,-sr_anim_eval(&camera->yaw,time)*SR_PI/180.0);p=rotate_x(p,-sr_anim_eval(&camera->pitch,time)*SR_PI/180.0);p=rotate_z(p,-sr_anim_eval(&camera->roll,time)*SR_PI/180.0);
     if(camera->orthographic){*scale=1;*x=scene->project.width*.5+p.x;*y=scene->project.height*.5-p.y;return true;}
     if (p.z < camera->near_plane || p.z > camera->far_plane) return false;
-    double focal = scene->project.height * .5 /
-                   tan(sr_anim_eval(&camera->fov,time) * SR_PI / 360.0);
+    double focal = sr_camera_focal(scene, camera, time);
     *scale = focal / p.z;
     *x = scene->project.width * .5 + p.x * *scale;
     *y = scene->project.height * .5 - p.y * *scale;
@@ -120,7 +120,7 @@ static View view_init(const SrScene *scene, double time) {
         view.yaw = sr_anim_eval(&camera->yaw, time) * SR_PI / 180.0;
         view.pitch = sr_anim_eval(&camera->pitch, time) * SR_PI / 180.0;
         view.roll = sr_anim_eval(&camera->roll, time) * SR_PI / 180.0;
-        view.focal = view.height * .5 / tan(sr_anim_eval(&camera->fov, time) * SR_PI / 360.0);
+        view.focal = sr_camera_focal(scene, camera, time);
     }
     return view;
 }
@@ -493,7 +493,21 @@ typedef struct {
     int samples;                /* antialias3d */
     SrFrame *target;            /* frame, or the supersampled buffer */
     double *depth;
+    int *dirty;                 /* [x0, y0, x1, y1) touched target samples */
 } Pass;
+
+static void mark(const Pass *pass, int x0, int y0, int x1, int y1) {
+    int w = (int)pass->target->width, h = (int)pass->target->height;
+    x0 = x0 < 0 ? 0 : x0; y0 = y0 < 0 ? 0 : y0;
+    x1 = x1 > w ? w : x1; y1 = y1 > h ? h : y1;
+    if (x1 <= x0 || y1 <= y0) return;
+    int *d = pass->dirty;
+    if (d[2] <= d[0] || d[3] <= d[1]) { d[0] = x0; d[1] = y0; d[2] = x1; d[3] = y1; return; }
+    if (x0 < d[0]) d[0] = x0;
+    if (y0 < d[1]) d[1] = y0;
+    if (x1 > d[2]) d[2] = x1;
+    if (y1 > d[3]) d[3] = y1;
+}
 
 typedef struct { double x,y,depth; Vec3 world,normal; } MeshVertex;
 
@@ -565,7 +579,7 @@ static bool project_mesh_vertex(const SrScene *scene,const SrObject3D *object,
     result->depth=point.z;
     if(camera->orthographic){result->x=scene->project.width*.5+point.x;
         result->y=scene->project.height*.5-point.y;return true;}
-    double focal=scene->project.height*.5/tan(sr_anim_eval(&camera->fov,time)*SR_PI/360.0);
+    double focal=sr_camera_focal(scene,camera,time);
     result->x=scene->project.width*.5+point.x*focal/point.z;
     result->y=scene->project.height*.5-point.y*focal/point.z;return true;
 }
@@ -584,6 +598,7 @@ static void render_mesh(const Pass *pass,const SrObject3D *object){
     SrFrame *frame=pass->target;double *depth=pass->depth;int n=pass->samples;
     if(!object->mesh_asset||!object->mesh_asset->mesh)return;
     const SrMesh *mesh=object->mesh_asset->mesh;
+    bool perspective=pass->view.camera&&!pass->view.camera->orthographic;
     for(size_t index=0;index<mesh->triangle_count;++index){MeshVertex v[3];
         if(!project_mesh_vertex(scene,object,&mesh->triangles[index],0,time,&v[0])||
            !project_mesh_vertex(scene,object,&mesh->triangles[index],1,time,&v[1])||
@@ -596,11 +611,15 @@ static void render_mesh(const Pass *pass,const SrObject3D *object){
         int max_x=sr_clamp_int(ceil(fmax(v[0].x,fmax(v[1].x,v[2].x))*n),-1,fw-1);
         int min_y=sr_clamp_int(floor(fmin(v[0].y,fmin(v[1].y,v[2].y))*n),0,fh);
         int max_y=sr_clamp_int(ceil(fmax(v[0].y,fmax(v[1].y,v[2].y))*n),-1,fh-1);
+        mark(pass,min_x,min_y,max_x+1,max_y+1);
         for(int y=min_y;y<=max_y;++y)for(int x=min_x;x<=max_x;++x){
             double sx=sample_at(x,n),sy=sample_at(y,n);
             double a=edge(v[1].x,v[1].y,v[2].x,v[2].y,sx,sy)/area;
             double b=edge(v[2].x,v[2].y,v[0].x,v[0].y,sx,sy)/area;
-            double c=1.0-a-b;if(a<0||b<0||c<0)continue;double z=a*v[0].depth+b*v[1].depth+c*v[2].depth;
+            double c=1.0-a-b;if(a<0||b<0||c<0)continue;
+            /* Camera depth is linear in screen space only as 1/z. */
+            double z=perspective?1.0/(a/v[0].depth+b/v[1].depth+c/v[2].depth)
+                               :a*v[0].depth+b*v[1].depth+c*v[2].depth;
             size_t at=(size_t)y*frame->width+(size_t)x;if(z>=depth[at])continue;depth[at]=z;
             Vec3 point={a*v[0].world.x+b*v[1].world.x+c*v[2].world.x,
                         a*v[0].world.y+b*v[1].world.y+c*v[2].world.y,
@@ -635,6 +654,7 @@ static void shadow_blob(const Pass *pass,const SrObject3D *object){
     int bw=(int)pass->target->width,bh=(int)pass->target->height;
     int py0=sr_clamp_int((y-radius*.3)*n,-1,bh),py1=sr_clamp_int((y+radius*.3)*n,-1,bh);
     int px0=sr_clamp_int((x-radius)*n,-1,bw),px1=sr_clamp_int((x+radius)*n,-1,bw);
+    mark(pass,px0,py0,px1+1,py1+1);
     for(int py=py0;py<=py1;++py)for(int px=px0;px<=px1;++px){
         double dx=(px/(double)n-x)/fmax(radius,1.0),dy=(py/(double)n-y)/fmax(radius*.3,1.0);
         if(dx*dx+dy*dy<=1.0)over(&scene->project,pass->target,px,py,(SrColor){0,0,0,1},.3);}
@@ -655,6 +675,10 @@ static void render_sprite(const Pass *pass, const SrObject3D *object) {
     int fw=(int)frame->width,fh=(int)frame->height;
     int y0=sr_clamp_int(floor((cy-ry)*n),-1,fh),y1=sr_clamp_int(ceil((cy+ry)*n),-1,fh);
     int x0=sr_clamp_int(floor((cx-rx)*n),-1,fw),x1=sr_clamp_int(ceil((cx+rx)*n),-1,fw);
+    mark(pass,x0,y0,x1+1,y1+1);
+    /* With a camera, depth is the view depth of the camera-facing surface:
+     * the center's minus the sphere bulge (see sprite_surface). */
+    double center_depth = pass->view.camera ? to_camera(&pass->view, sprite.center).z : 0.0;
     for(int y=y0;y<=y1;++y)for(int x=x0;x<=x1;++x){
         double px=sample_at(x,n),py=sample_at(y,n);
         double nx=(px-cx)/rx,ny=(py-cy)/ry;
@@ -670,7 +694,10 @@ static void render_sprite(const Pass *pass, const SrObject3D *object) {
                       world_y - normal.y * object->radius,
                       cz + normal.z * object->radius};
         size_t at=(size_t)y*frame->width+(size_t)x;
-        double object_depth=view_depth(scene,point,time);
+        double object_depth = pass->view.camera
+            ? center_depth - (object->primitive == SR_OBJECT_SPHERE ? normal.z : 0.0) *
+                             object->radius * sprite.sz
+            : view_depth(scene,point,time);
         if(object_depth>=pass->depth[at])continue;
         pass->depth[at]=object_depth;
         Vec3 geometry[2];
@@ -682,11 +709,12 @@ static void render_sprite(const Pass *pass, const SrObject3D *object) {
     }
 }
 
-/* Box filter of the supersampled buffer over the frame. */
-static void resolve(const Pass *pass, SrFrame *frame) {
+/* Box filter of the supersampled buffer over frame pixels [x0,x1) x [y0,y1). */
+static void resolve(const Pass *pass, SrFrame *frame, uint32_t x0, uint32_t y0,
+                    uint32_t x1, uint32_t y1) {
     int n = pass->samples;
     double norm = 1.0 / (double)(n * n);
-    for (uint32_t y = 0; y < frame->height; ++y) for (uint32_t x = 0; x < frame->width; ++x) {
+    for (uint32_t y = y0; y < y1; ++y) for (uint32_t x = x0; x < x1; ++x) {
         double sum[4] = {0, 0, 0, 0};
         for (int j = 0; j < n; ++j) for (int i = 0; i < n; ++i) {
             const float *s = &pass->target->px[(((size_t)y * n + j) * pass->target->width +
@@ -700,51 +728,153 @@ static void resolve(const Pass *pass, SrFrame *frame) {
     }
 }
 
-SrStatus sr_lighting_render(SrScene *scene,double time,SrFrame *frame,SrDiagnostics *diag){
+int sr_lighting_samples(const SrScene *scene) {
+    return scene->project.antialias3d >= 1 && scene->project.antialias3d <= 4
+         ? (int)scene->project.antialias3d : 1;
+}
+
+struct SrLightingPass {
+    Pass pass;
+    SrFrame *frame;
+    SrFrame supersampled;
+    bool own_depth;
+    int dirty[4];
+};
+
+void sr_lighting_end(SrLightingPass *lp) {
+    if (!lp) return;
+    const SrScene *scene = lp->pass.scene;
+    for (size_t i = 0; lp->pass.maps && i < scene->light_count; ++i)
+        free(lp->pass.maps[i].depth);
+    free(lp->pass.maps);
+    free(lp->pass.light_color);
+    if (lp->own_depth) free(lp->pass.depth);
+    sr_frame_free(&lp->supersampled);
+    free(lp);
+}
+
+SrStatus sr_lighting_begin(SrScene *scene, double time, SrFrame *frame,
+                           SrDepthBuffer *shared, SrDiagnostics *diag,
+                           SrLightingPass **out) {
+    *out = NULL;
     const SrCamera *camera=scene_camera(scene);
-    if(camera&&!camera->orthographic){double fov=sr_anim_eval(&camera->fov,time);
+    if (camera && !camera->orthographic && camera->zoom_set) {
+        if (!(sr_anim_eval(&camera->zoom, time) > 0.0)) {
+            sr_diag_error(diag, camera->source_line, "camera", "zoom",
+                          "animated zoom must remain positive");
+            return SR_ERR_RENDER;
+        }
+    } else if(camera&&!camera->orthographic){double fov=sr_anim_eval(&camera->fov,time);
         if(fov<=1.0||fov>=179.0){sr_diag_error(diag,camera->source_line,"camera","fov",
             "animated field of view must remain between 1 and 179 degrees");return SR_ERR_RENDER;}}
     if(!scene->object3d_count)return SR_OK;
-    int n = scene->project.antialias3d >= 1 && scene->project.antialias3d <= 4
-          ? (int)scene->project.antialias3d : 1;
-    Pass pass = {.scene = scene, .time = time, .view = view_init(scene, time),
-                 .samples = n, .target = frame};
-    SrFrame supersampled = {0};
+    SrLightingPass *lp = sr_alloc(sizeof(*lp));
+    if (!lp) {
+        sr_diag_error(diag,0,NULL,NULL,"cannot allocate 3D pass buffers");
+        return SR_ERR_MEMORY;
+    }
+    *lp = (SrLightingPass){0};
+    int n = sr_lighting_samples(scene);
+    lp->frame = frame;
+    lp->pass = (Pass){.scene = scene, .time = time, .view = view_init(scene, time),
+                      .samples = n, .target = frame, .dirty = lp->dirty};
+    Pass *pass = &lp->pass;
     SrStatus status = SR_OK;
-    pass.light_color = sr_alloc((scene->light_count + 1) * sizeof(*pass.light_color));
-    pass.maps = sr_alloc((scene->light_count + 1) * sizeof(*pass.maps));
-    if (!pass.light_color || !pass.maps) { status = SR_ERR_MEMORY; goto done; }
+    pass->light_color = sr_alloc((scene->light_count + 1) * sizeof(*pass->light_color));
+    pass->maps = sr_alloc((scene->light_count + 1) * sizeof(*pass->maps));
+    if (!pass->light_color || !pass->maps) { status = SR_ERR_MEMORY; goto fail; }
     for (size_t i = 0; i < scene->light_count; ++i) {
         const SrLight *light = &scene->lights[i];
-        pass.light_color[i] = sr_anim_color_eval(&light->color, time);
+        pass->light_color[i] = sr_anim_color_eval(&light->color, time);
         if (!light->cast_shadow || light->used_2d) continue;
-        if (light->type == SR_LIGHT_POINT) { pass.blob = true; continue; }
+        if (light->type == SR_LIGHT_POINT) { pass->blob = true; continue; }
         if (light->type != SR_LIGHT_DIRECTIONAL && light->type != SR_LIGHT_SPOT) continue;
-        status = map_build(scene, &pass.view, light, time, &pass.maps[i]);
-        if (status != SR_OK) goto done;
+        status = map_build(scene, &pass->view, light, time, &pass->maps[i]);
+        if (status != SR_OK) goto fail;
     }
     if (n > 1) {
-        status = sr_frame_init(&supersampled, frame->width * (uint32_t)n,
+        status = sr_frame_init(&lp->supersampled, frame->width * (uint32_t)n,
                                frame->height * (uint32_t)n);
-        if (status != SR_OK) goto done;
-        pass.target = &supersampled;
+        if (status != SR_OK) goto fail;
+        pass->target = &lp->supersampled;
     }
-    size_t pixels=(size_t)pass.target->width*pass.target->height;
-    pass.depth=sr_alloc(pixels*sizeof(*pass.depth));
-    if(!pass.depth){status=SR_ERR_MEMORY;goto done;}
-    for(size_t i=0;i<pixels;++i)pass.depth[i]=INFINITY;
-    for(size_t i=0;i<scene->object3d_count;++i)shadow_blob(&pass,&scene->objects3d[i]);
-    for(size_t i=0;i<scene->object3d_count;++i){SrObject3D *object=&scene->objects3d[i];
-        if(object->primitive==SR_OBJECT_MESH)render_mesh(&pass,object);
-        else render_sprite(&pass,object);
+    size_t pixels=(size_t)pass->target->width*pass->target->height;
+    if (shared) {
+        if (shared->width != pass->target->width || shared->height != pass->target->height) {
+            sr_lighting_end(lp);
+            return SR_ERR_ARGUMENT;
+        }
+        pass->depth = shared->z;
+    } else {
+        pass->depth=sr_alloc(pixels*sizeof(*pass->depth));
+        if(!pass->depth){status=SR_ERR_MEMORY;goto fail;}
+        lp->own_depth = true;
+        for(size_t i=0;i<pixels;++i)pass->depth[i]=INFINITY;
     }
-    if (n > 1) resolve(&pass, frame);
-done:
+    *out = lp;
+    return SR_OK;
+fail:
     if (status == SR_ERR_MEMORY)
         sr_diag_error(diag,0,NULL,NULL,"cannot allocate 3D pass buffers");
-    for (size_t i = 0; pass.maps && i < scene->light_count; ++i) free(pass.maps[i].depth);
-    free(pass.maps); free(pass.light_color); free(pass.depth);
-    sr_frame_free(&supersampled);
+    sr_lighting_end(lp);
     return status;
+}
+
+void sr_lighting_draw_blobs(SrLightingPass *lp) {
+    const SrScene *scene = lp->pass.scene;
+    for(size_t i=0;i<scene->object3d_count;++i)shadow_blob(&lp->pass,&scene->objects3d[i]);
+}
+
+void sr_lighting_draw_object(SrLightingPass *lp, size_t index, bool blob) {
+    SrObject3D *object = &lp->pass.scene->objects3d[index];
+    if (blob) shadow_blob(&lp->pass, object);
+    if(object->primitive==SR_OBJECT_MESH)render_mesh(&lp->pass,object);
+    else render_sprite(&lp->pass,object);
+}
+
+void sr_lighting_flush(SrLightingPass *lp, bool whole_frame) {
+    int n = lp->pass.samples;
+    if (n <= 1) return;
+    SrFrame *frame = lp->frame;
+    int *d = lp->dirty;
+    if (whole_frame) {
+        resolve(&lp->pass, frame, 0, 0, frame->width, frame->height);
+    } else if (d[2] > d[0] && d[3] > d[1]) {
+        uint32_t x0 = (uint32_t)(d[0] / n), y0 = (uint32_t)(d[1] / n);
+        uint32_t x1 = (uint32_t)((d[2] + n - 1) / n), y1 = (uint32_t)((d[3] + n - 1) / n);
+        if (x1 > frame->width) x1 = frame->width;
+        if (y1 > frame->height) y1 = frame->height;
+        resolve(&lp->pass, frame, x0, y0, x1, y1);
+        /* Clear exactly the resolved samples for the next object. */
+        SrFrame *ss = &lp->supersampled;
+        size_t row = (size_t)(x1 - x0) * (size_t)n * 4 * sizeof(float);
+        for (uint32_t y = y0 * (uint32_t)n; y < y1 * (uint32_t)n; ++y)
+            memset(ss->px + ((size_t)y * ss->width + (size_t)x0 * (size_t)n) * 4, 0, row);
+    }
+    d[0] = d[1] = d[2] = d[3] = 0;
+}
+
+double sr_lighting_object_depth(const SrScene *scene, size_t index, double time) {
+    const SrObject3D *object = &scene->objects3d[index];
+    Vec3 center = {sr_anim_eval(&object->transform.x, time),
+                   sr_anim_eval(&object->transform.y, time),
+                   sr_anim_eval(&object->transform.z, time)};
+    return view_depth(scene, center, time);
+}
+
+SrStatus sr_lighting_render(SrScene *scene,double time,SrFrame *frame,SrDiagnostics *diag){
+    return sr_lighting_render_depth(scene, time, frame, NULL, diag);
+}
+
+SrStatus sr_lighting_render_depth(SrScene *scene, double time, SrFrame *frame,
+                                  SrDepthBuffer *shared, SrDiagnostics *diag) {
+    SrLightingPass *lp = NULL;
+    SrStatus status = sr_lighting_begin(scene, time, frame, shared, diag, &lp);
+    if (status != SR_OK || !lp) return status;
+    sr_lighting_draw_blobs(lp);
+    for (size_t i = 0; i < scene->object3d_count; ++i)
+        sr_lighting_draw_object(lp, i, false);
+    sr_lighting_flush(lp, true);
+    sr_lighting_end(lp);
+    return SR_OK;
 }
