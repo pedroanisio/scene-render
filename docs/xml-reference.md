@@ -120,8 +120,10 @@ are generated.
 ### Text
 
 A `text` asset is a `width` x `height` box; `size` is the font size in pixels
-per em. The font is `fontFile` (resolved relative to the XML file; face 0) or,
-without it, the `font` family (default `Sans`) looked up through Fontconfig.
+per em, in (0, 4096]. The `text` attribute holds at most 1 MiB (1048576
+bytes of UTF-8). The font is `fontFile` (resolved relative to the XML file;
+face 0) or, without it, the `font` family (default `Sans`) looked up through
+Fontconfig.
 A family that is not installed is an error naming the family: when
 Fontconfig's best match belongs to a different family the render fails rather
 than substituting silently. The generic names `sans`, `sans-serif`, `serif`,
@@ -132,20 +134,30 @@ Characters the font lacks render as its missing-glyph box (no fallback).
   (XML turns literal newlines in attribute values into spaces).
 - Each paragraph's direction is `direction="auto"` (default: from its first
   strong character, UAX #9; left-to-right when there is none), `ltr` or `rtl`.
-  Bidirectional reordering follows UAX #9 per line.
+  Bidirectional reordering follows UAX #9 per line: whitespace ending a line
+  takes the paragraph direction (rule L1) before runs are reversed (L2).
 - Text is shaped with HarfBuzz (kerning, ligatures, contextual forms of
-  complex scripts) per bidi level and script run; `language` (a BCP 47 tag
-  such as `ar` or `sr-Latn`) selects language-specific shaping.
-- Lines wrap to `width`: at spaces (which hang at the line end) and after
-  hyphens; a word wider than the box breaks between grapheme clusters.
+  complex scripts) per line and per bidi level and script run. Each line is
+  shaped on its own, so joining forms never connect across a line break.
+  `language` (a BCP 47 tag such as `ar` or `sr-Latn`) selects
+  language-specific shaping; it must have the shape
+  `[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*` and at most 35 characters. HarfBuzz
+  keeps every distinct language tag it sees for the life of the process, so
+  a long-running renderer should not be fed unbounded sets of tags.
+- Lines wrap to `width`: at spaces (which hang at the line end, together
+  with any combining marks on them) and after hyphens; a word wider than the
+  box breaks between grapheme clusters. Breaks never split a cluster. A line
+  is re-measured after it is shaped on its own (kerning across the break is
+  gone) and, if it no longer fits, breaks at the previous opportunity; only
+  a single cluster wider than the box overflows.
 - `align="start|center|end|justify"` (default `start`); start and end follow
   the paragraph direction (start is the right edge for right-to-left text).
   `justify` widens the spaces of every line except a paragraph's last line.
 - `lineHeight` is the baseline distance as a multiple of `size` (default
-  1.2). Each line box is `lineHeight x size` tall with the font's ascent and
-  descent centred in it; baselines are whole pixels.
-- `letterSpacing` (pixels, default 0, may be negative) is added after each
-  cluster, so a line of N clusters grows by (N-1) x letterSpacing.
+  1.2, in [0.1, 10]). Each line box is `lineHeight x size` tall with the
+  font's ascent and descent centred in it; baselines are whole pixels.
+- `letterSpacing` (pixels, default 0, in [-`size`, 4 x `size`]) is added
+  after each cluster, so a line of N clusters grows by (N-1) x letterSpacing.
 - `verticalAlign="top|middle|bottom"` (default `top`) places the block of
   lines inside the box.
 - Ink outside the box is clipped, with one warning per asset.

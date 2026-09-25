@@ -122,10 +122,22 @@
   </xs:complexType>
   <xs:complexType name="textAssetType">
     <xs:attribute name="id" type="xs:ID" use="required"/>
-    <xs:attribute name="text" type="xs:string" use="required"/>
+    <xs:attribute name="text" use="required">
+      <xs:annotation><xs:documentation>
+        At most 1 MiB (1048576 bytes of UTF-8; the parser checks bytes, the
+        schema can only bound characters).
+      </xs:documentation></xs:annotation>
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:maxLength value="1048576"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
     <xs:attribute name="width" type="xs:positiveInteger" use="required"/>
     <xs:attribute name="height" type="xs:positiveInteger" use="required"/>
-    <xs:attribute name="size" type="positiveDecimal" use="required"/>
+    <xs:attribute name="size" use="required">
+      <xs:simpleType><xs:restriction base="xs:double">
+        <xs:minExclusive value="0"/><xs:maxInclusive value="4096"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
     <xs:attribute name="color" type="colorType" default="#FFFFFFFF"/>
     <xs:attribute name="font" type="xs:string" default="Sans"/>
     <xs:attribute name="fontFile" type="xs:anyURI"/>
@@ -135,8 +147,20 @@
         <xs:enumeration value="end"/><xs:enumeration value="justify"/>
       </xs:restriction></xs:simpleType>
     </xs:attribute>
-    <xs:attribute name="lineHeight" type="positiveDecimal" default="1.2"/>
-    <xs:attribute name="letterSpacing" type="xs:double" default="0"/>
+    <xs:attribute name="lineHeight" default="1.2">
+      <xs:simpleType><xs:restriction base="xs:double">
+        <xs:minInclusive value="0.1"/><xs:maxInclusive value="10"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="letterSpacing" default="0">
+      <xs:annotation><xs:documentation>
+        Pixels in [-size, 4 x size]; the parser checks the bound relative to
+        size, the schema only the absolute range that bound allows.
+      </xs:documentation></xs:annotation>
+      <xs:simpleType><xs:restriction base="xs:double">
+        <xs:minInclusive value="-4096"/><xs:maxInclusive value="16384"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
     <xs:attribute name="direction" default="auto">
       <xs:simpleType><xs:restriction base="xs:string">
         <xs:enumeration value="auto"/><xs:enumeration value="ltr"/>
@@ -145,7 +169,8 @@
     </xs:attribute>
     <xs:attribute name="language">
       <xs:simpleType><xs:restriction base="xs:string">
-        <xs:pattern value="[A-Za-z][A-Za-z0-9\-]*"/>
+        <xs:maxLength value="35"/>
+        <xs:pattern value="[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*"/>
       </xs:restriction></xs:simpleType>
     </xs:attribute>
     <xs:attribute name="verticalAlign" default="top">

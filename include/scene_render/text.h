@@ -77,11 +77,25 @@ typedef struct {
     bool overflow;          /* ink crosses the box edges and is clipped */
 } SrTextLayout;
 
+/* True when `tag` has the shape of a BCP 47 language tag:
+ * [A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*, at most 35 characters. Only the shape
+ * is checked, not the IANA registry. The bound matters because HarfBuzz
+ * interns every language tag it is given (hb_language_from_string) in a
+ * process-wide list that is freed only at exit, so each distinct tag
+ * outlives the scene that used it. */
+bool sr_text_language_valid(const char *tag);
+
 /* Lays out UTF-8 text: paragraphs split at U+000A, each resolved with UAX #9
  * (direction auto = first strong character), wrapped at spaces and after
  * hyphens to style->width (words wider than the box break at cluster
- * boundaries), shaped per line and per bidi/script run with HarfBuzz
- * (unhinted, 26.6 positions), aligned and vertically placed in the box. */
+ * boundaries; breaks only fall on cluster starts), shaped per line and per
+ * bidi/script run with HarfBuzz (unhinted, 26.6 positions; each line is
+ * shaped with context limited to itself and re-checked against the width
+ * after shaping), reordered per line (UAX #9 L1 and L2), aligned and
+ * vertically placed in the box. Fails with SR_ERR_ARGUMENT for an invalid
+ * style (size outside (0, 16384], non-finite letter spacing or line
+ * advance, malformed language tag) and SR_ERR_MEMORY, with a message in
+ * `err`, when HarfBuzz or FriBidi cannot allocate. */
 SrStatus sr_text_layout(SrFont *font, const char *utf8, const SrTextStyle *style,
                         SrTextLayout *out, char *err, size_t errlen);
 void sr_text_layout_free(SrTextLayout *layout);

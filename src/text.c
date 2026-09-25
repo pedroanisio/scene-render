@@ -33,6 +33,60 @@ static void set_err(char *err, size_t errlen, const char *format, ...) {
     va_end(args);
 }
 
+/* Makes room for one more element in a dynamic array of `count` elements
+ * of `element` bytes: capacity doubles from `initial`, and a size that
+ * cannot be represented fails with SR_ERR_MEMORY instead of wrapping. On
+ * success *out is the (possibly moved) array; on failure `items` is kept. */
+static SrStatus grow_array(void *items, size_t *capacity, size_t count,
+                           size_t element, size_t initial, void **out) {
+    *out = items;
+    if (count < *capacity) return SR_OK;
+    size_t wanted = initial;
+    if (*capacity) {
+        if (*capacity > SIZE_MAX / 2) return SR_ERR_MEMORY;
+        wanted = *capacity * 2;
+    }
+    if (!element || wanted > SIZE_MAX / element) return SR_ERR_MEMORY;
+    void *grown = sr_realloc(items, wanted * element);
+    if (!grown) return SR_ERR_MEMORY;
+    *out = grown;
+    *capacity = wanted;
+    return SR_OK;
+}
+
+/* Rounds toward negative infinity and converts, clamping in double first so
+ * NaN, infinities and out-of-range values never reach the integer cast.
+ * NaN maps to `low`. */
+static int64_t floor_to_int(double value, int64_t low, int64_t high) {
+    if (!(value > (double)low)) return low;
+    if (value >= (double)high) return high;
+    return (int64_t)floor(value);
+}
+
+/* Coordinates are clamped to +-2^52, exact in double and far outside any
+ * raster, so integer arithmetic on them cannot overflow. */
+#define SR_TEXT_COORD_LIMIT ((int64_t)1 << 52)
+
+bool sr_text_language_valid(const char *tag) {
+    if (!tag) return false;
+    size_t length = strlen(tag);
+    if (length > 35) return false;
+    size_t run = 0, subtag = 0;
+    for (size_t i = 0; i <= length; ++i) {
+        unsigned char c = (unsigned char)tag[i];
+        if (c == '-' || c == '\0') {
+            if (subtag == 0 ? run < 2 || run > 8 : run < 1 || run > 8) return false;
+            ++subtag;
+            run = 0;
+            continue;
+        }
+        bool alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+        if (!alpha && !(subtag > 0 && c >= '0' && c <= '9')) return false;
+        ++run;
+    }
+    return true;
+}
+
 SrStatus sr_font_open(const char *path, int face_index, SrFont **out,
                       char *err, size_t errlen) {
     *out = NULL;
@@ -192,8 +246,10 @@ typedef struct {
 struct SrFontCache {
     FontEntry *fonts;
     size_t font_count;
+    size_t font_capacity;
     FamilyEntry *families;
     size_t family_count;
+    size_t family_capacity;
     FcConfig *config;
 };
 
@@ -233,11 +289,11 @@ static SrStatus cache_family(SrFontCache *cache, const char *family,
     SrStatus status = match_family(cache->config, family, &resolved, index,
                                    err, errlen);
     if (status != SR_OK) return status;
-    FamilyEntry *grown = sr_realloc(cache->families, (cache->family_count + 1) *
-                                                         sizeof(*grown));
     char *name = sr_strdup(family);
-    if (!grown || !name) {
-        if (grown) cache->families = grown;
+    void *grown = NULL;
+    if (!name || grow_array(cache->families, &cache->family_capacity,
+                            cache->family_count, sizeof(*cache->families), 4,
+                            &grown) != SR_OK) {
         free(name);
         free(resolved);
         return SR_ERR_MEMORY;
@@ -259,11 +315,10 @@ static SrStatus cache_font(SrFontCache *cache, const char *path, int index,
         }
     SrStatus status = sr_font_open(path, index, font, err, errlen);
     if (status != SR_OK) return status;
-    FontEntry *grown = sr_realloc(cache->fonts,
-                                  (cache->font_count + 1) * sizeof(*grown));
     char *key = sr_strdup(path);
-    if (!grown || !key) {
-        if (grown) cache->fonts = grown;
+    void *grown = NULL;
+    if (!key || grow_array(cache->fonts, &cache->font_capacity, cache->font_count,
+                           sizeof(*cache->fonts), 4, &grown) != SR_OK) {
         free(key);
         sr_font_close(*font);
         *font = NULL;
@@ -280,12 +335,15 @@ static SrStatus cache_font(SrFontCache *cache, const char *path, int index,
 typedef struct {
     uint32_t *cp;          /* code points of one paragraph */
     size_t *byte;          /* byte offset of each code point (n + 1) */
-    FriBidiLevel *levels;
+    FriBidiCharType *types;     /* bidi types, as fribidi_get_bidi_types */
+    FriBidiLevel *levels;       /* paragraph embedding levels */
+    FriBidiLevel *line_levels;  /* the current line's levels after L1 */
     hb_script_t *scripts;
     double *advance;       /* shaped advance attributed to each code point */
     bool *cluster_start;
     size_t n;
     size_t byte_base;      /* paragraph offset in the source text */
+    FriBidiParType base;   /* resolved paragraph direction */
     bool rtl;
 } Paragraph;
 
@@ -319,6 +377,7 @@ typedef struct {
     hb_buffer_t *buffer;
     hb_language_t language;
     double spacing;
+    const char *failure;   /* why shaping returned SR_ERR_MEMORY */
 } Shaper;
 
 static bool is_space(uint32_t c) { return c == 0x20 || c == 0x09 || c == 0x3000; }
@@ -355,7 +414,9 @@ static size_t utf8_next(const unsigned char *s, size_t length, uint32_t *out) {
 static void paragraph_free(Paragraph *p) {
     free(p->cp);
     free(p->byte);
+    free(p->types);
     free(p->levels);
+    free(p->line_levels);
     free(p->scripts);
     free(p->advance);
     free(p->cluster_start);
@@ -370,15 +431,15 @@ static SrStatus paragraph_init(Paragraph *p, const char *text, size_t begin,
     size_t slots = length + 1;
     p->cp = calloc(slots, sizeof(*p->cp));
     p->byte = calloc(slots, sizeof(*p->byte));
+    p->types = calloc(slots, sizeof(*p->types));
     p->levels = calloc(slots, sizeof(*p->levels));
+    p->line_levels = calloc(slots, sizeof(*p->line_levels));
     p->scripts = calloc(slots, sizeof(*p->scripts));
     p->advance = calloc(slots, sizeof(*p->advance));
     p->cluster_start = calloc(slots, sizeof(*p->cluster_start));
-    FriBidiCharType *types = calloc(slots, sizeof(*types));
     FriBidiBracketType *brackets = calloc(slots, sizeof(*brackets));
-    if (!p->cp || !p->byte || !p->levels || !p->scripts || !p->advance ||
-        !p->cluster_start || !types || !brackets) {
-        free(types);
+    if (!p->cp || !p->byte || !p->types || !p->levels || !p->line_levels ||
+        !p->scripts || !p->advance || !p->cluster_start || !brackets) {
         free(brackets);
         paragraph_free(p);
         return SR_ERR_MEMORY;
@@ -391,23 +452,23 @@ static SrStatus paragraph_init(Paragraph *p, const char *text, size_t begin,
     }
     p->byte[p->n] = length;
     p->rtl = direction == SR_TEXT_DIR_RTL;
+    p->base = p->rtl ? FRIBIDI_PAR_RTL : FRIBIDI_PAR_LTR;
     if (p->n) {
         FriBidiParType base = direction == SR_TEXT_DIR_LTR   ? FRIBIDI_PAR_LTR
                               : direction == SR_TEXT_DIR_RTL ? FRIBIDI_PAR_RTL
                                                              : FRIBIDI_PAR_ON;
         FriBidiStrIndex n = (FriBidiStrIndex)p->n;
-        fribidi_get_bidi_types(p->cp, n, types);
-        fribidi_get_bracket_types(p->cp, n, types, brackets);
-        if (!fribidi_get_par_embedding_levels_ex(types, brackets, n, &base,
+        fribidi_get_bidi_types(p->cp, n, p->types);
+        fribidi_get_bracket_types(p->cp, n, p->types, brackets);
+        if (!fribidi_get_par_embedding_levels_ex(p->types, brackets, n, &base,
                                                  p->levels)) {
-            free(types);
             free(brackets);
             paragraph_free(p);
             return SR_ERR_MEMORY;
         }
+        p->base = base;
         p->rtl = FRIBIDI_IS_RTL(base);
     }
-    free(types);
     free(brackets);
     /* Script itemization: Common/Inherited/Unknown characters join the
      * script of the preceding character (or the first real script). */
@@ -429,30 +490,31 @@ static SrStatus paragraph_init(Paragraph *p, const char *text, size_t begin,
 }
 
 static SrStatus shaped_push(ShapedVec *vec, Shaped item) {
-    if (vec->count == vec->capacity) {
-        size_t capacity = vec->capacity ? vec->capacity * 2 : 64;
-        Shaped *grown = sr_realloc(vec->items, capacity * sizeof(*grown));
-        if (!grown) return SR_ERR_MEMORY;
-        vec->items = grown;
-        vec->capacity = capacity;
-    }
+    void *grown = NULL;
+    if (grow_array(vec->items, &vec->capacity, vec->count, sizeof(*vec->items),
+                   64, &grown) != SR_OK)
+        return SR_ERR_MEMORY;
+    vec->items = grown;
     vec->items[vec->count++] = item;
     return SR_OK;
 }
 
-/* Shapes [start, end) of a paragraph run by run (constant bidi level and
- * script). Runs are returned in logical order; each run's glyphs are in
- * visual order, as HarfBuzz emits them. Letter spacing is added after every
- * cluster. */
-static SrStatus shape_range(const Shaper *shaper, const Paragraph *p,
-                            size_t start, size_t end, ShapedVec *out,
-                            Run **runs_out, size_t *run_count) {
+/* Shapes [start, end) of a paragraph run by run (constant level and
+ * script) with HarfBuzz context limited to [start, end): text outside the
+ * range does not influence shaping, and the range's ends are the text's
+ * beginning and end (HB_BUFFER_FLAG_BOT/EOT). Runs are returned in logical
+ * order; each run's glyphs are in visual order, as HarfBuzz emits them.
+ * Letter spacing is added after every cluster. */
+static SrStatus shape_range(Shaper *shaper, const Paragraph *p,
+                            const FriBidiLevel *levels, size_t start,
+                            size_t end, ShapedVec *out, Run **runs_out,
+                            size_t *run_count) {
     *runs_out = NULL;
     *run_count = 0;
     out->count = 0;
     size_t count = 0;
     for (size_t i = start; i < end; ++i)
-        if (i == start || p->levels[i] != p->levels[i - 1] ||
+        if (i == start || levels[i] != levels[i - 1] ||
             p->scripts[i] != p->scripts[i - 1])
             ++count;
     if (!count) return SR_OK;
@@ -460,18 +522,23 @@ static SrStatus shape_range(const Shaper *shaper, const Paragraph *p,
     if (!runs) return SR_ERR_MEMORY;
     size_t r = 0;
     for (size_t i = start; i < end; ++i) {
-        if (i == start || p->levels[i] != p->levels[i - 1] ||
+        if (i == start || levels[i] != levels[i - 1] ||
             p->scripts[i] != p->scripts[i - 1])
-            runs[r++] = (Run){.start = i, .level = p->levels[i],
+            runs[r++] = (Run){.start = i, .level = levels[i],
                               .script = p->scripts[i]};
         runs[r - 1].end = i + 1;
     }
     for (r = 0; r < count; ++r) {
         Run *run = &runs[r];
         hb_buffer_clear_contents(shaper->buffer);
-        hb_buffer_add_codepoints(shaper->buffer, p->cp, (int)p->n,
-                                 (unsigned)run->start,
+        hb_buffer_add_codepoints(shaper->buffer, p->cp + start, (int)(end - start),
+                                 (unsigned)(run->start - start),
                                  (int)(run->end - run->start));
+        if (!hb_buffer_allocation_successful(shaper->buffer)) {
+            shaper->failure = "HarfBuzz cannot allocate a shaping buffer";
+            free(runs);
+            return SR_ERR_MEMORY;
+        }
         hb_buffer_set_direction(shaper->buffer, run->level & 1
                                                     ? HB_DIRECTION_RTL
                                                     : HB_DIRECTION_LTR);
@@ -479,9 +546,13 @@ static SrStatus shape_range(const Shaper *shaper, const Paragraph *p,
         if (shaper->language != HB_LANGUAGE_INVALID)
             hb_buffer_set_language(shaper->buffer, shaper->language);
         hb_buffer_set_flags(shaper->buffer,
-                            (hb_buffer_flags_t)((run->start == 0 ? HB_BUFFER_FLAG_BOT : 0) |
-                                                (run->end == p->n ? HB_BUFFER_FLAG_EOT : 0)));
-        hb_shape(shaper->font, shaper->buffer, NULL, 0);
+                            (hb_buffer_flags_t)((run->start == start ? HB_BUFFER_FLAG_BOT : 0) |
+                                                (run->end == end ? HB_BUFFER_FLAG_EOT : 0)));
+        if (!hb_shape_full(shaper->font, shaper->buffer, NULL, 0, NULL)) {
+            shaper->failure = "HarfBuzz shaping failed (out of memory)";
+            free(runs);
+            return SR_ERR_MEMORY;
+        }
         unsigned length = 0;
         const hb_glyph_info_t *info =
             hb_buffer_get_glyph_infos(shaper->buffer, &length);
@@ -491,14 +562,15 @@ static SrStatus shape_range(const Shaper *shaper, const Paragraph *p,
         run->count = length;
         for (unsigned g = 0; g < length; ++g) {
             bool cluster_end = g + 1 == length || info[g + 1].cluster != info[g].cluster;
+            size_t cluster = start + info[g].cluster;
             Shaped item = {
                 .glyph = info[g].codepoint,
-                .cluster = info[g].cluster,
+                .cluster = (uint32_t)cluster,
                 .advance = pos[g].x_advance / 64.0 +
                            (cluster_end ? shaper->spacing : 0.0),
                 .x_offset = pos[g].x_offset / 64.0,
                 .y_offset = pos[g].y_offset / 64.0,
-                .space = info[g].cluster < p->n && is_space(p->cp[info[g].cluster]),
+                .space = cluster < p->n && is_space(p->cp[cluster]),
                 .cluster_end = cluster_end,
             };
             if (shaped_push(out, item) != SR_OK) {
@@ -542,25 +614,21 @@ static void reorder_runs(const Run *runs, size_t count, size_t *order) {
 }
 
 static SrStatus layout_push_glyph(SrTextLayout *layout, SrTextGlyph glyph) {
-    if (layout->glyph_count == layout->glyph_capacity) {
-        size_t capacity = layout->glyph_capacity ? layout->glyph_capacity * 2 : 64;
-        SrTextGlyph *grown = sr_realloc(layout->glyphs, capacity * sizeof(*grown));
-        if (!grown) return SR_ERR_MEMORY;
-        layout->glyphs = grown;
-        layout->glyph_capacity = capacity;
-    }
+    void *grown = NULL;
+    if (grow_array(layout->glyphs, &layout->glyph_capacity, layout->glyph_count,
+                   sizeof(*layout->glyphs), 64, &grown) != SR_OK)
+        return SR_ERR_MEMORY;
+    layout->glyphs = grown;
     layout->glyphs[layout->glyph_count++] = glyph;
     return SR_OK;
 }
 
 static SrStatus layout_push_line(SrTextLayout *layout, SrTextLine line) {
-    if (layout->line_count == layout->line_capacity) {
-        size_t capacity = layout->line_capacity ? layout->line_capacity * 2 : 8;
-        SrTextLine *grown = sr_realloc(layout->lines, capacity * sizeof(*grown));
-        if (!grown) return SR_ERR_MEMORY;
-        layout->lines = grown;
-        layout->line_capacity = capacity;
-    }
+    void *grown = NULL;
+    if (grow_array(layout->lines, &layout->line_capacity, layout->line_count,
+                   sizeof(*layout->lines), 8, &grown) != SR_OK)
+        return SR_ERR_MEMORY;
+    layout->lines = grown;
     layout->lines[layout->line_count++] = line;
     return SR_OK;
 }
@@ -568,36 +636,65 @@ static SrStatus layout_push_line(SrTextLayout *layout, SrTextLine line) {
 /* Tolerance for line fitting: one 26.6 unit. */
 #define SR_TEXT_FIT_EPSILON (1.0 / 64.0)
 
-/* Shapes one visible line [start, end), orders it visually, aligns it and
- * appends its glyphs (baseline filled in later). */
-static SrStatus emit_line(const Shaper *shaper, const Paragraph *p,
-                          const SrTextStyle *style, size_t start, size_t end,
-                          bool paragraph_end, ShapedVec *scratch,
-                          SrTextLayout *layout) {
-    Run *runs = NULL;
-    size_t run_count = 0;
-    SrStatus status = shape_range(shaper, p, start, end, scratch, &runs, &run_count);
-    if (status != SR_OK) return status;
-    size_t *order = calloc(run_count ? run_count : 1, sizeof(*order));
-    if (!order) {
-        free(runs);
-        return SR_ERR_MEMORY;
+/* One visible line shaped on its own (glyphs in the shaper's scratch). */
+typedef struct {
+    Run *runs;
+    size_t run_count;
+    double width;          /* advance width, no spacing after the last cluster */
+    size_t clusters;
+    size_t spaces;
+} LineShape;
+
+/* Shapes the visible line [start, end): its levels get UAX #9 L1 (trailing
+ * whitespace takes the paragraph level) from fribidi_reorder_line, then it
+ * is shaped with context limited to the line. */
+static SrStatus shape_line(Shaper *shaper, Paragraph *p, size_t start,
+                           size_t end, ShapedVec *scratch, LineShape *line) {
+    free(line->runs);
+    *line = (LineShape){0};
+    if (end > start) {
+        memcpy(p->line_levels + start, p->levels + start,
+               (end - start) * sizeof(*p->levels));
+        /* No visual string or map is requested; only the levels change. */
+        if (!fribidi_reorder_line(FRIBIDI_FLAGS_DEFAULT, p->types,
+                                  (FriBidiStrIndex)(end - start),
+                                  (FriBidiStrIndex)start, p->base,
+                                  p->line_levels, NULL, NULL)) {
+            shaper->failure = "FriBidi cannot reorder a line (out of memory)";
+            return SR_ERR_MEMORY;
+        }
     }
-    reorder_runs(runs, run_count, order);
+    SrStatus status = shape_range(shaper, p, p->line_levels, start, end, scratch,
+                                  &line->runs, &line->run_count);
+    if (status != SR_OK) return status;
     double total = 0.0;
-    size_t clusters = 0, spaces = 0;
     for (size_t i = 0; i < scratch->count; ++i) {
         total += scratch->items[i].advance;
-        clusters += scratch->items[i].cluster_end;
-        spaces += scratch->items[i].space && scratch->items[i].cluster_end;
+        line->clusters += scratch->items[i].cluster_end;
+        line->spaces += scratch->items[i].space && scratch->items[i].cluster_end;
     }
-    double width = total - (clusters ? shaper->spacing : 0.0);
+    line->width = total - (line->clusters ? shaper->spacing : 0.0);
+    return SR_OK;
+}
+
+/* Orders a shaped line visually, aligns it and appends its glyphs
+ * (baseline filled in later). */
+static SrStatus emit_line(const Shaper *shaper, const Paragraph *p,
+                          const SrTextStyle *style, size_t start, size_t end,
+                          bool paragraph_end, const ShapedVec *scratch,
+                          const LineShape *shaped, SrTextLayout *layout) {
+    size_t run_count = shaped->run_count;
+    const Run *runs = shaped->runs;
+    size_t *order = calloc(run_count ? run_count : 1, sizeof(*order));
+    if (!order) return SR_ERR_MEMORY;
+    reorder_runs(runs, run_count, order);
+    double width = shaped->width;
     double box = style->width;
     SrTextAlign align = style->align;
     double per_space = 0.0;
     if (align == SR_TEXT_ALIGN_JUSTIFY) {
-        if (!paragraph_end && spaces && width < box) {
-            per_space = (box - width) / (double)spaces;
+        if (!paragraph_end && shaped->spaces && width < box) {
+            per_space = (box - width) / (double)shaped->spaces;
             width = box;
         }
         align = SR_TEXT_ALIGN_START;
@@ -610,7 +707,7 @@ static SrStatus emit_line(const Shaper *shaper, const Paragraph *p,
     SrTextLine line = {
         .first_glyph = layout->glyph_count,
         .glyph_count = scratch->count,
-        .cluster_count = clusters,
+        .cluster_count = shaped->clusters,
         .byte_start = p->byte_base + p->byte[start],
         .byte_end = p->byte_base + p->byte[end],
         .x = x0,
@@ -620,6 +717,7 @@ static SrStatus emit_line(const Shaper *shaper, const Paragraph *p,
         .rtl = p->rtl,
         .paragraph_end = paragraph_end,
     };
+    SrStatus status = SR_OK;
     double pen = x0;
     for (size_t r = 0; r < run_count && status == SR_OK; ++r) {
         const Run *run = &runs[order[r]];
@@ -649,19 +747,46 @@ static SrStatus emit_line(const Shaper *shaper, const Paragraph *p,
     if (line.ink_left > line.ink_right) line.ink_left = line.ink_right = x0;
     if (status == SR_OK) status = layout_push_line(layout, line);
     free(order);
-    free(runs);
     return status;
 }
 
-/* Greedy line breaking on the paragraph's logical advances: break after a
- * run of spaces or after a hyphen; a word wider than the box breaks at the
- * last HarfBuzz cluster boundary that fits. Spaces at a break hang. */
-static SrStatus layout_paragraph(const Shaper *shaper, Paragraph *p,
+static size_t next_cluster(const Paragraph *p, size_t i) {
+    do ++i;
+    while (i < p->n && !p->cluster_start[i]);
+    return i;
+}
+
+/* Start of the cluster holding code point end - 1 (not before `start`). */
+static size_t cluster_before(const Paragraph *p, size_t start, size_t end) {
+    size_t i = end - 1;
+    while (i > start && !p->cluster_start[i]) --i;
+    return i;
+}
+
+/* Drops trailing space clusters (with any marks attached to them). */
+static size_t trim_spaces(const Paragraph *p, size_t start, size_t end) {
+    while (end > start) {
+        size_t last = cluster_before(p, start, end);
+        if (!is_space(p->cp[last])) break;
+        end = last;
+    }
+    return end;
+}
+
+/* Greedy line breaking. Break opportunities are cluster starts only: after
+ * a run of spaces, or after a hyphen's cluster. A candidate line is chosen
+ * on the paragraph's advances, then shaped on its own; while that is wider
+ * than the box the break moves back to the previous opportunity (or, when
+ * none is left, the previous cluster boundary). A word wider than the box
+ * breaks at the last cluster boundary that fits, and a single cluster wider
+ * than the box stays alone on its line. Spaces at a break hang. */
+static SrStatus layout_paragraph(Shaper *shaper, Paragraph *p,
                                  const SrTextStyle *style, ShapedVec *scratch,
                                  SrTextLayout *layout) {
     Run *runs = NULL;
     size_t run_count = 0;
-    SrStatus status = shape_range(shaper, p, 0, p->n, scratch, &runs, &run_count);
+    SrStatus status = shape_range(shaper, p, p->levels, 0, p->n, scratch, &runs,
+                                  &run_count);
     free(runs);
     if (status != SR_OK) return status;
     for (size_t g = 0; g < scratch->count; ++g) {
@@ -670,42 +795,52 @@ static SrStatus layout_paragraph(const Shaper *shaper, Paragraph *p,
         p->advance[item->cluster] += item->advance;
         p->cluster_start[item->cluster] = true;
     }
-    if (!p->n) return emit_line(shaper, p, style, 0, 0, true, scratch, layout);
+    LineShape line = {0};
+    if (!p->n) {
+        status = shape_line(shaper, p, 0, 0, scratch, &line);
+        if (status == SR_OK)
+            status = emit_line(shaper, p, style, 0, 0, true, scratch, &line, layout);
+        free(line.runs);
+        return status;
+    }
+    p->cluster_start[0] = true;
+    size_t *breaks = calloc(p->n, sizeof(*breaks));
+    if (!breaks) return SR_ERR_MEMORY;
     double box = style->width + SR_TEXT_FIT_EPSILON;
     size_t start = 0;
     while (start < p->n && status == SR_OK) {
         double width = 0.0;
-        size_t opportunity = 0, end = p->n;
-        for (size_t i = start; i < p->n; ++i) {
-            uint32_t c = p->cp[i];
-            width += p->advance[i];
-            if (is_space(c)) {
-                if (i + 1 < p->n && !is_space(p->cp[i + 1])) opportunity = i + 1;
-                continue;
-            }
-            if (i > start && width - shaper->spacing > box) {
-                if (opportunity > start) {
-                    end = opportunity;
-                } else {
-                    size_t j = i;
-                    while (j > start && !p->cluster_start[j]) --j;
-                    if (j == start) {
-                        j = start + 1;
-                        while (j < p->n && !p->cluster_start[j]) ++j;
-                    }
-                    end = j;
-                }
+        size_t count = 0, end = p->n, previous = start;
+        for (size_t k = start; k < p->n; k = next_cluster(p, k)) {
+            bool space = is_space(p->cp[k]);
+            if (k > start && !space &&
+                (is_space(p->cp[previous]) ||
+                 (is_hyphen(p->cp[previous]) && previous > start)))
+                breaks[count++] = k;
+            width += p->advance[k];
+            if (!space && k > start && width - shaper->spacing > box) {
+                end = count ? breaks[count - 1] : k;
                 break;
             }
-            if (is_hyphen(c) && i > start && i + 1 < p->n && !is_space(p->cp[i + 1]))
-                opportunity = i + 1;
+            previous = k;
         }
         size_t visible = end;
-        while (visible > start && is_space(p->cp[visible - 1])) --visible;
-        status = emit_line(shaper, p, style, start, visible, end == p->n,
-                           scratch, layout);
+        for (;;) {
+            visible = trim_spaces(p, start, end);
+            status = shape_line(shaper, p, start, visible, scratch, &line);
+            if (status != SR_OK || line.width <= box) break;
+            while (count && breaks[count - 1] >= end) --count;
+            size_t back = count ? breaks[--count] : cluster_before(p, start, end);
+            if (back <= start) break;
+            end = back;
+        }
+        if (status == SR_OK)
+            status = emit_line(shaper, p, style, start, visible, end == p->n,
+                               scratch, &line, layout);
         start = end;
     }
+    free(line.runs);
+    free(breaks);
     return status;
 }
 
@@ -716,7 +851,10 @@ void sr_text_layout_free(SrTextLayout *layout) {
     *layout = (SrTextLayout){0};
 }
 
-static int64_t size_26_6(double size) { return (int64_t)llround(size * 64.0); }
+/* Font size in 26.6 units; callers bound size to (0, 16384]. */
+static int64_t size_26_6(double size) {
+    return floor_to_int(size * 64.0 + 0.5, 1, INT_MAX);
+}
 
 SrStatus sr_text_layout(SrFont *font, const char *utf8, const SrTextStyle *style,
                         SrTextLayout *out, char *err, size_t errlen) {
@@ -727,6 +865,16 @@ SrStatus sr_text_layout(SrFont *font, const char *utf8, const SrTextStyle *style
         return SR_ERR_ARGUMENT;
     }
     double line_height = style->line_height > 0.0 ? style->line_height : 1.2;
+    double advance = line_height * style->size;
+    if (!isfinite(advance)) {
+        set_err(err, errlen, "invalid text style (line height)");
+        return SR_ERR_ARGUMENT;
+    }
+    if (style->language && *style->language &&
+        !sr_text_language_valid(style->language)) {
+        set_err(err, errlen, "invalid language tag");
+        return SR_ERR_ARGUMENT;
+    }
     int scale = (int)size_26_6(style->size);
     Shaper shaper = {
         .font = hb_font_create(font->hb_face),
@@ -739,6 +887,7 @@ SrStatus sr_text_layout(SrFont *font, const char *utf8, const SrTextStyle *style
     if (!hb_buffer_allocation_successful(shaper.buffer)) {
         hb_buffer_destroy(shaper.buffer);
         hb_font_destroy(shaper.font);
+        set_err(err, errlen, "HarfBuzz cannot allocate a shaping buffer");
         return SR_ERR_MEMORY;
     }
     hb_font_set_scale(shaper.font, scale, scale);
@@ -763,7 +912,6 @@ SrStatus sr_text_layout(SrFont *font, const char *utf8, const SrTextStyle *style
         hb_font_get_h_extents(shaper.font, &extents);
         double ascender = extents.ascender / 64.0;
         double descender = -extents.descender / 64.0;
-        double advance = line_height * style->size;
         double leading = (advance - (ascender + descender)) / 2.0;
         out->block_height = advance * (double)out->line_count;
         double top = style->valign == SR_TEXT_VALIGN_MIDDLE
@@ -798,15 +946,20 @@ SrStatus sr_text_layout(SrFont *font, const char *utf8, const SrTextStyle *style
     hb_font_destroy(shaper.font);
     if (status != SR_OK) {
         sr_text_layout_free(out);
-        set_err(err, errlen, status == SR_ERR_MEMORY ? "out of memory"
-                                                     : "text is too long");
+        set_err(err, errlen, "%s",
+                status != SR_ERR_MEMORY ? "text is too long"
+                : shaper.failure        ? shaper.failure
+                                        : "out of memory");
     }
     return status;
 }
 
 /* ----------------------------------------------------------- rasterizing */
 
-static int64_t quarter(double value) { return (int64_t)floor(value * 4.0 + 0.5); }
+/* Position in quarter pixels, clamped (NaN included) to +-2^52. */
+static int64_t quarter(double value) {
+    return floor_to_int(value * 4.0 + 0.5, -SR_TEXT_COORD_LIMIT, SR_TEXT_COORD_LIMIT);
+}
 
 static int64_t floor_div4(int64_t value) {
     return value >= 0 ? value / 4 : -((-value + 3) / 4);
