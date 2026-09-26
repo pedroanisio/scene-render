@@ -11,6 +11,7 @@ import os
 import pathlib
 import random
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -22,9 +23,14 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 def run(args, env=None, expect=None):
     result = subprocess.run([str(a) for a in args], cwd=ROOT, env=env,
                             capture_output=True, text=True, check=False)
+    if re.search(r"\[FAIL\]|runtime error:|ERROR: AddressSanitizer",
+                 result.stdout + result.stderr):
+        raise RuntimeError(f"sanitizer/test failure: {args}\n"
+                           f"{result.stdout}{result.stderr}")
     if expect == "abort":
-        if result.returncode == 0:
-            raise RuntimeError("interruption hook unexpectedly succeeded")
+        if result.returncode != -signal.SIGKILL:
+            raise RuntimeError(f"expected hook SIGKILL, got {result.returncode}: "
+                               f"{result.stderr}")
     elif result.returncode:
         raise RuntimeError(f"command failed: {args}\n{result.stdout}{result.stderr}")
     return result
@@ -53,7 +59,7 @@ def decoded_hashes(path, width, height, count):
     return {i: fnv(data[i * size:(i + 1) * size]) for i in range(count)}
 
 
-def check(binary, hooks, scene, work):
+def check(binary, hooks, scene, work, threads):
     root = ET.parse(scene).getroot()
     project = root.find("project")
     fps = project.get("fps").split("/")
@@ -75,7 +81,7 @@ def check(binary, hooks, scene, work):
     root.insert(list(root).index(project) + 1, output)
     local = work / "scene.xml"
     ET.ElementTree(root).write(local, encoding="utf-8", xml_declaration=True)
-    common = ["--scene", local, "--threads", 4]
+    common = ["--scene", local, "--threads", threads]
     reference = frame_hashes(run([binary, *common, "--hash"]).stdout)
     if set(reference) != set(range(count)):
         raise RuntimeError(f"missing sequential frames: {scene}")
@@ -109,7 +115,8 @@ def check(binary, hooks, scene, work):
         raise RuntimeError(f"no segment reused: {scene}\n{result.stderr}")
     if decoded_hashes(resumed, width, height, count) != reference:
         raise RuntimeError(f"resumed encode mismatch: {scene}")
-    print(f"PASS frame order: {scene.name} ({count} frames, four paths)", flush=True)
+    print(f"PASS frame order: {scene.name} ({count} frames, four paths, {threads} threads)", flush=True)
+    return reference
 
 
 def main():
@@ -121,8 +128,13 @@ def main():
     if len(scenes) < 14:
         raise RuntimeError("golden inventory shrank below 14")
     for scene in scenes:
-        with tempfile.TemporaryDirectory(prefix="sr-order-") as temp:
-            check(binary, hooks, scene, pathlib.Path(temp))
+        single = None
+        for threads in (1, 4):
+            with tempfile.TemporaryDirectory(prefix="sr-order-") as temp:
+                current = check(binary, hooks, scene, pathlib.Path(temp), threads)
+                if single is not None and current != single:
+                    raise RuntimeError(f"thread-count mismatch: {scene}")
+                single = current
     print(f"PASS: frame order verified for all {len(scenes)} goldens")
     return 0
 

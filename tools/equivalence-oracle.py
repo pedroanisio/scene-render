@@ -9,6 +9,7 @@ from the original performance oracle. Failed renders always fail the check.
 """
 import hashlib
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,12 @@ import xml.etree.ElementTree as ET
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 THREADS = (1, 3, 22)
+# XSD-valid fixtures deliberately rejected before rendering. They are part
+# of compatibility coverage, but cannot produce a reference image.
+NEGATIVE = {
+    "tests/cli/missing-asset.xml": (4, "does-not-exist.ppm"),
+    "tests/data-doctype.xml": (3, "document type declarations are not allowed"),
+}
 SAMPLES = {
     "benchmarks/perf-scene.xml": [0, 15, 29],
     "examples/archive-beacon.xml": [60, 300, 420, 560, 735, 870],
@@ -42,13 +49,17 @@ ENCODES = [
 ]
 
 
-def run(args):
+def run(args, expected=0):
     result = subprocess.run([str(a) for a in args], cwd=ROOT,
                             capture_output=True, text=True, check=False)
-    if result.returncode:
+    if re.search(r"\[FAIL\]|runtime error:|ERROR: AddressSanitizer",
+                 result.stdout + result.stderr):
+        raise RuntimeError(f"sanitizer/test failure: {args}\n"
+                           f"{result.stdout}{result.stderr}")
+    if result.returncode != expected:
         raise RuntimeError(f"command failed ({result.returncode}): {args}\n"
                            f"{result.stdout}{result.stderr}")
-    return result.stdout
+    return result.stdout if not expected else result.stderr
 
 
 def digest(path):
@@ -80,10 +91,19 @@ def main():
             raise RuntimeError(f"fixture inventory shrank: {len(scenes)} < 42")
     if not scenes:
         raise RuntimeError("empty scene list")
-    previews = encodes = 0
+    previews = encodes = rejected = 0
     with tempfile.TemporaryDirectory(prefix="sr-oracle-") as temp:
         work = pathlib.Path(temp)
         for scene in scenes:
+            if scene in NEGATIVE:
+                code, diagnostic = NEGATIVE[scene]
+                messages = [run([binary, "--scene", ROOT / scene, "--hash"],
+                                expected=code) for binary in binaries]
+                if messages[0] != messages[1] or diagnostic not in messages[0]:
+                    raise RuntimeError(f"negative-fixture mismatch: {scene}: {messages}")
+                rejected += 1
+                print(f"PASS {scene} (expected rejection {code})", flush=True)
+                continue
             root = ET.parse(ROOT / scene).getroot()
             project = root.find("project")
             fps = project.get("fps").split("/")
@@ -94,7 +114,7 @@ def main():
                 hashes = []
                 for binary in binaries:
                     for threads in THREADS:
-                        out = work / "frame.ppm"
+                        out = work / "frame.png"
                         run([binary, "--scene", ROOT / scene, "--preview-frame",
                              frame, "--preview-out", out, "--threads", threads])
                         hashes.append(digest(out))
@@ -116,7 +136,7 @@ def main():
                 raise RuntimeError(f"encode mismatch: {scene}: {hashes}")
             encodes += 1
     print(f"PASS: {previews}/{previews} previews across {len(scenes)} scenes; "
-          f"{encodes}/{encodes} encodes match")
+          f"{encodes}/{encodes} encodes match; {rejected} expected rejections match")
     return 0
 
 

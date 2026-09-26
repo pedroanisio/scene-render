@@ -365,7 +365,8 @@ void sr_xml_start_mask(ParseContext *ctx, const XML_Char **attrs) {
 }
 
 static SrAnimColor *animate_color_target(ParseFrame *p, const char *property) {
-    if (p->kind == E_LAYER && p->node) return sr_node_color_property(p->node, property);
+    if ((p->kind == E_LAYER || p->kind == E_PARTICLES) && p->node)
+        return sr_node_color_property(p->node, property);
     if (p->light && strcmp(property, "color") == 0) return &p->light->color;
     if (p->effect && strcmp(property, "color") == 0) return &p->effect->color;
     return NULL;

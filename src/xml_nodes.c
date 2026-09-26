@@ -312,6 +312,7 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
                                ? "out of memory while attaching node to parent"
                                : "cannot attach node to parent");
     }
-    sr_xml_push(ctx, (ParseFrame){.kind = type == SR_NODE_GROUP ? E_GROUP : E_LAYER,
+    sr_xml_push(ctx, (ParseFrame){.kind = type == SR_NODE_GROUP ? E_GROUP :
+                                  type == SR_NODE_PARTICLES ? E_PARTICLES : E_LAYER,
                                   .node = node, .curve = SR_CURVE_LINEAR}, name);
 }
