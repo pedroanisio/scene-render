@@ -310,9 +310,10 @@ static void mask_copy_work_includes_both_passes(sr_test_ctx *t) {
     sr_composite_free(&probe, p);
     uint64_t copies = 2 * sizeof(SrMaskLink) + 10 * sizeof(SrMaskEval);
     uint64_t heap = 9 * sizeof(SrMaskEval);
-    /* Ten evaluated masks, 12 linked-mask steps per raster pixel, three
-     * traversals of two links, one heap array zero, chain zero AND copy. */
-    uint64_t extra = 10 + 16 * 16 * 12 + 6 + (heap + prefix + 3) / 4 +
+    /* Ten masks with five scalar evaluations and 16 setup/clip units each,
+     * node visits, 12 linked-mask steps per raster pixel, three traversals of
+     * two links, one heap array zero, chain zero AND copy. */
+    uint64_t extra = 10 * (1 + 5 + 16) + 16 * 16 * 12 + 6 + (heap + prefix + 3) / 4 +
                      (copies + prefix + 3) / 4 + (copies + 3) / 4;
     CHECK_INT(t, work[1] - work[0], extra);
 }

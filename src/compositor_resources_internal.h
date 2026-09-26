@@ -34,6 +34,8 @@ bool sr_composite_work(SrCompositeResources *resources, uint64_t count,
                         uint64_t cost);
 /* Before scalar/relative-key evaluation; accepts only finalized track storage.
  * A NULL ledger leaves legacy validation and arithmetic unchanged. */
+bool sr_composite_track_work(SrCompositeResources *resources,
+                              const SrTrack *track, bool length);
 bool sr_composite_anim_work(SrCompositeResources *resources,
                              const SrAnimValue *value, bool length);
 bool sr_composite_resource_fail(SrCompositeResources *resources,

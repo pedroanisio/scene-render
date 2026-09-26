@@ -86,10 +86,9 @@ bool sr_composite_work(SrCompositeResources *resources, uint64_t count,
     return sr_composite_reserve(resources, 0, 0, count * cost);
 }
 
-bool sr_composite_anim_work(SrCompositeResources *resources,
-                             const SrAnimValue *value, bool length) {
+bool sr_composite_track_work(SrCompositeResources *resources,
+                              const SrTrack *track, bool length) {
     if (!resources) return true;
-    const SrTrack *track = &value->track;
     if (track->count > SR_MAX_TRACK_KEYS || (track->count && !track->keys))
         return sr_composite_resource_fail(resources, SR_ERR_RENDER,
                                             "invalid compositing animation keys");
@@ -104,6 +103,11 @@ bool sr_composite_anim_work(SrCompositeResources *resources,
             (2 + sizeof(SrKeyframe) / 4 + (sizeof(SrKeyframe) % 4 != 0));
     }
     return sr_composite_work(resources, work, 1);
+}
+
+bool sr_composite_anim_work(SrCompositeResources *resources,
+                             const SrAnimValue *value, bool length) {
+    return !resources || sr_composite_track_work(resources, &value->track, length);
 }
 
 SrStatus sr_composite_resource_status(const SrCompositeResources *resources) {

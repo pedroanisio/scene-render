@@ -577,3 +577,34 @@ Remaining accounting includes other animation/card geometry, effects/lighting,
 path scratch, the wider renderer scope and aggregate new authored/path ownership.
 Advanced masks, remaining blends, dependency captures, mattes, adjustments and
 B1-4 through B1-6 remain required. No additional capability is enabled here.
+
+
+## Node and card evaluation accounting
+
+Compositor track evaluation, child/card-list traversal, bounded in-place sorting,
+recursive content bounds and projective preparation/warp work now use the shared
+ledger. Scene clocks and camera/object counts are checked before evaluation;
+consumed finalized tracks have checked storage, with source ownership preserved
+through sort/bounds helpers. Projective clipping checks finite intermediates and
+fixed vertex capacity; screen/plane conversions and plane-area multiplication
+are checked before use. The legacy path retains its arithmetic and qsort.
+
+Seven focused cases and 25-allocation failure replay cover independent work
+bounds, exact/short quotas, unchanged sorting on rejection, real parallel warp
+execution, repeated/shuffled histories, relative geometry, 3D-object interleave
+and cleanup. Review findings were reproduced before fixes and are all closed.
+Initial Release and ASan/UBSan pass 82/82 tests each; final affected-suite reruns
+pass in both builds. Final coverage passes 82/82 at 92.25% lines / 77.25%
+branches, with floors 90.30% / 75.25%. The final oracle matches 309 previews,
+three encodes and two rejections. The final nine-run strict 2% performance gate
+passes (clear -1.3%, total -12.5%; noisy). The feature benchmark measures +2.70%
+card compositor CPU with overlapping ranges and identical frames at 1/4 threads.
+Earlier failed performance runs remain recorded. Full evidence:
+`docs/reviews/b1-compositor-evaluation.md`.
+
+B1-3 remains incomplete: effects/lighting and renderer/path ownership/work,
+advanced masks, seven remaining blend modes, captures, mattes and adjustments
+are still required. B1-4 through B1-6, dependent loader/animation hosts, batch
+merges and the full completion audit also remain. The next feature increment
+is the remaining blend operators; final resource integration remains required
+before B1-3 completion.

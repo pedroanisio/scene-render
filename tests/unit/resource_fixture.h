@@ -105,4 +105,58 @@ static inline bool resource_particle_scene(SrScene *scene) {
     return sr_node_add_mask(node, mask) == SR_OK;
 }
 
+/* Two separate card runs, recursive known bounds, heap masks and animations.
+ * The large tilted cards cross the 16384-pixel warp dispatch threshold. */
+static inline bool resource_evaluation_scene(SrScene *scene) {
+    fx_scene(scene, 256, 192);
+    scene->has_cards = true;
+    scene->cameras = sr_alloc(sizeof(*scene->cameras));
+    if (!scene->cameras) return false;
+    scene->camera_count = scene->camera_capacity = 1;
+    scene->cameras[0] = (SrCamera){.active = true, .z = {.base = -256},
+        .zoom = {.base = 256}, .zoom_set = true, .near_plane = .1,
+        .far_plane = 10000, .source_line = 70};
+    for (size_t k = 0; k < 2; ++k)
+        if (sr_track_add(&scene->cameras[0].yaw.track, (SrKeyframe){
+            .time = (double)k, .value = (double)k, .curve = SR_CURVE_LINEAR}) != SR_OK)
+            return false;
+    if (sr_track_finalize(&scene->cameras[0].yaw.track) != SR_OK) return false;
+    for (size_t i = 0; i < 3; ++i) {
+        if (i == 2 && !fx_rect(scene, NULL, 0, 80, 256, 4,
+            (SrColor){0, 1, 0, .2}, 1)) return false;
+        SrNode *card = fx_add(scene, NULL, SR_NODE_GROUP);
+        if (!card) return false;
+        card->card = true;
+        card->source_line = 80 + i;
+        card->transform.x.base = card->transform.anchor_x.base = 128;
+        card->transform.y.base = card->transform.anchor_y.base = 96;
+        card->transform.z.base = (double)i * 10;
+        card->transform.rotation_y.base = i == 1 ? 0 : 25;
+        SrNode *group = fx_add(scene, card, SR_NODE_GROUP);
+        if (!group) return false;
+        SrNode *leaf = fx_rect(scene, group, 16, 12, 224, 168,
+            (SrColor){.2 + (double)i * .2, .5, .8, .3}, 1);
+        if (!leaf) return false;
+        leaf->source_line = 90 + i;
+        SrMask mask = fx_mask(SR_MASK_RECT, 0, 0, 224, 168, false);
+        mask.source_line = 100 + i;
+        for (size_t j = 0; j < 9; ++j)
+            if (sr_node_add_mask(leaf, mask) != SR_OK) return false;
+        SrTrack *tracks[] = {&card->transform.rotation_y.track,
+            &leaf->transform.scale_x.track, &leaf->masks[0].radius.track,
+            &leaf->fill.r};
+        double values[] = {card->transform.rotation_y.base, 1, 0, 0};
+        /* Color channel keys are linear; an additive zero preserves base RGBA. */
+        leaf->fill.r.additive = true;
+        for (size_t j = 0; j < 4; ++j) {
+            for (size_t k = 0; k < 2; ++k)
+                if (sr_track_add(tracks[j], (SrKeyframe){.time = (double)k,
+                    .value = values[j] + (j == 0 && i != 1 ? (double)k * 10 : 0),
+                    .curve = SR_CURVE_LINEAR}) != SR_OK) return false;
+            if (sr_track_finalize(tracks[j]) != SR_OK) return false;
+        }
+    }
+    return true;
+}
+
 #endif

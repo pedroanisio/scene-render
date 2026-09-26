@@ -13,6 +13,7 @@
 #include "compositor_internal.h"
 #include "compositor_resources_internal.h"
 #include "compositor_geometry_internal.h"
+#include "compositor_evaluation_internal.h"
 
 #include <float.h>
 #include <limits.h>
@@ -285,6 +286,9 @@ static SrStatus sr_node_world(SrDrawContext *context, const SrNode *node,
     const SrScene *scene = context->scene;
     double time = context->time;
     const SrNodeGeometry *geometry = sr_length_node(context->lengths, node);
+    SrCompositeResources *resources = context->compositor->resources;
+    if (resources && !sr_composite_world_work(resources, scene, node, geometry != NULL))
+        return SR_ERR_RENDER;
     double x = geometry ? geometry->x : sr_anim_eval(&node->transform.x, time);
     double y = geometry ? geometry->y : sr_anim_eval(&node->transform.y, time);
     double rotation = sr_anim_eval(&node->transform.rotation, time) * SR_PI / 180.0;
@@ -550,9 +554,11 @@ static double sr_pixel_footprint(SrMat3 inverse) {
 
 /* ---- masks -------------------------------------------------------------- */
 
-static void sr_masks_eval(const SrDrawContext *context, const SrNode *node, SrMaskEval *out) {
+static bool sr_masks_eval(const SrDrawContext *context, const SrNode *node, SrMaskEval *out) {
     double time = context->time;
     const SrNodeGeometry *geometry = sr_length_node(context->lengths, node);
+    if (!sr_composite_masks_work(context->compositor->resources, node, geometry != NULL))
+        return false;
     for (size_t i = 0; i < node->mask_count; ++i) {
         const SrMask *mask = &node->masks[i];
         const SrMaskGeometry *evaluated = geometry
@@ -566,6 +572,7 @@ static void sr_masks_eval(const SrDrawContext *context, const SrNode *node, SrMa
             .height = evaluated ? evaluated->height : fmax(0.0, sr_anim_eval(&mask->height, time)),
             .radius = fmax(0.0, sr_anim_eval(&mask->radius, time))};
     }
+    return true;
 }
 
 /* sr_mat_point, inlined: the same products and sums in the same order. */
@@ -1245,6 +1252,15 @@ static SrStatus sr_draw_image(SrDrawContext *context, const SrNode *node,
                               SrMat3 world, SrMat3 inverse, double opacity,
                               SrClip clip, const SrTarget *target,
                               const SrMaskLink *masks) {
+    SrCompositeResources *resources = context->compositor->resources;
+    if (resources && node->source_time.track.count) {
+        SrCompositeOwner previous = sr_composite_owner(resources,
+            sr_composite_node_owner(context->scene, node, "sourceTime"));
+        bool valid = sr_composite_anim_work(resources, &node->source_time, false);
+        sr_composite_owner(resources, previous);
+        if (!valid) return SR_ERR_RENDER;
+    }
+    if (!sr_composite_work(resources, 1, 32)) return SR_ERR_RENDER;
     bool before;
     double source_time = sr_media_time(node, context->time, &before);
     SrStatus frame_status = SR_OK;
@@ -1283,6 +1299,15 @@ static SrStatus sr_draw_shape(SrDrawContext *context, const SrNode *node,
                               SrMat3 world, SrMat3 inverse, double opacity,
                               SrClip clip, const SrTarget *target,
                               const SrMaskLink *masks) {
+    SrCompositeResources *resources = context->compositor->resources;
+    if (resources) {
+        SrCompositeOwner previous = sr_composite_owner(resources,
+            sr_composite_node_owner(context->scene, node, "fill/stroke"));
+        bool valid = sr_composite_color_work(resources, &node->fill) &&
+            sr_composite_color_work(resources, &node->stroke);
+        sr_composite_owner(resources, previous);
+        if (!valid) return SR_ERR_RENDER;
+    }
     SrDeformState deform;
     SrStatus status = sr_deform_prepare(context->scene, node, context->time,
                                         context->compositor->resources, &deform);
@@ -1359,21 +1384,6 @@ static SrStatus sr_draw_node(SrDrawContext *context, const SrNode *node,
                              const SrTarget *target, size_t depth,
                              const SrMaskLink *outer);
 
-/* One entry of a draw list: a child node, or (node NULL) 3D object
- * `object` interleaved among root-level cards. */
-typedef struct {
-    const SrNode *node;
-    size_t object;
-    double key;                 /* view depth; larger is farther */
-    size_t order;
-} SrDrawItem;
-
-static int sr_item_compare(const void *a, const void *b) {
-    const SrDrawItem *x = a, *y = b;
-    if (x->key != y->key) return x->key < y->key ? 1 : -1;  /* far first */
-    return (x->order > y->order) - (x->order < y->order);
-}
-
 /* View depth of a card's pivot (its sort key). */
 static SrStatus sr_card_key(const SrDrawContext *context, const SrNode *node,
                             SrMat3 parent, double *out) {
@@ -1383,6 +1393,8 @@ static SrStatus sr_card_key(const SrDrawContext *context, const SrNode *node,
     SrStatus status = sr_node_world(&local, node, parent, &plane);
     if (status != SR_OK) return status;
     const SrNodeGeometry *geometry = sr_length_node(context->lengths, node);
+    if (!sr_composite_pivot_work(context->compositor->resources, context->scene,
+                                  node, geometry != NULL, false)) return SR_ERR_RENDER;
     SrVec2 pivot = sr_mat_point(plane, (SrVec2){
         geometry ? geometry->anchor_x : sr_anim_eval(&node->transform.anchor_x, time),
         geometry ? geometry->anchor_y : sr_anim_eval(&node->transform.anchor_y, time)});
@@ -1405,6 +1417,11 @@ static SrStatus sr_draw_children(SrDrawContext *context, const SrNode *node,
                                  SrMat3 world, SrClip clip,
                                  const SrTarget *target, size_t depth,
                                  const SrMaskLink *masks) {
+    SrCompositeResources *resources = context->compositor->resources;
+    /* Discovery, construction, drawing and final lighting-handoff scans,
+     * including copied list records. Prepared ownership bounds children. */
+    if (!sr_composite_work(resources, node->child_count,
+                            8 + 2 * ((sizeof(SrDrawItem) + 3) / 4))) return SR_ERR_RENDER;
     bool cards = false;
     for (size_t i = 0; i < node->child_count && !cards; ++i)
         cards = node->children[i]->card;
@@ -1418,6 +1435,13 @@ static SrStatus sr_draw_children(SrDrawContext *context, const SrNode *node,
     }
     const SrScene *scene = context->scene;
     bool merge = context->lighting && node == scene->root && !target->buffer;
+    if (resources && (node->child_count > SR_MAX_COMPOSITE_NODES ||
+        scene->object3d_count > SR_MAX_COMPOSITE_OBJECTS)) {
+        sr_composite_resource_fail(resources, SR_ERR_RENDER, "compositing draw-list limit");
+        return SR_ERR_RENDER;
+    }
+    if (merge && !sr_composite_work(resources, scene->object3d_count,
+        8 + 2 * ((sizeof(SrDrawItem) + 3) / 4))) return SR_ERR_RENDER;
     size_t capacity = node->child_count + (merge ? scene->object3d_count : 0);
     SrDrawItem *items = sr_composite_alloc(context->compositor->resources,
         capacity, sizeof(*items), 0);
@@ -1441,13 +1465,20 @@ static SrStatus sr_draw_children(SrDrawContext *context, const SrNode *node,
         }
         if (merge) {
             for (size_t k = 0; k < scene->object3d_count; ++k) {
+                if (!sr_composite_object_key_work(resources, scene, k)) {
+                    sr_composite_free(resources, items);
+                    return SR_ERR_RENDER;
+                }
                 double key = sr_lighting_object_depth(scene, k, context->time);
                 items[count++] = (SrDrawItem){NULL, k,
                     isnan(key) ? INFINITY : key, node->child_count + k};
             }
             merge = false;
         }
-        qsort(items + first, count - first, sizeof(*items), sr_item_compare);
+        if (!sr_composite_sort_items(resources, items + first, count - first)) {
+            sr_composite_free(resources, items);
+            return SR_ERR_RENDER;
+        }
     }
     SrStatus status = SR_OK;
     for (size_t i = 0; i < count && status == SR_OK; ++i) {
@@ -1502,7 +1533,11 @@ static SrStatus sr_draw_group(SrDrawContext *context, const SrNode *node,
         : sr_composite_alloc(context->compositor->resources, node->mask_count,
                                sizeof(*masks), 0);
     if (!masks) return sr_composite_resource_status(context->compositor->resources);
-    sr_masks_eval(context, node, masks);
+    if (!sr_masks_eval(context, node, masks)) {
+        if (masks != local_masks)
+            sr_composite_free(context->compositor->resources, masks);
+        return SR_ERR_RENDER;
+    }
     SrMaskLink link = {masks, node->mask_count, inverse,
                        sr_pixel_footprint(inverse), outer};
     const SrMaskLink *chain = node->mask_count ? &link : outer;
@@ -1580,6 +1615,14 @@ static SrStatus sr_draw_node_impl(SrDrawContext *context, const SrNode *node,
     double time = context->time;
     if (!node->visible || time < node->start_time || time >= node->end_time)
         return SR_OK;
+    SrCompositeResources *resources = context->compositor->resources;
+    if (resources) {
+        SrCompositeOwner previous = sr_composite_owner(resources,
+            sr_composite_node_owner(context->scene, node, "opacity"));
+        bool valid = sr_composite_anim_work(resources, &node->opacity, false);
+        sr_composite_owner(resources, previous);
+        if (!valid) return SR_ERR_RENDER;
+    }
     double opacity = sr_clamp(sr_anim_eval(&node->opacity, time), 0.0, 1.0);
     if (opacity <= 0.0) return SR_OK;
     SrDrawContext *caller = context;
@@ -1608,14 +1651,10 @@ static SrStatus sr_draw_node(SrDrawContext *context, const SrNode *node,
     SrCompositeResources *resources = context->compositor->resources;
     if (!resources)
         return sr_draw_node_impl(context, node, parent, clip, target, depth, outer);
-    const char *element = node == context->scene->root ? "composition"
-        : node->type == SR_NODE_GROUP ? "group"
-        : node->type == SR_NODE_MEDIA ? "layer"
-        : node->type == SR_NODE_PARTICLES ? "particleEmitter" : "shape";
     const char *attribute = node->blend > SR_BLEND_DIFFERENCE ? "blend"
         : sr_node_uses_compositing(node) ? "skewX/skewY" : NULL;
     SrCompositeOwner previous = sr_composite_owner(resources,
-        (SrCompositeOwner){node->source_line, element, attribute});
+        sr_composite_node_owner(context->scene, node, attribute));
     SrStatus status = SR_ERR_RENDER;
     if (sr_composite_work(resources, 1 + node->mask_count, 1))
         status = sr_draw_node_impl(context, node, parent, clip, target, depth, outer);
@@ -1634,7 +1673,11 @@ static SrStatus sr_draw_leaf(SrDrawContext *context, const SrNode *node,
         : sr_composite_alloc(context->compositor->resources, node->mask_count,
                                sizeof(*masks), 0);
     if (!masks) return sr_composite_resource_status(context->compositor->resources);
-    sr_masks_eval(context, node, masks);
+    if (!sr_masks_eval(context, node, masks)) {
+        if (masks != local_masks)
+            sr_composite_free(context->compositor->resources, masks);
+        return SR_ERR_RENDER;
+    }
     SrMaskLink link = {masks, node->mask_count, inverse,
                        sr_pixel_footprint(inverse), outer};
     const SrMaskLink *chain = node->mask_count ? &link : outer;
@@ -1672,7 +1715,11 @@ static SrStatus sr_draw_content(SrDrawContext *context, const SrNode *node,
         : sr_composite_alloc(context->compositor->resources, node->mask_count,
                                sizeof(*masks), 0);
     if (!masks) return sr_composite_resource_status(context->compositor->resources);
-    sr_masks_eval(context, node, masks);
+    if (!sr_masks_eval(context, node, masks)) {
+        if (masks != local_masks)
+            sr_composite_free(context->compositor->resources, masks);
+        return SR_ERR_RENDER;
+    }
     SrMaskLink link = {masks, node->mask_count, inverse,
                        sr_pixel_footprint(inverse), NULL};
     SrClip inner = sr_mask_clip(clip, masks, node->mask_count, world, target);
@@ -1686,6 +1733,10 @@ static SrStatus sr_draw_content(SrDrawContext *context, const SrNode *node,
 /* Conservative bounds, in the coordinates `matrix` maps to, of what `node`
  * can draw at `time`; false when unknown (particles, deformers). */
 static bool sr_content_bounds(const SrDrawContext *context, const SrNode *node,
+                              SrMat3 matrix, bool own, double box[4], bool *any,
+                              SrStatus *status);
+
+static bool sr_content_bounds_impl(const SrDrawContext *context, const SrNode *node,
                               SrMat3 matrix, bool own, double box[4], bool *any,
                               SrStatus *status) {
     double time = context->time;
@@ -1737,19 +1788,65 @@ static bool sr_content_bounds(const SrDrawContext *context, const SrNode *node,
     return true;
 }
 
+static bool sr_content_bounds(const SrDrawContext *context, const SrNode *node,
+                              SrMat3 matrix, bool own, double box[4], bool *any,
+                              SrStatus *status) {
+    SrCompositeResources *resources = context->compositor->resources;
+    if (!resources) return sr_content_bounds_impl(context, node, matrix, own, box, any, status);
+    SrCompositeOwner previous = sr_composite_owner(resources,
+        sr_composite_node_owner(context->scene, node, "bounds"));
+    bool result = false;
+    /* Admission plus four corners, including invisible and unknown leaves. */
+    if (!sr_composite_work(resources, 1, 64) ||
+        !sr_composite_work(resources, node->child_count, 1)) *status = SR_ERR_RENDER;
+    else result = sr_content_bounds_impl(context, node, matrix, own, box, any, status);
+    sr_composite_owner(resources, previous);
+    return result;
+}
+
+/* Checked appends also bound adversarial finite clipping state. */
+static bool sr_clip_vertex(SrCompositeResources *resources, double *out,
+                            size_t *count, double x, double y) {
+    if (resources && (*count == SR_MAX_COMPOSITE_CLIP_VERTICES ||
+        !isfinite(x) || !isfinite(y)))
+        return sr_composite_resource_fail(resources, SR_ERR_RENDER,
+            "invalid projective card clipping vertex/capacity");
+    out[2 * *count] = x;
+    out[2 * *count + 1] = y;
+    ++*count;
+    return true;
+}
+
 /* Clips convex polygon (u, v pairs) to a * u + b * v + c >= 0. */
 static size_t sr_clip_polygon(const double *in, size_t count, double a,
-                              double b, double c, double *out) {
+                              double b, double c, double *out,
+                              SrCompositeResources *resources) {
+    if (resources && (count > SR_MAX_COMPOSITE_CLIP_VERTICES ||
+        !isfinite(a) || !isfinite(b) || !isfinite(c))) {
+        sr_composite_resource_fail(resources, SR_ERR_RENDER,
+            "invalid projective card clipping plane");
+        return 0;
+    }
     size_t n = 0;
     for (size_t i = 0; i < count; ++i) {
         const double *p = in + 2 * i, *q = in + 2 * ((i + 1) % count);
         double dp = a * p[0] + b * p[1] + c, dq = a * q[0] + b * q[1] + c;
-        if (dp >= 0.0) { out[2 * n] = p[0]; out[2 * n + 1] = p[1]; ++n; }
+        if (resources && (!isfinite(dp) || !isfinite(dq))) {
+            sr_composite_resource_fail(resources, SR_ERR_RENDER,
+                "nonfinite projective card clipping distance");
+            return 0;
+        }
+        if (dp >= 0.0 && !sr_clip_vertex(resources, out, &n, p[0], p[1])) return 0;
         if ((dp >= 0.0) != (dq >= 0.0)) {
+            if (resources && !isfinite(dp - dq)) {
+                sr_composite_resource_fail(resources, SR_ERR_RENDER,
+                    "nonfinite projective card clipping intersection");
+                return 0;
+            }
             double t = dp / (dp - dq);
-            out[2 * n] = p[0] + (q[0] - p[0]) * t;
-            out[2 * n + 1] = p[1] + (q[1] - p[1]) * t;
-            ++n;
+            double x = p[0] + (q[0] - p[0]) * t;
+            double y = p[1] + (q[1] - p[1]) * t;
+            if (!sr_clip_vertex(resources, out, &n, x, y)) return 0;
         }
     }
     return n;
@@ -1841,6 +1938,10 @@ static SrStatus sr_card_projective(SrDrawContext *context, const SrNode *node,
                                    SrMat3 plane, const SrCardPose *pose,
                                    const SrTarget *card, SrClip clip) {
     const SrCardView *view = context->view;
+    SrCompositeResources *resources = context->compositor->resources;
+    /* Six clips of at most 12 vertices, bounded appends/intersections,
+     * 12 final projections and 16 size attempts; pose work is separate. */
+    if (!sr_composite_work(resources, 1, SR_COMPOSITE_PROJECTIVE_WORK)) return SR_ERR_RENDER;
     const double (*h)[3] = pose->to_screen.m;
     /* Visible plane region: content bounds (or a huge square) clipped to
      * the screen edges and the near/far planes, all half-planes in (u, v). */
@@ -1852,7 +1953,17 @@ static SrStatus sr_card_projective(SrDrawContext *context, const SrNode *node,
     if (bounds_status != SR_OK) return bounds_status;
     if (bounded && !any) return SR_OK;
     if (!bounded) { box[0] = box[1] = -1e9; box[2] = box[3] = 1e9; }
-    double a[24], b[24];
+    if (resources) {
+        for (size_t i = 0; i < 4; ++i) {
+            if (!isfinite(box[i])) {
+                sr_composite_resource_fail(resources, SR_ERR_RENDER,
+                    "nonfinite projective card content bounds");
+                return SR_ERR_RENDER;
+            }
+        }
+    }
+    double a[2 * SR_MAX_COMPOSITE_CLIP_VERTICES];
+    double b[2 * SR_MAX_COMPOSITE_CLIP_VERTICES];
     double *poly = a, *next = b;
     size_t count = 4;
     double start[8] = {box[0], box[1], box[2], box[1], box[2], box[3], box[0], box[3]};
@@ -1877,7 +1988,8 @@ static SrStatus sr_card_projective(SrDrawContext *context, const SrNode *node,
     }
     for (size_t i = 0; i < ncons && count >= 3; ++i) {
         count = sr_clip_polygon(poly, count, cons[i][0], cons[i][1],
-                                cons[i][2], next);
+                                cons[i][2], next, resources);
+        if (resources && resources->status != SR_OK) return SR_ERR_RENDER;
         double *swap = poly; poly = next; next = swap;
     }
     if (count < 3) return SR_OK;
@@ -1887,23 +1999,53 @@ static SrStatus sr_card_projective(SrDrawContext *context, const SrNode *node,
     for (size_t i = 0; i < count; ++i) {
         double u = poly[2 * i], v = poly[2 * i + 1], x, y;
         u0 = fmin(u0, u); v0 = fmin(v0, v); u1 = fmax(u1, u); v1 = fmax(v1, v);
-        s = fmax(s, sr_plane_magnification(pose, u, v));
+        double magnification = sr_plane_magnification(pose, u, v);
+        if (resources && (!isfinite(u) || !isfinite(v) || !isfinite(magnification))) {
+            sr_composite_resource_fail(resources, SR_ERR_RENDER,
+                "nonfinite projective card scale");
+            return SR_ERR_RENDER;
+        }
+        s = fmax(s, magnification);
         if (sr_card_to_screen(pose, u, v, &x, &y)) {
-            screen.x0 = (int)fmin(screen.x0, floor(x) - 1);
-            screen.y0 = (int)fmin(screen.y0, floor(y) - 1);
-            screen.x1 = (int)fmax(screen.x1, ceil(x) + 1);
-            screen.y1 = (int)fmax(screen.y1, ceil(y) + 1);
+            if (resources) {
+                if (!isfinite(x) || !isfinite(y)) {
+                    sr_composite_resource_fail(resources, SR_ERR_RENDER,
+                        "nonfinite projective card screen coordinate");
+                    return SR_ERR_RENDER;
+                }
+                screen.x0 = sr_clamp_int(fmin(screen.x0, floor(x) - 1), 0, card->width);
+                screen.y0 = sr_clamp_int(fmin(screen.y0, floor(y) - 1), 0, card->height);
+                screen.x1 = sr_clamp_int(fmax(screen.x1, ceil(x) + 1), 0, card->width);
+                screen.y1 = sr_clamp_int(fmax(screen.y1, ceil(y) + 1), 0, card->height);
+            } else {
+                screen.x0 = (int)fmin(screen.x0, floor(x) - 1);
+                screen.y0 = (int)fmin(screen.y0, floor(y) - 1);
+                screen.x1 = (int)fmax(screen.x1, ceil(x) + 1);
+                screen.y1 = (int)fmax(screen.y1, ceil(y) + 1);
+            }
         }
     }
     screen = sr_clip_intersect(screen, clip);
     if (screen.x1 <= screen.x0 || screen.y1 <= screen.y0) return SR_OK;
     double pw = fmax(u1 - u0, 1e-6), ph = fmax(v1 - v0, 1e-6);
+    if (resources && (!isfinite(pw) || !isfinite(ph) || !isfinite(pw * ph))) {
+        sr_composite_resource_fail(resources, SR_ERR_RENDER,
+            "nonfinite projective card plane extent/area");
+        return SR_ERR_RENDER;
+    }
     s = fmin(s, fmin((SR_PLANE_MAX_SIDE - 2.0) / pw, (SR_PLANE_MAX_SIDE - 2.0) / ph));
     s = fmin(s, sqrt(SR_PLANE_MAX_PIXELS / (pw * ph)));
     if (!(s > 0.0) || !isfinite(s)) return SR_OK;
     uint32_t bw = 0, bh = 0;
     /* Quantized sizes round up; shrink s until they fit the caps too. */
     for (int attempt = 0; attempt < 16; ++attempt) {
+        if (resources && (!isfinite(pw * s) || !isfinite(ph * s) ||
+            ceil(pw * s) > UINT32_MAX - 2u - (SR_PLANE_QUANTUM - 1u) ||
+            ceil(ph * s) > UINT32_MAX - 2u - (SR_PLANE_QUANTUM - 1u))) {
+            sr_composite_resource_fail(resources, SR_ERR_RENDER,
+                "projective card plane dimension overflow");
+            return SR_ERR_RENDER;
+        }
         bw = (uint32_t)ceil(pw * s) + 2;
         bh = (uint32_t)ceil(ph * s) + 2;
         bw = (bw + SR_PLANE_QUANTUM - 1) / SR_PLANE_QUANTUM * SR_PLANE_QUANTUM;
@@ -1944,6 +2086,11 @@ static SrStatus sr_card_projective(SrDrawContext *context, const SrNode *node,
     if (status != SR_OK) return status;
     SrWarp warp = {pose, view, {bw, bh, buffer->frame.px}, s, u0, v0, card,
                    screen};
+    /* At most 16 taps: homography + clear + four RGBA texels + accumulation,
+     * plus four outer queries, loop dispatch and final channel stores. */
+    if (!sr_composite_work(context->compositor->resources,
+        (uint64_t)(screen.x1 - screen.x0) * (uint64_t)(screen.y1 - screen.y0),
+        SR_COMPOSITE_WARP_PIXEL_WORK)) return SR_ERR_RENDER;
     sr_buffer_mark(card->buffer, screen);
     return sr_parallel_for((size_t)(screen.y1 - screen.y0),
                            sr_op_threads(context->compositor, screen),
@@ -1963,6 +2110,8 @@ static SrStatus sr_draw_card(SrDrawContext *context, const SrNode *node,
     const SrCardView *view = context->view;
     double time = context->time;
     const SrNodeGeometry *geometry = sr_length_node(context->lengths, node);
+    if (!sr_composite_pivot_work(context->compositor->resources, context->scene,
+                                  node, geometry != NULL, true)) return SR_ERR_RENDER;
     SrVec2 pivot = sr_mat_point(plane, (SrVec2){
         geometry ? geometry->anchor_x : sr_anim_eval(&node->transform.anchor_x, time),
         geometry ? geometry->anchor_y : sr_anim_eval(&node->transform.anchor_y, time)});
@@ -2080,6 +2229,7 @@ static SrStatus sr_compositor_render_impl(SrCompositor *compositor, SrScene *sce
         return SR_ERR_ARGUMENT;
     SrStatus ready = sr_composite_scene_ready(scene, diag);
     if (ready != SR_OK) return ready;
+    if (!sr_composite_view_work(compositor->resources, scene, time)) return SR_ERR_RENDER;
     SrStatus status = sr_prepare_lengths(compositor, scene, time, diag);
     return status == SR_OK ? sr_compositor_draw(compositor, scene, time, frame, diag)
                           : status;
@@ -2098,6 +2248,7 @@ static SrStatus sr_compositor_render_scene_impl(SrCompositor *compositor, SrScen
         return SR_ERR_ARGUMENT;
     SrStatus ready = sr_composite_scene_ready(scene, diag);
     if (ready != SR_OK) return ready;
+    if (!sr_composite_view_work(compositor->resources, scene, time)) return SR_ERR_RENDER;
     SrStatus prepared = sr_prepare_lengths(compositor, scene, time, diag);
     if (prepared != SR_OK) return prepared;
     if (!scene->has_cards) {
@@ -2128,6 +2279,10 @@ static SrStatus sr_compositor_render_scene_impl(SrCompositor *compositor, SrScen
     SrStatus status = sr_lighting_begin(scene, time, frame, depth,
                                         compositor->threads, diag, &pass);
     if (status != SR_OK) return status;
+    if (pass && !sr_composite_work(compositor->resources, scene->root->child_count, 1)) {
+        sr_lighting_end(pass);
+        return SR_ERR_RENDER;
+    }
     if (pass && !sr_root_has_cards(scene)) {
         sr_lighting_draw_blobs(pass);
         for (size_t i = 0; i < scene->object3d_count && status == SR_OK; ++i)

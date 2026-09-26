@@ -221,6 +221,74 @@ preparation are charged separately. Actual allocation failure remains MEMORY;
 work/storage/candidate rejection is RENDER. Frame history and worker count must
 produce identical resource decisions and output.
 
+### Node and card evaluation
+
+Charge every consumed scalar track before sampling: opacity, transform and
+skew, non-relative mask coordinates/radius, media source time, shape fill and
+stroke channels, card pivot/tilt and active-camera values. Repeated evaluations
+for sort keys, bounds and drawing each count; evaluated length coordinates are
+not sampled or charged again. A shared track helper validates finalized storage
+and applies the existing static/keyed work rule to color channels too. Fixed
+matrix/corner/pose work and mask clipping have separate conservative charges.
+Failed admission unwinds masks, lists and pools through their existing owners.
+
+Before scene evaluation, bound camera and 3D-object counts at 65536 each and
+require their declared arrays; reject nonfinite render clocks or
+`abs(time) > SR_MAX_DURATION`, preserving the existing negative-time envelope.
+Camera selection charges both its admission scan and the unchanged
+view-construction scan, and validates only the selected camera's consumed
+tracks before lighting or card code can sample them. Lighting's own repeated
+evaluation and private scratch remain a separate integration. Object sort-key
+evaluation charges its consumed position tracks and camera scan/transform;
+the direct-C finalized-array contract continues to apply.
+
+Child discovery, list construction, drawing and final handoff scans reserve
+linear work before traversal. Prepared node/mask bounds still govern those
+arrays. Card-run sorting on the bounded path uses in-place heapsort with the
+existing total ordering (far depth, then unique document order), eliminating
+unobservable library sort scratch. Legacy calls retain qsort. Each heap level
+uses at most two comparisons and one three-record swap; reserve
+`2*N*(ceil(log2(N))+1)*(4+3*ceil(sizeof(item)/4))` before mutation. The two
+passes have fewer than 2*N sifts including root extraction. No allocation or
+worker-dependent admission is introduced. The combined list is bounded by
+the sum of the node and object ceilings before size addition.
+
+Recursive content bounds charge each visited node, child edge and four-corner
+projection, including visits that return unknown bounds. Transform work is
+charged at each actual call. Projective clipping, magnification and the fixed
+16-attempt size search reserve 1024 units per card before those loops. A convex
+quad clipped by six half-planes has at most 39 input-edge visits, 45 emitted
+vertex records, 12 crossings and 10 final projected vertices. The active path
+checks finite clipping state and a named 12-vertex stack capacity before every
+append. The 1024-unit reserve covers even six full 12-edge walks with bounded
+appends, rejected intersections and twelve final projections, without relying
+on exact convexity after floating-point rounding. Projected screen coordinates must be finite and are clamped to the
+target before integer conversion; plane-size and quantization conversions are
+range-checked. Mathematical clipping is not a substitute for those checks.
+Visited nodes/masks/cameras temporarily own their admission diagnostics even
+when the caller is sorting or walking a parent's bounds. The warp
+reserves 512 units per clipped screen pixel before dispatch: four depth/plane
+queries, up to sixteen taps (each including its homography query, four-channel
+clear, four RGBA texels and accumulation), sample-loop overhead and the final
+four-channel store. These are logical loop/copy units, not CPU instruction
+counts. Reserve the same bound
+even when a pixel rejects early or takes one sample; workers do not update the
+ledger. At 512 units per pixel, the 2^30 frame-work ceiling admits at most
+2097152 warped pixels before any other work. A full 1920x1080 warp leaves
+12058624 work units for its other consumers, so many such cards will fail; a
+full 4K projective warp always exceeds this conservative bound. Affine cards
+do not pay warp work. Effects and DOF remain separately listed until their private scratch
+and pass work are connected.
+
+Tests compare bounded sorting with the existing comparator across ascending,
+descending, equal-depth and mixed runs, and check an independently calculated
+work ceiling and rejection before mutation. Render fixtures cover animated
+transform/mask/color/camera tracks, multiple separated card runs, affine and
+projective cards, recursive bounds, relative coordinates, exact/short quotas,
+larger-prior/shuffled histories and actual one/four-worker dispatch. Malformed
+track storage and clock/count limits fail before indexing with source owners;
+existing OOM replay continues to cover all changed cleanup paths.
+
 ## Integration and verification
 
 Integrate the ledger into actual consumers in reviewable increments. An

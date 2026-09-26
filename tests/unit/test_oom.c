@@ -536,6 +536,22 @@ static void resources_survive_allocation_failures(sr_test_ctx *t) {
     sr_compositor_free(&c.compositor);
     sr_frame_free(&c.frame);
     sr_scene_free(&c.scene);
+
+    c = (ResourceContext){.lighting = true};
+    built = resource_evaluation_scene(&c.scene);
+    sr_compositor_init(&c.compositor, 1);
+    CHECK(t, built);
+    CHECK_INT(t, sr_scene_prepare_compositing(&c.scene, NULL), SR_OK);
+    CHECK_INT(t, sr_frame_init(&c.frame, 256, 192), SR_OK);
+    const OomSpec evaluation = {"bounded card runs/bounds/heap masks",
+        resource_render_op, NULL, NULL, NULL, {SR_ERR_MEMORY}};
+    if (built && c.scene.compositing && c.frame.px)
+        CHECK(t, replay_until_success(t, &evaluation, &c) >= 12);
+    CHECK_INT(t, resource_render_op(&c), SR_OK);
+    sr_compositor_free(&c.compositor);
+    sr_frame_free(&c.frame);
+    sr_scene_free(&c.scene);
+
 }
 
 typedef struct {
