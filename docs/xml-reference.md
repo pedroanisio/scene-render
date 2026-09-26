@@ -75,6 +75,7 @@ The 1.0 subset of the root sequence is:
   <project .../>
   <output .../>           <!-- optional -->
   <assets>...</assets>    <!-- optional -->
+  <paints>...</paints>    <!-- optional, 1.1 only -->
   <materials>...</materials><!-- optional -->
   <scene360 .../>         <!-- optional -->
   <composition>...</composition>
@@ -337,7 +338,7 @@ reported when the encoder opens, before the first frame renders.
 | `video` | `id`, `src`, `width`, `height`, `fps`, `duration` | `colorSpace` |
 | `audio` | `id`, `src` | — |
 | `text` | `id`, `text`, `width`, `height`, `size` | `color`, `font`, `fontFile`, `align`, `lineHeight`, `letterSpacing`, `direction`, `language`, `verticalAlign` |
-| `vector` | `id`, `shape`, `width`, `height` | `fill`, `path`, `fillRule`, `stroke`, `strokeWidth` |
+| `vector` | `id`, `shape`, `width`, `height` | `fill`, `path`, `fillRule`, `stroke`, `strokeWidth`; 1.1 additions `radius`, `points`, `innerRadius`, `strokeCap`, `strokeJoin`, `miterLimit`, `dash`, `dashOffset`, `strokePosition`, `paintOrder`, `url(#id)` paints (see "Shapes, strokes and trims") |
 | `mesh` | `id`, `src` | — |
 
 Declared video geometry/FPS/duration make frame indexing explicit and
@@ -378,7 +379,12 @@ area of each pixel inside the shape (signed-area scanline accumulation), with
 and `strokeWidth` (default 0, off) draw a stroke centred on the outline with
 round joins and caps, over the fill; open subpaths are stroked open and filled
 as if closed. Rect and ellipse vectors fill the asset box with one pixel of
-anti-aliasing; half of their stroke lies outside the box and is clipped. Meshes load Wavefront OBJ vertices,
+anti-aliasing; half of their stroke lies outside the box and is clipped.
+These rules apply to a vector without any of the 1.1 additions. A vector that
+uses `shape="rounded-rect|polygon|star|line"`, a stroke-style attribute or a
+`url(#id)` paint is rasterized once, at asset load, by the path renderer of
+"Shapes, strokes and trims (1.1)" in asset pixels (`shape="svg"` is
+unsupported in this build). Meshes load Wavefront OBJ vertices,
 normals, and polygonal faces; faces are fan-triangulated and missing normals
 are generated.
 
@@ -457,10 +463,12 @@ The implicit source interval is `[clipIn, clipOut)`. At a frame-aligned
 play, forward playback holds that frame and reverse playback holds the
 frame at `clipIn`.
 
-`shape` requires `shape="rect|ellipse"`, `width`, and `height`; it accepts
-`fill`, `stroke`, `strokeWidth`, and `blend`. Edges are anti-aliased from a
-signed distance at the node's pixel footprint; the stroke is `strokeWidth`
-wide and centred on the outline, drawn over the fill.
+`shape` requires `shape`, `width`, and `height`; it accepts `fill`,
+`stroke`, `strokeWidth`, and `blend`. A `rect` or `ellipse` without any 1.1
+shape attribute is anti-aliased from a signed distance at the node's pixel
+footprint; the stroke is `strokeWidth` wide and centred on the outline, drawn
+over the fill. The other kinds and attributes are described in "Shapes,
+strokes and trims (1.1)".
 
 `particleEmitter` is parametric. Particle `i` (in emission order) is born at
 `i / rate` seconds after the emitter's `start` (with an animated `rate`, where
@@ -1201,3 +1209,147 @@ budget and its cost grows with the evaluated emitter time span. Extended
 emission tracks fail rendering if their cumulative index exceeds
 `SR_MAX_PARTICLE_INDEX` (9e15); this keeps integer conversion and one-particle
 steps exact, even when interpolation overshoots its key values.
+
+## Shapes, strokes and trims (1.1)
+
+`shape` accepts `shape="rect|ellipse|rounded-rect|polygon|star|line|path"`;
+the new kinds require `version="1.1"`. The attributes below are new
+attributes of an existing element and are also accepted in 1.0 documents;
+animating them requires 1.1. A `rect` or `ellipse` that uses none of them
+(and no `url(#id)` paint) keeps the 1.0 renderer. Any of them selects the path
+renderer, which follows the schema defaults: butt caps, miter joins, miter
+limit 4, a centred stroke and fill before stroke. The one visible
+consequence is that a stroked rect gains sharp miter corners.
+
+Geometry uses the node's local box `[0,width] x [0,height]` (after relative
+lengths):
+
+| Kind | Outline |
+|---|---|
+| `rect`, `rounded-rect` | the box; `radius` (animatable) or `cornerRadii="TL TR BR BL"` (1–4 values in CSS order; overrides `radius`) round the corners with circular arcs, scaled down together as CSS does when adjacent radii exceed a side |
+| `ellipse` | inscribed in the box |
+| `polygon` | `points` in [3,4096] (default 5) around the box centre, radius `outerRadius` or half the smaller box side; the first vertex points up and vertices run clockwise |
+| `star` | 2 × `points` vertices alternating `outerRadius` and `innerRadius` (default: half the evaluated outer radius at every time); the inner radius is clamped to [0, outer] after evaluation |
+| `line` | from `(0, height/2)` to `(width, height/2)`; rotate the node for other directions; it has no fill |
+| `path` | the SVG subset `M/L/H/V/C/Q/Z` in local coordinates, not scaled to the box; `path` is required exactly for this kind |
+
+`outerRoundness` / `innerRoundness` (in [0,1]) round polygon and star
+vertices with cubic handles perpendicular to the radius, of length
+`roundness · 2πρ / (4 · points)` (the lottie-web construction). `radius`,
+`cornerRadii`, `points`, `innerRadius`, `outerRadius` and the roundness
+attributes on a kind they do not apply to are errors, except explicit schema
+defaults. `fillRule` is `nonzero` (default) or `evenodd`. Curves and arcs are
+flattened to within 0.01 output pixels (at most 1024 pieces per cubic or
+quarter arc); path data keeps the fixed 16/12-piece subdivision and the
+bounds of mask paths (1 MiB, 65536 commands, 4096 contours, 262144 points,
+coordinates within 1e9).
+
+Stroke style (also on 1.1 `vector` assets):
+
+- `strokeCap` `butt|round|square`, `strokeJoin` `miter|round|bevel` and
+  `miterLimit` (≥ 1; a miter becomes a bevel when its length exceeds
+  `miterLimit × strokeWidth`, as in SVG).
+- `dash`: up to 64 non-negative lengths in local units; an odd list repeats
+  once; an all-zero list is solid. The pattern is measured along each
+  contour from its start plus `dashOffset` (animatable, floor-based modulo),
+  so dashes stay in place while a trim animates. A zero-length dash is a dot
+  with round or square caps.
+- `strokePosition`: `center`, or `inside` / `outside`, which stroke twice the
+  width and clip it by the fill coverage (`stroke·fill`, `stroke·(1−fill)`);
+  open contours are closed implicitly for this clip; a `line` accepts only
+  `center`.
+- `paintOrder`: `fill-stroke` (stroke over fill) or `stroke-fill`.
+
+Trim paths: `trimStart`, `trimEnd` (in [0,1]) and `trimOffset` are
+animatable. They are clamped to [0,1] and swapped when reversed; `trimOffset`
+is in outline fractions (1 = one full turn; After Effects degrees / 360) and
+the visible interval wraps around a closed contour's start without a seam.
+`trimMode="simultaneous"` (default) trims each contour by its own length;
+`sequential` treats all contours as one outline in document order. Trims
+affect the stroke only; the fill stays the untrimmed shape.
+
+Rendering: stroke outlines are built as polygons (offset outlines with joins
+and caps, inner joins through the vertex) and filled with the nonzero rule
+by the exact-area rasterizer, as are fills. Where two stroke pieces overlap
+inside one partially covered boundary pixel (for example a path that retraces
+itself), their areas add before the clamp to 1. A deformed shape is
+rasterized on a local grid of one sample per local unit and sampled
+bilinearly through the deformation.
+
+Limits: at most 4,194,304 vertices and 1,048,576 dash pieces per evaluated
+shape; evaluated coordinates, radii, dashes and widths within 1e9;
+`trimOffset` within ±1e6. Violations at load report the attribute and line;
+at render time they fail the frame naming the shape. Extended shapes run on
+the bounded compositing path: their geometry, coverage grids and per-pixel
+work are charged to the frame's resource ledger.
+
+```xml
+<shape id="badge" shape="star" points="5" width="60" height="60"
+       innerRoundness="0.3" fill="url(#warm)" stroke="#FFFFFF"
+       strokeWidth="3" strokeJoin="round" strokePosition="inside">
+  <animate property="trimEnd">
+    <key time="0" value="0"/><key time="1" value="1"/>
+  </animate>
+</shape>
+```
+
+## Paints (1.1)
+
+`paints` holds `linearGradient`, `radialGradient` and `conicGradient`
+elements (`meshGradient` and `pattern` are unsupported in this build). Each
+needs a globally unique `id` and at least one `stop` (`offset`, `color`,
+optional `opacity` and `midpoint`). `fill`/`stroke` of shapes and vector
+assets and `project/@background` accept `url(#id)`; an unknown id, an id of
+another kind, and a colour animation on a url-painted `fill`/`stroke` are
+load errors. Vector assets are rasterized once, so a paint with any
+animation is an error there.
+
+Common attributes: `units="object"` (default; coordinates are fractions of
+the painted box: the shape box, the vector asset or the frame for a
+background) or `user` (local pixels); `rotation` in degrees, clockwise about
+the box centre; `spread="pad|reflect|repeat"`; `interpolationSpace`; and
+`dither` (default true).
+
+- Linear: `x1 y1 x2 y2` (defaults 0,0 → 1,0); coincident points paint the
+  last stop.
+- Radial: the end circle `cx cy r` (defaults 0.5, 0.5, 0.5) and the focal
+  circle `fx fy fr` (focal point defaulting to the evaluated centre, radius
+  0) form a two-point conical gradient (HTML canvas `createRadialGradient`):
+  a pixel takes the largest parameter whose circle passes through it with a
+  non-negative radius; pixels outside the resulting cone are transparent.
+  `aspect` scales the vertical gradient axis (ellipses with rx/ry = aspect).
+- Conic: centre `cx cy`; parameter 0 at `angle` degrees measured from the
+  top, increasing clockwise.
+
+Stops: evaluated offsets are clamped to [0,1] and to at least the previous
+offset; at equal offsets the later stop wins. `midpoint` H of a stop is a
+CSS colour hint for the segment to the next stop: weight `P^(ln 0.5/ln H)`
+(H = 0 or 1 give hard steps). Stop colour animation interpolates in linear
+light like every colour track; `opacity` multiplies alpha. Colours are
+interpolated premultiplied: `linear` (linear-light working RGB, default),
+`srgb` (the working space's encoded values), `oklab` (Ottosson's Oklab) or
+`oklch` (Oklab in polar form; hue takes the shorter arc, an exact 180°
+difference keeps increasing hue, and a chroma below 1e-6 makes hue powerless
+so the other stop's hue is used). Results are clipped to the working gamut.
+
+Dither adds an 8×8 ordered (Bayer) threshold of ±½ code value (1/255) to the
+encoded RGB before conversion to the blend space. The matrix offset is
+seeded by `splitmix64(FNV-1a64(id, 0, "paint.dither") XOR project seed)` and
+indexed by integer pixel coordinates of the receiving raster, so it does not
+change with frame, thread count or render order.
+
+Animatable properties (1.1): `x1 y1 x2 y2` (linear), `cx cy r fx fy fr
+aspect` (radial), `cx cy angle` (conic), `rotation` (all), and stop `offset`,
+`color`, `opacity` and `midpoint`. Paints have no owning node, so their
+tracks use the project clock. Limits: 4096 paints, 256 stops per gradient,
+coordinates within 1e9. A paint background replaces the solid clear with one
+row-parallel paint sample per frame pixel.
+
+```xml
+<paints>
+  <radialGradient id="glow" fx="0.35" fy="0.35" interpolationSpace="oklab">
+    <stop offset="0" color="#FFFFFF"/>
+    <stop offset="1" color="#2060FF"/>
+  </radialGradient>
+</paints>
+```

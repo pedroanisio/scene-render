@@ -95,7 +95,7 @@ CORE_OBJECTS := $(CORE_SOURCES:src/%.c=$(BUILD)/%.o) $(BUILD)/schema_data.o
 APP_OBJECT := $(BUILD)/main.o
 TEST_SOURCES := $(sort $(wildcard tests/unit/*.c))
 TEST_OBJECTS := $(TEST_SOURCES:tests/unit/%.c=$(BUILD)/unit/%.o)
-UNIT_SUITES := timeline shapes paint length length_frame length_physics curves geometry \
+UNIT_SUITES := timeline shapes paint xml_shapes length length_frame length_physics curves geometry \
 	compositor color vector mesh random \
 	scene property xml xml_lengths profile styles metadata \
 	camera physics blend blend_color skew compositing composite_resources \
