@@ -170,6 +170,35 @@ static void rejections_name_attributes(sr_test_ctx *t) {
     free(message);
 }
 
+/* B1-5 key markers reach the B1-4 paint and stop hosts (project clock). */
+static void key_markers_on_paint_hosts(sr_test_ctx *t) {
+    const char *xml = "<scene version=\"1.1\"><project width=\"32\" height=\"24\" "
+        "fps=\"4\" duration=\"2\"/><paints><linearGradient id=\"g\"><animate "
+        "property=\"x2\"><key time=\"0\" value=\"1\"/><key marker=\"cue\" "
+        "time=\"0\" value=\"0.5\"/></animate><stop offset=\"0\" color=\"#FFFFFF\">"
+        "<animate property=\"opacity\"><key time=\"0\" value=\"1\"/><key "
+        "marker=\"cue\" time=\"0.25\" value=\"0\"/></animate></stop>"
+        "</linearGradient></paints><markers><marker id=\"cue\" time=\"1.5\"/>"
+        "</markers><composition><shape id=\"a\" shape=\"rect\" width=\"8\" "
+        "height=\"8\" fill=\"url(#g)\" name=\"swatch\" tags=\"ui\"/></composition>"
+        "</scene>";
+    SrScene scene;
+    char *message = NULL;
+    SrStatus status = st_load(t, "paint-markers.xml", xml, &scene, &message);
+    CHECK_INT(t, status, SR_OK);
+    if (status != SR_OK) {
+        fprintf(stderr, "%s", message ? message : "");
+        free(message);
+        return;
+    }
+    free(message);
+    const SrPaint *g = paint(&scene, "g");
+    CHECK(t, g && g->x2.track.count == 2);
+    CHECK_NEAR(t, g->x2.track.keys[1].time, 1.5, 1e-12);
+    CHECK_NEAR(t, g->stops[0].opacity.track.keys[1].time, 1.75, 1e-12);
+    sr_scene_free(&scene);
+}
+
 static void version_gates(sr_test_ctx *t) {
     /* New kinds and elements need 1.1; new attributes on 1.0 elements do not. */
     expect_rejection(t, "<composition><shape id=\"a\" shape=\"polygon\" width=\"8\" "
@@ -523,6 +552,7 @@ static void runtime_limits(sr_test_ctx *t) {
 const sr_test_case sr_tests_xml_shapes[] = {
     {"fixture_constructs", fixture_constructs},
     {"rejections_name_attributes", rejections_name_attributes},
+    {"key_markers_on_paint_hosts", key_markers_on_paint_hosts},
     {"version_gates", version_gates},
     {"seeded_document_mutations", seeded_document_mutations},
     {"legacy_identity_and_exact_area", legacy_identity_and_exact_area},

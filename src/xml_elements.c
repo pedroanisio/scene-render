@@ -424,7 +424,7 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
 void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"time", "value", "interpolation", "bezier",
         "easeIn", "easeOut", "steps", "stepPosition", "tension", "continuity",
-        "bias", "stiffness", "damping", "mass"};
+        "bias", "stiffness", "damping", "mass", "marker"};
     if (!sr_xml_attrs_allowed(ctx, "key", attrs, allowed,
                               sizeof(allowed) / sizeof(allowed[0]))) return;
     ParseFrame *p = sr_xml_parent(ctx);
@@ -433,9 +433,12 @@ void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs) {
     if (!p || p->kind != E_ANIMATE || !time_text || !value_text) return;
     SrKeyframe key = {.curve = p->curve, .x1 = 0.25, .y1 = 0.1,
                       .x2 = 0.25, .y2 = 1.0};
-    if (!sr_parse_double(time_text, &key.time) || key.time < 0.0)
+    /* With a marker, time is a signed offset from the marker (B1-5). */
+    if (!sr_parse_double(time_text, &key.time) ||
+        (key.time < 0.0 && !sr_xml_attr(attrs, "marker")))
         SR_XML_FAIL_RETURN(ctx, "key", "time",
                            "expected a non-negative time in seconds");
+    if (!sr_xml_key_marker(ctx, attrs, &key)) return;
     SrColor color_value = {0, 0, 0, 0};
     if (p->color_anim) {
         if (!sr_xml_parse_color(ctx, "key", "value", value_text, &color_value))

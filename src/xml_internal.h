@@ -15,7 +15,8 @@ typedef enum {
     E_MATERIAL, E_LIGHTS, E_LIGHT, E_EFFECTS, E_EFFECT, E_PHYSICS,
     E_FORCE_FIELD, E_CONSTRAINT, E_PARTICLES, E_RIGID_BODY, E_SOFT_BODY,
     E_DEFORM, E_MODIFIER, E_OBJECT3D, E_POINT, E_STYLES, E_TOKEN,
-    E_METADATA, E_META, E_STILL, E_PAINTS, E_PAINT, E_STOP
+    E_METADATA, E_META, E_STILL, E_MARKERS, E_MARKER, E_BEAT_GRID,
+    E_PAINTS, E_PAINT, E_STOP
 } ElementKind;
 
 typedef struct {
@@ -53,6 +54,7 @@ typedef struct {
     bool out_of_memory;         /* the failure was an allocation (exit 8) */
     bool seen_styles;
     bool seen_metadata;
+    bool seen_markers;
     bool seen_project;
     bool seen_output;
     bool seen_assets;
@@ -135,6 +137,21 @@ bool sr_xml_anim_length_attr(ParseContext *ctx, const char *element,
                               const XML_Char **attrs, const char *attribute,
                               SrAnimValue *value, bool positive);
 bool sr_xml_finish_animation(ParseContext *ctx, ParseFrame *frame);
+/* Finalizes and validates one animation track: NULL, or the problem with
+ * its key line (0 when not key-specific) and attribute. */
+const char *sr_xml_track_problem(SrAnimValue *value, SrAnimColor *color,
+                                 size_t *line, const char **attribute);
+
+/* Timeline structure (B1-5, src/xml_timeline.c). */
+void sr_xml_start_marker(ParseContext *ctx, const XML_Char **attrs);
+void sr_xml_start_beat_grid(ParseContext *ctx, const XML_Char **attrs);
+bool sr_xml_parse_node_timeline(ParseContext *ctx, const char *element,
+                                const XML_Char **attrs, SrNode *node,
+                                bool sequence);
+bool sr_xml_key_marker(ParseContext *ctx, const XML_Char **attrs, SrKeyframe *key);
+/* True when the track has marker keys: validation waits for resolution. */
+bool sr_xml_track_deferred(ParseContext *ctx, const SrTrack *track);
+bool sr_xml_resolve_timeline(ParseContext *ctx);
 
 /* B1-4 (xml_shapes.c). */
 extern const char *const sr_xml_shape_attribute_names[];

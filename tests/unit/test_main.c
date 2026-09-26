@@ -63,6 +63,7 @@ int main(int argc, char **argv)
         {"vector", sr_tests_vector},     {"mesh", sr_tests_mesh},
         {"scene", sr_tests_scene}, {"property", sr_tests_property},       {"xml", sr_tests_xml},
         {"profile", sr_tests_profile}, {"styles", sr_tests_styles},
+        {"markers", sr_tests_markers}, {"fuzz_markers", sr_tests_fuzz_markers},
         {"metadata", sr_tests_metadata}, {"outputs", sr_tests_outputs},
         {"camera", sr_tests_camera},     {"physics", sr_tests_physics},
         {"blend", sr_tests_blend},       {"group", sr_tests_group},

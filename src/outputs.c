@@ -112,7 +112,10 @@ void sr_output_free(SrOutput *output) {
     free(output->preset);
     free(output->audio_codec);
     free(output->id);
-    for (size_t i = 0; i < output->still_count; ++i) free(output->stills[i].path);
+    for (size_t i = 0; i < output->still_count; ++i) {
+        free(output->stills[i].path);
+        free(output->stills[i].marker);
+    }
     free(output->stills);
     output->path = output->pixel_format = output->preset = NULL;
     output->audio_codec = output->id = NULL;

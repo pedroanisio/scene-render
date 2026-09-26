@@ -78,7 +78,9 @@ offset cycle count); ping-pong maps alternating boundaries to the first/last
 key. A mapped first key uses step-start's outgoing jump; a mapped last key
 holds its value. Tests cover either side of every boundary and negative cycles.
 
-Composition time is project seconds. Local time is elapsed host time, including
+Composition time is project seconds (B1-5 refines this: inside a re-timed
+group or a sequence it is the enclosing composition timeline, see
+`b1-5-timeline.md`). Local time is elapsed host time, including
 ancestor group clocks; normalized time divides local time by the host span.
 Hosts without a node interval use the composition span. Store a resolved
 affine clock per track so evaluation remains a pure function of scene time.

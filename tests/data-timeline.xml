@@ -1,0 +1,65 @@
+<scene version="1.1">
+  <project width="64" height="32" fps="12" duration="2" background="#101820"/>
+  <styles><token name="accent" value="#E08020"/></styles>
+  <output id="main" path="../build/test-artifacts/timeline.mkv" codec="ffv1"
+          pixelFormat="yuv444p" audioCodec="pcm_s16le">
+    <poster path="../build/test-artifacts/timeline-poster.png" format="png" marker="cue"/>
+    <thumbnail path="../build/test-artifacts/timeline-thumb.jpg" marker="beat.2"/>
+  </output>
+  <assets>
+    <image id="tile" src="data-oom-tile.png" width="8" height="8"/>
+    <audio id="tone" src="../examples/assets/tone.wav"/>
+  </assets>
+  <materials>
+    <material id="m" baseColor="#102030" roughness="0.5">
+      <animate property="roughness">
+        <key marker="beat.1" time="0" value="0.9"/><key marker="bar.2" time="0" value="0.1"/>
+      </animate>
+      <animate property="baseColor">
+        <key marker="cue" time="0" value="#2080E0"/><key marker="cue" time="0.5" value="#E08020"/>
+      </animate>
+    </material>
+  </materials>
+  <markers>
+    <marker id="cue" time="0.5" duration="0.25" kind="cue" label="Cue" color="var(--accent)"/>
+    <marker id="part" time="1" kind="section" label="Part two" color="#40C0A0"/>
+    <marker id="pulse" time="1.5" kind="beat"/>
+    <marker time="1.75"/>
+    <beatGrid bpm="120" offset="0.25" beatsPerBar="2"/>
+  </markers>
+  <composition>
+    <sequence id="seq" name="Intro sequence" tags="intro seq" timeGap="0.25"
+              timeOffset="0.125" timeScale="1.5" x="2">
+      <group id="first" end="0.5" name="First card" tags="card">
+        <shape id="bar" shape="rect" width="10" height="6" y="2" fill="#F87171">
+          <animate property="position.x" timeBase="local">
+            <key time="0" value="0"/><key marker="beat.2" time="0" value="20"/>
+          </animate>
+          <mask type="rect" width="10" height="6">
+            <animate property="width" timeBase="normalized"><key time="0" value="2"/><key time="1" value="10"/></animate>
+          </mask>
+        </shape>
+      </group>
+      <layer id="picture" asset="tile" endMarker="part" name="Tile" tags="media"/>
+      <particleEmitter id="sparks" x="40" y="20" rate="8" lifetime="0.5" speed="10"
+                       size="1" seed="3" tags="fx"/>
+    </sequence>
+    <group id="slow" timeScale="0.5" timeOffset="0.25" startMarker="cue" endMarker="part">
+      <shape id="dot" shape="ellipse" width="6" height="6" x="30" y="20" fill="#FACC15">
+        <animate property="fill"><key marker="pulse" time="0" value="#FACC15"/><key marker="part" time="0.125" value="#60A5FA"/></animate>
+      </shape>
+    </group>
+    <shape id="late" shape="rect" width="8" height="8" x="50" y="4" startMarker="pulse" name="Late"/>
+  </composition>
+  <lights><light id="sun" type="directional" intensity="0.5">
+    <animate property="intensity"><key marker="beat.3" time="0" value="0.2"/><key marker="beat.4" time="0" value="0.8"/></animate>
+  </light></lights>
+  <effects><effect id="grade" type="vignette" intensity="0.2">
+    <animate property="intensity"><key marker="cue" time="-0.25" value="0"/><key marker="part" time="0" value="0.4"/></animate>
+  </effect></effects>
+  <audioMix sampleRate="48000" channels="2">
+    <audioTrack id="voice" asset="tone" start="0.25" volume="0.1">
+      <animate property="volume"><key marker="beat.1" time="0" value="0"/><key marker="part" time="0" value="0.5"/></animate>
+    </audioTrack>
+  </audioMix>
+</scene>

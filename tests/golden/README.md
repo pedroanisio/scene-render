@@ -40,6 +40,7 @@ difference, and keeps the rendered frame in `BUILD/test_tmp/golden/`.
 | `shapes-strokes.xml` | every shape kind, caps, joins and miter limit, dashes with an animated offset, inside/outside strokes, paint order, fill rules, sequential and offset trims, animated star radii/roundness, a deformed star and a depth card | 0, 12, 23 |
 | `gradients.xml` | linear/radial (focal, aspect)/conic gradients, all spreads and units, rotation, animated geometry and stops, colour hints, the four interpolation spaces, dither on/off, gradient stroke, vector asset and background paints | 0, 12, 23 |
 | `tracks.xml` | all extrapolation modes, additive positions/colours, normalized/local clocks, looping particle emission and spring lifetimes | 0, 12, 20 |
+| `sequence-markers.xml` | sequences with a positive gap and an overlap (slot-relative keys, open-end normalized and local tracks, a local mask), a `timeOffset`/`timeScale` group with a re-timed particle emitter, `startMarker`/`endMarker`, keys snapped to markers, `beat.N` and `bar.N` with offsets, names and tags | 0, 12, 18 |
 | `material-animation.xml` | shared base color/alpha, emissive, metallic and roughness animation with shadows | 0, 12, 20 |
 | `lengths.xml` | relative lengths, group scopes, mixed-unit motion, host-local masks and physics | 0, 12, 23 |
 | `styles.xml` | load-time color aliases in project and animated material colors, equivalent to `material-animation.xml` | 0, 12, 20 |

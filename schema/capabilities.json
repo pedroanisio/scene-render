@@ -10,6 +10,11 @@
     "particleEmitterType/mask",
     "outputType/poster",
     "outputType/thumbnail",
+    "scene/markers",
+    "markersType/marker",
+    "markersType/beatGrid",
+    "compositionType/sequence",
+    "groupType/sequence",
     "scene/paints",
     "paintsType/linearGradient",
     "paintsType/radialGradient",
@@ -89,6 +94,36 @@
     "stillType/@format",
     "stillType/@width",
     "stillType/@quality",
+    "groupType/@name",
+    "groupType/@tags",
+    "groupType/@startMarker",
+    "groupType/@endMarker",
+    "layerType/@name",
+    "layerType/@tags",
+    "layerType/@startMarker",
+    "layerType/@endMarker",
+    "shapeType/@name",
+    "shapeType/@tags",
+    "shapeType/@startMarker",
+    "shapeType/@endMarker",
+    "particleEmitterType/@name",
+    "particleEmitterType/@tags",
+    "particleEmitterType/@startMarker",
+    "particleEmitterType/@endMarker",
+    "groupType/@timeOffset",
+    "groupType/@timeScale",
+    "sequenceType/@timeGap",
+    "keyType/@marker",
+    "markerType/@id",
+    "markerType/@time",
+    "markerType/@duration",
+    "markerType/@kind",
+    "markerType/@label",
+    "markerType/@color",
+    "beatGridType/@bpm",
+    "beatGridType/@offset",
+    "beatGridType/@beatsPerBar",
+    "stillType/@marker",
     "shapeType/@path",
     "shapeType/@fillRule",
     "shapeType/@radius",
@@ -399,6 +434,11 @@
       "jpeg",
       "png"
     ],
+    "markerType/@kind": [
+      "cue",
+      "section",
+      "beat"
+    ],
     "shapeType/@shape": [
       "rounded-rect",
       "polygon",
@@ -637,6 +677,9 @@
       "token",
       "paint-reference"
     ],
+    "markerType/@color": [
+      "token"
+    ],
     "stopType/@color": [
       "token"
     ]
@@ -679,5 +722,8 @@
         "implemented": true
       }
     }
+  },
+  "inherits": {
+    "sequenceType": "groupType"
   }
 }

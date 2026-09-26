@@ -248,8 +248,9 @@ void sr_xml_start_output(ParseContext *ctx, const XML_Char **attrs) {
 void sr_xml_start_still(ParseContext *ctx, const XML_Char **attrs,
                         SrStillKind kind) {
     const char *element = kind == SR_STILL_POSTER ? "poster" : "thumbnail";
-    const char *const allowed[] = {"time", "path", "format", "width", "quality"};
-    if (!sr_xml_attrs_allowed(ctx, element, attrs, allowed, 5)) return;
+    const char *const allowed[] = {"time", "path", "format", "width", "quality",
+                                   "marker"};
+    if (!sr_xml_attrs_allowed(ctx, element, attrs, allowed, 6)) return;
     ParseFrame *parent = sr_xml_parent(ctx);
     SrOutput *output = parent ? parent->output : NULL;
     if (!output) SR_XML_FAIL_RETURN(ctx, element, NULL, "must be inside <output>");
@@ -293,6 +294,24 @@ void sr_xml_start_still(ParseContext *ctx, const XML_Char **attrs,
     if (!still.path) {
         ctx->out_of_memory = true;
         SR_XML_FAIL_RETURN(ctx, element, "path", "out of memory");
+    }
+    const char *marker = sr_xml_attr(attrs, "marker");
+    if (marker) {
+        /* The still's time comes from the marker (resolved by B1-5). */
+        if (sr_xml_attr(attrs, "time")) {
+            free(still.path);
+            SR_XML_FAIL_RETURN(ctx, element, "marker",
+                               "time and marker are mutually exclusive");
+        }
+        if (!sr_id_valid(marker)) {
+            free(still.path);
+            SR_XML_FAIL_RETURN(ctx, element, "marker", "expected a marker id");
+        }
+        if (!(still.marker = sr_strdup(marker))) {
+            free(still.path);
+            ctx->out_of_memory = true;
+            SR_XML_FAIL_RETURN(ctx, element, "marker", "out of memory");
+        }
     }
     output->stills[output->still_count++] = still;
 }

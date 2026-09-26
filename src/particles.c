@@ -50,6 +50,24 @@ static double anim_upper_bound(const SrAnimValue *value) {
     return high;
 }
 
+/* Particle emission, ages and the rate grid run on the emitter's parent
+ * clock (B1-5 group timeScale): local seconds = rate * elapsed composition
+ * seconds. The rate is 1.0 for every node outside a re-timed group, where
+ * each conversion below is exact. */
+static double clock_rate(const SrNode *node) {
+    return node->clock_scale > 0.0 ? node->clock_scale : 1.0;
+}
+
+/* Composition time of local time `local` after the emitter start. */
+static double emitter_time(const SrNode *node, double local) {
+    return node->start_time + local / clock_rate(node);
+}
+
+/* Local seconds since the emitter start at composition time `time`. */
+static double emitter_age(const SrNode *node, double time) {
+    return (time - node->start_time) * clock_rate(node);
+}
+
 typedef struct {
     SrParticle *items;
     size_t count, capacity, limit;
@@ -78,7 +96,7 @@ static bool particle_at(const SrScene *scene, const SrNode *node, uint64_t seed,
                         SrParticle *out) {
     double age = now - birth;
     if (age < 0.0) return false;
-    double tb = node->start_time + birth;
+    double tb = emitter_time(node, birth);
     double lifetime = fmax(1e-6, sr_anim_eval(&node->particle_lifetime, tb) +
         node->particle_lifetime_variance *
             (2.0 * sr_particles_random(seed, index, 0) - 1.0));
@@ -152,28 +170,28 @@ static pthread_mutex_t rate_cache_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static double rate_at(const SrNode *node, uint64_t k) {
     return fmax(0.0, sr_anim_eval(&node->particle_rate,
-                                  node->start_time + (double)k * RATE_STEP));
+                                  emitter_time(node, (double)k * RATE_STEP)));
 }
 
 /* Smallest grid index whose time is >= t (0 when t <= the start). */
 static uint64_t cell_at_or_after(const SrNode *node, double t) {
-    double x = (t - node->start_time) / RATE_STEP;
+    double x = emitter_age(node, t) / RATE_STEP;
     if (!(x > 0.0)) return 0;
     if (!(x < (double)FAR_CELL)) return FAR_CELL;
     uint64_t k = (uint64_t)ceil(x);
-    while (k > 0 && node->start_time + (double)(k - 1) * RATE_STEP >= t) --k;
-    while (node->start_time + (double)k * RATE_STEP < t) ++k;
+    while (k > 0 && emitter_time(node, (double)(k - 1) * RATE_STEP) >= t) --k;
+    while (emitter_time(node, (double)k * RATE_STEP) < t) ++k;
     return k;
 }
 
 /* Largest grid index whose time is <= t (0 when t <= the start). */
 static uint64_t cell_at_or_before(const SrNode *node, double t) {
-    double x = (t - node->start_time) / RATE_STEP;
+    double x = emitter_age(node, t) / RATE_STEP;
     if (!(x > 0.0)) return 0;
     if (!(x < (double)FAR_CELL)) return FAR_CELL;
     uint64_t k = (uint64_t)floor(x);
-    while (node->start_time + (double)(k + 1) * RATE_STEP <= t) ++k;
-    while (k > 0 && node->start_time + (double)k * RATE_STEP > t) --k;
+    while (emitter_time(node, (double)(k + 1) * RATE_STEP) <= t) ++k;
+    while (k > 0 && emitter_time(node, (double)k * RATE_STEP) > t) --k;
     return k;
 }
 
@@ -278,7 +296,7 @@ static bool particle_admit(const SrNode *node, double time,
     if (!particle_metadata(node, candidate_work) || !isfinite(time) ||
         fabs(time) > SR_MAX_DURATION)
         return particle_failure(resources, "invalid bounded particle metadata or clock");
-    double now = time - node->start_time;
+    double now = emitter_age(node, time);
     if (now < 0) return true;
     if (!sr_composite_work(resources, node->particle_lifetime.track.count, 64) ||
         !sr_composite_work(resources, 1, 128)) return false;
@@ -604,7 +622,7 @@ static SrStatus particles_eval(const SrScene *scene, const SrNode *node,
     *count = 0;
     uint64_t candidate_work;
     if (!particle_admit(node, time, resources, &candidate_work)) return SR_ERR_RENDER;
-    double now = time - node->start_time;
+    double now = emitter_age(node, time);
     if (!(now >= 0.0) || !isfinite(now)) return SR_OK;
     uint64_t seed = sr_particles_seed(scene, node);
     double lifetime = sr_track_extended(&node->particle_lifetime.track)

@@ -160,7 +160,8 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
     static const char *const common[] = {"id", "z", "visible", "opacity", "x",
         "y", "rotation", "scaleX", "scaleY", "anchorX", "anchorY", "start",
         "end", "depth", "rotationX", "rotationY", "threeD", "zDepth",
-        "skewX", "skewY"};
+        "skewX", "skewY", "name", "tags", "startMarker", "endMarker"};
+    bool sequence = !strcmp(name, "sequence");
     const char *allowed[64];
     memcpy(allowed, common, sizeof(common));
     size_t count = sizeof(common) / sizeof(common[0]);
@@ -169,6 +170,13 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
         allowed[count++] = "effects";
         allowed[count++] = "width";
         allowed[count++] = "height";
+        allowed[count++] = "timeOffset";
+        allowed[count++] = "timeScale";
+        if (sequence) {
+            allowed[count++] = "timeGap";
+            allowed[count++] = "transition";
+            allowed[count++] = "transitionDuration";
+        }
     } else if (type == SR_NODE_MEDIA) {
         allowed[count++] = "asset";
         allowed[count++] = "blend";
@@ -213,7 +221,8 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
     if (!sr_xml_attrs_allowed(ctx, name, attrs, allowed, count)) return;
     SrNode *node = sr_node_create(ctx->scene, type);
     if (!node) SR_XML_FAIL_RETURN(ctx, name, NULL, "out of memory");
-    if (!sr_xml_parse_node_common(ctx, name, attrs, node)) {
+    if (!sr_xml_parse_node_common(ctx, name, attrs, node) ||
+        !sr_xml_parse_node_timeline(ctx, name, attrs, node, sequence)) {
         sr_node_free(node);
         return;
     }
