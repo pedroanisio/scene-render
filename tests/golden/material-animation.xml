@@ -1,0 +1,40 @@
+<!-- Shared animated material: linear-light color/alpha, emissive light,
+     metallic and roughness change with absolute frame time. -->
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="2" background="#0A1020"
+           linearLight="true" antialias3d="2"/>
+  <materials>
+    <material id="wall" baseColor="#526070" roughness="0.9"/>
+    <material id="changing" baseColor="#20A0FF" metallic="0.2" roughness="0.8">
+      <animate property="baseColor" timeBase="normalized" defaultInterpolation="sine-in-out">
+        <key time="0" value="#20A0FFFF"/>
+        <key time="0.5" value="#F09040A0"/>
+        <key time="1" value="#E060E0FF"/>
+      </animate>
+      <animate property="emissive" timeBase="local">
+        <key time="0" value="#000000"/><key time="2" value="#200828"/>
+      </animate>
+      <animate property="metallic" defaultInterpolation="back-out">
+        <key time="0" value="0"/><key time="2" value="1"/>
+      </animate>
+      <animate property="roughness" extrapolateAfter="ping-pong">
+        <key time="0" value="0.9"/><key time="1" value="0.1"/>
+      </animate>
+    </material>
+  </materials>
+  <composition>
+    <object3D id="back" primitive="plane" material="wall" x="160" y="95"
+              z="-80" radius="90"/>
+    <object3D id="sphere" primitive="sphere" material="changing" x="115" y="90"
+              z="25" radius="38"/>
+    <object3D id="box" primitive="box" material="changing" x="215" y="105"
+              z="35" radius="29" rotation="-12"/>
+  </composition>
+  <lights>
+    <light id="ambient" type="ambient" intensity="0.08"/>
+    <light id="sun" type="directional" yaw="-22" pitch="12" intensity="0.65"
+           color="#FFE8C8" castShadow="true" shadowMapSize="256"/>
+    <light id="rim" type="point" x="270" y="40" z="130" range="500"
+           color="#4080FF" intensity="0.4"/>
+  </lights>
+</scene>

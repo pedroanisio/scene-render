@@ -25,6 +25,8 @@ typedef struct {
     SrEffect *effect;
     SrModifier *modifier;
     SrObject3D *object3d;
+    SrMaterial *material;
+    SrAudioTrack *audio_track;
     SrMask *mask;
     SrForceField *field;
     SrAnimValue *point;         /* mesh-warp point: [0] = x, [1] = y */

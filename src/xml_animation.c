@@ -39,6 +39,7 @@ bool sr_xml_animation_options(ParseContext *ctx, const XML_Char **attrs,
             parent_offset += ancestor->node->start_time;
     }
     config.domain_start = host->node ? parent_offset + host->node->start_time : 0.0;
+    if (host->audio_track) config.domain_start = host->audio_track->start;
     config.domain_end = host->node && isfinite(host->node->end_time)
         ? parent_offset + host->node->end_time : ctx->scene->project.duration;
     config.seconds_per_unit = 1.0;

@@ -295,7 +295,7 @@ fail at load time; they are never silently ignored.
 | `audioTrackType/@start` | 1.0 | implemented |
 | `audioTrackType/@startMarker` | 1.0 | unsupported |
 | `audioTrackType/@volume` | 1.0 | implemented |
-| `audioTrackType/animate` | 1.1 | unsupported |
+| `audioTrackType/animate` | 1.1 | implemented |
 | `audioTrackType/audioEffect` | 1.1 | unsupported |
 | `audioTrackType/expression` | 1.1 | unsupported |
 | `audioTrackType/link` | 1.1 | unsupported |
@@ -1795,7 +1795,7 @@ fail at load time; they are never silently ignored.
 | `materialType/@unlit` | 1.0 | unsupported |
 | `materialType/@uvScaleX` | 1.0 | unsupported |
 | `materialType/@uvScaleY` | 1.0 | unsupported |
-| `materialType/animate` | 1.1 | unsupported |
+| `materialType/animate` | 1.1 | implemented |
 | `materialType/expression` | 1.1 | unsupported |
 | `materialType/link` | 1.1 | unsupported |
 | `materialType/motionPath` | 1.1 | unsupported |

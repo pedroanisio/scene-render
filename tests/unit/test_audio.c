@@ -12,6 +12,7 @@
 #include "scene_render/renderer.h"
 #include "scene_render/xml.h"
 #include "../../src/audio_internal.h"
+#include "scene_text.h"
 
 static void frame_to_sample_is_exact(sr_test_ctx *t) {
     /* 30000/1001 at 48 kHz: floor(f * 48048000 / 30000), which fits in 64
@@ -60,7 +61,7 @@ static SrAudioTrack *add_track(SrScene *scene, SrAsset *asset) {
         mix->track_capacity = capacity;
     }
     SrAudioTrack *track = &mix->tracks[mix->track_count++];
-    *track = (SrAudioTrack){.asset = asset, .clip_out = -1.0, .volume = 1.0,
+    *track = (SrAudioTrack){.asset = asset, .clip_out = -1.0, .volume = {.base = 1.0},
                             .speed = 1.0};
     return track;
 }
@@ -75,6 +76,96 @@ static float ramp(uint64_t i, uint32_t c) {
     return (float)i / 1000.0f;
 }
 
+static void animated_volume_pan_and_ranges(sr_test_ctx *t) {
+    const char *xml = "<scene version=\"1.1\">"
+        "<project width=\"16\" height=\"16\" duration=\"1\" fps=\"12\"/>"
+        "<assets><audio id=\"tone\" src=\"unused.wav\"/></assets><composition/>"
+        "<audioMix sampleRate=\"8000\" channels=\"2\">"
+        "<audioTrack id=\"a\" asset=\"tone\" start=\"0.125\" volume=\"0.25\" "
+        "fadeIn=\"0.0625\" fadeOut=\"0.0625\" clipOut=\"0.875\">"
+        "<animate property=\"volume\" additive=\"true\" timeBase=\"local\">"
+        "<key time=\"0\" value=\"0\"/><key time=\"0.5\" value=\"0.5\"/>"
+        "</animate><animate property=\"pan\" timeBase=\"normalized\">"
+        "<key time=\"0\" value=\"-1\"/><key time=\"1\" value=\"1\"/>"
+        "</animate></audioTrack></audioMix></scene>";
+    SrScene scene;
+    if (st_load(t, "audio-animation.xml", xml, &scene, NULL) != SR_OK) {
+        SR_FAIL(t, "animated audio fixture failed to load");
+        return;
+    }
+    SrAsset *asset = &scene.assets[0];
+    asset->audio_pcm = malloc(8000 * 2 * sizeof(float));
+    if (!asset->audio_pcm) { sr_scene_free(&scene); SR_FAIL(t, "PCM allocation"); return; }
+    asset->audio_frames = 8000;
+    asset->audio_decoded = true;
+    for (size_t s = 0; s < 8000; ++s) {
+        asset->audio_pcm[2 * s] = 0.5f;
+        asset->audio_pcm[2 * s + 1] = 0.25f;
+    }
+    SrMixer *mixer = NULL;
+    CHECK_INT(t, sr_mixer_create(&scene, &mixer), SR_OK);
+    if (!mixer) { sr_scene_free(&scene); return; }
+    float full[16000], split[16000];
+    sr_mixer_mix(mixer, 0, 8000, full);
+    sr_mixer_mix(mixer, 6000, 2000, split + 12000);
+    sr_mixer_mix(mixer, 0, 137, split);
+    sr_mixer_mix(mixer, 137, 5863, split + 274);
+    CHECK(t, memcmp(full, split, sizeof(full)) == 0);
+    for (int s = 0; s < 8000; ++s) {
+        double volume = s < 1000 ? 0.0 : 0.25 + fmin((s - 1000) / 8000.0, 0.5);
+        double angle = ((s - 1000) / 7000.0) * SR_PI / 2.0;
+        double fade = s < 1000 ? 0 : fmin(1.0, (s - 1000) / 500.0);
+        fade *= fmin(1.0, (8000 - s) / 500.0);
+        double left = volume * sqrt(2.0) * cos(angle);
+        double right = volume * sqrt(2.0) * sin(angle);
+        if (s == 4500) left = right = volume;
+        CHECK_NEAR(t, full[2 * s], 0.5f * (float)(left * fade), 1e-7);
+        CHECK_NEAR(t, full[2 * s + 1], 0.25f * (float)(right * fade), 1e-7);
+    }
+    sr_mixer_destroy(mixer);
+    scene.audio.sample_rate = 0;
+    CHECK_INT(t, sr_mixer_create(&scene, &mixer), SR_ERR_ARGUMENT);
+    CHECK(t, mixer == NULL);
+    sr_scene_free(&scene);
+}
+
+static void animated_gain_clamps(sr_test_ctx *t) {
+    for (uint32_t channels = 1; channels <= 2; ++channels) {
+        for (int upper = 0; upper < 2; ++upper) {
+            for (int volume_track = 0; volume_track < 2; ++volume_track) {
+                SrScene scene;
+                sr_scene_init(&scene);
+                scene.audio.sample_rate = 1000;
+                scene.audio.channels = channels;
+                SrAsset *asset = pcm_asset(&scene, channels, 1000, constant_half);
+                SrAudioTrack *track = add_track(&scene, asset);
+                SrTrack *animated = volume_track ? &track->volume.track : &track->pan.track;
+                CHECK_INT(t, sr_track_add(animated, (SrKeyframe){.time = 0,
+                    .value = volume_track ? 0 : -1,
+                    .curve = upper ? SR_CURVE_BACK_OUT : SR_CURVE_BACK_IN}), SR_OK);
+                CHECK_INT(t, sr_track_add(animated,
+                    (SrKeyframe){.time = 1, .value = 1}), SR_OK);
+                CHECK_INT(t, sr_track_finalize(animated), SR_OK);
+                SrMixer *mixer = NULL;
+                CHECK_INT(t, sr_mixer_create(&scene, &mixer), SR_OK);
+                if (mixer) {
+                    float samples[2] = {0};
+                    sr_mixer_mix(mixer, upper ? 700 : 300, 1, samples);
+                    double volume = volume_track && !upper ? 0 : 1;
+                    double left = !volume_track && channels == 2 ?
+                        (upper ? 0 : sqrt(2.0)) : 1;
+                    double right = !volume_track ? (upper ? sqrt(2.0) : 0) : 1;
+                    CHECK_NEAR(t, samples[0], 0.5 * volume * left, 1e-7);
+                    if (channels == 2)
+                        CHECK_NEAR(t, samples[1], 0.25 * volume * right, 1e-7);
+                }
+                sr_mixer_destroy(mixer);
+                sr_scene_free(&scene);
+            }
+        }
+    }
+}
+
 /* Two tracks: A (stereo 0.5/0.25) panned 0.5 with a 100-sample fade-in;
  * B (ramp) starting at sample 50, volume 0.5, 40-sample fade-out over its
  * 200-sample clip. Each output sample is computed here by hand. */
@@ -86,12 +177,12 @@ static void two_tracks_with_pan_and_fades(sr_test_ctx *t) {
     SrAsset *a = pcm_asset(&scene, 2, 1000, constant_half);
     SrAsset *b = pcm_asset(&scene, 2, 1000, ramp);
     SrAudioTrack *ta = add_track(&scene, a);
-    ta->pan = 0.5;
+    ta->pan.base = 0.5;
     ta->fade_in = 0.1;           /* 100 samples */
     ta->clip_out = 0.5;          /* 500 samples */
     SrAudioTrack *tb = add_track(&scene, b);
     tb->start = 0.05;            /* sample 50 */
-    tb->volume = 0.5;
+    tb->volume.base = 0.5;
     tb->clip_in = 0.1;           /* source 100.. */
     tb->clip_out = 0.3;          /* ..300: 200 samples */
     tb->fade_out = 0.04;         /* 40 samples */
@@ -132,9 +223,9 @@ static void two_tracks_with_pan_and_fades(sr_test_ctx *t) {
      * reaches unity on the left and silence on the right. */
     CHECK(t, out[0] == 0.0f && out[1] == 0.0f);
     sr_mixer_destroy(mixer);
-    ta->pan = -1.0;
+    ta->pan.base = -1.0;
     ta->fade_in = 0.0;
-    tb->volume = 0.0;
+    tb->volume.base = 0.0;
     CHECK_INT(t, sr_mixer_create(&scene, &mixer), SR_OK);
     sr_mixer_mix(mixer, 200, 1, out);
     CHECK_NEAR(t, out[0], 0.5 * sqrt(2.0), 1e-6);
@@ -249,6 +340,45 @@ static void range_render_sample_count(sr_test_ctx *t) {
         }
         sr_scene_free(&scene);
     }
+    if (sink) fclose(sink);
+}
+
+static void animated_pcm_range_matches_full(sr_test_ctx *t) {
+    FILE *sink;
+    SrDiagnostics diag;
+    st_diag(&diag, &sink);
+    SrScene scene;
+    SrStatus status = sr_scene_load_xml(sr_test_data_path("tests/data-animation-hosts.xml"),
+                                        &scene, &diag);
+    CHECK_INT(t, status, SR_OK);
+    if (status != SR_OK) { if (sink) fclose(sink); return; }
+    float *pcm[2] = {NULL, NULL};
+    uint64_t counts[2] = {0};
+    for (int range = 0; range < 2; ++range) {
+        char path[1024], error[256] = "";
+        snprintf(path, sizeof(path), "%s", sr_test_tmp_path(range ?
+            "animated-range.mkv" : "animated-full.mkv"));
+        SrRenderOptions options = {.has_range = range != 0, .first_frame = 7,
+            .end_frame = 19, .output_override = path, .encoder_threads = range ? 4 : 1};
+        SrRenderMetrics metrics;
+        CHECK_INT(t, sr_render(&scene, &options, &metrics, &diag), SR_OK);
+        CHECK_INT(t, sr_audio_decode_file(path, 48000, 2, 60.0, &pcm[range],
+            &counts[range], error, sizeof(error)), SR_OK);
+        CHECK_INT(t, counts[range], range ? 48000 : 96000);
+    }
+    if (pcm[0] && pcm[1] && counts[0] == 96000 && counts[1] == 48000) {
+        CHECK(t, !memcmp(pcm[0] + 28000 * 2, pcm[1], 48000 * 2 * sizeof(float)));
+        /* This fixture must actually carry a moving stereo signal. */
+        double channel_difference = 0, energy = 0;
+        for (size_t i = 0; i < 48000; ++i) {
+            channel_difference += fabs(pcm[1][2 * i] - pcm[1][2 * i + 1]);
+            energy += fabs(pcm[1][2 * i]);
+        }
+        CHECK(t, channel_difference > 1 && energy > 1);
+    }
+    free(pcm[0]);
+    free(pcm[1]);
+    sr_scene_free(&scene);
     if (sink) fclose(sink);
 }
 
@@ -382,6 +512,9 @@ static void seconds_to_samples_saturates(sr_test_ctx *t) {
 }
 
 const sr_test_case sr_tests_audio[] = {
+    {"animated_gain_clamps", animated_gain_clamps},
+    {"animated_pcm_range_matches_full", animated_pcm_range_matches_full},
+    {"animated_volume_pan_and_ranges", animated_volume_pan_and_ranges},
     {"frame_to_sample_is_exact", frame_to_sample_is_exact},
     {"two_tracks_with_pan_and_fades", two_tracks_with_pan_and_fades},
     {"reverse_and_speed_positions", reverse_and_speed_positions},

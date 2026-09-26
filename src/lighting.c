@@ -76,10 +76,6 @@ static Vec3 normalize(Vec3 value) {
 }
 static double dot(Vec3 a, Vec3 b) { return a.x*b.x+a.y*b.y+a.z*b.z; }
 
-static double object_alpha(const SrObject3D *object) {
-    return object->material ? clamp01(object->material->base_color.a) : 1.0;
-}
-
 static double view_depth(const SrScene *scene,Vec3 point,double time){
     const SrCamera *camera=scene_camera(scene);if(!camera)return-point.z;
     point.x-=sr_anim_eval(&camera->x,time);point.y-=sr_anim_eval(&camera->y,time);
@@ -184,8 +180,13 @@ typedef struct { Vec3 v[3]; } WorldTri;
 typedef struct { int x0, y0, x1, y1; } Rect;   /* mark() arguments */
 
 typedef struct {
+    SrColor base_color, emissive;
+    double metallic, roughness;
+} MaterialFrame;
+
+typedef struct {
     const SrObject3D *object;
-    const SrMaterial *material;
+    MaterialFrame material;
     double alpha;
     SpriteFrame sprite;
     Trig angle;                 /* cos/sin of sprite.angle */
@@ -211,8 +212,17 @@ typedef struct {
     Rect mesh_mark;             /* union of the fan triangles' marks */
 } ObjectFrame;
 
-static const SrMaterial fallback_material = {.base_color = {0.7, 0.7, 0.7, 1},
-                                             .roughness = .5};
+static MaterialFrame material_frame(const SrMaterial *material, double time) {
+    if (!material)
+        return (MaterialFrame){.base_color = {0.7, 0.7, 0.7, 1}, .roughness = .5};
+    return (MaterialFrame){
+        .base_color = sr_anim_color_eval(&material->base_color, time),
+        .emissive = sr_anim_color_eval(&material->emissive, time),
+        .metallic = material->metallic.track.count
+            ? clamp01(sr_anim_eval(&material->metallic, time)) : material->metallic.base,
+        .roughness = material->roughness.track.count
+            ? clamp01(sr_anim_eval(&material->roughness, time)) : material->roughness.base};
+}
 
 /* ---- shadow maps --------------------------------------------------------- */
 
@@ -719,7 +729,7 @@ static SrColor shade(const Pass *pass, const ObjectFrame *of,
                      Vec3 point, Vec3 normal, const Vec3 geometry[2]) {
     const SrScene *scene = pass->scene;
     const SrObject3D *object = of->object;
-    const SrMaterial *material = of->material;
+    const MaterialFrame *material = &of->material;
     double r=material->emissive.r,g=material->emissive.g,b=material->emissive.b;
     Vec3 view={0,0,1};
     for(size_t i=0;i<scene->light_count;++i){const SrLight *light=&scene->lights[i];
@@ -1189,12 +1199,12 @@ static void object_frame_init(const SrScene *scene, const View *view,
                               const SrObject3D *object, double time, int n,
                               int fw, int fh, ObjectFrame *of) {
     *of = (ObjectFrame){.object = object};
-    of->material = object->material ? object->material : &fallback_material;
-    of->alpha = object_alpha(object);
+    of->material = material_frame(object->material, time);
+    of->alpha = clamp01(of->material.base_color.a);
     of->sprite = sprite_frame(object, time);
     of->angle = trig(of->sprite.angle);
     of->bound = object->radius * fmax(of->sprite.sx, fmax(of->sprite.sy, of->sprite.sz));
-    const SrMaterial *material = of->material;
+    const MaterialFrame *material = &of->material;
     of->exponent = 2.0+126.0*(1.0-material->roughness);
     of->spec_scale = 0.04+0.96*material->metallic;
     bool emissive_ok = true;

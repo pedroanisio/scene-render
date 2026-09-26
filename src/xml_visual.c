@@ -210,6 +210,8 @@ void sr_xml_start_material(ParseContext *ctx, const XML_Char **attrs) {
         SR_XML_FAIL_RETURN(ctx, "material", "id", "invalid identifier");
     if (sr_scene_id_exists(ctx->scene, id))
         SR_XML_FAIL_RETURN(ctx, "material", "id", "id must be globally unique");
+    if (ctx->scene->material_count >= SR_MAX_MATERIALS)
+        SR_XML_FAIL_RETURN(ctx, "material", NULL, "material count exceeds 4096 limit");
     if (ctx->scene->material_count == ctx->scene->material_capacity) {
         size_t capacity = ctx->scene->material_capacity ? ctx->scene->material_capacity * 2 : 4;
         SrMaterial *items = sr_realloc(ctx->scene->materials, capacity * sizeof(*items));
@@ -220,20 +222,21 @@ void sr_xml_start_material(ParseContext *ctx, const XML_Char **attrs) {
     }
     SrMaterial *material = &ctx->scene->materials[ctx->scene->material_count++];
     material->id = sr_strdup(id);
-    material->base_color = (SrColor){1,1,1,1};
-    material->roughness = 0.5;
+    material->base_color.base = (SrColor){1,1,1,1};
+    material->roughness.base = 0.5;
     if (!material->id) SR_XML_FAIL_RETURN(ctx, "material", NULL, "out of memory");
     const char *value = sr_xml_attr(attrs, "baseColor");
-    if (value && !sr_parse_color(value, &material->base_color))
+    if (value && !sr_parse_color(value, &material->base_color.base))
         SR_XML_FAIL_RETURN(ctx, "material", "baseColor", "invalid color");
     value = sr_xml_attr(attrs, "emissive");
-    if (value && !sr_parse_color(value, &material->emissive))
+    if (value && !sr_parse_color(value, &material->emissive.base))
         SR_XML_FAIL_RETURN(ctx, "material", "emissive", "invalid color");
-    if (!decimal(ctx, "material", attrs, "metallic", &material->metallic) ||
-        !decimal(ctx, "material", attrs, "roughness", &material->roughness)) return;
-    if (material->metallic < 0 || material->metallic > 1 ||
-        material->roughness < 0 || material->roughness > 1)
+    if (!decimal(ctx, "material", attrs, "metallic", &material->metallic.base) ||
+        !decimal(ctx, "material", attrs, "roughness", &material->roughness.base)) return;
+    if (material->metallic.base < 0 || material->metallic.base > 1 ||
+        material->roughness.base < 0 || material->roughness.base > 1)
         SR_XML_FAIL_RETURN(ctx, "material", "metallic/roughness", "expected values in [0,1]");
+    sr_xml_push(ctx, (ParseFrame){.kind = E_MATERIAL, .material = material}, "material");
 }
 
 void sr_xml_start_light(ParseContext *ctx, const XML_Char **attrs) {

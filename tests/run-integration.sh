@@ -139,6 +139,24 @@ depth_b="$work/depth-b.ppm"
 cmp "$depth_a" "$depth_b"
 golden depth "$depth_a"
 
+# Material and sample-time audio automation: lossless output is invariant
+# across render thread counts, including every encoded PCM sample.
+hosts_preview="$work/animation-hosts.ppm"
+"$binary" --scene "$root/tests/data-animation-hosts.xml" --preview-frame 9 \
+    --preview-out "$hosts_preview" --threads 1
+golden animation-hosts "$hosts_preview"
+hosts_a="$work/animation-hosts-a.mkv"
+hosts_b="$work/animation-hosts-b.mkv"
+"$binary" --scene "$root/tests/data-animation-hosts.xml" --output "$hosts_a" --threads 1
+"$binary" --scene "$root/tests/data-animation-hosts.xml" --output "$hosts_b" --threads 4
+cmp "$hosts_a" "$hosts_b"
+test "$(field "$hosts_a" audio codec)" = "pcm_s16le"
+test "$(field "$hosts_a" audio rate)" = "48000"
+test "$(field "$hosts_a" video frames)" = "24"
+"$probe_tool" --samples "$hosts_a" | awk '
+    /type=audio/ { found=1; for (i=1; i<=NF; ++i) if ($i == "samples=96000") ok=1 }
+    END { exit !(found && ok) }'
+
 video="$work/integration.mp4"
 "$binary" --scene "$root/examples/keyframe-curves.xml" --resolution 320x180 \
     --fps 12 --frame-range 0:12 --output "$video" --threads 1 --quality low

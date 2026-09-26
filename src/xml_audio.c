@@ -46,6 +46,8 @@ void sr_xml_start_audio_track(ParseContext *ctx, const XML_Char **attrs) {
     if (sr_scene_id_exists(ctx->scene, id))
         SR_XML_FAIL_RETURN(ctx, "audioTrack", "id", "id must be globally unique");
     SrAudioMix *mix = &ctx->scene->audio;
+    if (mix->track_count >= SR_MAX_AUDIO_TRACKS)
+        SR_XML_FAIL_RETURN(ctx, "audioTrack", NULL, "audioTrack count exceeds 4096 limit");
     if (mix->track_count == mix->track_capacity) {
         size_t capacity = mix->track_capacity ? mix->track_capacity * 2 : 4;
         SrAudioTrack *tracks = sr_realloc(mix->tracks,
@@ -58,7 +60,7 @@ void sr_xml_start_audio_track(ParseContext *ctx, const XML_Char **attrs) {
     }
     SrAudioTrack *track = &mix->tracks[mix->track_count++];
     track->clip_out = -1.0;
-    track->volume = 1.0;
+    track->volume.base = 1.0;
     track->speed = 1.0;
     track->id = sr_strdup(id);
     track->asset_id = sr_strdup(asset);
@@ -68,8 +70,8 @@ void sr_xml_start_audio_track(ParseContext *ctx, const XML_Char **attrs) {
     if (!number(ctx, "audioTrack", attrs, "start", &track->start) ||
         !number(ctx, "audioTrack", attrs, "clipIn", &track->clip_in) ||
         !number(ctx, "audioTrack", attrs, "clipOut", &track->clip_out) ||
-        !number(ctx, "audioTrack", attrs, "volume", &track->volume) ||
-        !number(ctx, "audioTrack", attrs, "pan", &track->pan) ||
+        !number(ctx, "audioTrack", attrs, "volume", &track->volume.base) ||
+        !number(ctx, "audioTrack", attrs, "pan", &track->pan.base) ||
         !number(ctx, "audioTrack", attrs, "fadeIn", &track->fade_in) ||
         !number(ctx, "audioTrack", attrs, "fadeOut", &track->fade_out) ||
         !number(ctx, "audioTrack", attrs, "speed", &track->speed)) return;
@@ -91,8 +93,8 @@ void sr_xml_start_audio_track(ParseContext *ctx, const XML_Char **attrs) {
                            "track times and fades must be at most 1e7 seconds");
     if (track->start < 0.0 || track->clip_in < 0.0 ||
         (track->clip_out >= 0.0 && track->clip_out <= track->clip_in) ||
-        track->volume < 0.0 || track->volume > 1.0 ||
-        track->pan < -1.0 || track->pan > 1.0)
+        track->volume.base < 0.0 || track->volume.base > 1.0 ||
+        track->pan.base < -1.0 || track->pan.base > 1.0)
         SR_XML_FAIL_RETURN(ctx, "audioTrack", "time/volume/pan",
                            "invalid track time, volume, or pan");
     const char *loops = sr_xml_attr(attrs, "loop");
@@ -103,4 +105,5 @@ void sr_xml_start_audio_track(ParseContext *ctx, const XML_Char **attrs) {
                                "expected a non-negative integer");
         track->loop_count = (int64_t)value;
     }
+    sr_xml_push(ctx, (ParseFrame){.kind = E_AUDIO_TRACK, .audio_track = track}, "audioTrack");
 }

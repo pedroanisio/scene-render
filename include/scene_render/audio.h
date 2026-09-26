@@ -32,7 +32,9 @@ SrStatus sr_audio_load(SrScene *scene, SrDiagnostics *diag);
  * audioMix rate, counted from scene time 0) is the sum over tracks of the
  * track's source sample for s, times volume, equal-power pan and fades, then
  * clipped to [-1,1]. The result does not depend on how [first, first+count)
- * ranges are split across calls. Assets must be decoded (sr_audio_load). */
+ * ranges are split across calls. Assets must be decoded (sr_audio_load).
+ * The mixer borrows scene-owned tracks and PCM; the scene must remain
+ * unchanged and outlive the mixer. */
 typedef struct SrMixer SrMixer;
 
 SrStatus sr_mixer_create(const SrScene *scene, SrMixer **out);

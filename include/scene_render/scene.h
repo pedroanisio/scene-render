@@ -10,6 +10,8 @@
 #define SR_MAX_LIGHT_INTENSITY 1e6
 #define SR_MAX_EFFECT_OFFSET 1e5
 #define SR_MAX_EFFECT_RADIUS 4096.0
+#define SR_MAX_MATERIALS 4096u
+#define SR_MAX_AUDIO_TRACKS 4096u
 
 /* The one double -> int conversion for pixel, texel and loop bounds:
  * clamped to [low, high] in double first (NaN gives `low`), so the cast is
@@ -351,8 +353,8 @@ typedef struct {
     double clip_in;
     double clip_out;
     int64_t loop_count;
-    double volume;
-    double pan;
+    SrAnimValue volume;
+    SrAnimValue pan;
     double fade_in;         /* seconds of linear gain ramp from the start */
     double fade_out;        /* seconds of linear gain ramp to the end */
     double speed;           /* source seconds per output second (> 0) */
@@ -395,10 +397,10 @@ typedef struct {
 
 typedef struct {
     char *id;
-    SrColor base_color;
-    double metallic;
-    double roughness;
-    SrColor emissive;
+    SrAnimColor base_color;
+    SrAnimValue metallic;
+    SrAnimValue roughness;
+    SrAnimColor emissive;
 } SrMaterial;
 
 typedef struct {

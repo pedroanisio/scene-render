@@ -194,7 +194,102 @@ static void test_spot_degenerate_angle_defined(sr_test_ctx *t)
     sr_scene_free(&scene);
 }
 
+static bool material_render(sr_test_ctx *t, SrScene *scene, double time,
+                            SrFrame *frame) {
+    if (!frame->px && sr_frame_init(frame, 80, 48) != SR_OK) {
+        SR_FAIL(t, "material frame allocation");
+        return false;
+    }
+    const float black[4] = {0, 0, 0, 1};
+    sr_frame_clear(frame, black, 1);
+    FILE *sink;
+    SrDiagnostics diag;
+    st_diag(&diag, &sink);
+    SrStatus status = sr_lighting_render(scene, time, frame, &diag);
+    if (sink) fclose(sink);
+    CHECK_INT(t, status, SR_OK);
+    return status == SR_OK;
+}
+
+/* The animated render must match independently computed static material
+ * values, including alpha/shadows and a material shared by two objects.
+ * Back-out overshoot must clamp metallic/roughness before shading. */
+static void animated_material_matches_static(sr_test_ctx *t) {
+    static const char format[] =
+        "<scene version=\"1.1\"><project width=\"80\" height=\"48\" fps=\"12\" "
+        "duration=\"1\" linearLight=\"%s\"/><materials>"
+        "<material id=\"m\">%s</material>"
+        "<material id=\"wall\" baseColor=\"#606060\" roughness=\"1\"/></materials>"
+        "<composition><object3D id=\"a\" primitive=\"sphere\" material=\"m\" "
+        "x=\"27\" y=\"24\" z=\"20\" radius=\"12\"/>"
+        "<object3D id=\"b\" primitive=\"box\" material=\"m\" "
+        "x=\"55\" y=\"24\" z=\"15\" radius=\"9\"/>"
+        "<object3D id=\"w\" primitive=\"plane\" material=\"wall\" "
+        "x=\"40\" y=\"24\" z=\"-20\" radius=\"40\"/></composition>"
+        "<lights><light id=\"ambient\" type=\"ambient\" intensity=\"0.1\"/>"
+        "<light id=\"sun\" type=\"directional\" intensity=\"0.5\" yaw=\"-25\" "
+        "pitch=\"15\" castShadow=\"true\" shadowMapSize=\"64\"/></lights></scene>";
+    static const char tracks[] =
+        "<animate property=\"baseColor\"><key time=\"0\" value=\"#00000000\"/>"
+        "<key time=\"1\" value=\"#FFFFFFCC\"/></animate>"
+        "<animate property=\"emissive\"><key time=\"0\" value=\"#000000\"/>"
+        "<key time=\"1\" value=\"0.0625,0,0\"/></animate>"
+        "<animate property=\"metallic\" defaultInterpolation=\"%s\">"
+        "<key time=\"0\" value=\"0\"/><key time=\"1\" value=\"1\"/></animate>"
+        "<animate property=\"roughness\" defaultInterpolation=\"%s\">"
+        "<key time=\"0\" value=\"1\"/><key time=\"1\" value=\"0\"/></animate>";
+    for (int variant = 0; variant < 6; ++variant) {
+        bool overshoot = variant % 2 != 0;
+        double time = variant >= 4 ? 0 : overshoot ? 0.6 : 0.5;
+        const char *curve = overshoot ? "back-out" : "linear";
+        const char *linear_light = variant < 2 ? "false" : "true";
+        char keys[2048], xml[4096];
+        snprintf(keys, sizeof(keys), tracks, curve, curve);
+        snprintf(xml, sizeof(xml), format, linear_light, keys);
+        SrScene animated, reference;
+        if (st_load(t, "material-animated.xml", xml, &animated, NULL) != SR_OK) {
+            SR_FAIL(t, "animated material load");
+            return;
+        }
+        snprintf(xml, sizeof(xml), format, linear_light, "");
+        if (st_load(t, "material-static.xml", xml, &reference, NULL) != SR_OK) {
+            sr_scene_free(&animated);
+            SR_FAIL(t, "static material load");
+            return;
+        }
+        /* IEC sRGB transfer, computed without the animation/color helpers. */
+        double encoded = time == 0 ? 0 : 1.055 * pow(time, 1.0 / 2.4) - 0.055;
+        double emissive = 12.92 * time * pow((0.0625 + 0.055) / 1.055, 2.4);
+        reference.materials[0].base_color.base =
+            (SrColor){encoded, encoded, encoded, 0.8 * time};
+        reference.materials[0].emissive.base = (SrColor){emissive, 0, 0, 1};
+        reference.materials[0].metallic.base = time == 0 ? 0 : overshoot ? 1 : 0.5;
+        reference.materials[0].roughness.base = time == 0 ? 1 : overshoot ? 0 : 0.5;
+        SrMaterial before;
+        memcpy(&before, &animated.materials[0], sizeof(before));
+        SrFrame actual = {0}, expected = {0}, repeated = {0};
+        if (material_render(t, &animated, time, &actual) &&
+            material_render(t, &reference, time, &expected)) {
+            double largest = 0;
+            for (size_t i = 0; i < 80 * 48 * 4; ++i)
+                largest = fmax(largest, fabs(actual.px[i] - expected.px[i]));
+            CHECK_NEAR(t, largest, 0, 1e-6);
+            CHECK(t, material_render(t, &animated, 0.9, &repeated));
+            CHECK(t, !st_frames_equal(&actual, &repeated));
+            CHECK(t, material_render(t, &animated, time, &repeated));
+            CHECK(t, st_frames_equal(&actual, &repeated));
+            CHECK(t, !memcmp(&before, &animated.materials[0], sizeof(before)));
+        }
+        sr_frame_free(&actual);
+        sr_frame_free(&expected);
+        sr_frame_free(&repeated);
+        sr_scene_free(&animated);
+        sr_scene_free(&reference);
+    }
+}
+
 const sr_test_case sr_tests_shadow[] = {
+    {"animated_material_matches_static", animated_material_matches_static},
     {"plane_receives_shadow", test_plane_receives_shadow},
     {"supersampling_changes_only_edges", test_supersampling_changes_only_edges},
     {"antialias_attribute", test_antialias_attribute},

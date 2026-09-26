@@ -31,7 +31,7 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | B1-0 root sections and multiple outputs | Still gated | Implement and enable alongside dependent items below |
 | B1-1 property registry | Committed `0dd2068`, reviewed and verified | Batch merge; Release/ASan/coverage 65/65, oracle 309 previews + 3 encodes |
 | B1-1 curves, handles, extrapolation, additive and timeBase | Implemented, reviewed and verified in animation worktree | Performance gate and batch merge |
-| B1-1 new animation hosts | Pending | Material/audio properties; new-node hosts alongside B1-4/B1-5 |
+| B1-1 new animation hosts | Material/audio implemented, reviewed and verified | Performance and merge; new-node hosts alongside B1-4/B1-5 |
 | B1-2 relative lengths and parent-box evaluation | Pending | All required hosts, per-frame evaluation, scoped percentages, docs and goldens |
 | B1-2 tokens and metadata/container tags | Pending | Load-time resolution, unknown-token errors, tags and embedMetadata tests |
 | B1-3 blend modes, skew, mattes, masks, adjustment nodes | Pending | Every listed mode/parameter, cycle checks, numerical tests, three new goldens |
@@ -94,3 +94,29 @@ concurrent rendering. Five alternating reference/current pairs measured
 total +6.73% and several stages above the 2% budget, with strongly varying
 absolute times. This does not clear the gate; retain the original baseline
 and remeasure/profile under stable conditions before merging.
+
+## Material and audio animation
+
+The host slice animates material baseColor, emissive, metallic
+and roughness, plus audio volume/pan. Shared material values live in
+render-owned object frames. Audio automation uses absolute sample time and
+has no mutable cursor. The new 4096-host limits, key bounds and normalized
+audio span have parser boundary/rejection tests and 216 seeded mutations.
+
+Focused Release and ASan suites passed, including independent numeric
+material/audio references, overshoot clamps, shuffled audio blocks, and
+allocation-failure replay. The host fixture exercises 40 XML allocations,
+21 preview-render allocations and both mixer allocations; every injected
+failure is clean and leak-free. Three new material goldens were visually
+reviewed; 1/4-thread and warm-frame comparisons pass. Integration confirms
+identical FFV1/PCM files at 1/4 threads, 96000 audio samples and unchanged
+prior preview hashes. The read-only review found no implementation defects.
+Full Release, ASan/UBSan and coverage passed 66/66 CTests each, including
+frame order for all 17 goldens. The oracle against `0735d72` matched 309
+previews, three encodes and two expected rejections. Final coverage is
+91.21% lines / 73.50% branches; floors rise to 89.20% / 71.40%. Performance
+remains open; see `docs/reviews/b1-animation-hosts.md`.
+
+The host slice's strict performance check failed at total +126.1%, with all
+stages noisy during a separate user render using roughly eight CPU cores.
+No baseline was updated and no merge gate was waived.

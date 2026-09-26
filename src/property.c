@@ -19,6 +19,16 @@
      low, high, 0, error}
 
 static const SrProperty properties[] = {
+    COLOR(H(MATERIAL), SrMaterial, base_color, "baseColor", "baseColor", 0),
+    COLOR(H(MATERIAL), SrMaterial, emissive, "emissive", "emissive", 0),
+    BOUNDED(H(MATERIAL), SrMaterial, metallic, "metallic", "metallic", 0, 1,
+            "material metallic keys must be in [0,1]"),
+    BOUNDED(H(MATERIAL), SrMaterial, roughness, "roughness", "roughness", 0, 1,
+            "material roughness keys must be in [0,1]"),
+    BOUNDED(H(AUDIO_TRACK), SrAudioTrack, volume, "volume", "volume", 0, 1,
+            "audio volume keys must be in [0,1]"),
+    BOUNDED(H(AUDIO_TRACK), SrAudioTrack, pan, "pan", "pan", -1, 1,
+            "audio pan keys must be in [-1,1]"),
     NUMBER(NODES, SrNode, opacity, "opacity", "opacity", 0),
     NUMBER(NODES, SrNode, transform.x, "position.x", "x", 0),
     NUMBER(NODES, SrNode, transform.y, "position.y", "y", 0),

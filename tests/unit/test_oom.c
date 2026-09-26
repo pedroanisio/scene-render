@@ -28,6 +28,7 @@
 
 #include "harness.h"
 #include "scene_render/assets.h"
+#include "scene_render/audio.h"
 #include "scene_render/encoder.h"
 #include "scene_render/renderer.h"
 #include "scene_render/xml.h"
@@ -307,6 +308,7 @@ static void xml_load_survives_allocation_failures(sr_test_ctx *t) {
     check_load(t, "tests/data-oom.xml", 50);
     check_load(t, "tests/data-profile.xml", 25);
     check_load(t, "tests/data-animation.xml", 23);
+    check_load(t, "tests/data-animation-hosts.xml", 20);
     check_load(t, "examples/feature-parity.xml", 50);
 }
 
@@ -421,9 +423,10 @@ static bool render_same_result(void *opaque) {
 
 static void frame_render_survives_allocation_failures(sr_test_ctx *t) {
     static const unsigned threads[] = {1, 3};
-    for (size_t i = 0; i < 3; ++i) {
+    for (size_t i = 0; i < 4; ++i) {
         RenderContext c = {.threads = threads[i % 2],
-            .fixture = i == 2 ? "tests/data-animation.xml" : "tests/data-oom.xml"};
+            .fixture = i == 3 ? "tests/data-animation-hosts.xml" :
+                i == 2 ? "tests/data-animation.xml" : "tests/data-oom.xml"};
         snprintf(c.path, sizeof(c.path), "%s", sr_test_tmp_path("oom-frame.ppm"));
         render_prepare(&c);
         if (!c.loaded) { SR_FAIL(t, "could not load render fixture"); return; }
@@ -441,13 +444,41 @@ static void frame_render_survives_allocation_failures(sr_test_ctx *t) {
                               render_same_result,
                               {SR_ERR_MEMORY}};
         long n = replay_until_success(t, &spec, &c);
-        CHECK(t, n >= (i == 2 ? 12 : 21));
+        CHECK(t, n >= (i >= 2 ? 12 : 21));
         free(c.reference);
         if (c.loaded) sr_scene_free(&c.scene);
     }
 }
 
 /* ---------------------------------------------------------------- encoder */
+
+static SrStatus mixer_op(void *opaque) {
+    SceneContext *c = opaque;
+    SrMixer *mixer = NULL;
+    SrStatus status = sr_mixer_create(&c->scene, &mixer);
+    float samples[512];
+    if (status == SR_OK) sr_mixer_mix(mixer, 24000, 256, samples);
+    sr_mixer_destroy(mixer);
+    return status;
+}
+
+static void animated_mixer_survives_allocation_failures(sr_test_ctx *t) {
+    SceneContext c;
+    SrDiagnostics diag = quiet_diag("oom-mixer");
+    if (sr_scene_load_xml(sr_test_data_path("tests/data-animation-hosts.xml"),
+                         &c.scene, &diag) != SR_OK) {
+        SR_FAIL(t, "mixer scene load");
+        return;
+    }
+    if (sr_audio_load(&c.scene, &diag) == SR_OK) {
+        const OomSpec spec = {"animated mixer", mixer_op, NULL, NULL, NULL,
+                              {SR_ERR_MEMORY}};
+        CHECK_INT(t, replay_until_success(t, &spec, &c), 2);
+    } else {
+        SR_FAIL(t, "mixer asset load");
+    }
+    sr_scene_free(&c.scene);
+}
 
 typedef struct {
     SrScene scene;
@@ -536,6 +567,7 @@ const sr_test_case sr_tests_oom[] = {
     {"repeated_render_leaks_nothing", repeated_render_leaks_nothing},
     {"xml_load_survives_allocation_failures", xml_load_survives_allocation_failures},
     {"asset_load_survives_allocation_failures", asset_load_survives_allocation_failures},
+    {"animated_mixer_survives_allocation_failures", animated_mixer_survives_allocation_failures},
     {"frame_render_survives_allocation_failures", frame_render_survives_allocation_failures},
     {"encoder_survives_allocation_failures", encoder_survives_allocation_failures},
     {NULL, NULL},

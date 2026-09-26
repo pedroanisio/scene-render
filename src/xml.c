@@ -110,7 +110,7 @@ typedef struct {
 #define NODES (P(E_GROUP) | P(E_LAYER) | P(E_PARTICLES))
 #define ANIM_HOSTS (NODES | P(E_CAMERA) | P(E_MASK) | P(E_LIGHT) | \
                     P(E_EFFECT) | P(E_MODIFIER) | P(E_OBJECT3D) | \
-                    P(E_FORCE_FIELD) | P(E_POINT))
+                    P(E_FORCE_FIELD) | P(E_POINT) | P(E_MATERIAL) | P(E_AUDIO_TRACK))
 #define ENTRY(name, parents, handler, kind, push) \
     {name, parents, handler, kind, 0, 10, true, push}
 #define SECTION(name, handler, kind, seen) \
@@ -146,7 +146,7 @@ static const ElementDispatch dispatch[] = {
     ENTRY("vector", P(E_ASSETS), sr_xml_start_vector, E_VECTOR, true),
     ENTRY("mesh", P(E_ASSETS), sr_xml_start_mesh, E_MESH, true),
     SECTION("materials", NULL, E_MATERIALS, seen_materials),
-    ENTRY("material", P(E_MATERIALS), sr_xml_start_material, E_MATERIAL, true),
+    ENTRY("material", P(E_MATERIALS), sr_xml_start_material, E_MATERIAL, false),
     SECTION("composition", NULL, E_COMPOSITION, seen_composition),
     SECTION("scene360", sr_xml_start_scene360, E_SCENE360, seen_scene360),
     ENTRY("group", CONTAINERS, start_group, E_GROUP, false),
@@ -168,7 +168,7 @@ static const ElementDispatch dispatch[] = {
     ENTRY("key", P(E_ANIMATE), sr_xml_start_key, E_KEY, false),
     SECTION("audioMix", sr_xml_start_audio_mix, E_AUDIO_MIX, seen_audio_mix),
     ENTRY("audioTrack", P(E_AUDIO_MIX), sr_xml_start_audio_track,
-          E_AUDIO_TRACK, true),
+          E_AUDIO_TRACK, false),
     SECTION("lights", NULL, E_LIGHTS, seen_lights),
     ENTRY("light", P(E_LIGHTS), sr_xml_start_light, E_LIGHT, false),
     SECTION("effects", NULL, E_EFFECTS, seen_effects),

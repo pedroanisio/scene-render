@@ -36,6 +36,7 @@ difference, and keeps the rendered frame in `BUILD/test_tmp/golden/`.
 | `deform.xml` | mesh-warp with animated points, bend, twist, wave, squash, stretch | 0, 12, 23 |
 | `curves.xml` | hold/steps, all ten Penner families, Catmull-Rom, TCB, spring and temporal Bezier handles | 0, 8, 20 |
 | `tracks.xml` | all extrapolation modes, additive positions/colours, normalized/local clocks, looping particle emission and spring lifetimes | 0, 12, 20 |
+| `material-animation.xml` | shared base color/alpha, emissive, metallic and roughness animation with shadows | 0, 12, 20 |
 
 The scenes are at most 320x180 and 24 frames. Assets come from
 `examples/assets/` and `assets/third-party/`.
@@ -43,6 +44,10 @@ The scenes are at most 320x180 and 24 frames. Assets come from
 The new `curves` and `tracks` references capture the schema 1.1 interpolation
 families and track options, including cached particle-rate evaluation. Their
 six frames were visually reviewed; existing references are unchanged.
+
+The three `material-animation` references capture the newly animatable
+material colors, transparency, metallic and roughness. They were visually
+reviewed at frames 0, 12 and 20; all previous references remain unchanged.
 
 ## Determinism scope
 

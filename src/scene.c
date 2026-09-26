@@ -109,10 +109,17 @@ void sr_scene_free(SrScene *scene) {
     for (size_t i = 0; i < scene->audio.track_count; ++i) {
         free(scene->audio.tracks[i].id);
         free(scene->audio.tracks[i].asset_id);
+        anim_free(&scene->audio.tracks[i].volume);
+        anim_free(&scene->audio.tracks[i].pan);
     }
     for (size_t i = 0; i < scene->camera_count; ++i) camera_free(&scene->cameras[i]);
-    for (size_t i = 0; i < scene->material_count; ++i)
+    for (size_t i = 0; i < scene->material_count; ++i) {
         free(scene->materials[i].id);
+        sr_anim_color_free(&scene->materials[i].base_color);
+        sr_anim_color_free(&scene->materials[i].emissive);
+        anim_free(&scene->materials[i].metallic);
+        anim_free(&scene->materials[i].roughness);
+    }
     for (size_t i = 0; i < scene->light_count; ++i) light_free(&scene->lights[i]);
     for (size_t i = 0; i < scene->object3d_count; ++i) {
         free(scene->objects3d[i].id);

@@ -1,6 +1,9 @@
 {
   "description": "Implemented additions to the complete 1.0 profile. Missing additions are unsupported, including explicitly authored default values. New enumerations on existing attributes require 1.1; new attributes remain legal in both versions.",
-  "elements": [],
+  "elements": [
+    "materialType/animate",
+    "audioTrackType/animate"
+  ],
   "attributes": [
     "groupType/@threeD",
     "groupType/@zDepth",

@@ -105,6 +105,17 @@ hosts land with their B1-4/B1-5 owners. Entirely deferred hosts remain gated;
 their animation children cannot make the parent implemented. Expression,
 link and motionPath stay unsupported.
 
+Material `baseColor`/`emissive` use `SrAnimColor`; `metallic`/`roughness`
+use `SrAnimValue`. Each object evaluates its shared material once into its
+render-owned frame data. Metallic and roughness clamp to [0,1] when animated;
+static arithmetic remains unchanged. Audio volume/pan use `SrAnimValue` and
+the mixer borrows their immutable tracks. It evaluates absolute sample time,
+then existing equal-power pan and fades, with no cursor or block dependency.
+Volume clamps to [0,1] and pan to [-1,1]. Audio normalized time spans its start
+through the project end; clip length and playback settings affect source
+sampling, independently of this automation clock. Host arrays are limited to
+4096 materials and 4096 audio tracks; existing key limits apply to both.
+
 ## Limits, ownership and determinism
 
 Limits: `SR_MAX_TRACK_KEYS=65536`, `SR_MAX_SCENE_KEYS=1048576`,

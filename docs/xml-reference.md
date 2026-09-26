@@ -480,7 +480,25 @@ nodes of scenes without cards, render exactly as before (camera ignored).
 ## Materials, 3D, and lights
 
 `material` requires `id` and accepts `baseColor`, `metallic`, `roughness`, and
-`emissive`.
+`emissive`. Their defaults are white, 0, 0.5, and black respectively.
+In 1.1 these four properties accept nested `animate`. Colors interpolate in
+linear light in the project working space. Metallic and roughness keys must
+lie in `[0,1]`; evaluated overshoot is clamped to that range before shading.
+Animated base-color alpha controls object transparency. Fully transparent
+objects cast no shadow; nonzero alpha retains the existing shadow model.
+Materials use project time: local equals composition time, and normalized
+time spans the project duration. A shared material has the same value on all
+objects at a given time. Values are evaluated once per object per frame into
+render-owned storage; rendering does not change the scene or its tracks.
+Scenes contain at most `SR_MAX_MATERIALS=4096` materials.
+
+```xml
+<material id="metal" roughness="0.3">
+  <animate property="metallic" timeBase="normalized">
+    <key time="0" value="0"/><key time="1" value="1"/>
+  </animate>
+</material>
+```
 
 `object3D` requires `id` and `primitive="sphere|box|plane|mesh"`; it accepts
 `mesh` (required for `primitive="mesh"`), `material`, position, three rotations, three
@@ -669,6 +687,29 @@ asset whose best audio stream is used), and accepts:
 `start`, `clipIn`, `clipOut`, `fadeIn` and `fadeOut` are at most `1e7`
 seconds; larger values are rejected with a diagnostic.
 
+In 1.1 `audioTrack` accepts `animate property="volume"` and
+`animate property="pan"`. Key ranges match the static attributes; evaluation
+clamps overshoot to those ranges. Automation is evaluated at each absolute
+output sample time, before the track's fades and the final mix clamp. Pan has
+no effect on a mono mix. `timeBase="local"` begins at `start`; `normalized`
+spans `start` through the project end, independently of source trimming,
+speed, reverse and loop count. A normalized track starting at or after the
+project end is rejected. Composition time remains project seconds.
+Splitting, shuffling or repeating sample requests gives identical samples;
+there is no mutable automation cursor. Each automated track costs two
+`O(log keys)` scalar evaluations per active sample, plus stereo pan's
+trigonometric functions when pan is nonzero. Scenes contain at most
+`SR_MAX_AUDIO_TRACKS=4096` audio tracks. Gain in decibels, buses and DSP remain
+in the later audio batch.
+
+```xml
+<audioTrack id="voice" asset="tone" start="0.5">
+  <animate property="volume" timeBase="local">
+    <key time="0" value="0"/><key time="0.25" value="0.8"/>
+  </animate>
+</audioTrack>
+```
+
 Every asset is decoded once, in memory, with libswresample to the mix rate and
 channel count (clips longer than 4 hours are rejected), and shared by all its
 tracks. Decoded samples follow the file's timestamps on the same timeline as
@@ -762,7 +803,8 @@ uses project seconds. `local` uses elapsed host seconds and its ancestor
 group clocks. Masks and modifiers inherit their owning node's clock.
 `normalized` divides those local seconds by the host duration; a missing
 end uses the project end. A zero or nonfinite normalized span is an error.
-Shared scene hosts use the project interval. Clocks resolve at load time
+Shared scene hosts use the project interval; audio tracks use `start` through
+the project end. Clocks resolve at load time
 and render-time evaluation reads them without mutation.
 
 Tracks have at most 65536 keys and scenes at most 1048576 logical keys.

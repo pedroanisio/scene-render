@@ -397,6 +397,8 @@ static const SrProperty *animate_target(ParseFrame *frame, const char *name,
     case E_FORCE_FIELD: host = SR_PROPERTY_FIELD; *object = frame->field; break;
     case E_MODIFIER: host = SR_PROPERTY_MODIFIER; *object = frame->modifier; break;
     case E_OBJECT3D: host = SR_PROPERTY_OBJECT3D; *object = frame->object3d; break;
+    case E_MATERIAL: host = SR_PROPERTY_MATERIAL; *object = frame->material; break;
+    case E_AUDIO_TRACK: host = SR_PROPERTY_AUDIO_TRACK; *object = frame->audio_track; break;
     default: return NULL;
     }
     const SrProperty *property = sr_property_find(host, name);
