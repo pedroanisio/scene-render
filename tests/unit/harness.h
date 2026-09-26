@@ -76,6 +76,7 @@ extern const sr_test_case sr_tests_mask_advanced[];
 extern const sr_test_case sr_tests_fuzz_mask_xml[];
 extern const sr_test_case sr_tests_matte[];
 extern const sr_test_case sr_tests_adjustment[];
+extern const sr_test_case sr_tests_b13_review[];
 extern const sr_test_case sr_tests_compositing[];
 extern const sr_test_case sr_tests_composite_resources[];
 extern const sr_test_case sr_tests_composite_evaluation[];

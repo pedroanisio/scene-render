@@ -150,7 +150,7 @@ if(BUILD_TESTING)
                        encode encode_faults audio video
                        fx anim_color particles deform shadow text args resume
                        depth blend_operators mask_advanced fuzz_mask_xml matte
-                       adjustment)
+                       adjustment b13_review)
     file(GLOB SR_UNIT_SOURCES CONFIGURE_DEPENDS
          ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/*.c)
     add_executable(sr-unit-tests ${SR_UNIT_SOURCES})

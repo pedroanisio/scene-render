@@ -51,6 +51,7 @@ int main(int argc, char **argv)
         {"fuzz_mask_xml", sr_tests_fuzz_mask_xml},
         {"matte", sr_tests_matte},
         {"adjustment", sr_tests_adjustment},
+        {"b13_review", sr_tests_b13_review},
         {"compositing", sr_tests_compositing},
         {"composite_resources", sr_tests_composite_resources},
         {"composite_evaluation", sr_tests_composite_evaluation},
