@@ -1,4 +1,5 @@
 #include "xml_internal.h"
+#include "compositing_internal.h"
 
 #include <ctype.h>
 #include <limits.h>
@@ -317,6 +318,7 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
             return;
         }
     }
+    if (sr_node_uses_compositing(node)) ctx->scene->compositing_required = true;
     ParseFrame *p = sr_xml_parent(ctx);
     SrStatus attached = p && p->node ? sr_node_add_child(p->node, node)
                                      : SR_ERR_ARGUMENT;

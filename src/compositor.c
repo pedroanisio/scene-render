@@ -9,6 +9,7 @@
 #include "scene_render/particles.h"
 #include "scene_render/physics.h"
 #include "length_frame.h"
+#include "compositing_internal.h"
 
 #include <float.h>
 #include <limits.h>
@@ -1544,6 +1545,8 @@ static SrStatus sr_draw_node(SrDrawContext *context, const SrNode *node,
                              SrMat3 parent, SrClip clip,
                              const SrTarget *target, size_t depth,
                              const SrMaskLink *outer) {
+    SrStatus ready = sr_composite_node_ready(context->scene, node, context->diag);
+    if (ready != SR_OK) return ready;
     double time = context->time;
     if (!node->visible || time < node->start_time || time >= node->end_time)
         return SR_OK;
@@ -2012,6 +2015,8 @@ SrStatus sr_compositor_render(SrCompositor *compositor, SrScene *scene,
                               double time, SrFrame *frame, SrDiagnostics *diag) {
     if (!compositor || !scene || !scene->root || !frame || !frame->px)
         return SR_ERR_ARGUMENT;
+    SrStatus ready = sr_composite_scene_ready(scene, diag);
+    if (ready != SR_OK) return ready;
     SrStatus status = sr_prepare_lengths(compositor, scene, time, diag);
     return status == SR_OK ? sr_compositor_draw(compositor, scene, time, frame, diag)
                           : status;
@@ -2028,6 +2033,8 @@ SrStatus sr_compositor_render_scene(SrCompositor *compositor, SrScene *scene,
                                     SrDiagnostics *diag) {
     if (!compositor || !scene || !scene->root || !frame || !frame->px)
         return SR_ERR_ARGUMENT;
+    SrStatus ready = sr_composite_scene_ready(scene, diag);
+    if (ready != SR_OK) return ready;
     SrStatus prepared = sr_prepare_lengths(compositor, scene, time, diag);
     if (prepared != SR_OK) return prepared;
     if (!scene->has_cards) {

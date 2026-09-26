@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "scene_render/renderer.h"
+#include "compositing_internal.h"
 
 #include "scene_render/assets.h"
 #include "scene_render/audio.h"
@@ -848,6 +849,8 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
         return SR_ERR_ARGUMENT;
     }
     *metrics = (SrRenderMetrics){0};
+    SrStatus ready = sr_composite_scene_ready(scene, diag);
+    if (ready != SR_OK) return ready;
     if (scene->has_cards && scene->project.mode != SR_MODE_STANDARD) {
         sr_diag_error(diag, 0, "project", "mode",
                       "depth cards require mode standard; equirectangular and "

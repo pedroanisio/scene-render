@@ -83,6 +83,7 @@ set(SCENE_RENDER_SOURCES
     src/procedural.c
     src/audio.c
     src/compositor.c
+    src/compositing.c
     src/camera.c
     src/lighting.c
     src/effects.c
@@ -136,8 +137,8 @@ if(BUILD_TESTING)
     set(SR_UNIT_SUITES timeline length length_frame length_physics
                        curves geometry compositor color vector random
                        mesh scene property xml xml_lengths profile styles metadata
-                       camera physics blend blend_color skew group raster mask path image
-                       encode encode_faults audio video
+                       camera physics blend blend_color skew compositing group
+                       raster mask path image encode encode_faults audio video
                        fx anim_color particles deform shadow text args resume
                        depth)
     file(GLOB SR_UNIT_SOURCES CONFIGURE_DEPENDS

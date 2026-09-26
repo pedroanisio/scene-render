@@ -57,4 +57,6 @@ Read-only follow-up review found no actionable contract gaps. Its wording
 clarification, "invalidate before editing", is incorporated. Deliberately
 invalid graph tests must restore an acyclic ownership tree before ordinary
 scene cleanup. This is an approved implementation contract; the preparation
-APIs and shared limits are still pending.
+APIs and shared limits were still pending at that review. The structural
+phase now implements the lifecycle and node/mask/depth preflight; its evidence
+and remaining resource work are in `b1-compositing-preparation.md`.

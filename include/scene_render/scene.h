@@ -589,6 +589,8 @@ typedef struct {
     SrPhysicsWorld physics;
     bool has_cards;             /* some node is a depth card (see card.h) */
     bool has_relative_lengths;  /* authored geometry needs per-frame resolution */
+    bool compositing_required;  /* opted in; no evaluation after invalidation */
+    struct SrCompositePlan *compositing; /* owned immutable authored plan */
     struct SrFontCache *font_cache; /* text fonts opened while loading assets */
 } SrScene;
 

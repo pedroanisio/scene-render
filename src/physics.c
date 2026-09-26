@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "scene_render/physics.h"
 #include "length_frame.h"
+#include "compositing_internal.h"
 
 #include <errno.h>
 #include <math.h>
@@ -1016,6 +1017,8 @@ static SrStatus prepare_rest_lengths(const SrScene *scene, const SrLengthFrame *
 }
 
 SrStatus sr_physics_prepare(SrScene *scene, SrDiagnostics *diag) {
+    SrStatus ready = sr_composite_scene_ready(scene, diag);
+    if (ready != SR_OK) return ready;
     BodyState *states = NULL;
     size_t count = 0, capacity = 0;
     SrNode **softs = NULL;

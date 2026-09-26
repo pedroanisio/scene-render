@@ -3,6 +3,7 @@
 #include "scene_render/text.h"
 #include "scene_render/video.h"
 #include "scene_render/color.h"
+#include "scene_render/compositing.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -107,6 +108,7 @@ static void light_free(SrLight *light) {
 
 void sr_scene_free(SrScene *scene) {
     if (!scene) return;
+    sr_scene_invalidate_compositing(scene);
     sr_node_free(scene->root);
     for (size_t i = 0; i < scene->token_count; ++i) {
         free(scene->tokens[i].name);

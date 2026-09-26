@@ -445,6 +445,9 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
     void *target = sr_property_target(entry, object);
     SrAnimValue *anim = entry && entry->type == SR_PROPERTY_NUMBER ? target : NULL;
     SrAnimColor *color = entry && entry->type == SR_PROPERTY_COLOR ? target : NULL;
+    if (p->node && anim && (anim == &p->node->transform.skew_x ||
+                            anim == &p->node->transform.skew_y))
+        ctx->scene->compositing_required = true;
     sr_property_activate(entry, object);
     if ((p->kind == E_GROUP || p->kind == E_LAYER || p->kind == E_PARTICLES) &&
         p->node && anim && (entry->flags & SR_PROPERTY_DEPTH_CARD)) {

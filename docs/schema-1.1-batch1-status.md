@@ -37,7 +37,7 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | B1-2 relative lengths and parent-box evaluation | Implemented, enabled, reviewed and verified | Batch merge |
 | B1-2 style tokens | Implemented, reviewed and verified | Batch merge |
 | B1-2 metadata/container tags | Implemented, reviewed and verified | Batch merge |
-| B1-3 blend modes, skew, mattes, masks, adjustment nodes | Design and randomness verified; 22 new color modes and skew implemented | Shared graph/surface limits, dissolve/parent operators, advanced masks, mattes, adjustment nodes and remaining goldens |
+| B1-3 blend modes, skew, mattes, masks, adjustment nodes | 22 new color modes, skew, prepared paths and structural preparation verified | Dependency graphs and surface/work accounting, dissolve/parent operators, advanced masks, mattes, adjustment nodes and remaining goldens |
 | B1-4 shapes, stroke styles, trims, vector constructors | Pending | Geometry/arc lengths/coverage, all listed styles and shapes, golden |
 | B1-4 gradients and paints | Pending | Coordinates, focal/aspect/spread/rotation/stops, interpolation, dither, every paint host, golden |
 | B1-5 markers/beatGrid/snapping, group timing, sequence, names/tags | Pending | Generated ID resolution, timing tests and sequence-markers golden |
@@ -413,5 +413,34 @@ The next preparation phase has a reviewed explicit prepare/invalidate
 contract for programmatic scenes. It avoids stale plans after direct field
 edits without adding a per-frame traversal to legacy scenes. XML prepares
 automatically; direct-C callers must invalidate before authored edits and
-prepare afterwards. The APIs and shared limits remain pending implementation;
-see `docs/reviews/b1-compositing-design.md`.
+prepare afterwards. The lifecycle is now implemented with bounded structural
+preparation, as described below; the remaining shared limits still need their
+consumers. See `docs/reviews/b1-compositing-design.md`.
+
+## Structural compositing preparation
+
+The scene-owned immutable plan validates all authored 2D nodes, including
+inactive content, with limits of 65,536 nodes, 262,144 aggregate masks and
+256 ancestry levels. A bounded iterative walk rejects cycles, duplicate
+ownership and missing backing arrays. XML preflights before recursive
+resolution; explicit C preparation follows the same validated lifecycle.
+Invalidation disables renderer, compositor and physics entry until a new
+preparation succeeds. Legacy scenes retain their existing bypass.
+
+Six new cases include exact boundaries, direct-C lifecycle diagnostics,
+immutable frame/thread reuse and XML publication/re-preparation consistency.
+Ten preparation/replacement and four invalid-ownership allocation failures
+all return SR_ERR_MEMORY without leaks. One review finding was reproduced
+before correction: the published XML plan now follows the finalized sorted
+tree. Follow-up review found no remaining actionable issues. Final SDK
+Release, ASan/UBSan and coverage each pass 76/76 CTests, including all 21
+golden frame-order checks. Coverage is 92.14% / 76.63%, and raised floors
+90.10% / 74.60% pass. The oracle matches 309 previews, three encodes and two
+expected rejections against `caccb24`. The strict 2% performance gate passes:
+clear -8.4%, compositor -21.4% and stage total -22.2%; the noisy measurements
+do not establish a stable speedup. Existing image hashes and the owner
+baseline are unchanged. See `docs/reviews/b1-compositing-preparation.md`.
+
+Dependency capture graphs, bounded mask paths and live surface/work accounting
+remain required B1-3 work, along with advanced masks, remaining blend operators,
+mattes and adjustments. This phase does not enable another capability.

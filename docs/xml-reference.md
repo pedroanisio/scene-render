@@ -963,6 +963,30 @@ the output space with matching primaries/transfer/matrix/range tags. Times and d
 seconds. Frames are selected on a half-open interval; frame N occurs exactly
 at `N × fps_den / fps_num`.
 
+## Compositing preparation for C callers
+
+The XML loader automatically prepares scenes using the new color blend modes
+or skew. Preparation checks the whole authored 2D ownership tree, including
+inactive content, independently of relative lengths. Limits are 65,536 nodes
+including the composition root, 262,144 masks in aggregate and 256 ancestry
+levels. Cycles, shared child ownership and nonzero counts without backing
+arrays fail with source-aware diagnostics before recursive resolution.
+
+Programmatic scenes using these features must call
+`sr_scene_prepare_compositing(scene, diag)` from
+`scene_render/compositing.h` before physics preparation or rendering. The
+scene owns the resulting immutable plan and frees it during `sr_scene_free`.
+Before editing authored fields, call `sr_scene_invalidate_compositing(scene)`;
+after editing, prepare again and check its status. This also applies to edits
+of XML-loaded scenes. Direct field assignments are not automatically detected,
+and preparation or mutation cannot overlap rendering.
+
+Invalidation and failed preparation leave evaluation disabled until a new
+preparation succeeds. They do not restore an older plan. Preparation leaves
+the authored graph untouched; a caller who deliberately constructs a cycle
+or shared child must repair ownership before ordinary scene destruction.
+Legacy scenes that do not use this subsystem retain their existing path.
+
 ## Skew transforms
 
 `group`, `layer`, `shape` and `particleEmitter` accept `skewX` and `skewY`

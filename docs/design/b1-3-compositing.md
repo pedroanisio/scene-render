@@ -70,7 +70,11 @@ lookup to reject containment cycles and duplicate node ownership. Visit
 children in authored order; pointer hash iteration never determines drawing
 order. XML's structural check runs before existing recursive reference
 resolution, constraint lookup and sorting; final dependency preparation
-follows resolution. Both are independent of `has_relative_lengths`.
+follows resolution and sorting. The published index follows finalized tree
+preorder, identically on initial load and subsequent explicit preparation.
+Both phases are independent of `has_relative_lengths`. Pointer lookup uses
+an AVL tree with a fixed depth bound; allocator layout cannot change resource
+acceptance through an address-dependent hash probe budget.
 
 Frame-owned evaluation-depth, capture, allocation and work budgets supplement
 preflight. The legacy draw `depth` argument indexes isolated buffers and is
@@ -469,6 +473,11 @@ claim the shared graph/surface limits below are implemented. The bounded
 compositing preparation phase must install those checks for all new B1-3
 features before B1-3 is complete, including direct-C scenes; it remains an
 explicit requirement alongside advanced-mask and matte preparation.
+
+The structural preparation phase now installs the explicit lifecycle and
+2D ownership node/mask/depth checks. Matte/adjustment graph edges, captures,
+bounded path preparation and live surface/work accounting remain pending;
+the named constants below do not imply those consumers are implemented.
 
 | Constant | Bound |
 |---|---:|

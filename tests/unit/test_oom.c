@@ -20,6 +20,7 @@
  * sanitizer build (SR_SANITIZE=ON) turns invalid accesses into failures.
  * SR_OOM_BACKTRACE=1 prints a backtrace of every injected failure. */
 #include "vector_path_internal.h"
+#include "compositing_internal.h"
 
 #include <execinfo.h>
 #include <inttypes.h>
@@ -324,6 +325,48 @@ static void prepared_paths_survive_allocation_failures(sr_test_ctx *t) {
 }
 
 /* ---------------------------------------------------------------- loading */
+
+static SrStatus compositing_prepare_op(void *opaque) {
+    SrScene *scene = opaque;
+    SrStatus status = sr_scene_prepare_compositing(scene, NULL);
+    /* Repreparation must discard the previous plan even if replacement fails. */
+    if (status == SR_OK) status = sr_scene_prepare_compositing(scene, NULL);
+    if (status != SR_OK && scene->compositing) return SR_ERR_ARGUMENT;
+    return status;
+}
+
+static SrStatus compositing_invalid_op(void *opaque) {
+    SrScene *scene = opaque;
+    SrStatus status = sr_scene_prepare_compositing(scene, NULL);
+    if (scene->compositing) return SR_ERR_ARGUMENT;
+    return status == SR_ERR_RENDER ? SR_OK : status;
+}
+
+static void compositing_release(void *opaque) {
+    sr_scene_invalidate_compositing(opaque);
+}
+
+static void compositing_preparation_survives_allocation_failures(sr_test_ctx *t) {
+    SrScene scene;
+    fx_scene(&scene, 16, 16);
+    for (size_t i = 0; i < 128; ++i)
+        CHECK(t, fx_add(&scene, NULL, SR_NODE_GROUP) != NULL);
+    if (scene.root->child_count != 128) {
+        sr_scene_free(&scene);
+        return;
+    }
+    scene.root->transform.skew_x.base = 1;
+    const OomSpec valid = {"compositing preparation/replacement",
+        compositing_prepare_op, compositing_release, NULL, NULL, {SR_ERR_MEMORY}};
+    CHECK(t, replay_until_success(t, &valid, &scene) >= 10);
+    SrNode *last = scene.root->children[127];
+    scene.root->children[127] = scene.root->children[0];
+    const OomSpec invalid = {"partial invalid compositing ownership",
+        compositing_invalid_op, compositing_release, NULL, NULL, {SR_ERR_MEMORY}};
+    CHECK(t, replay_until_success(t, &invalid, &scene) >= 4);
+    scene.root->children[127] = last;
+    sr_scene_free(&scene);
+}
 
 typedef struct {
     const char *path;
@@ -747,6 +790,8 @@ const sr_test_case sr_tests_oom[] = {
     {"injection_and_leak_check_work", injection_and_leak_check_work},
     {"prepared_paths_survive_allocation_failures",
      prepared_paths_survive_allocation_failures},
+    {"compositing_preparation_survives_allocation_failures",
+     compositing_preparation_survives_allocation_failures},
     {"color_parse_survives_allocation_failures",
      color_parse_survives_allocation_failures},
     {"repeated_render_leaks_nothing", repeated_render_leaks_nothing},

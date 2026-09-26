@@ -7,12 +7,12 @@
 # usage: tools/coverage-gate.sh [BUILD_DIR]     (default: build/coverage)
 #
 # Floors retain about 2 percentage points of headroom below the B1-3
-# prepared paths (92.07% lines / 76.46% branches, GCC 15.2, SDK 25.08).
+# compositing preparation (92.14% lines / 76.63% branches, GCC 15.2, SDK 25.08).
 # Raise them when coverage improves; lowering them needs a reason in the
 # commit message.
 set -eu
-LINE_FLOOR=90.05
-BRANCH_FLOOR=74.45
+LINE_FLOOR=90.10
+BRANCH_FLOOR=74.60
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 build=${1:-$root/build/coverage}

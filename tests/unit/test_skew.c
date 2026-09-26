@@ -5,6 +5,7 @@
 #include "scene_render/physics.h"
 #include "scene_render/property.h"
 #include "scene_render/random.h"
+#include "scene_render/compositing.h"
 
 #include <float.h>
 #include <math.h>
@@ -149,6 +150,7 @@ static void raster_order_and_masks(sr_test_ctx *t) {
         SrFrame frame = {0};
         const float clear[4] = {0};
         unsigned inside = 0, outside = 0;
+        CHECK_INT(t, sr_scene_prepare_compositing(&scene, NULL), SR_OK);
         if (fx_render(t, &scene, 0, clear, &frame)) {
             for (uint32_t y = 0; y < 80; ++y) for (uint32_t x = 0; x < 96; ++x) {
                 SrVec2 p = local_point(&group->transform, (SrVec2){x+.5, y+.5});
@@ -174,8 +176,12 @@ static SrStatus render_status(SrScene *scene, SrCompositor *compositor,
     sr_diag_init(&diag, "skew-test", sink ? sink : stderr);
     const float clear[4] = {0};
     sr_frame_clear(frame, clear, 1);
-    SrStatus status = sr_compositor_render(compositor, scene, time, frame,
-                                           message ? &diag : NULL);
+    SrStatus status = sr_scene_prepare_compositing(scene, message ? &diag : NULL);
+    if (status == SR_OK)
+        status = sr_compositor_render(compositor, scene, time, frame,
+                                       message ? &diag : NULL);
+    /* Each caller may edit authored fields before the next helper call. */
+    sr_scene_invalidate_compositing(scene);
     if (message && sink) {
         fflush(sink);
         long size = ftell(sink);
@@ -297,7 +303,9 @@ static SrStatus prepare(SrScene *scene) {
     SrDiagnostics diag;
     FILE *sink;
     st_diag(&diag, &sink);
-    SrStatus status = sr_physics_prepare(scene, &diag);
+    SrStatus status = sr_scene_prepare_compositing(scene, &diag);
+    if (status == SR_OK) status = sr_physics_prepare(scene, &diag);
+    sr_scene_invalidate_compositing(scene);
     if (sink) fclose(sink);
     return status;
 }
@@ -443,6 +451,7 @@ static void render_paths_threads_and_defaults(sr_test_ctx *t) {
         CHECK_INT(t, sr_track_add(&node->transform.skew_y.track,
                                   (SrKeyframe){.time=0, .value=0}), SR_OK);
         CHECK_INT(t, sr_track_finalize(&node->transform.skew_y.track), SR_OK);
+        CHECK_INT(t, sr_scene_prepare_compositing(&scene, NULL), SR_OK);
         CHECK(t, fx_render(t, &scene, 1, clear, &frames[1]));
         CHECK(t, st_frames_equal(&frames[0], &frames[1]));
         for (size_t i = 0; i < 2; ++i) sr_frame_free(&frames[i]);
