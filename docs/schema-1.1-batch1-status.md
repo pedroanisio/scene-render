@@ -33,7 +33,7 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | B1-1 property registry | Committed `0dd2068`, reviewed and verified | Batch merge; Release/ASan/coverage 65/65, oracle 309 previews + 3 encodes |
 | B1-1 curves, handles, extrapolation, additive and timeBase | Implemented, reviewed and verified in animation worktree | Performance gate and batch merge |
 | B1-1 new animation hosts | Material/audio implemented, reviewed and verified | Performance and merge; new-node hosts alongside B1-4/B1-5 |
-| B1-2 relative lengths and parent-box evaluation | Pending | All required hosts, per-frame evaluation, scoped percentages, docs and goldens |
+| B1-2 relative lengths and parent-box evaluation | Design reviewed; implementation pending | All required hosts, per-frame evaluation, scoped percentages, docs and goldens |
 | B1-2 style tokens | Implemented, reviewed and verified | Batch merge |
 | B1-2 metadata/container tags | Implemented, reviewed and verified | Performance gate and batch merge |
 | B1-3 blend modes, skew, mattes, masks, adjustment nodes | Pending | Every listed mode/parameter, cycle checks, numerical tests, three new goldens |
