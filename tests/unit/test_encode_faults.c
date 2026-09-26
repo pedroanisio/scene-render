@@ -19,6 +19,7 @@
 
 static const char *g_fault;     /* function to fail, NULL = none */
 static int g_skip;              /* matching calls to let through first */
+static bool g_poison_hevc_dts;
 static int g_rc;                /* avcodec_receive_frame: forced code */
 
 static bool inject(const char *fn) {
@@ -69,7 +70,15 @@ WRAP(int, av_frame_get_buffer, (AVFrame *f, int align), (f, align), AVERROR(ENOM
 WRAP(int, av_frame_make_writable, (AVFrame *f), (f), AVERROR(ENOMEM))
 WRAP(int, avcodec_send_frame, (AVCodecContext *c, const AVFrame *f), (c, f),
      AVERROR(EINVAL))
-WRAP(int, avcodec_receive_packet, (AVCodecContext *c, AVPacket *p), (c, p), AVERROR(EIO))
+int __real_avcodec_receive_packet(AVCodecContext *c, AVPacket *p);
+int __wrap_avcodec_receive_packet(AVCodecContext *c, AVPacket *p);
+int __wrap_avcodec_receive_packet(AVCodecContext *c, AVPacket *p) {
+    if (inject("avcodec_receive_packet")) return AVERROR(EIO);
+    int status = __real_avcodec_receive_packet(c, p);
+    if (status == 0 && g_poison_hevc_dts && c->codec_id == AV_CODEC_ID_HEVC)
+        p->dts = -INT64_C(1000000000000);
+    return status;
+}
 WRAP(int, av_interleaved_write_frame, (AVFormatContext *s, AVPacket *p), (s, p),
      AVERROR(EIO))
 WRAP(int, av_write_trailer, (AVFormatContext *s), (s), AVERROR(EIO))
@@ -586,7 +595,52 @@ static void stream_without_timestamps(sr_test_ctx *t) {
     sr_video_close(bare);
 }
 
+/* x265 4.2 leaves its reorder delay uninitialized when flushed before
+ * the third input frame. Poisoning that DTS makes the regression independent
+ * of allocator layout, which the larger embedded schema happened to change. */
+static void short_hevc_timestamps(sr_test_ctx *t) {
+    for (int frames = 1; frames <= 2; ++frames) {
+        SrScene scene;
+        fault_scene(&scene);
+        scene.project.width = scene.project.height = 64;
+        scene.output.codec = SR_CODEC_H265;
+        free(scene.output.pixel_format);
+        scene.output.pixel_format = sr_strdup("yuv420p");
+        SrDiagnostics diag = sink_diag();
+        SrEncoder *encoder = NULL;
+        const char *path = sr_test_tmp_path("short-hevc.mp4");
+        SrStatus status = sr_encoder_open(&encoder, &scene, path, 1, NULL, &diag);
+        CHECK_INT(t, status, SR_OK);
+        uint8_t pixels[64 * 64 * 4] = {0};
+        g_poison_hevc_dts = true;
+        for (int i = 0; i < frames && status == SR_OK; ++i)
+            status = sr_encoder_write_video(encoder, pixels, &diag);
+        if (status == SR_OK) status = sr_encoder_finish(encoder, &diag);
+        g_poison_hevc_dts = false;
+        CHECK_INT(t, status, SR_OK);
+        sr_encoder_destroy(encoder);
+        if (status == SR_OK) {
+            AVFormatContext *input = NULL;
+            int rc = avformat_open_input(&input, path, NULL, NULL);
+            CHECK_INT(t, rc, 0);
+            AVPacket *packet = av_packet_alloc();
+            int count = 0;
+            while (rc == 0 && packet && av_read_frame(input, packet) == 0) {
+                CHECK(t, packet->pts == packet->dts);
+                CHECK(t, packet->dts >= 0);
+                ++count;
+                av_packet_unref(packet);
+            }
+            CHECK_INT(t, count, frames);
+            av_packet_free(&packet);
+            avformat_close_input(&input);
+        }
+        sr_scene_free(&scene);
+    }
+}
+
 const sr_test_case sr_tests_encode_faults[] = {
+    {"short_hevc_timestamps", short_hevc_timestamps},
     {"open_faults", open_faults},
     {"write_and_finish_faults", write_and_finish_faults},
     {"video_open_faults", video_open_faults},

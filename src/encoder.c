@@ -744,6 +744,12 @@ static int drain(SrEncoder *e, AVCodecContext *codec, AVStream *stream) {
         if (rc < 0) return rc;
         if (codec == e->video) {
             e->pkt->duration = 1;
+            /* x265 4.2 initializes its reorder delay at the third input
+             * frame. Short flushes can return an uninitialized DTS; these
+             * one/two-frame streams have no reordered pictures. */
+            if (codec->codec_id == AV_CODEC_ID_HEVC && e->closing &&
+                e->next_pts <= 2)
+                e->pkt->dts = e->pkt->pts;
         } else if (e->closing) {
             rc = mark_audio_padding(e, e->pkt);
             if (rc < 0) {
