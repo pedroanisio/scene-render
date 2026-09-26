@@ -45,6 +45,7 @@ typedef struct {
     unsigned threads;           /* resolved render/encoder worker count */
     unsigned bits;              /* bits per component fed to the encoder */
     const char *backend;        /* colour conversion: "cpu" or "opencl:<dev>" */
+    const SrOutput *output;     /* the resumed output; NULL: scene->output */
 } SrResumeSettings;
 
 /* One input file's identity: stat fields plus the FNV-1a 64 of its whole

@@ -7,7 +7,9 @@
     "stylesType/token",
     "scene/metadata",
     "metadataType/meta",
-    "particleEmitterType/mask"
+    "particleEmitterType/mask",
+    "outputType/poster",
+    "outputType/thumbnail"
   ],
   "attributes": [
     "groupType/@threeD",
@@ -56,7 +58,24 @@
     "shapeType/@skewX",
     "shapeType/@skewY",
     "particleEmitterType/@skewX",
-    "particleEmitterType/@skewY"
+    "particleEmitterType/@skewY",
+    "outputType/@id",
+    "outputType/@container",
+    "outputType/@width",
+    "outputType/@height",
+    "outputType/@fps",
+    "outputType/@start",
+    "outputType/@end",
+    "outputType/@keyframeInterval",
+    "outputType/@bFrames",
+    "outputType/@faststart",
+    "outputType/@loopCount",
+    "outputType/@proresProfile",
+    "stillType/@time",
+    "stillType/@path",
+    "stillType/@format",
+    "stillType/@width",
+    "stillType/@quality"
   ],
   "values": {
     "animateType/@extrapolateBefore": [
@@ -263,6 +282,37 @@
       "saturation",
       "color",
       "luminosity"
+    ],
+    "outputType/@codec": [
+      "h264",
+      "h265",
+      "ffv1",
+      "prores",
+      "vp9",
+      "av1",
+      "png-sequence",
+      "tiff-sequence",
+      "exr-sequence",
+      "gif",
+      "apng"
+    ],
+    "outputType/@container": [
+      "mp4",
+      "mov",
+      "mkv",
+      "webm"
+    ],
+    "outputType/@proresProfile": [
+      "proxy",
+      "lt",
+      "422",
+      "hq",
+      "4444",
+      "4444xq"
+    ],
+    "stillType/@format": [
+      "jpeg",
+      "png"
     ]
   },
   "forms": {
@@ -379,9 +429,7 @@
       "token"
     ]
   },
-  "occurrence_limits": {
-    "scene/output": 1
-  },
+  "occurrence_limits": {},
   "vocabularies": {
     "rigidBodyType/@shape": {
       "box": {

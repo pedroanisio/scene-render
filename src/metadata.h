@@ -9,6 +9,9 @@
 bool sr_metadata_name_equal(const char *left, const char *right);
 SrStatus sr_metadata_validate(const SrScene *scene, const char *container,
                                SrDiagnostics *diag);
+/* As sr_metadata_validate with an explicit embedMetadata flag. */
+SrStatus sr_metadata_validate_embed(const SrScene *scene, bool embed,
+                                     const char *container, SrDiagnostics *diag);
 SrStatus sr_metadata_apply(const SrScene *scene, AVFormatContext *format,
                             const char *container, SrDiagnostics *diag);
 SrStatus sr_metadata_check(const SrScene *scene, const AVFormatContext *format,
