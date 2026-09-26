@@ -5,6 +5,7 @@
 #include "scene_render/color.h"
 #include "scene_render/compositing.h"
 #include "scene_render/paint.h"
+#include "scene_render/outputs.h"
 #include "particles_internal.h"
 
 #include <math.h>
@@ -56,6 +57,8 @@ void sr_scene_init(SrScene *scene) {
     scene->output.color_space = SR_COLOR_SRGB;
     scene->output.spherical_metadata = true;
     scene->output.embed_metadata = true;
+    scene->output.b_frames = -1;
+    scene->output.faststart = true;
     scene->audio.sample_rate = 48000;
     scene->audio.channels = 2;
     scene->scene360.width = 3840;
@@ -181,9 +184,11 @@ void sr_scene_free(SrScene *scene) {
     free(scene->physics.fields); free(scene->physics.cache_path);
     free(scene->physics.cache_dir);
     free(scene->scene360.viewport_camera_id);
-    free(scene->source_path); free(scene->base_dir); free(scene->output.path);
-    free(scene->output.pixel_format); free(scene->output.preset);
-    free(scene->output.audio_codec);
+    free(scene->source_path); free(scene->base_dir);
+    sr_output_free(&scene->output);
+    for (size_t i = 0; i < scene->extra_output_count; ++i)
+        sr_output_free(&scene->extra_outputs[i]);
+    free(scene->extra_outputs);
     for (size_t i = 0; i < scene->paint_count; ++i) sr_paint_free(&scene->paints[i]);
     free(scene->paints);
     sr_paint_ref_free(&scene->background_paint);

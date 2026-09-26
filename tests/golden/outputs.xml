@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Reference frames for the B1-6 lossless codecs: flat and translucent
+     shapes, sub-pixel motion and edges, so an encoder that changed a single
+     value would show. tests/unit/test_outputs.c encodes frame 12 through
+     png-sequence, tiff-sequence, apng and exr-sequence and compares the
+     decoded pixels with these references. -->
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="2" seed="61"
+           linearLight="false" background="#101824"/>
+  <composition>
+    <shape id="band0" shape="rect" x="0" y="0" width="320" height="60" fill="#1B3A5C"/>
+    <shape id="band1" shape="rect" x="0" y="60" width="320" height="60" fill="#23506E"/>
+    <shape id="band2" shape="rect" x="0" y="120" width="320" height="60" fill="#2E6A7E"/>
+    <shape id="sun" shape="ellipse" x="40" y="30" width="70" height="70" fill="#F2B84B">
+      <animate property="position.x">
+        <key time="0" value="20"/>
+        <key time="2" value="230.5" interpolation="ease-in-out"/>
+      </animate>
+    </shape>
+    <shape id="glass" shape="rect" x="120" y="40" width="80" height="100"
+           fill="#E0584A" opacity="0.55" rotation="12">
+      <animate property="rotation">
+        <key time="0" value="0"/>
+        <key time="2" value="90"/>
+      </animate>
+    </shape>
+    <shape id="ring" shape="ellipse" x="220" y="96" width="60" height="60"
+           fill="#00000000" stroke="#F4F1E8" strokeWidth="5"/>
+    <shape id="bar" shape="rect" x="10" y="160" width="10" height="12" fill="#9BD06A">
+      <animate property="scale.x">
+        <key time="0" value="1"/>
+        <key time="2" value="30"/>
+      </animate>
+    </shape>
+  </composition>
+</scene>

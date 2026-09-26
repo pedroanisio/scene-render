@@ -41,6 +41,8 @@
 #include "scene_render/encoder.h"
 #include "scene_render/renderer.h"
 #include "scene_render/xml.h"
+#include "gif_palette_internal.h"
+#include "output_plan_internal.h"
 
 void *__real_malloc(size_t size);
 void *__real_calloc(size_t count, size_t size);
@@ -611,6 +613,7 @@ static void xml_load_survives_allocation_failures(sr_test_ctx *t) {
     check_load(t, "tests/data-animation-hosts.xml", 20);
     check_load(t, "tests/data-styles.xml", 60);
     check_load(t, "tests/data-metadata.xml", 50);
+    check_load(t, "tests/data-outputs.xml", 40);
     check_load(t, "tests/data-lengths.xml", 50);
     check_load(t, "tests/golden/skew.xml", 40);
     check_load(t, "examples/feature-parity.xml", 50);
@@ -963,6 +966,146 @@ static void encoder_survives_allocation_failures(sr_test_ctx *t) {
     sr_scene_free(&c.scene);
 }
 
+/* ------------------------------------------------------ B1-6 outputs */
+
+typedef struct {
+    SrScene scene;
+    bool loaded;
+    char scene_path[1024];
+    SrOutputPlan plan;
+    unsigned threads;
+    uint8_t *reference[2];      /* a.mkv and b-01.png of the uninjected run */
+    size_t reference_size[2];
+} OutputsContext;
+
+static const char *const outputs_checked[2] = {"oom-out/a.mkv", "oom-out/b-01.png"};
+
+/* The writer thread cannot start when its slot buffers cannot be
+ * allocated; the render then encodes serially, which must give the same
+ * files. */
+static bool outputs_same_result(void *opaque) {
+    OutputsContext *c = opaque;
+    bool same = true;
+    for (int i = 0; i < 2 && same; ++i) {
+        char path[1100];
+        snprintf(path, sizeof(path), "%s", sr_test_tmp_path(outputs_checked[i]));
+        uint8_t *data = NULL;
+        size_t size = 0;
+        same = read_all(path, &data, &size) && size == c->reference_size[i] &&
+               memcmp(data, c->reference[i], size) == 0;
+        free(data);
+    }
+    return same;
+}
+
+/* Several outputs in one shared pass and separate passes, an image
+ * sequence, a GIF palette, an APNG and both still formats: every core
+ * allocation of planning, sinks, writer-less encoding and stills. */
+static SrStatus outputs_render_op(void *opaque) {
+    OutputsContext *c = opaque;
+    if (!c->loaded) return SR_ERR_ARGUMENT;
+    SrDiagnostics diag = quiet_diag("oom-outputs");
+    SrRenderOptions options = {.encoder_threads = c->threads ? c->threads : 1};
+    SrRenderMetrics metrics;
+    return sr_render(&c->scene, &options, &metrics, &diag);
+}
+
+static void outputs_release(void *opaque) {
+    OutputsContext *c = opaque;
+    if (c->loaded) sr_scene_free(&c->scene);
+    c->loaded = false;
+}
+
+static void outputs_prepare(void *opaque) {
+    OutputsContext *c = opaque;
+    SrDiagnostics diag = quiet_diag("oom");
+    c->loaded = sr_scene_load_xml(c->scene_path, &c->scene, &diag) == SR_OK;
+}
+
+static SrStatus outputs_plan_op(void *opaque) {
+    OutputsContext *c = opaque;
+    SrDiagnostics diag = quiet_diag("oom-plan");
+    SrRenderOptions options = {.output_ids = "main,master,loop,exr"};
+    SrStatus status = sr_output_plan_build(&c->plan, &c->scene, &options, &diag);
+    sr_output_plan_free(&c->plan);
+    return status;
+}
+
+static SrStatus gif_palette_op(void *opaque) {
+    (void)opaque;
+    enum { W = 40, H = 30 };
+    static uint8_t rgba[W * H * 4], indices[W * H];
+    uint32_t palette[256];
+    for (size_t i = 0; i < sizeof(rgba); ++i) rgba[i] = (uint8_t)(i * 31u >> 2);
+    SrGifPalette *p = NULL;
+    SrStatus status = sr_gif_palette_create(&p, W, H);
+    if (status == SR_OK) sr_gif_palette_quantize(p, rgba, indices, W, palette);
+    sr_gif_palette_free(p);
+    return status;
+}
+
+static void outputs_survive_allocation_failures(sr_test_ctx *t) {
+    OutputsContext c = {0};
+    snprintf(c.scene_path, sizeof(c.scene_path), "%s",
+             sr_test_tmp_path("oom-outputs.xml"));
+    FILE *file = fopen(c.scene_path, "w");
+    if (!file) {
+        SR_FAIL(t, "cannot write the outputs fixture");
+        return;
+    }
+    fputs("<scene version=\"1.1\"><project width=\"16\" height=\"9\" fps=\"2\" "
+          "duration=\"1\" background=\"#204060\"/>"
+          "<output id=\"a\" path=\"oom-out/a.mkv\" codec=\"ffv1\">"
+          "<poster path=\"oom-out/p.png\" format=\"png\" time=\"0.5\"/>"
+          "<thumbnail path=\"oom-out/t.jpg\" width=\"8\"/></output>"
+          "<output id=\"b\" path=\"oom-out/b-%02d.png\" codec=\"png-sequence\"/>"
+          "<output id=\"c\" path=\"oom-out/c.gif\" codec=\"gif\" fps=\"1\"/>"
+          "<output id=\"d\" path=\"oom-out/d.apng\" codec=\"apng\" width=\"8\" "
+          "height=\"4\"/><output id=\"e\" path=\"oom-out/e-%02d.exr\" "
+          "codec=\"exr-sequence\"/>"
+          "<composition><shape id=\"s\" shape=\"ellipse\" x=\"1\" y=\"1\" "
+          "width=\"6\" height=\"6\" fill=\"#F0A030\"/></composition></scene>", file);
+    fclose(file);
+    outputs_prepare(&c);
+    if (!c.loaded) {
+        SR_FAIL(t, "cannot load the outputs fixture");
+        return;
+    }
+    const OomSpec render = {"multi-output passes, sinks and stills",
+                            outputs_render_op, outputs_release, outputs_prepare,
+                            NULL, {SR_ERR_MEMORY}};
+    CHECK(t, replay_until_success(t, &render, &c) > 20);
+    /* Again with the writer thread and several sinks per slot. */
+    c.threads = 3;
+    CHECK_INT(t, outputs_render_op(&c), SR_OK);
+    for (int i = 0; i < 2; ++i)
+        CHECK(t, read_all(sr_test_tmp_path(outputs_checked[i]), &c.reference[i],
+                          &c.reference_size[i]));
+    outputs_release(&c);
+    outputs_prepare(&c);
+    const OomSpec threaded = {"multi-output writer thread", outputs_render_op,
+                              outputs_release, outputs_prepare, outputs_same_result,
+                              {SR_ERR_MEMORY}};
+    CHECK(t, replay_until_success(t, &threaded, &c) > 20);
+    for (int i = 0; i < 2; ++i) free(c.reference[i]);
+    c.threads = 1;
+    outputs_release(&c);
+    snprintf(c.scene_path, sizeof(c.scene_path), "%s",
+             sr_test_data_path("tests/data-outputs.xml"));
+    outputs_prepare(&c);
+    if (!c.loaded) {
+        SR_FAIL(t, "cannot load tests/data-outputs.xml");
+        return;
+    }
+    const OomSpec plan = {"output plan", outputs_plan_op, NULL, NULL, NULL,
+                          {SR_ERR_MEMORY}};
+    CHECK(t, replay_until_success(t, &plan, &c) >= 5);
+    outputs_release(&c);
+    const OomSpec palette = {"gif palette", gif_palette_op, NULL, NULL, NULL,
+                             {SR_ERR_MEMORY}};
+    CHECK_INT(t, replay_until_success(t, &palette, NULL), 7);
+}
+
 /* Rendering twice with one scene (as the golden suite's warm renders do)
  * reloads nothing twice and leaks nothing: sr_render loads assets and
  * prepares physics on every call. */
@@ -1023,5 +1166,6 @@ const sr_test_case sr_tests_oom[] = {
     {"relative_lengths_survive_allocation_failures",
      relative_lengths_survive_allocation_failures},
     {"encoder_survives_allocation_failures", encoder_survives_allocation_failures},
+    {"outputs_survive_allocation_failures", outputs_survive_allocation_failures},
     {NULL, NULL},
 };

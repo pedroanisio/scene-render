@@ -43,6 +43,7 @@ difference, and keeps the rendered frame in `BUILD/test_tmp/golden/`.
 | `material-animation.xml` | shared base color/alpha, emissive, metallic and roughness animation with shadows | 0, 12, 20 |
 | `lengths.xml` | relative lengths, group scopes, mixed-unit motion, host-local masks and physics | 0, 12, 23 |
 | `styles.xml` | load-time color aliases in project and animated material colors, equivalent to `material-animation.xml` | 0, 12, 20 |
+| `outputs.xml` | flat and translucent shapes with sub-pixel motion; the B1-6 lossless codec references (`tests/unit/test_outputs.c` decodes png/tiff sequence, apng and exr frames against `outputs-f012.png` and `outputs-f012.exr`) | 0, 12, 23 |
 
 The scenes are at most 320x180 and 24 frames. Assets come from
 `examples/assets/` and `assets/third-party/`.
@@ -123,3 +124,11 @@ previews checked by `tests/run-integration.sh`.
 `lengths.xml` adds references for scoped relative lengths: mixed-unit motion,
 mask dimensions, partial/unsized groups, media, particles and prepared physics.
 The three new PNGs cover frames 0, 12 and 23; existing references are unchanged.
+
+The three `outputs` references (frames 0, 12 and 23) were visually reviewed:
+three horizontal bands, the sun moving right with ease-in-out, the red
+translucent card rotating 0 to about 86 degrees over the sun, the white ring
+and the green bar growing. `outputs-f012.exr` is the linear float EXR of
+frame 12 written by `exr-sequence`; converted back to sRGB it shows the same
+picture. PNG, TIFF and APNG frames decode to exactly `outputs-f012.png`.
+Existing references are unchanged.

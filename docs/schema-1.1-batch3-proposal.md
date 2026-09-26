@@ -713,7 +713,7 @@ Each lane follows the port-phase discipline:
 
 ## 7. Consolidated schema errata
 
-These are applied in one commit before B1-0, and they supersede the header
+These are applied in one commit before B1-0 (E1–E14), and they supersede the header
 claims of the current draft.
 
 | # | Change | Origin |
@@ -727,6 +727,11 @@ claims of the current draft.
 | E7 | Add `output/@audioLanguages` (`xs:NMTOKENS` of language tags): one audio stream per listed language, taken from tracks with that `language`. Without it, the per-track `language` attribute would have no effect on the output. | this batch |
 | E8 | Define `object3D/@instances` (N copies with `index`/`count`) and `skeleton/@weights` (JSON format), which the current draft names without semantics. | this batch |
 | E9 | Document that `destination/@credentials` names an environment profile, never a secret value, and that safe-area preset insets come from a dated table in the renderer. | this batch |
+| E10 | Define `startMarker`/`endMarker`: with a marker, `@start`/`@end` become offsets from the marker time, as `key/@marker` already defines for `@time`. Also state that generated beat ids are `beat.N`/`bar.N` counted from 0 at the grid offset. The draft uses both without saying what they mean. | trailer review, 2026-09-25 |
+| E11 | Add `startMarker`/`endMarker` to `camera`, and `@marker` to `shake` and `burst`. Today these are the only timed elements that cannot follow the edit's markers, so a retimed cut leaves camera windows, shakes and debris bursts behind. | trailer review, 2026-09-25 |
+| E12 | Add `group/@camera` (IDREF of a camera): a 2.5D group is filmed by that camera rather than the globally active one. Without it, a dissolve between two shots filmed by different cameras cannot be expressed; the best a document can do is cut after the dissolve. | trailer review, 2026-09-25 |
+| E13 | Define `{{var}}` and `{{var.field}}` in text for repeats: inside a `repeat over=… var=…`, text placed by the repeat (directly or through symbol instances) substitutes the current row, using a per-copy text clone as for the B2 S8 override. A placement outside any such repeat is a load error. Today only `param(var)` in expressions is defined, so per-row card text has no defined meaning. | explainer review, 2026-09-25 |
+| E14 | Add `output/@display` and `output/@view` (defaulting to the output's colour space and transfer), with `colorManagement/@display`/`@view` as the fallback. One document-wide display cannot serve SDR Rec.709, sRGB and PQ HDR deliverables at once. | explainer review, 2026-09-25 |
 
 ## 8. Verification and definition of done
 

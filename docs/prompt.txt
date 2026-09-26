@@ -1,0 +1,709 @@
+Create a comprehensive **editorial and visual production guide for transforming news, reports, documents, presentations, and structured information into stop-motion-style videos**.
+
+The guide must define not only how to animate content, but also **how to make editorial decisions**: what visual language to use, what assets to generate or source, how to preserve factual integrity, how to adapt the same story to different platforms, and how to create a recognizable and consistent house style.
+
+The final guide should function as a practical handbook for editors, designers, animators, producers, and AI-assisted production systems.
+
+## 1. Editorial principles
+
+Define the core editorial principles for converting factual content into video.
+
+Cover:
+
+- factual accuracy
+- source fidelity
+- visual clarity
+- narrative compression
+- hierarchy of information
+- distinction between fact, interpretation, context, and speculation
+- how to avoid visually implying claims that the source does not support
+- when visualization should be literal versus metaphorical
+- how to preserve nuance while simplifying complex stories
+- how to use humor, irony, urgency, drama, or emotional framing responsibly
+- how visual style should change according to subject matter
+
+Establish rules for maintaining editorial credibility even when using highly stylized stop-motion, collage, miniature, paper-cut, clay-like, photographic, or generated imagery.
+
+## 2. Editorial lines by subject
+
+Define distinct editorial treatments for different types of stories.
+
+Include at minimum:
+
+### Breaking news
+Fast, clear, restrained, fact-first.
+
+### Politics and public affairs
+Neutral visual framing, clear attribution, contextual timelines, documents, quotes, maps, institutions, voting or legislative mechanics where relevant.
+
+### Business and economics
+Data-led storytelling, charts, numbers, company assets, market context, products, documents, and timelines.
+
+### Technology and AI
+Product interfaces, diagrams, conceptual objects, workflows, code, infrastructure, devices, abstract systems, and explanatory metaphors.
+
+### Science and space
+Scale, diagrams, physical processes, spatial movement, explanatory labels, simulations, and scientifically informed visualizations.
+
+### Investigations
+Documents, timelines, connections, annotations, maps, evidence chains, and restrained dramatic treatment.
+
+### Culture and entertainment
+More expressive visual treatment, stronger rhythm, personality, archive material, typography, and references.
+
+### Sports
+Faster pacing, statistics, trajectories, player or team imagery, scoreboards, field or court diagrams.
+
+### Historical stories
+Archive media, maps, documents, dates, recreated environments, timelines, and clearly identified reconstruction.
+
+### Explainers
+Visual-first teaching, progressive construction, labeled objects, diagrams, comparisons, and repeated visual motifs.
+
+For each editorial category, specify:
+
+- recommended visual tone
+- pacing
+- color logic
+- typography
+- camera behavior
+- use of generated imagery
+- use of archive or stock
+- use of diagrams
+- use of text
+- audio approach
+- acceptable level of stylization
+- common editorial risks
+
+## 3. House style and visual consistency
+
+Define how to create a recognizable and repeatable visual identity across hundreds of videos.
+
+Specify rules for:
+
+- typography
+- font hierarchy
+- margins
+- grids
+- color palette
+- recurring graphic motifs
+- lower thirds
+- labels
+- captions
+- quote cards
+- maps
+- charts
+- timelines
+- document treatments
+- shadows
+- borders
+- paper textures
+- lighting
+- object scale
+- animation timing
+- depth
+- camera behavior
+- transitions
+- iconography
+- sound identity
+
+Define what should remain invariant across all videos and what may adapt depending on subject matter.
+
+Create a visual grammar rather than merely a style guide.
+
+## 4. Stop-motion visual language
+
+Explain how to create a convincing stop-motion aesthetic even when production is digital.
+
+Cover:
+
+- frame cadence
+- stepped animation
+- imperfect motion
+- tactile textures
+- paper movement
+- cardboard
+- clay-like objects
+- cutout animation
+- collage
+- miniature sets
+- practical-looking shadows
+- handcrafted typography
+- physical object staging
+- intentional jitter
+- small scale changes
+- object replacement
+- match cuts
+- object morphing
+- animated diagrams constructed piece by piece
+
+Explain when motion should feel handmade and when smooth digital movement is preferable.
+
+## 5. Asset taxonomy
+
+Define what visual elements should be treated as reusable built-in objects in the production system.
+
+Examples:
+
+- arrows
+- labels
+- map pins
+- document sheets
+- folders
+- phones
+- laptops
+- newspapers
+- charts
+- timelines
+- clocks
+- calendars
+- currency symbols
+- ballots
+- buildings
+- microphones
+- cameras
+- speech bubbles
+- quote blocks
+- social-media cards
+- location markers
+- vehicles
+- generic people
+- podiums
+- courtrooms
+- parliament chambers
+- factories
+- servers
+- data centers
+- clouds
+- satellites
+- planets
+- generic products
+- tables
+- chairs
+- desks
+- shelves
+- office objects
+
+Classify assets into:
+
+1. permanent reusable library assets
+2. parameterized procedural assets
+3. story-specific generated assets
+4. sourced photographic or video assets
+5. archival assets
+6. data-driven graphics
+7. text-derived assets
+8. 3D or pseudo-3D objects
+
+For each category, define when it should be used.
+
+## 6. Generated imagery vs stock vs open-source media
+
+Create a decision framework for choosing between:
+
+- AI-generated images
+- editorial photography
+- stock photography
+- stock video
+- public-domain media
+- Creative Commons media
+- institutional media
+- screenshots
+- maps
+- charts
+- diagrams
+- archive footage
+- generated illustrations
+- generated backgrounds
+- 3D assets
+
+Explain where generated images are appropriate and where they should be avoided.
+
+For example, distinguish between:
+
+- illustrative representation
+- actual people
+- actual places
+- historical events
+- specific products
+- evidence
+- documents
+- scientific visualization
+- speculative reconstructions
+
+Define clear provenance and attribution rules.
+
+Generated visuals must never be presented in a way that could reasonably be mistaken for documentary evidence.
+
+## 7. Turning documents into video
+
+Define a workflow for transforming documents, reports, PDFs, articles, court filings, research papers, and presentations into visual stories.
+
+Cover:
+
+- extracting the central thesis
+- identifying key claims
+- identifying supporting evidence
+- extracting important quotes
+- extracting numbers
+- detecting timelines
+- recognizing entities
+- selecting relevant pages
+- highlighting clauses
+- animating excerpts
+- cropping and zooming documents
+- reconstructing diagrams
+- converting tables into charts
+- converting bullet points into visual sequences
+
+Show how a document can become part of the physical stop-motion scene rather than simply appearing full-screen.
+
+Examples:
+
+- paper sliding onto a desk
+- paragraphs being highlighted
+- pages stacking
+- clauses being circled
+- documents connected by string or lines
+- pages turning
+- data lifting out of a document and becoming a chart
+- text transforming into objects
+
+## 8. Turning presentations into video
+
+Explain how to convert slide decks into dynamic video without merely recording slides.
+
+Define techniques such as:
+
+- decomposing slides into layers
+- reconstructing charts
+- separating foreground and background
+- revealing information progressively
+- moving between charts spatially
+- transforming one diagram into another
+- animating slide elements independently
+- converting bullet hierarchies into scenes
+- treating slides as source material rather than final frames
+
+## 9. Camera and viewport grammar
+
+Create a clear grammar for camera movement and viewport design.
+
+Cover:
+
+- establishing shots
+- close-ups
+- extreme close-ups
+- overhead views
+- isometric views
+- frontal views
+- low-angle views
+- high-angle views
+- lateral tracking
+- push-ins
+- pull-outs
+- orbiting
+- pans
+- tilts
+- handheld-like motion
+- locked camera
+- rack-like spatial transitions
+- simulated macro photography
+
+Explain when each angle should be used editorially.
+
+For example:
+
+- overhead view for process or evidence
+- close-up for a critical quote
+- push-in for emphasis
+- pull-back for revealing context
+- orbit for physical objects or systems
+- lateral tracking for timelines
+
+## 10. Zoom, paths, and spatial storytelling
+
+Define best practices for:
+
+- zoom-in
+- zoom-out
+- continuous camera paths
+- spatial transitions
+- object-following paths
+- timeline travel
+- map navigation
+- document navigation
+- parallax
+- foreground occlusion
+- depth staging
+
+Explain how to use camera movement to communicate relationships rather than merely add motion.
+
+Avoid meaningless camera movement.
+
+Each movement should have an editorial purpose.
+
+## 11. Transition system
+
+Define a reusable transition vocabulary.
+
+Include:
+
+- match cuts
+- object replacement
+- paper wipes
+- page turns
+- camera passes behind foreground objects
+- zoom transitions
+- map-to-location transitions
+- document-to-scene transitions
+- chart-to-object transitions
+- object-to-object morphs
+- light-based transitions
+- texture wipes
+- rack focus
+- rotation transitions
+- cut-on-action
+- hard cuts
+
+For each transition, explain:
+
+- when to use it
+- when not to use it
+- emotional effect
+- pacing effect
+- complexity
+- best editorial applications
+
+## 12. Audio and sound effects
+
+Define a complete audio editorial system.
+
+Separate:
+
+- narration
+- music
+- ambient sound
+- Foley
+- transitions
+- impact sounds
+- interface sounds
+- atmospheric effects
+- silence
+
+Explain correct use of sound effects for:
+
+- paper
+- typing
+- camera shutters
+- page turns
+- object placement
+- map movement
+- chart reveals
+- zooms
+- transitions
+- impacts
+- data visualization
+- mechanical motion
+
+Avoid excessive or cartoonish sound effects unless the editorial style intentionally requires them.
+
+Define when silence should be used for emphasis.
+
+Specify loudness hierarchy and ducking between narration, music, and effects.
+
+## 13. Narration
+
+Define how narration should work with visual storytelling.
+
+Cover:
+
+- sentence length
+- rhythm
+- density
+- pauses
+- emphasis
+- pronunciation
+- synchronization with visual reveals
+- avoiding duplication between narration and on-screen text
+
+The visual should add information rather than simply illustrate every spoken word literally.
+
+## 14. Platform differentiation
+
+Define separate editorial and production rules for:
+
+### YouTube
+
+Consider:
+
+- 16:9
+- longer attention span
+- deeper context
+- slower information buildup
+- more complex visual sequences
+- chapters
+- richer narration
+- horizontal composition
+
+### Instagram Reels
+
+Consider:
+
+- 9:16
+- immediate hook
+- mobile readability
+- aggressive visual hierarchy
+- fast pacing
+- subtitles
+- safe zones
+- loopability
+- social sharing
+
+### TikTok
+
+Consider:
+
+- 9:16
+- extremely rapid hook
+- conversational rhythm
+- short visual cycles
+- pattern interruption
+- strong captions
+- cultural fluency
+- faster cuts
+- high visual density without loss of clarity
+
+Also explain how a single master story can be adapted into platform-specific edits rather than simply cropped.
+
+## 15. Duration formats
+
+Define storytelling patterns for:
+
+- 15 seconds
+- 30 seconds
+- 60 seconds
+- 90 seconds
+- 3 minutes
+- 5–10 minutes
+
+Show how information density, narration, number of scenes, and visual complexity should change.
+
+## 16. Story structure
+
+Define reusable structures such as:
+
+- headline → context → evidence → implication
+- question → explanation → evidence → answer
+- event → cause → consequence
+- person → action → controversy → context
+- number → comparison → meaning
+- document → finding → implication
+- before → change → after
+- timeline
+- process
+- confrontation
+- investigation
+- reveal
+
+Explain when each structure is appropriate.
+
+## 17. Text and typography in motion
+
+Define rules for:
+
+- headlines
+- captions
+- quotes
+- numbers
+- labels
+- subtitles
+- dates
+- locations
+- names
+- sources
+
+Specify:
+
+- maximum text density
+- minimum readable sizes
+- duration on screen
+- hierarchy
+- entrance/exit animations
+- relationship with narration
+
+## 18. Data visualization
+
+Define how charts and statistics should be adapted to stop-motion.
+
+Cover:
+
+- bar charts
+- line charts
+- maps
+- ranking charts
+- timelines
+- percentage comparisons
+- flows
+- networks
+- before/after
+- scale comparisons
+
+Charts should animate progressively and reveal information according to the narration.
+
+Avoid visually impressive but analytically misleading animation.
+
+## 19. Source handling and provenance
+
+Define how every story should maintain a source manifest.
+
+Each externally sourced asset should record:
+
+- source
+- creator
+- license
+- URL
+- acquisition date
+- permitted use
+- attribution requirement
+
+Each factual statement should be traceable to a source.
+
+Differentiate clearly between:
+
+- source evidence
+- contextual information
+- visual reconstruction
+- generated imagery
+- editorial illustration
+
+## 20. Production workflow
+
+Define an end-to-end workflow:
+
+1. ingest source material
+2. extract facts
+3. identify narrative
+4. select editorial line
+5. choose target platforms
+6. write narration
+7. create storyboard
+8. create visual grammar
+9. create asset manifest
+10. search for source media
+11. identify generated-image requirements
+12. construct reusable objects
+13. design scenes
+14. assign depth
+15. define camera paths
+16. define transitions
+17. define animation
+18. design audio
+19. render
+20. editorial review
+21. factual review
+22. platform adaptation
+23. final export
+24. archive source and asset provenance
+
+## 21. Decision matrices
+
+Create practical decision matrices for:
+
+- generated image vs real image
+- stock footage vs constructed scene
+- document view vs reconstructed visualization
+- text vs narration
+- 2D vs 3D
+- static shot vs camera movement
+- hard cut vs animated transition
+- smooth animation vs stepped stop-motion
+- realistic vs illustrative representation
+
+## 22. Anti-patterns
+
+Document common failures, including:
+
+- slideshow videos
+- excessive Ken Burns zoom
+- constant camera motion
+- arbitrary transitions
+- fake documentary imagery
+- visual overload
+- unreadable captions
+- stock footage unrelated to the story
+- generated imagery pretending to be evidence
+- animations that distort data
+- overuse of sound effects
+- every sentence having a literal image
+- excessive text
+- unnecessary visual spectacle
+- inconsistent object scale
+- inconsistent lighting
+- mixing incompatible visual styles
+
+Explain how to correct each one.
+
+## 23. Reusable scene templates
+
+Create a library of standard scene patterns such as:
+
+- breaking-news opener
+- headline reveal
+- quote scene
+- document evidence scene
+- timeline
+- map journey
+- company profile
+- financial result
+- data comparison
+- political process
+- scientific explainer
+- product explainer
+- investigation board
+- historical reconstruction
+- closing summary
+
+For each template define:
+
+- layout
+- objects
+- camera
+- movement
+- transitions
+- sound
+- text
+- suitable story types
+
+## 24. Final output
+
+The final guide should provide:
+
+1. editorial principles
+2. subject-specific editorial lines
+3. house style
+4. visual grammar
+5. stop-motion grammar
+6. asset taxonomy
+7. image/media sourcing policy
+8. document-to-video workflow
+9. presentation-to-video workflow
+10. camera grammar
+11. viewport and angle rules
+12. zoom and path rules
+13. transition library
+14. audio guide
+15. narration guide
+16. platform-specific guidelines
+17. duration-specific structures
+18. data visualization rules
+19. source and provenance policy
+20. production workflow
+21. decision matrices
+22. anti-patterns
+23. reusable scene templates
+24. final production checklist
+
+The objective is to define a **coherent editorial system for visual journalism and information storytelling**, not merely a collection of animation techniques.
+
+The guide should make it possible for different teams—or AI agents—to independently produce videos that still look, sound, and feel like they belong to the same publication.
