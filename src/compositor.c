@@ -703,7 +703,15 @@ static float sr_card_visibility(const SrCardTest *test, int x, int y,
  *    masks: the composite of such a pixel is a no-op in sr_blend_px (the
  *    scaled alpha is not positive either) and it never reaches the 0.5
  *    alpha at which a card writes depth. */
-static inline __attribute__((always_inline)) void sr_op_rows_impl(
+/* Forced specialization is useful only with constant folding enabled.
+ * At -O0 it creates 33 copies with unreachable flag branches, obscuring
+ * both debugger stepping and coverage of the shared pixel kernel. */
+#if defined(__OPTIMIZE__)
+#define SR_OP_INLINE __attribute__((always_inline))
+#else
+#define SR_OP_INLINE
+#endif
+static inline SR_OP_INLINE void sr_op_rows_impl(
     const SrDrawOp *op, size_t begin, size_t end, SrOpKind kind,
     SrMaskType shape, bool normal, bool masked, bool deform, bool axis,
     bool card) {
@@ -849,6 +857,8 @@ static inline __attribute__((always_inline)) void sr_op_rows_impl(
         }
     }
 }
+
+#undef SR_OP_INLINE
 
 /* Deforming draws are rare and dominated by the inverse warp: one generic
  * loop with runtime flags. */
