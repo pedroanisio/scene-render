@@ -6,7 +6,7 @@
 #include "scene_render/effects.h"
 #include "scene_render/lighting.h"
 #include "scene_render/parallel.h"
-#include "scene_render/particles.h"
+#include "particles_internal.h"
 #include "scene_render/physics.h"
 #include "length_frame.h"
 #include "compositing_internal.h"
@@ -1322,9 +1322,10 @@ static SrStatus sr_draw_particles(SrDrawContext *context, const SrNode *node,
                                   const SrMaskLink *masks) {
     SrParticle *particles = NULL;
     size_t count = 0;
-    SrStatus status = sr_particles_eval(context->scene, node, context->time,
-                                        &particles, &count);
-    if (status == SR_ERR_RENDER)
+    SrCompositeResources *resources = context->compositor->resources;
+    SrStatus status = sr_particles_eval_composite(context->scene, node, context->time,
+                                                  resources, &particles, &count);
+    if (status == SR_ERR_RENDER && (!resources || resources->status == SR_OK))
         sr_diag_error(context->diag, node->source_line, "particleEmitter", "rate/lifetime",
                       "animation exceeds the particle sampling budget or "
                       "9e15 emission-index limit");
@@ -1349,7 +1350,7 @@ static SrStatus sr_draw_particles(SrDrawContext *context, const SrNode *node,
         op.bounds = sr_clip_intersect(bounds, clip);
         status = sr_op_submit_shared(context->compositor, &op, false, &shared);
     }
-    free(particles);
+    sr_composite_free(resources, particles);
     return status;
 }
 

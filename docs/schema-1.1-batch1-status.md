@@ -544,3 +544,36 @@ and card geometry work, effects/lighting, path raster scratch and the wider
 renderer scope. Advanced masks, remaining blends, dependency captures, mattes,
 adjustments, B1-4 through B1-6 and batch completion remain required. No new
 capability is enabled by this increment.
+
+
+## Particle resource accounting
+
+The next increment extends the shared ledger to particle output growth and
+keyed-walk scratch. Preparation aggregates authored rate-cache capacity;
+invalidation clears the old prepared emitter inventory and final preparation
+clears newly admitted caches before publication. Cold integration and actual
+deterministic candidate work are charged independently of cache warmth.
+Closed-form emission-index overflow now fails explicitly on bounded paths.
+Legacy evaluation keeps its arithmetic and behavior.
+
+Focused tests cover thread/frame/cache history, extended animation, independent
+work bounds, exact/short quotas, edit-and-shrink recovery, aggregate capacity,
+invalid metadata and diagnostics. Nineteen particle allocation failures return
+memory errors with complete cleanup. Release, ASan/UBSan and coverage pass
+81/81 tests each; coverage is 92.33% lines / 77.23% branches, with raised
+90.30% / 75.20% floors. The oracle matches 309 previews, three encodes and
+two expected rejections. Review findings are closed.
+
+The strict 2% performance gate remains **open**: the final 31-run check fails
+on clear (+3.5%, noisy), despite lower total stage CPU (-10.7%). The particle
+feature benchmark measures +2.89% compositor CPU, about 0.029 ms per frame,
+with overlapping ranges and identical before/after one/four-thread output.
+This functional checkpoint is not ready for merge. The baseline, goldens and
+integration hashes are unchanged. All results, including the earlier failed
+timing runs and the passing reference control, are retained in
+`docs/reviews/b1-compositor-particles.md`.
+
+Remaining accounting includes other animation/card geometry, effects/lighting,
+path scratch, the wider renderer scope and aggregate new authored/path ownership.
+Advanced masks, remaining blends, dependency captures, mattes, adjustments and
+B1-4 through B1-6 remain required. No additional capability is enabled here.

@@ -78,4 +78,31 @@ static inline bool resource_geometry_scene(SrScene *scene) {
     return node->soft_body.offsets != NULL;
 }
 
+
+/* A keyed emitter crosses checkpoint blocks and grows both output and queue;
+ * the shared mask makes particle copies outlive the evaluated output array. */
+static inline bool resource_particle_scene(SrScene *scene) {
+    fx_scene(scene, 96, 96);
+    scene->project.duration = 24;
+    SrNode *node = fx_add(scene, NULL, SR_NODE_PARTICLES);
+    if (!node) return false;
+    node->source_line = 91;
+    node->transform.x.base = node->transform.y.base = 48;
+    node->particle_rate.base = 90;
+    node->particle_lifetime.base = 5;
+    node->particle_speed.base = 4;
+    node->particle_size.base = 6;
+    node->particle_spread.base = 180;
+    node->particle_max = 2000;
+    node->particle_color.base = (SrColor){.8, .4, .2, .2};
+    const double times[] = {2, 8, 20}, rates[] = {90, 130, 70};
+    for (size_t i = 0; i < 3; ++i)
+        if (sr_track_add(&node->particle_rate.track, (SrKeyframe){
+            .time = times[i], .value = rates[i], .curve = SR_CURVE_LINEAR}) != SR_OK)
+            return false;
+    if (sr_track_finalize(&node->particle_rate.track) != SR_OK) return false;
+    SrMask mask = fx_mask(SR_MASK_RECT, -48, -48, 96, 96, false);
+    return sr_node_add_mask(node, mask) == SR_OK;
+}
+
 #endif

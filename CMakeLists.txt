@@ -140,7 +140,7 @@ if(BUILD_TESTING)
                        curves geometry compositor color vector random
                        mesh scene property xml xml_lengths profile styles metadata
                        camera physics blend blend_color skew compositing composite_resources
-                       composite_geometry group
+                       composite_geometry composite_particles group
                        raster mask path mask_path fuzz_mask_path image
                        encode encode_faults audio video
                        fx anim_color particles deform shadow text args resume

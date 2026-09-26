@@ -34,6 +34,7 @@
 #include "fixture.h"
 #include "resource_fixture.h"
 #include "length_frame.h"
+#include "particles_internal.h"
 #include "scene_render/physics.h"
 #include "scene_render/assets.h"
 #include "scene_render/audio.h"
@@ -441,16 +442,22 @@ typedef struct {
     SrFrame frame;
     SrCompositor compositor;
     bool lighting;
+    double time;
 } ResourceContext;
 
 static SrStatus resource_render_op(void *opaque) {
     ResourceContext *c = opaque;
     SrStatus status = c->lighting
         ? sr_compositor_render_scene(&c->compositor, &c->scene, .5, &c->frame, NULL)
-        : sr_compositor_render(&c->compositor, &c->scene, 0, &c->frame, NULL);
+        : sr_compositor_render(&c->compositor, &c->scene, c->time, &c->frame, NULL);
     if (c->compositor.resources || c->compositor.pool || c->compositor.queue)
         return SR_ERR_ARGUMENT;
     return status;
+}
+
+static void resource_particle_release(void *opaque) {
+    ResourceContext *c = opaque;
+    sr_particles_invalidate(c->scene.root->children[0]);
 }
 
 static void resources_survive_allocation_failures(sr_test_ctx *t) {
@@ -495,6 +502,21 @@ static void resources_survive_allocation_failures(sr_test_ctx *t) {
         resource_render_op, NULL, NULL, NULL, {SR_ERR_MEMORY}};
     if (built && c.scene.compositing && c.frame.px)
         CHECK(t, replay_until_success(t, &geometry, &c) >= 10);
+    CHECK_INT(t, resource_render_op(&c), SR_OK);
+    sr_compositor_free(&c.compositor);
+    sr_frame_free(&c.frame);
+    sr_scene_free(&c.scene);
+
+    c = (ResourceContext){.time = 12.5};
+    built = resource_particle_scene(&c.scene);
+    sr_compositor_init(&c.compositor, 1);
+    CHECK(t, built);
+    CHECK_INT(t, sr_scene_prepare_compositing(&c.scene, NULL), SR_OK);
+    CHECK_INT(t, sr_frame_init(&c.frame, 96, 96), SR_OK);
+    const OomSpec particles = {"bounded particle cache/walk/output/queue",
+        resource_render_op, resource_particle_release, NULL, NULL, {SR_ERR_MEMORY}};
+    if (built && c.scene.compositing && c.frame.px)
+        CHECK(t, replay_until_success(t, &particles, &c) >= 10);
     CHECK_INT(t, resource_render_op(&c), SR_OK);
     sr_compositor_free(&c.compositor);
     sr_frame_free(&c.frame);

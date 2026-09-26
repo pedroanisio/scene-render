@@ -172,6 +172,55 @@ Mesh/soft extent scans and output preparation have separate reservations;
 `modifier.amount` is charged again for its existing bounds evaluation.
 Parameters and arithmetic remain unchanged on the legacy path.
 
+
+### Particle consumers
+
+The public particle evaluator retains raw ownership and legacy arithmetic. A
+private compositor entry carries the ledger through collector growth, keyed
+walk totals, segment marks and the fixed 1025-double regeneration buffer;
+returned particles use paired ledger release after their draw operations have
+copied their values. Existing queued mask borrows keep their normal lifetime.
+
+Preparation adds every emitter's conservative rate-cache allocation capacity
+to aggregate prepared bytes, independent of cache readiness. Compute it from
+the authored finalized rate track's slot and checkpoint layout. The scene-owned
+cache remains one raw allocation protected by its existing mutex. Invalidation
+clears caches through the old prepared inventory before freeing the plan;
+successful preparation clears newly admitted emitters after all bounds pass and
+before publishing the plan. Structural XML preflight remains separate from
+final preparation after track resolution. A failed preparation publishes nothing.
+
+Bounded particle tracks must provide finalized backing storage with at most
+65536 keys; maxParticles is at most the existing XML limit 10000000. Rate-key
+and emitter clock coordinates used by grid-index correction stay within the
+existing animation/project time limits. The private path rejects invalid
+metadata before indexing or candidate work. Seed hashing scans at most 1 MiB
+of emitter id bytes, with a named limit and separate scan/hash work; an explicit
+particle seed avoids that scan. Legacy callers keep their contract.
+
+For a keyed evaluation let C be the grid span from the first cache cell to
+min(the newest requested birth cell, the last cache cell), clamped below at
+zero. Validate C against the existing maximum rate-cell count before work.
+Reserve four times (C + slot_count + 1) times 80 work units, plus cache-capacity
+zeroing. This covers cold boundary integration, checkpoint integration/copy,
+block regeneration, reverse cell visits and key/segment dispatch. Each cell's
+scalar rate evaluation costs at most 64 units; the extra factor covers starting
+samples and all three possible passes. Never discount for warmed checkpoints.
+
+Lifetime upper-bound scans reserve 64 units per key plus 128 for endpoint
+sampling before evaluation. Each candidate deterministically reserves scalar
+birth-parameter and color-channel evaluation plus fixed particle math before
+being offered, regardless of whether it survives. Candidate visits are
+independent of cache warmth and charged before work; the bounded path fails if
+the existing 20000000-candidate ceiling is exhausted, rather than silently
+truncating. Every closed-form path (static, before-first, after-last) rejects
+nonfinite or greater-than-9e15 emission indices on the bounded path. Rejection
+diagnostics omit unbounded emitter ids. Collector copies/growth, final reversal
+and per-particle draw
+preparation are charged separately. Actual allocation failure remains MEMORY;
+work/storage/candidate rejection is RENDER. Frame history and worker count must
+produce identical resource decisions and output.
+
 ## Integration and verification
 
 Integrate the ledger into actual consumers in reviewable increments. An

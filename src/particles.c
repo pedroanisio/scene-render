@@ -1,4 +1,4 @@
-#include "scene_render/particles.h"
+#include "particles_internal.h"
 #include "scene_render/color.h"
 #include "scene_render/random.h"
 #include "random_internal.h"
@@ -10,13 +10,13 @@
 
 /* Candidate particles examined per frame are bounded so a pathological
  * rate x lifetime cannot stall a render. */
-#define MAX_CANDIDATES UINT64_C(20000000)
+#define SR_MAX_PARTICLE_CANDIDATES UINT64_C(20000000)
 /* Animated emission rates are integrated on this fixed grid (seconds from
  * the emitter start), independent of the frame being rendered. */
 #define RATE_STEP (1.0 / 240.0)
 /* Most grid cells one evaluation may integrate: the whole accepted project
  * duration (renders never ask for later times). */
-#define MAX_RATE_CELLS ((uint64_t)(SR_MAX_DURATION * 240.0) + 16)
+#define SR_MAX_PARTICLE_RATE_CELLS ((uint64_t)(SR_MAX_DURATION * 240.0) + 16)
 /* Grid cells between checkpoints of the newest-first walk. */
 #define WALK_BLOCK 1024
 /* Grid index standing for "beyond any time this emitter can reach". */
@@ -53,13 +53,16 @@ static double anim_upper_bound(const SrAnimValue *value) {
 typedef struct {
     SrParticle *items;
     size_t count, capacity, limit;
+    SrCompositeResources *resources;
+    uint64_t candidate_work;
 } Collector;
 
 static bool collect(Collector *collector, SrParticle particle) {
     if (collector->count == collector->capacity) {
         size_t capacity = collector->capacity ? collector->capacity * 2 : 64;
         if (capacity > collector->limit) capacity = collector->limit;
-        SrParticle *items = sr_realloc(collector->items, capacity * sizeof(*items));
+        SrParticle *items = sr_composite_realloc(collector->resources,
+            collector->items, capacity, sizeof(*items), 0);
         if (!items) return false;
         collector->items = items;
         collector->capacity = capacity;
@@ -174,13 +177,18 @@ static uint64_t cell_at_or_before(const SrNode *node, double t) {
     return k;
 }
 
-static struct SrParticleRateCache *rate_cache_build(const SrNode *node) {
+typedef struct {
+    size_t slots, bytes;
+    uint64_t marks, first, last;
+} RateLayout;
+
+static bool rate_layout(const SrNode *node, RateLayout *layout) {
     const SrTrack *track = &node->particle_rate.track;
     size_t keys = track->count;
     bool extended = sr_track_extended(track);
     if (keys > (SIZE_MAX - sizeof(struct SrParticleRateCache)) /
                    (sizeof(uint64_t) + sizeof(double)) - 2)
-        return NULL;
+        return false;
     size_t slots = extended ? 2 : keys + 2;
     double first = track->keys[0].time;
     uint64_t first_cell = first > node->start_time ? cell_at_or_before(node, first) : 0;
@@ -195,22 +203,125 @@ static struct SrParticleRateCache *rate_cache_build(const SrNode *node) {
     /* Each middle segment of length L keeps ceil(L / WALK_BLOCK) marks; the
      * segments tile [first_cell, last_cell), so this bounds their sum. */
     uint64_t mark_capacity = 0;
-    if (last_cell - first_cell <= MAX_RATE_CELLS)
+    if (last_cell - first_cell <= SR_MAX_PARTICLE_RATE_CELLS)
         mark_capacity = (last_cell - first_cell) / WALK_BLOCK + slots;
     if (slots > (SIZE_MAX - sizeof(struct SrParticleRateCache) -
                  mark_capacity * sizeof(double)) /
                     (3 * sizeof(uint64_t) + sizeof(double)))
-        return NULL;
-    struct SrParticleRateCache *cache = sr_alloc(
-        sizeof(*cache) + slots * (3 * sizeof(uint64_t) + sizeof(double)) +
-        (size_t)mark_capacity * sizeof(double));
+        return false;
+    *layout = (RateLayout){slots,
+        sizeof(struct SrParticleRateCache) + slots * (3 * sizeof(uint64_t) + sizeof(double)) +
+        (size_t)mark_capacity * sizeof(double), mark_capacity, first_cell, last_cell};
+    return true;
+}
+
+static bool track_storage(const SrTrack *track) {
+    return track->count <= SR_MAX_TRACK_KEYS && (!track->count || track->keys);
+}
+
+static bool particle_metadata(const SrNode *node, uint64_t *candidate_work) {
+    const SrTrack *tracks[] = {&node->particle_rate.track, &node->particle_lifetime.track,
+        &node->particle_speed.track, &node->particle_spread.track, &node->particle_size.track,
+        &node->particle_direction.track, &node->particle_color.r, &node->particle_color.g,
+        &node->particle_color.b, &node->particle_color.a, &node->particle_color_end.r,
+        &node->particle_color_end.g, &node->particle_color_end.b, &node->particle_color_end.a};
+    *candidate_work = 64 + (sizeof(SrParticle) + 3) / 4;
+    for (size_t i = 0; i < sizeof(tracks) / sizeof(tracks[0]); ++i) {
+        if (!track_storage(tracks[i])) return false;
+        if (i) *candidate_work += tracks[i]->count ? 64 : 1;
+    }
+    if (node->particle_max > SR_MAX_PARTICLE_OUTPUT || !isfinite(node->start_time) ||
+        fabs(node->start_time) > SR_MAX_DURATION) return false;
+    const SrTrack *rate = tracks[0];
+    if (rate->count &&
+        (!isfinite(rate->keys[0].time) || !isfinite(rate->keys[rate->count - 1].time) ||
+         fabs(rate->keys[0].time) > SR_MAX_ANIMATION_TIME ||
+         fabs(rate->keys[rate->count - 1].time) > SR_MAX_ANIMATION_TIME)) return false;
+    if (sr_track_extended(rate) &&
+        (!isfinite(rate->domain_end) || fabs(rate->domain_end) > SR_MAX_DURATION)) return false;
+    return true;
+}
+
+bool sr_particles_cache_bound(const SrNode *node, uint64_t *bytes) {
+    *bytes = 0;
+    uint64_t candidate_work;
+    if (!particle_metadata(node, &candidate_work)) return false;
+    if (!node->particle_seed_set && node->id) {
+        size_t i = 0;
+        while (i < SR_MAX_PARTICLE_ID_BYTES && node->id[i]) ++i;
+        if (node->id[i]) return false;
+    }
+    if (node->particle_rate.track.count) {
+        RateLayout layout;
+        if (!rate_layout(node, &layout)) return false;
+        *bytes = layout.bytes;
+    }
+    return true;
+}
+
+void sr_particles_invalidate(SrNode *node) {
+    if (!node) return;
+    pthread_mutex_lock(&rate_cache_lock);
+    free(node->particle_rate_cache);
+    node->particle_rate_cache = NULL;
+    pthread_mutex_unlock(&rate_cache_lock);
+}
+
+static bool particle_failure(SrCompositeResources *resources, const char *message) {
+    return sr_composite_resource_fail(resources, SR_ERR_RENDER, message);
+}
+
+static bool particle_admit(const SrNode *node, double time,
+                            SrCompositeResources *resources, uint64_t *candidate_work) {
+    *candidate_work = 0;
+    if (!resources) return true;
+    if (!particle_metadata(node, candidate_work) || !isfinite(time) ||
+        fabs(time) > SR_MAX_DURATION)
+        return particle_failure(resources, "invalid bounded particle metadata or clock");
+    double now = time - node->start_time;
+    if (now < 0) return true;
+    if (!sr_composite_work(resources, node->particle_lifetime.track.count, 64) ||
+        !sr_composite_work(resources, 1, 128)) return false;
+    if (!node->particle_seed_set && node->id) {
+        for (size_t i = 0; node->id[i]; ++i) {
+            if (i == SR_MAX_PARTICLE_ID_BYTES)
+                return particle_failure(resources, "particle seed id exceeds 1048576 bytes");
+            if (!sr_composite_work(resources, 2, 1)) return false;
+        }
+    }
+    if (node->particle_rate.track.count) {
+        RateLayout layout;
+        if (!rate_layout(node, &layout))
+            return particle_failure(resources, "particle cache capacity overflow");
+        uint64_t top = (uint64_t)(floor(now / RATE_STEP) + 1.0);
+        if (top > layout.last) top = layout.last;
+        uint64_t cells = top > layout.first ? top - layout.first : 0;
+        if (cells > SR_MAX_PARTICLE_RATE_CELLS)
+            return particle_failure(resources, "particle sampling grid limit exceeded");
+        /* Cold totals, checkpoints and regeneration; starting samples,
+         * reverse cell visits and metadata/copy dispatch remain covered. */
+        if (!sr_composite_work(resources, cells + layout.slots + 1, 4 * 80) ||
+            !sr_composite_work(resources, (layout.bytes + 3) / 4, 1)) return false;
+    }
+    return true;
+}
+
+static struct SrParticleRateCache *rate_cache_build(const SrNode *node) {
+    const SrTrack *track = &node->particle_rate.track;
+    size_t keys = track->count;
+    bool extended = sr_track_extended(track);
+    RateLayout layout;
+    if (!rate_layout(node, &layout)) return NULL;
+    size_t slots = layout.slots;
+    uint64_t first_cell = layout.first, last_cell = layout.last;
+    struct SrParticleRateCache *cache = sr_alloc(layout.bytes);
     if (!cache) return NULL;
     cache->cell = (uint64_t *)(void *)(cache + 1);
     cache->total = (double *)(void *)(cache->cell + slots);
     cache->mark_offset = (uint64_t *)(void *)(cache->total + slots);
     cache->mark_ready = cache->mark_offset + slots;
     cache->marks = (double *)(void *)(cache->mark_ready + slots);
-    cache->mark_capacity = mark_capacity;
+    cache->mark_capacity = layout.marks;
     cache->first_rate = fmax(0.0, track->keys[0].value);
     cache->last_rate = fmax(0.0, track->keys[keys - 1].value);
     if (extended) {
@@ -334,7 +445,16 @@ typedef struct {
  * stop (cap reached, candidate budget spent or allocation failure). */
 static bool offer(Walk *walk, double index, double birth) {
     if (walk->collector.count >= walk->collector.limit ||
-        ++walk->examined > MAX_CANDIDATES) {
+        ++walk->examined > SR_MAX_PARTICLE_CANDIDATES) {
+        if (walk->examined > SR_MAX_PARTICLE_CANDIDATES && walk->collector.resources) {
+            particle_failure(walk->collector.resources, "particle candidate limit exceeded");
+            walk->ok = false;
+        }
+        walk->done = true;
+        return false;
+    }
+    if (!sr_composite_work(walk->collector.resources, 1, walk->collector.candidate_work)) {
+        walk->ok = false;
         walk->done = true;
         return false;
     }
@@ -363,9 +483,14 @@ static SrStatus walk_segment(Walk *walk, size_t segment, uint64_t from,
                              uint64_t to, double value) {
     uint64_t cells = to - from;
     size_t blocks = (size_t)(cells / WALK_BLOCK) + 1;
-    double *marks = sr_alloc(blocks * sizeof(*marks));
-    double *buffer = sr_alloc((WALK_BLOCK + 1) * sizeof(*buffer));
-    if (!marks || !buffer) { free(marks); free(buffer); return SR_ERR_MEMORY; }
+    SrCompositeResources *resources = walk->collector.resources;
+    double *marks = sr_composite_alloc(resources, blocks, sizeof(*marks), 0);
+    double *buffer = sr_composite_alloc(resources, WALK_BLOCK + 1, sizeof(*buffer), 0);
+    if (!marks || !buffer) {
+        sr_composite_free(resources, marks);
+        sr_composite_free(resources, buffer);
+        return sr_composite_resource_status(resources);
+    }
     if (!segment_marks(walk->node, segment, to, marks))
         integrate(walk->node, from, to, value, marks);
     SrStatus status = SR_OK;
@@ -395,14 +520,15 @@ static SrStatus walk_segment(Walk *walk, size_t segment, uint64_t from,
         }
     }
 done:
-    free(marks);
-    free(buffer);
+    sr_composite_free(resources, marks);
+    sr_composite_free(resources, buffer);
     return status;
 }
 
 static SrStatus walk_keyed(Walk *walk) {
     const SrNode *node = walk->node;
     double now = walk->now;
+    SrCompositeResources *resources = walk->collector.resources;
     struct SrParticleRateCache info;
     SrStatus status = rate_totals(node, 0, &info, NULL);
     if (status != SR_OK) return status;
@@ -412,19 +538,24 @@ static SrStatus walk_keyed(Walk *walk) {
     /* After the last key: constant rate, closed form. */
     if (top >= info.last_cell) {
         size_t last = info.count - 1;
-        if (info.last_cell - info.first_cell > MAX_RATE_CELLS) return SR_ERR_RENDER;
-        double *totals = sr_alloc(info.count * sizeof(*totals));
-        if (!totals) return SR_ERR_MEMORY;
+        if (info.last_cell - info.first_cell > SR_MAX_PARTICLE_RATE_CELLS) return SR_ERR_RENDER;
+        double *totals = sr_composite_alloc(resources, info.count, sizeof(*totals), 0);
+        if (!totals) return sr_composite_resource_status(resources);
         status = rate_totals(node, last, &info, totals);
         double base = totals[last];
-        free(totals);
+        sr_composite_free(resources, totals);
         if (status != SR_OK) return status;
         double u0 = (double)info.last_cell * RATE_STEP, rate = info.last_rate;
         if (rate > 0.0) {
             double high = floor(base + rate * (now - u0)) + 1.0;
-            if (!isfinite(high) || high > SR_MAX_PARTICLE_INDEX)
+            if (!isfinite(high) || high > SR_MAX_PARTICLE_INDEX) {
+                if (resources) {
+                    particle_failure(resources, "particle emission index exceeds 9e15");
+                    return SR_ERR_RENDER;
+                }
                 return sr_track_extended(&node->particle_rate.track)
                     ? SR_ERR_RENDER : SR_OK;
+            }
             double low = fmax(ceil(base),
                               floor(base + rate * fmax(0.0, walk->oldest - u0)) - 1.0);
             walk_constant(walk, low, high, base, u0, rate);
@@ -434,11 +565,11 @@ static SrStatus walk_keyed(Walk *walk) {
     }
     /* Between the first and last keys: the grid, one segment at a time. */
     if (!walk->done && top > info.first_cell) {
-        if (top - info.first_cell > MAX_RATE_CELLS) return SR_ERR_RENDER;
+        if (top - info.first_cell > SR_MAX_PARTICLE_RATE_CELLS) return SR_ERR_RENDER;
         size_t segment = 0;
         while (segment + 1 < info.count && info.cell[segment + 1] < top) ++segment;
-        double *totals = sr_alloc((segment + 1) * sizeof(*totals));
-        if (!totals) return SR_ERR_MEMORY;
+        double *totals = sr_composite_alloc(resources, segment + 1, sizeof(*totals), 0);
+        if (!totals) return sr_composite_resource_status(resources);
         status = rate_totals(node, segment, &info, totals);
         for (size_t j = segment + 1; status == SR_OK && j-- > 0 && !walk->done;) {
             uint64_t end = j + 1 < info.count && info.cell[j + 1] < top
@@ -446,7 +577,7 @@ static SrStatus walk_keyed(Walk *walk) {
             if (end > info.cell[j])
                 status = walk_segment(walk, j, info.cell[j], end, totals[j]);
         }
-        free(totals);
+        sr_composite_free(resources, totals);
         if (status != SR_OK) return status;
     }
     /* Before the first key: constant rate from the start, N = rate * u. */
@@ -458,14 +589,21 @@ static SrStatus walk_keyed(Walk *walk) {
         double low = fmax(0.0, floor(rate * fmax(0.0, walk->oldest)) - 1.0);
         if (isfinite(high) && high <= SR_MAX_PARTICLE_INDEX)
             walk_constant(walk, low, high, 0.0, u0, rate);
+        else if (resources) {
+            particle_failure(resources, "particle emission index exceeds 9e15");
+            return SR_ERR_RENDER;
+        }
     }
     return SR_OK;
 }
 
-SrStatus sr_particles_eval(const SrScene *scene, const SrNode *node,
-                           double time, SrParticle **particles, size_t *count) {
+static SrStatus particles_eval(const SrScene *scene, const SrNode *node,
+                                 double time, SrCompositeResources *resources,
+                                 SrParticle **particles, size_t *count) {
     *particles = NULL;
     *count = 0;
+    uint64_t candidate_work;
+    if (!particle_admit(node, time, resources, &candidate_work)) return SR_ERR_RENDER;
     double now = time - node->start_time;
     if (!(now >= 0.0) || !isfinite(now)) return SR_OK;
     uint64_t seed = sr_particles_seed(scene, node);
@@ -475,7 +613,8 @@ SrStatus sr_particles_eval(const SrScene *scene, const SrNode *node,
     if (!isfinite(lifetime)) return SR_ERR_RENDER;
     double longest = fmax(1e-6, lifetime +
                                 node->particle_lifetime_variance);
-    Collector collector = {NULL, 0, 0, node->particle_max ? node->particle_max : 1};
+    Collector collector = {.limit = node->particle_max ? node->particle_max : 1,
+        .resources = resources, .candidate_work = candidate_work};
     uint64_t examined = 0;
     bool ok = true;
     if (!node->particle_rate.track.count) {
@@ -483,9 +622,20 @@ SrStatus sr_particles_eval(const SrScene *scene, const SrNode *node,
         if (!(rate > 0.0)) return SR_OK;
         double last = floor(now * rate);
         double first = fmax(0.0, floor((now - longest) * rate) - 1.0);
-        if (!isfinite(last) || last > SR_MAX_PARTICLE_INDEX) return SR_OK;
+        if (!isfinite(last) || last > SR_MAX_PARTICLE_INDEX) {
+            if (!resources) return SR_OK;
+            particle_failure(resources, "particle emission index exceeds 9e15");
+            return SR_ERR_RENDER;
+        }
         for (double k = last; k >= first && ok; k -= 1.0) {
-            if (collector.count >= collector.limit || ++examined > MAX_CANDIDATES) break;
+            if (collector.count >= collector.limit || ++examined > SR_MAX_PARTICLE_CANDIDATES) {
+                if (examined > SR_MAX_PARTICLE_CANDIDATES && resources) {
+                    particle_failure(resources, "particle candidate limit exceeded");
+                    ok = false;
+                }
+                break;
+            }
+            if (!sr_composite_work(resources, 1, candidate_work)) { ok = false; break; }
             uint64_t index = (uint64_t)k;
             SrParticle particle;
             if (particle_at(scene, node, seed, index, (double)index / rate, now,
@@ -497,14 +647,21 @@ SrStatus sr_particles_eval(const SrScene *scene, const SrNode *node,
         SrStatus status = walk_keyed(&walk);
         collector = walk.collector;
         if (status != SR_OK) {
-            free(collector.items);
+            sr_composite_free(resources, collector.items);
             return status;
         }
         ok = walk.ok;
     }
     if (!ok) {
-        free(collector.items);
-        return SR_ERR_MEMORY;
+        sr_composite_free(resources, collector.items);
+        return sr_composite_resource_status(resources);
+    }
+    /* Reversal copies three records per pair; reserve a whole-record bound
+     * plus the compositor's subsequent per-particle draw preparation. */
+    if (!sr_composite_work(resources, collector.count,
+                            3 * sizeof(SrParticle) / 4 + 64)) {
+        sr_composite_free(resources, collector.items);
+        return SR_ERR_RENDER;
     }
     /* Collected newest first; draw oldest first. */
     for (size_t a = 0, b = collector.count; a + 1 < b; ++a, --b) {
@@ -515,4 +672,19 @@ SrStatus sr_particles_eval(const SrScene *scene, const SrNode *node,
     *particles = collector.items;
     *count = collector.count;
     return SR_OK;
+}
+
+SrStatus sr_particles_eval(const SrScene *scene, const SrNode *node,
+                           double time, SrParticle **particles, size_t *count) {
+    return particles_eval(scene, node, time, NULL, particles, count);
+}
+
+SrStatus sr_particles_eval_composite(const SrScene *scene, const SrNode *node,
+                                      double time, SrCompositeResources *resources,
+                                      SrParticle **particles, size_t *count) {
+    SrCompositeOwner previous = sr_composite_owner(resources,
+        (SrCompositeOwner){node->source_line, "particleEmitter", "rate/lifetime"});
+    SrStatus status = particles_eval(scene, node, time, resources, particles, count);
+    sr_composite_owner(resources, previous);
+    return status;
 }

@@ -13,7 +13,9 @@
  *
  * Invalidate BEFORE changing authored fields or tracks, then prepare again.
  * Direct assignments are not automatically detected. Neither mutation nor
- * preparation may overlap rendering. Asset/physics caches remain governed by
+ * preparation may overlap rendering. Invalidation also clears prepared
+ * emitters' rate caches; successful preparation clears newly admitted caches
+ * before publishing their capacity reservation. Asset/physics caches remain governed by
  * their own preparation APIs. Invalid ownership graphs must be repaired by
  * the caller before ordinary recursive scene destruction. */
 SrStatus sr_scene_prepare_compositing(SrScene *scene, SrDiagnostics *diag);

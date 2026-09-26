@@ -98,7 +98,7 @@ UNIT_SUITES := timeline length length_frame length_physics curves geometry \
 	compositor color vector mesh random \
 	scene property xml xml_lengths profile styles metadata \
 	camera physics blend blend_color skew compositing composite_resources \
-	composite_geometry group raster mask path \
+	composite_geometry composite_particles group raster mask path \
 	mask_path fuzz_mask_path image \
 	encode encode_faults audio video fx anim_color particles deform shadow text args resume depth \
 	$(P7_UNIT_SUITES)

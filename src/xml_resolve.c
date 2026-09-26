@@ -215,9 +215,7 @@ bool sr_xml_resolve_scene(ParseContext *ctx) {
     /* Preflight protects recursive consumers; the published index must follow
      * the finalized tree, exactly as subsequent explicit preparation does. */
     if (ready && ctx->scene->compositing_required) {
-        SrStatus status = sr_composite_plan_build(ctx->scene,
-                                                    &ctx->scene->compositing,
-                                                    ctx->diag);
+        SrStatus status = sr_scene_prepare_compositing(ctx->scene, ctx->diag);
         ctx->out_of_memory = status == SR_ERR_MEMORY;
         ready = status == SR_OK;
     }

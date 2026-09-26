@@ -7,12 +7,12 @@
 # usage: tools/coverage-gate.sh [BUILD_DIR]     (default: build/coverage)
 #
 # Floors retain about 2 percentage points of headroom below the B1-3
-# geometry consumers (92.27% lines / 77.15% branches, GCC 15.2, SDK 25.08).
+# particle consumers (92.33% lines / 77.23% branches, GCC 15.2, SDK 25.08).
 # Raise them when coverage improves; lowering them needs a reason in the
 # commit message.
 set -eu
-LINE_FLOOR=90.25
-BRANCH_FLOOR=75.10
+LINE_FLOOR=90.30
+BRANCH_FLOOR=75.20
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 build=${1:-$root/build/coverage}

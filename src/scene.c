@@ -4,6 +4,7 @@
 #include "scene_render/video.h"
 #include "scene_render/color.h"
 #include "scene_render/compositing.h"
+#include "particles_internal.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -320,7 +321,7 @@ void sr_node_free(SrNode *node) {
     free(node->masks);
     free(node->children); free(node->modifiers); free(node->physics_samples);
     free(node->id); free(node->asset_id); free(node->particle_preset);
-    free(node->particle_rate_cache);
+    sr_particles_invalidate(node);
     anim_free(&node->opacity); anim_free(&node->source_time);
     anim_free(&node->particle_rate); anim_free(&node->particle_lifetime);
     anim_free(&node->particle_speed); anim_free(&node->particle_spread);

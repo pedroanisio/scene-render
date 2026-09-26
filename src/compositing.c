@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "compositing_internal.h"
+#include "particles_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +40,12 @@ void sr_composite_plan_free(SrCompositePlan *plan) {
 
 void sr_scene_invalidate_compositing(SrScene *scene) {
     if (!scene) return;
+    if (scene->compositing) {
+        for (size_t i = 0; i < scene->compositing->count; ++i) {
+            SrNode *node = (SrNode *)scene->compositing->nodes[i].node;
+            if (node->type == SR_NODE_PARTICLES) sr_particles_invalidate(node);
+        }
+    }
     sr_composite_plan_free(scene->compositing);
     scene->compositing = NULL;
     scene->compositing_required = true;
@@ -223,7 +230,31 @@ SrStatus sr_composite_plan_build(const SrScene *scene, SrCompositePlan **out,
 SrStatus sr_scene_prepare_compositing(SrScene *scene, SrDiagnostics *diag) {
     if (!scene) return SR_ERR_ARGUMENT;
     sr_scene_invalidate_compositing(scene);
-    return sr_composite_plan_build(scene, &scene->compositing, diag);
+    SrCompositePlan *plan = NULL;
+    SrStatus status = sr_composite_plan_build(scene, &plan, diag);
+    if (status != SR_OK) return status;
+    for (size_t i = 0; i < plan->count; ++i) {
+        const SrNode *node = plan->nodes[i].node;
+        if (node->type != SR_NODE_PARTICLES) continue;
+        uint64_t bytes;
+        if (!sr_particles_cache_bound(node, &bytes) ||
+            bytes > SR_MAX_COMPOSITE_BYTES - plan->owned_bytes) {
+            /* Do not rescan an overlong id while reporting bounded rejection. */
+            if (diag) sr_diag_error(diag, node->source_line, "particleEmitter",
+                "rate/maxParticles/id", "invalid particle metadata or cache capacity limit");
+            sr_composite_plan_free(plan);
+            return SR_ERR_RENDER;
+        }
+        plan->owned_bytes += bytes;
+    }
+    /* Initial preparation may admit nodes whose legacy caches were warmed.
+     * Clear them only after every bound passes, before publishing ownership. */
+    for (size_t i = 0; i < plan->count; ++i) {
+        SrNode *node = (SrNode *)plan->nodes[i].node;
+        if (node->type == SR_NODE_PARTICLES) sr_particles_invalidate(node);
+    }
+    scene->compositing = plan;
+    return SR_OK;
 }
 
 SrStatus sr_composite_scene_ready(const SrScene *scene, SrDiagnostics *diag) {
