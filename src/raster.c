@@ -1,4 +1,7 @@
 #include "scene_render/raster.h"
+#include "scene_render/color.h"
+
+#include <string.h>
 
 /* Legacy arithmetic stays in raster.h's inline forms. New color kernels
  * live here so they do not enlarge the old per-pixel paths. */
@@ -144,6 +147,75 @@ void sr_blend_px_color(SrBlendMode mode, float dst[4], const float src[4]) {
         dst[c] = (float)((1.0 - ab) * src[c] + (1.0 - as) * dst[c] +
                         (double)as * ab * mixed[c]);
     dst[3] = as + ab * (1.0f - as);
+}
+
+void sr_luma_config_init(const SrProject *project, SrLumaConfig *config) {
+    *config = (SrLumaConfig){.decode = !project->linear_light,
+                             .space = project->working_color_space};
+    sr_color_luminance_row(project->working_color_space, config->row);
+}
+
+double sr_luma_px(const SrLumaConfig *config, const float px[4]) {
+    float alpha = px[3];
+    if (!(alpha > 0.0f)) return 0.0;
+    double y = 0.0;
+    for (size_t c = 0; c < 3; ++c) {
+        double value = clamp_unit((double)px[c] / alpha);
+        if (config->decode) value = sr_color_decode(value, config->space);
+        y += config->row[c] * value;
+    }
+    return clamp_unit(y);
+}
+
+void sr_blend_operator_px(SrBlendMode mode, const SrLumaConfig *luma,
+                          float dst[4], const float src[4]) {
+    double a = src[3], b = dst[3];
+    switch (mode) {
+    case SR_BLEND_BEHIND: {
+        double keep = 1.0 - b;
+        for (size_t c = 0; c < 3; ++c) dst[c] = (float)(dst[c] + keep * src[c]);
+        dst[3] = (float)(b + keep * a);
+        return;
+    }
+    case SR_BLEND_STENCIL_ALPHA:
+    case SR_BLEND_STENCIL_LUMA:
+    case SR_BLEND_SILHOUETTE_ALPHA:
+    case SR_BLEND_SILHOUETTE_LUMA: {
+        double k = clamp_unit(a);
+        if (mode == SR_BLEND_STENCIL_LUMA || mode == SR_BLEND_SILHOUETTE_LUMA)
+            k *= luma ? sr_luma_px(luma, src) : 0.0;
+        if (mode == SR_BLEND_SILHOUETTE_ALPHA || mode == SR_BLEND_SILHOUETTE_LUMA)
+            k = 1.0 - k;
+        for (size_t c = 0; c < 4; ++c) dst[c] = (float)(dst[c] * k);
+        return;
+    }
+    case SR_BLEND_ALPHA_ADD: {
+        double sum = a + b;
+        if (!(sum > 0.0)) {
+            dst[0] = dst[1] = dst[2] = dst[3] = 0.0f;
+            return;
+        }
+        double alpha = fmin(sum, 1.0);
+        for (size_t c = 0; c < 3; ++c)
+            dst[c] = (float)(((double)src[c] + dst[c]) * alpha / sum);
+        dst[3] = (float)alpha;
+        return;
+    }
+    default:
+        sr_blend_px(mode, dst, src);
+        return;
+    }
+}
+
+void sr_dissolve_px(float dst[4], const float src[4], double u) {
+    float alpha = src[3];
+    if (!(alpha > 0.0f) || !(u < (double)alpha)) return;
+    float straight[4] = {0, 0, 0, 1};
+    for (size_t c = 0; c < 3; ++c) {
+        float value = src[c] / alpha;
+        straight[c] = isfinite(value) ? value : 0.0f;
+    }
+    memcpy(dst, straight, sizeof(straight));
 }
 
 double sr_shape_distance(SrMaskType type, double x, double y, double w,

@@ -362,32 +362,26 @@ void sr_xml_start_audio(ParseContext *ctx, const XML_Char **attrs) {
 
 void sr_xml_start_mask(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"type", "x", "y", "width", "height",
-                                    "radius", "invert"};
-    if (!sr_xml_attrs_allowed(ctx, "mask", attrs, allowed, 7)) return;
+        "radius", "invert", "path", "points", "innerRadius", "fillRule",
+        "feather", "expansion", "opacity", "mode"};
+    if (!sr_xml_attrs_allowed(ctx, "mask", attrs, allowed,
+                              sizeof(allowed) / sizeof(allowed[0]))) return;
     ParseFrame *p = sr_xml_parent(ctx);
-    const char *type = sr_xml_required(ctx, "mask", attrs, "type");
-    if (!p || !p->node || !type) return;
+    if (!p || !p->node) return;
     SrMask mask = {.source_line = sr_xml_line(ctx)};
-    if (!strcmp(type,"rect")) mask.type=SR_MASK_RECT;
-    else if (!strcmp(type,"ellipse")) mask.type=SR_MASK_ELLIPSE;
-    else if (!strcmp(type,"rounded-rect")) mask.type=SR_MASK_ROUNDED_RECT;
-    else SR_XML_FAIL_RETURN(ctx,"mask","type",
-                            "expected rect, ellipse, or rounded-rect");
-    if (!sr_xml_anim_length_attr(ctx, "mask", attrs, "x", &mask.x, false) ||
-        !sr_xml_anim_length_attr(ctx, "mask", attrs, "y", &mask.y, false) ||
-        !sr_xml_anim_length_attr(ctx, "mask", attrs, "width", &mask.width, true) ||
-        !sr_xml_anim_length_attr(ctx, "mask", attrs, "height", &mask.height, true) ||
-        !sr_xml_parse_double_attr(ctx, "mask", attrs, "radius", &mask.radius.base)) return;
-    if (mask.width.base <= 0.0 || mask.height.base <= 0.0)
-        SR_XML_FAIL_RETURN(ctx, "mask", "width/height", "expected positive dimensions");
-    if (mask.radius.base < 0.0)
-        SR_XML_FAIL_RETURN(ctx,"mask","radius","expected a non-negative radius");
-    const char *invert = sr_xml_attr(attrs, "invert");
-    if (invert && !sr_parse_bool(invert, &mask.invert))
-        SR_XML_FAIL_RETURN(ctx, "mask", "invert", "expected true or false");
+    if (!sr_xml_parse_mask(ctx, attrs, &mask)) {
+        free(mask.path);
+        return;
+    }
+    if (mask.type > SR_MASK_ROUNDED_RECT || mask.mode != SR_MASK_MODE_INTERSECT ||
+        mask.opacity.base != 1.0 || mask.feather.base != 0.0 ||
+        mask.expansion.base != 0.0)
+        ctx->scene->compositing_required = true;
     /* Every mask is kept in document order; coverage multiplies. */
-    if (sr_node_add_mask(p->node, mask) != SR_OK)
+    if (sr_node_add_mask(p->node, mask) != SR_OK) {
+        free(mask.path);
         SR_XML_FAIL_RETURN(ctx, "mask", NULL, "out of memory");
+    }
     /* Valid until the next sibling mask is added, i.e. for this element's
      * nested <animate> children. */
     SrMask *stored = &p->node->masks[p->node->mask_count - 1];
@@ -403,6 +397,7 @@ static const SrProperty *animate_target(ParseFrame *frame, const char *name,
     case E_GROUP:
     case E_LAYER:
     case E_PARTICLES:
+    case E_ADJUSTMENT:
         host = sr_property_node_host(frame->node);
         *object = frame->node;
         break;
@@ -447,6 +442,8 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
     SrAnimColor *color = entry && entry->type == SR_PROPERTY_COLOR ? target : NULL;
     if (p->node && anim && (anim == &p->node->transform.skew_x ||
                             anim == &p->node->transform.skew_y))
+        ctx->scene->compositing_required = true;
+    if (p->kind == E_MASK && entry && (entry->flags & SR_PROPERTY_REQUIRE_1_1))
         ctx->scene->compositing_required = true;
     sr_property_activate(entry, object);
     if ((p->kind == E_GROUP || p->kind == E_LAYER || p->kind == E_PARTICLES) &&

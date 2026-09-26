@@ -19,7 +19,8 @@ static const char *const color_names[] = {
 static void naming(sr_test_ctx *t) {
     CHECK_INT(t, SR_BLEND_NORMAL, 0);
     CHECK_INT(t, SR_BLEND_DIFFERENCE, 5);
-    CHECK_INT(t, ARRAY_COUNT(color_names), SR_BLEND_COUNT - 6);
+    CHECK_INT(t, ARRAY_COUNT(color_names), SR_BLEND_COLOR_END - 6);
+    CHECK_INT(t, SR_BLEND_COUNT - SR_BLEND_COLOR_END, 7);
     for (size_t i = 0; i < ARRAY_COUNT(color_names); ++i) {
         SrBlendMode mode = SR_BLEND_NORMAL;
         CHECK(t, sr_blend_parse(color_names[i], &mode));
@@ -150,7 +151,7 @@ static void transparency_hdr_and_dispatch(sr_test_ctx *t) {
     const float clear[4] = {0, 0, 0, 0};
     const float tiny[4] = {1e-40f, 2e-40f, 3e-40f, 1e-40f};
     const float source[4] = {.0625f, .125f, .1875f, .25f};
-    for (int m = SR_BLEND_PLUS_LIGHTER; m < SR_BLEND_COUNT; ++m) {
+    for (int m = SR_BLEND_PLUS_LIGHTER; m < SR_BLEND_COLOR_END; ++m) {
         float dst[4], expected[4];
         memcpy(dst, backdrop, sizeof(dst));
         sr_blend_px((SrBlendMode)m, dst, clear);

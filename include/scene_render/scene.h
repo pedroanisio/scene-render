@@ -52,8 +52,24 @@ typedef enum {
     SR_BLEND_SATURATION,
     SR_BLEND_COLOR,
     SR_BLEND_LUMINOSITY,
+    /* Flattened-node operators (B1-3): the node renders into an isolated
+     * buffer first, then acts once on its isolated parent target. */
+    SR_BLEND_DISSOLVE,
+    SR_BLEND_STENCIL_ALPHA,
+    SR_BLEND_STENCIL_LUMA,
+    SR_BLEND_SILHOUETTE_ALPHA,
+    SR_BLEND_SILHOUETTE_LUMA,
+    SR_BLEND_ALPHA_ADD,
+    SR_BLEND_BEHIND,
     SR_BLEND_COUNT
 } SrBlendMode;
+
+/* The pure per-pixel color modes end before the flattened-node operators. */
+#define SR_BLEND_COLOR_END SR_BLEND_DISSOLVE
+
+static inline bool sr_blend_is_operator(SrBlendMode mode) {
+    return mode >= SR_BLEND_DISSOLVE && mode < SR_BLEND_COUNT;
+}
 
 typedef enum {
     SR_MODE_STANDARD,
@@ -74,13 +90,21 @@ typedef enum {
     SR_NODE_GROUP,
     SR_NODE_MEDIA,
     SR_NODE_SHAPE,
-    SR_NODE_PARTICLES
+    SR_NODE_PARTICLES,
+    SR_NODE_ADJUSTMENT      /* 1.1 adjustment layer: effects on the backdrop */
 } SrNodeType;
 
 typedef enum { SR_SHAPE_RECT, SR_SHAPE_ELLIPSE, SR_SHAPE_PATH } SrShapeType;
 /* Vector fill rule; evenodd is the default to preserve pre-1.2 output. */
 typedef enum { SR_FILL_EVENODD, SR_FILL_NONZERO } SrFillRule;
-typedef enum { SR_MASK_RECT, SR_MASK_ELLIPSE, SR_MASK_ROUNDED_RECT } SrMaskType;
+typedef enum { SR_MASK_RECT, SR_MASK_ELLIPSE, SR_MASK_ROUNDED_RECT,
+               SR_MASK_PATH, SR_MASK_POLYGON, SR_MASK_STAR } SrMaskType;
+/* Mask combination in authored order; intersect (the product) is 1.0. */
+typedef enum { SR_MASK_MODE_INTERSECT, SR_MASK_MODE_ADD, SR_MASK_MODE_SUBTRACT,
+               SR_MASK_MODE_LIGHTEN, SR_MASK_MODE_DARKEN,
+               SR_MASK_MODE_DIFFERENCE, SR_MASK_MODE_NONE } SrMaskMode;
+typedef enum { SR_MATTE_ALPHA, SR_MATTE_ALPHA_INVERTED, SR_MATTE_LUMA,
+               SR_MATTE_LUMA_INVERTED } SrMatteMode;
 typedef enum { SR_BODY_NONE, SR_BODY_STATIC, SR_BODY_KINEMATIC, SR_BODY_DYNAMIC } SrBodyType;
 typedef enum { SR_COLLIDER_BOX, SR_COLLIDER_CIRCLE } SrColliderType;
 typedef enum { SR_MOD_BEND, SR_MOD_TWIST, SR_MOD_WAVE, SR_MOD_SQUASH, SR_MOD_STRETCH,
@@ -196,6 +220,8 @@ typedef struct {
     SrAnimValue anchor_y;
 } SrTransform;
 
+struct SrMaskPath;
+
 typedef struct {
     bool invert;
     SrMaskType type;
@@ -205,6 +231,20 @@ typedef struct {
     SrAnimValue height;
     SrAnimValue radius;
     size_t source_line;
+    /* 1.1 advanced masks. Defaults (intersect, opacity 1, feather and
+     * expansion 0) keep the analytic 1.0 coverage path. */
+    SrMaskMode mode;
+    SrAnimValue opacity;        /* 0..1; used only when opacity_set */
+    bool opacity_set;           /* false: opacity 1 (zero-initialized masks) */
+    SrAnimValue feather;        /* local px, >= 0 */
+    SrAnimValue expansion;      /* local px, signed */
+    SrAnimValue inner_radius;   /* star; half the outer radius when unset */
+    bool inner_radius_set;      /* attribute or track authored */
+    bool box_set;               /* path/polygon/star: width/height clip box */
+    SrFillRule fill_rule;       /* path; nonzero is the XSD default */
+    uint32_t points;            /* polygon/star outer vertices, 3..4096 */
+    char *path;                 /* owned SVG subset text */
+    struct SrMaskPath *prepared; /* owned immutable geometry of `path` */
 } SrMask;
 
 typedef struct {
@@ -342,6 +382,12 @@ typedef struct SrNode {
     struct SrNode **children;
     size_t child_count;
     size_t child_capacity;
+    /* Track matte (1.1): `matte` is resolved from matte_id at load (or set
+     * by a direct-C caller before preparation); it is borrowed. */
+    char *matte_id;
+    struct SrNode *matte;
+    SrMatteMode matte_mode;
+    bool matte_visible;
 } SrNode;
 
 typedef enum { SR_CODEC_H264, SR_CODEC_H265, SR_CODEC_FFV1 } SrCodec;

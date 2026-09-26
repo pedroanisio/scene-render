@@ -14,7 +14,7 @@ typedef enum {
     E_MATERIAL, E_LIGHTS, E_LIGHT, E_EFFECTS, E_EFFECT, E_PHYSICS,
     E_FORCE_FIELD, E_CONSTRAINT, E_PARTICLES, E_RIGID_BODY, E_SOFT_BODY,
     E_DEFORM, E_MODIFIER, E_OBJECT3D, E_POINT, E_STYLES, E_TOKEN,
-    E_METADATA, E_META
+    E_METADATA, E_META, E_ADJUSTMENT
 } ElementKind;
 
 typedef struct {
@@ -115,6 +115,13 @@ void sr_xml_start_point(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_node(ParseContext *ctx, const char *name,
                        const XML_Char **attrs, SrNodeType type);
 void sr_xml_start_mask(ParseContext *ctx, const XML_Char **attrs);
+/* xml_compositing.c (B1-3). */
+bool sr_xml_parse_mask(ParseContext *ctx, const XML_Char **attrs, SrMask *mask);
+bool sr_xml_parse_matte(ParseContext *ctx, const char *element,
+                        const XML_Char **attrs, SrNode *node);
+void sr_xml_start_adjustment(ParseContext *ctx, const XML_Char **attrs);
+bool sr_xml_resolve_compositing(ParseContext *ctx);
+bool sr_xml_parse_effect_ids(SrNode *node, const char *text);
 void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs);
 bool sr_xml_animation_options(ParseContext *ctx, const XML_Char **attrs,

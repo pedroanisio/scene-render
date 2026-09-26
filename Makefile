@@ -80,12 +80,13 @@ CORE_SOURCES := src/common.c src/card.c src/parallel.c src/random.c \
 	src/timeline.c src/length.c src/length_frame.c src/curves.c src/property.c src/scene.c \
 	src/assets.c src/text.c src/procedural.c src/audio.c src/compositor.c \
 	src/compositing.c src/compositor_resources.c src/compositor_evaluation.c \
-	src/compositor_geometry.c src/camera.c \
+	src/compositor_geometry.c src/compositor_coverage.c src/compositor_matte.c \
+	src/mask_outline.c src/camera.c \
 	src/lighting.c src/effects.c src/particles.c src/deform.c src/physics.c \
 	src/encoder.c src/video.c src/renderer.c \
 	src/resume.c src/xml.c \
 	src/xml_elements.c src/xml_lengths.c src/xml_animation.c src/xml_nodes.c \
-	src/xml_resolve.c src/xml_audio.c \
+	src/xml_resolve.c src/xml_compositing.c src/xml_audio.c \
 	src/xml_camera.c \
 	src/xml_visual.c \
 	src/xml_physics.c src/xml_styles.c src/xml_metadata.c src/metadata.c \

@@ -670,3 +670,29 @@ SrStatus sr_vector_path_render(const char *text, const SrVectorStyle *style,
     free(stroke);
     return status;
 }
+
+/* Mask coverage (B1-3): the fill accumulation above over translated
+ * contours, with caller-owned scratch so bounded renders account for it.
+ * Contour points are translated by (dx, dy) as each edge is visited; the
+ * prepared geometry itself is never modified. */
+SrStatus sr_prepared_path_fill_offset(const SrPreparedPath *path,
+                                      SrFillRule rule, double dx, double dy,
+                                      uint32_t width, uint32_t height,
+                                      float *cells, float *fill) {
+    if (!path || !cells || !fill || !width || !height ||
+        width > INT32_MAX - 2 || height > INT32_MAX)
+        return SR_ERR_ARGUMENT;
+    Accumulator acc = {cells, (int)width + 2, (int)height};
+    memset(cells, 0, ((size_t)width + 2) * height * sizeof(float));
+    for (size_t c = 0; c < path->count; ++c) {
+        const SrPathContour *contour = &path->items[c];
+        for (size_t i = 0; i < contour->count; ++i) {
+            const Point *a = &contour->points[i];
+            const Point *b = &contour->points[(i + 1) % contour->count];
+            clipped_edge(&acc, (Point){a->x + dx, a->y + dy},
+                         (Point){b->x + dx, b->y + dy});
+        }
+    }
+    resolve(&acc, rule, fill);
+    return SR_OK;
+}

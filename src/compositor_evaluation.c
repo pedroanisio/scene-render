@@ -10,7 +10,8 @@ SrCompositeOwner sr_composite_node_owner(const SrScene *scene, const SrNode *nod
     const char *element = node == scene->root ? "composition"
         : node->type == SR_NODE_GROUP ? "group"
         : node->type == SR_NODE_MEDIA ? "layer"
-        : node->type == SR_NODE_PARTICLES ? "particleEmitter" : "shape";
+        : node->type == SR_NODE_PARTICLES ? "particleEmitter"
+        : node->type == SR_NODE_ADJUSTMENT ? "adjustment" : "shape";
     return (SrCompositeOwner){node->source_line, element, attribute};
 }
 

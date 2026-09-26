@@ -11,6 +11,8 @@ const char *sr_color_space_name(SrColorSpace space);
 /* Exact transfer functions of a color space on [0,1] (inputs are clamped). */
 double sr_color_decode(double value, SrColorSpace space);
 double sr_color_encode(double value, SrColorSpace space);
+/* The Y row of the space's linear RGB -> XYZ matrix (physical luminance). */
+void sr_color_luminance_row(SrColorSpace space, double row[3]);
 
 /* Blend space: the project working gamut, linear-light when
  * project.linear_light, otherwise the working space's transfer-encoded

@@ -63,4 +63,12 @@ SrStatus sr_prepared_path_coverage(const SrPreparedPath *path, SrFillRule rule,
                                    double stroke_width, uint32_t width,
                                    uint32_t height, float *fill, float *stroke);
 
+/* Fill coverage of `path` translated by (dx, dy) over a width x height
+ * grid of unit pixels, into `fill` (width*height floats). `cells` is
+ * caller-owned scratch of (width + 2) * height floats. No allocation. */
+SrStatus sr_prepared_path_fill_offset(const SrPreparedPath *path,
+                                      SrFillRule rule, double dx, double dy,
+                                      uint32_t width, uint32_t height,
+                                      float *cells, float *fill);
+
 #endif
