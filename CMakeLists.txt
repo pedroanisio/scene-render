@@ -115,6 +115,10 @@ sr_configure_target(scene-render)
 
 include(CTest)
 if(BUILD_TESTING)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME schema.compatibility
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/schema-compatibility.py)
     set(SR_UNIT_SUITES timeline geometry compositor color vector mesh scene xml
                        camera physics blend group raster mask path image
                        encode encode_faults audio video
