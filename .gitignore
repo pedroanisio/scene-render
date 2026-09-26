@@ -9,3 +9,4 @@ _tmp/
 tmp/
 *.pyc
 /.claude/worktrees/
+.env
