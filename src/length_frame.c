@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "length_frame.h"
 #include "length_internal.h"
+#include "compositor_resources_internal.h"
+#include "compositor_geometry_internal.h"
 #include "scene_render/physics.h"
 
 #include <math.h>
@@ -35,12 +37,16 @@ static SrStatus fail(LengthWalk *walk, const SrNode *node, SrStatus status,
     return status;
 }
 
-static void *grow(void *buffer, size_t *capacity, size_t needed,
+static void *grow(SrCompositeResources *resources, void *buffer,
+                   size_t *capacity, size_t needed,
                    size_t size, size_t maximum) {
     size_t next = *capacity ? *capacity : 32;
     while (next < needed) next = next > maximum / 2 ? maximum : next * 2;
     if (next > SIZE_MAX / size) return NULL;
-    void *grown = sr_realloc(buffer, next * size);
+    size_t zero_bytes = (next - *capacity) * size;
+    if (!sr_composite_work(resources, zero_bytes / 4 + (zero_bytes % 4 != 0), 1))
+        return NULL;
+    void *grown = sr_composite_realloc(resources, buffer, next, size, 0);
     if (!grown) return NULL;
     memset((char *)grown + *capacity * size, 0, (next - *capacity) * size);
     *capacity = next;
@@ -50,6 +56,15 @@ static void *grow(void *buffer, size_t *capacity, size_t needed,
 static SrStatus scalar(LengthWalk *walk, const SrAnimValue *value, double axis,
                         size_t line, const char *host, const char *attribute,
                         double *pixels) {
+    SrCompositeResources *resources = walk->frame->resources;
+    if (resources) {
+        SrCompositeOwner previous = sr_composite_owner(resources,
+            (SrCompositeOwner){line, host, attribute});
+        bool admitted = walk->base_pose ? sr_composite_work(resources, 1, 1)
+            : sr_composite_anim_work(resources, value, true);
+        sr_composite_owner(resources, previous);
+        if (!admitted) return SR_ERR_RENDER;
+    }
     SrStatus status = walk->base_pose
         ? sr_length_resolve((SrLength){value->base, value->unit}, axis,
                              walk->output, false, pixels)
@@ -99,10 +114,14 @@ static SrStatus masks(LengthWalk *walk, const SrNode *node, SrNodeGeometry *geom
     SrLengthFrame *frame = walk->frame;
     size_t needed = frame->mask_count + node->mask_count;
     if (needed > frame->mask_capacity) {
-        SrMaskGeometry *grown = grow(frame->masks, &frame->mask_capacity, needed,
+        SrMaskGeometry *grown = grow(frame->resources, frame->masks,
+                                      &frame->mask_capacity, needed,
                                       sizeof(*grown), SR_MAX_LENGTH_MASKS);
-        if (!grown) return fail(walk, node, SR_ERR_MEMORY,
-                                 "out of memory evaluating mask lengths");
+        if (!grown) {
+            if (frame->resources) return sr_composite_resource_status(frame->resources);
+            return fail(walk, node, SR_ERR_MEMORY,
+                          "out of memory evaluating mask lengths");
+        }
         frame->masks = grown;
     }
     geometry->mask_offset = frame->mask_count;
@@ -128,6 +147,11 @@ static SrStatus masks(LengthWalk *walk, const SrNode *node, SrNodeGeometry *geom
 static SrStatus index_node(LengthWalk *walk, const SrNode *node, size_t depth) {
     SrLengthFrame *frame = walk->frame;
     if (!node) return SR_ERR_ARGUMENT;
+    sr_composite_owner(frame->resources, (SrCompositeOwner){
+        node->source_line, node == walk->scene->root ? "composition" : element(node),
+        NULL});
+    if (!sr_composite_physics_ready(frame->resources, walk->scene, node, walk->time))
+        return SR_ERR_RENDER;
     if (depth > SR_MAX_LENGTH_DEPTH)
         return fail(walk, node, SR_ERR_RENDER, "relative length depth limit is 256");
     if (node->order >= SR_MAX_LENGTH_NODES || node->child_count > SR_MAX_LENGTH_NODES)
@@ -135,12 +159,21 @@ static SrStatus index_node(LengthWalk *walk, const SrNode *node, size_t depth) {
     if (node->mask_count > SR_MAX_LENGTH_MASKS - walk->masks_seen)
         return fail(walk, node, SR_ERR_RENDER, "relative length mask limit is 262144");
     walk->masks_seen += node->mask_count;
+    /* Index/evaluation, child traversal, local box and each mask record;
+     * scalar animation/key work is reserved separately at its consumer. */
+    if (!sr_composite_work(frame->resources,
+                            8 + 2 * node->child_count + node->mask_count, 1))
+        return SR_ERR_RENDER;
     size_t needed = node->order + 1;
     if (needed > frame->node_capacity) {
-        SrNodeGeometry *grown = grow(frame->nodes, &frame->node_capacity, needed,
+        SrNodeGeometry *grown = grow(frame->resources, frame->nodes,
+                                      &frame->node_capacity, needed,
                                       sizeof(*grown), SR_MAX_LENGTH_NODES);
-        if (!grown) return fail(walk, node, SR_ERR_MEMORY,
-                                 "out of memory evaluating node lengths");
+        if (!grown) {
+            if (frame->resources) return sr_composite_resource_status(frame->resources);
+            return fail(walk, node, SR_ERR_MEMORY,
+                          "out of memory evaluating node lengths");
+        }
         frame->nodes = grown;
     }
     if (needed > frame->node_count) frame->node_count = needed;
@@ -187,6 +220,9 @@ static SrStatus visit(LengthWalk *walk, const SrNode *node, SrLengthBox parent,
     if (walk->base_pose && !geometry->base_scope) return SR_OK;
     bool live = parent_live && node->visible && walk->time >= node->start_time &&
         walk->time < node->end_time;
+    if (!walk->base_pose && parent_drawn && live &&
+        !sr_composite_anim_work(walk->frame->resources, &node->opacity, false))
+        return SR_ERR_RENDER;
     bool drawn = !walk->base_pose && parent_drawn && live &&
         !(sr_anim_eval(&node->opacity, walk->time) <= 0.0);
     bool content = walk->base_pose ? geometry->base_box : drawn || (bounds && live);
@@ -227,9 +263,12 @@ static SrStatus visit(LengthWalk *walk, const SrNode *node, SrLengthBox parent,
     return SR_OK;
 }
 
-SrStatus sr_length_frame_prepare(SrLengthFrame *frame, const SrScene *scene,
+static SrStatus prepare(SrLengthFrame *frame, const SrScene *scene,
                                  double time, bool base_pose, SrDiagnostics *diag) {
     if (!frame || !scene || !scene->root || !isfinite(time)) return SR_ERR_ARGUMENT;
+    if (!sr_composite_work(frame->resources, frame->node_count,
+                            sizeof(*frame->nodes) / 4))
+        return SR_ERR_RENDER;
     if (frame->node_count)
         memset(frame->nodes, 0, frame->node_count * sizeof(*frame->nodes));
     frame->node_count = frame->mask_count = 0;
@@ -243,9 +282,18 @@ SrStatus sr_length_frame_prepare(SrLengthFrame *frame, const SrScene *scene,
     return visit(&walk, scene->root, walk.output, 1, true, true, false);
 }
 
+SrStatus sr_length_frame_prepare(SrLengthFrame *frame, const SrScene *scene,
+                                 double time, bool base_pose, SrDiagnostics *diag) {
+    SrCompositeResources *resources = frame ? frame->resources : NULL;
+    SrCompositeOwner previous = resources ? resources->owner : (SrCompositeOwner){0};
+    SrStatus status = prepare(frame, scene, time, base_pose, diag);
+    sr_composite_owner(resources, previous);
+    return status;
+}
+
 void sr_length_frame_free(SrLengthFrame *frame) {
     if (!frame) return;
-    free(frame->nodes);
-    free(frame->masks);
+    sr_composite_free(frame->resources, frame->nodes);
+    sr_composite_free(frame->resources, frame->masks);
     *frame = (SrLengthFrame){0};
 }

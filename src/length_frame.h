@@ -30,6 +30,7 @@ typedef struct SrLengthFrame {
     size_t node_count, node_capacity;
     SrMaskGeometry *masks;
     size_t mask_count, mask_capacity;
+    struct SrCompositeResources *resources; /* borrowed until arrays are freed */
 } SrLengthFrame;
 
 SrStatus sr_length_frame_prepare(SrLengthFrame *frame, const SrScene *scene,

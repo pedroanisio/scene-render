@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "compositor_resources_internal.h"
 #include "compositing_internal.h"
+#include "timeline_internal.h"
 
 #include <assert.h>
 #include <stddef.h>
@@ -83,6 +84,26 @@ bool sr_composite_work(SrCompositeResources *resources, uint64_t count,
         return sr_composite_resource_fail(resources, SR_ERR_RENDER,
                                             "compositing work overflow");
     return sr_composite_reserve(resources, 0, 0, count * cost);
+}
+
+bool sr_composite_anim_work(SrCompositeResources *resources,
+                             const SrAnimValue *value, bool length) {
+    if (!resources) return true;
+    const SrTrack *track = &value->track;
+    if (track->count > SR_MAX_TRACK_KEYS || (track->count && !track->keys))
+        return sr_composite_resource_fail(resources, SR_ERR_RENDER,
+                                            "invalid compositing animation keys");
+    /* Scalar evaluation has at most 16 binary-search steps and 24 Bezier
+     * iterations; the remaining curve/clock/tangent branches are constant.
+     * Relative keys add a second search, six-key neighborhood conversion and
+     * copying the selected keys plus the temporary track descriptor. */
+    uint64_t work = track->count ? 64 : 1;
+    if (length && track->has_relative) {
+        work += 32 + sizeof(SrTrack) / 4 + (sizeof(SrTrack) % 4 != 0);
+        work += SR_TRACK_NEIGHBORHOOD *
+            (2 + sizeof(SrKeyframe) / 4 + (sizeof(SrKeyframe) % 4 != 0));
+    }
+    return sr_composite_work(resources, work, 1);
 }
 
 SrStatus sr_composite_resource_status(const SrCompositeResources *resources) {

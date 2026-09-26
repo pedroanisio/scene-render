@@ -12,6 +12,7 @@
 #include "compositing_internal.h"
 #include "compositor_internal.h"
 #include "compositor_resources_internal.h"
+#include "compositor_geometry_internal.h"
 
 #include <float.h>
 #include <limits.h>
@@ -38,6 +39,8 @@ typedef struct {
     double *storage;            /* owns every mesh[i] grid */
     double *soft;
     double *params;             /* 3 per modifier */
+    SrCompositeResources *resources; /* borrowed through immediate draw */
+    uint64_t pixel_work;        /* worst-case inverse, independent of samples */
 } SrDeformState;
 
 typedef struct {
@@ -148,7 +151,7 @@ void sr_compositor_free(SrCompositor *compositor) {
     sr_composite_free(compositor->resources, compositor->depth_store.z);
     if (compositor->lengths) {
         sr_length_frame_free(compositor->lengths);
-        free(compositor->lengths);
+        sr_composite_free(compositor->resources, compositor->lengths);
     }
     for (size_t i = 0; i < compositor->pool_count; ++i) {
         if (compositor->pool[i])
@@ -286,6 +289,8 @@ static SrStatus sr_node_world(SrDrawContext *context, const SrNode *node,
     double y = geometry ? geometry->y : sr_anim_eval(&node->transform.y, time);
     double rotation = sr_anim_eval(&node->transform.rotation, time) * SR_PI / 180.0;
     double physics_rotation;
+    if (!sr_composite_physics_ready(context->compositor->resources, scene, node, time))
+        return SR_ERR_RENDER;
     if (sr_physics_pose(scene, node, time, &x, &y, &physics_rotation))
         rotation = physics_rotation * SR_PI / 180.0;
     double sx = sr_anim_eval(&node->transform.scale_x, time);
@@ -382,21 +387,24 @@ static bool sr_node_deforms(const SrNode *node) {
 }
 
 static void sr_deform_free(SrDeformState *state) {
-    free(state->mesh);
-    free(state->storage);
-    free(state->soft);
-    free(state->params);
+    sr_composite_free(state->resources, state->mesh);
+    sr_composite_free(state->resources, state->storage);
+    sr_composite_free(state->resources, state->soft);
+    sr_composite_free(state->resources, state->params);
     *state = (SrDeformState){0};
 }
 
 /* Evaluates the grid deformations of `node` at `time`. */
 static SrStatus sr_deform_prepare(const SrScene *scene, const SrNode *node,
-                                  double time, SrDeformState *state) {
-    *state = (SrDeformState){0};
+                                  double time, SrCompositeResources *resources,
+                                  SrDeformState *state) {
+    *state = (SrDeformState){.resources = resources};
+    if (!sr_composite_deform_admit(resources, scene, node, time, &state->pixel_work))
+        return sr_composite_resource_status(resources);
     if (node->modifier_count) {
-        state->params = sr_alloc(node->modifier_count * 3 *
-                                 sizeof(*state->params));
-        if (!state->params) return SR_ERR_MEMORY;
+        state->params = sr_composite_alloc(resources, node->modifier_count,
+                                            3 * sizeof(*state->params), 0);
+        if (!state->params) return sr_composite_resource_status(resources);
         for (size_t i = 0; i < node->modifier_count; ++i) {
             const SrModifier *modifier = &node->modifiers[i];
             double *param = state->params + i * 3;
@@ -412,9 +420,14 @@ static SrStatus sr_deform_prepare(const SrScene *scene, const SrNode *node,
         if (node->modifiers[i].type == SR_MOD_MESH_WARP)
             total += (size_t)node->modifiers[i].rows * node->modifiers[i].cols * 2;
     if (total) {
-        state->mesh = sr_alloc(node->modifier_count * sizeof(*state->mesh));
-        double *values = state->storage = sr_alloc(total * sizeof(*values));
-        if (!state->mesh || !values) { sr_deform_free(state); return SR_ERR_MEMORY; }
+        state->mesh = sr_composite_alloc(resources, node->modifier_count,
+                                          sizeof(*state->mesh), 0);
+        double *values = state->storage = sr_composite_alloc(resources, total,
+                                                              sizeof(*values), 0);
+        if (!state->mesh || !values) {
+            sr_deform_free(state);
+            return sr_composite_resource_status(resources);
+        }
         for (size_t i = 0; i < node->modifier_count; ++i) {
             const SrModifier *modifier = &node->modifiers[i];
             if (modifier->type != SR_MOD_MESH_WARP) continue;
@@ -427,10 +440,13 @@ static SrStatus sr_deform_prepare(const SrScene *scene, const SrNode *node,
     }
     if (node->soft_body.enabled && node->soft_body.sample_count) {
         size_t count = (size_t)node->soft_body.rows * node->soft_body.cols;
-        state->soft = sr_alloc(count * 2 * sizeof(*state->soft));
-        if (!state->soft) { sr_deform_free(state); return SR_ERR_MEMORY; }
+        state->soft = sr_composite_alloc(resources, count, 2 * sizeof(*state->soft), 0);
+        if (!state->soft) {
+            sr_deform_free(state);
+            return sr_composite_resource_status(resources);
+        }
         if (!sr_physics_soft_offsets(scene, node, time, state->soft)) {
-            free(state->soft);
+            sr_composite_free(resources, state->soft);
             state->soft = NULL;
         }
     }
@@ -1129,8 +1145,9 @@ static SrStatus sr_op_submit_shared(SrCompositor *compositor,
     SrCompositeResources *resources = compositor->resources;
     if (resources) {
         /* One raster/blend step, every inherited mask and link, and every
-         * card depth sample. Deformation evaluation is integrated separately. */
+         * card depth sample, plus the full inverse-deformation fallback. */
         uint64_t cost = 1;
+        if (op->deform) cost += op->deform->pixel_work;
         for (const SrMaskLink *link = op->masks; link; link = link->parent) {
             if (!sr_composite_work(resources, 1, 1)) return SR_ERR_RENDER;
             cost += 1 + link->count;
@@ -1239,7 +1256,7 @@ static SrStatus sr_draw_image(SrDrawContext *context, const SrNode *node,
     if (!image) return frame_status == SR_ERR_MEMORY ? SR_ERR_MEMORY : SR_OK;
     SrDeformState deform;
     SrStatus status = sr_deform_prepare(context->scene, node, context->time,
-                                        &deform);
+                                        context->compositor->resources, &deform);
     if (status != SR_OK) return status;
     SrDrawOp op = sr_op_base(context, node, target, inverse, opacity,
                              context->time, masks);
@@ -1268,7 +1285,7 @@ static SrStatus sr_draw_shape(SrDrawContext *context, const SrNode *node,
                               const SrMaskLink *masks) {
     SrDeformState deform;
     SrStatus status = sr_deform_prepare(context->scene, node, context->time,
-                                        &deform);
+                                        context->compositor->resources, &deform);
     if (status != SR_OK) return status;
     SrDrawOp op = sr_op_base(context, node, target, inverse, opacity,
                              context->time, masks);
@@ -2021,13 +2038,17 @@ static SrStatus sr_prepare_lengths(SrCompositor *compositor, const SrScene *scen
                                     double time, SrDiagnostics *diag) {
     if (!scene->has_relative_lengths) return SR_OK;
     if (!compositor->lengths) {
-        compositor->lengths = sr_alloc(sizeof(*compositor->lengths));
+        compositor->lengths = sr_composite_alloc(compositor->resources, 1,
+                                                 sizeof(*compositor->lengths), 0);
         if (!compositor->lengths) {
+            if (compositor->resources)
+                return sr_composite_resource_status(compositor->resources);
             if (diag)
                 sr_diag_error(diag, 0, "composition", NULL,
                               "out of memory allocating evaluated lengths");
             return SR_ERR_MEMORY;
         }
+        compositor->lengths->resources = compositor->resources;
     }
     return sr_length_frame_prepare(compositor->lengths, scene, time, false, diag);
 }

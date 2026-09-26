@@ -138,6 +138,40 @@ bundle bounds must likewise cover all supported dispatch choices consistently.
 Dynamic fragment growth needs a pre-established conservative capacity/work
 bound before raster workers start; it cannot use timing-dependent admission.
 
+### Evaluated lengths and deformation
+
+Length frames carry the same borrowed ledger from their first allocation until
+paired free. The descriptor, node/mask capacity and old-plus-new growth count;
+growth zeroing and reset zeroing are separate from the allocator's copy charge.
+Bounded compositor entry reclaims any earlier raw length arrays before attaching
+a ledger. Physics preparation and other legacy callers retain NULL ownership.
+
+Scalar animation reserves 64 units for a keyed track (at most 16 binary-search
+steps plus 24 Bezier iterations and constant curve/clock work), one for a static
+value. Relative-length tracks additionally reserve a second search, up to six
+key copies/conversions and a temporary track copy. Key count/storage is checked
+before evaluation. This consumer integration includes length-walk opacity and
+deformation parameters/grid points; other animation consumers are still listed
+as remaining work until connected.
+
+Deformation state owns parameter, mesh-pointer, evaluated-grid and soft-offset
+arrays through the ledger. Active compositing accepts at most 65536 modifiers
+per node and grid sides in [2,16], matching the existing XML grid range. Check
+those bounds before products or pointer access. Declared direct-C backing arrays
+must contain rows*cols*2 points, sample_count*rows*cols*2 soft doubles or
+sample_count rigid records; a bare pointer cannot expose its actual capacity.
+Cached physics sampling also requires finite time and finite positive fixedStep
+before floor-to-index conversion, and checked sample-offset products.
+
+Each grid inverse reserves `16 + 8*(rows+1)*(cols+1)` units per clipped pixel,
+plus one dispatch per modifier. This covers initial/final field checks, twelve
+Newton iterations, and the analytic fallback's exterior/interior patches,
+outer row dispatch, four hull corners and up to two roots/considerations per
+patch. Reserve the full bound even for a zero grid or an early-converging pixel.
+Mesh/soft extent scans and output preparation have separate reservations;
+`modifier.amount` is charged again for its existing bounds evaluation.
+Parameters and arithmetic remain unchanged on the legacy path.
+
 ## Integration and verification
 
 Integrate the ledger into actual consumers in reviewable increments. An

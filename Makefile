@@ -79,7 +79,7 @@ CORE_SOURCES := src/common.c src/card.c src/parallel.c src/random.c \
 	src/vector_path.c src/mesh.c src/gpu.c src/spatial.c src/diagnostics.c \
 	src/timeline.c src/length.c src/length_frame.c src/curves.c src/property.c src/scene.c \
 	src/assets.c src/text.c src/procedural.c src/audio.c src/compositor.c \
-	src/compositing.c src/compositor_resources.c src/camera.c \
+	src/compositing.c src/compositor_resources.c src/compositor_geometry.c src/camera.c \
 	src/lighting.c src/effects.c src/particles.c src/deform.c src/physics.c \
 	src/encoder.c src/video.c src/renderer.c \
 	src/resume.c src/xml.c \
@@ -97,7 +97,8 @@ TEST_OBJECTS := $(TEST_SOURCES:tests/unit/%.c=$(BUILD)/unit/%.o)
 UNIT_SUITES := timeline length length_frame length_physics curves geometry \
 	compositor color vector mesh random \
 	scene property xml xml_lengths profile styles metadata \
-	camera physics blend blend_color skew compositing composite_resources group raster mask path \
+	camera physics blend blend_color skew compositing composite_resources \
+	composite_geometry group raster mask path \
 	mask_path fuzz_mask_path image \
 	encode encode_faults audio video fx anim_color particles deform shadow text args resume depth \
 	$(P7_UNIT_SUITES)

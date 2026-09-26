@@ -73,6 +73,7 @@ extern const sr_test_case sr_tests_blend_color[];
 extern const sr_test_case sr_tests_skew[];
 extern const sr_test_case sr_tests_compositing[];
 extern const sr_test_case sr_tests_composite_resources[];
+extern const sr_test_case sr_tests_composite_geometry[];
 extern const sr_test_case sr_tests_length[];
 extern const sr_test_case sr_tests_xml_lengths[];
 extern const sr_test_case sr_tests_length_frame[];

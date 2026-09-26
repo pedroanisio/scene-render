@@ -32,6 +32,10 @@ void sr_composite_release(SrCompositeResources *resources, uint64_t bytes,
                            uint64_t pixels);
 bool sr_composite_work(SrCompositeResources *resources, uint64_t count,
                         uint64_t cost);
+/* Before scalar/relative-key evaluation; accepts only finalized track storage.
+ * A NULL ledger leaves legacy validation and arithmetic unchanged. */
+bool sr_composite_anim_work(SrCompositeResources *resources,
+                             const SrAnimValue *value, bool length);
 bool sr_composite_resource_fail(SrCompositeResources *resources,
                                  SrStatus status, const char *reason);
 SrStatus sr_composite_resource_status(const SrCompositeResources *resources);

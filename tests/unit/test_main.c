@@ -48,6 +48,7 @@ int main(int argc, char **argv)
         {"skew", sr_tests_skew},
         {"compositing", sr_tests_compositing},
         {"composite_resources", sr_tests_composite_resources},
+        {"composite_geometry", sr_tests_composite_geometry},
         {"length", sr_tests_length},
         {"xml_lengths", sr_tests_xml_lengths},
         {"length_frame", sr_tests_length_frame},

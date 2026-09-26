@@ -517,3 +517,30 @@ This is partial accounting: deformation/particles, lengths, geometry/animation
 work, effects/lighting, path raster scratch and the wider renderer scope still
 need integration. Advanced masks and the other remaining B1 requirements are
 unchanged. No complete shared-budget claim or additional capability is enabled.
+
+
+## Evaluated geometry accounting
+
+The next shared-ledger increment covers relative node/mask arrays, evaluated
+modifier parameters/mesh grids and sampled soft offsets, including growth,
+clearing, consumed animation work and the full inverse-deformation fallback
+before worker dispatch. Cached rigid/soft sample clocks and declared extents
+are checked before indexing. Legacy arithmetic and ownership remain unchanged.
+
+Five geometry cases and 52-allocation failure replay cover exact/short quotas,
+repeated growth, thread/frame history and clean recovery. Review found no
+production-code issues; the sole verification finding was reproduced and closed
+by enlarging the deformation fixture to exercise actual parallel dispatch.
+Release and ASan/UBSan pass 80/80 tests each, with the expanded test rerun in
+both builds; final coverage passes 80/80 at 92.27% lines / 77.15% branches.
+The raised 90.25% / 75.10% floors pass. The oracle matches 309 previews,
+three encodes and two rejections. The strict 2% baseline performance gate
+passes; alternating geometry compositor cost is +1.74% with overlapping ranges.
+No golden, integration hash or baseline changes. Full evidence is recorded in
+`docs/reviews/b1-compositor-geometry.md`.
+
+Accounting remains incomplete for particles/cache lifecycle, other animation
+and card geometry work, effects/lighting, path raster scratch and the wider
+renderer scope. Advanced masks, remaining blends, dependency captures, mattes,
+adjustments, B1-4 through B1-6 and batch completion remain required. No new
+capability is enabled by this increment.
