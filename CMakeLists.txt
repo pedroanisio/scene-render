@@ -145,6 +145,9 @@ if(BUILD_TESTING)
         PkgConfig::LIBAV PkgConfig::TEXT PkgConfig::LIBXML2 m Threads::Threads
         ${CMAKE_DL_LIBS})
     sr_configure_target(scene-render-testhooks)
+    add_test(NAME frame_order
+        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/frame-order-check.sh
+                $<TARGET_FILE:scene-render> $<TARGET_FILE:scene-render-testhooks>)
     # --- Verification depth (P7) ---------------------------------------
     # unit.golden: reference images in tests/golden/expected/
     # (SR_UPDATE_GOLDEN=1 regenerates them). unit.oom: allocation-failure
