@@ -38,6 +38,7 @@ difference, and keeps the rendered frame in `BUILD/test_tmp/golden/`.
 | `deform.xml` | mesh-warp with animated points, bend, twist, wave, squash, stretch | 0, 12, 23 |
 | `curves.xml` | hold/steps, all ten Penner families, Catmull-Rom, TCB, spring and temporal Bezier handles | 0, 8, 20 |
 | `tracks.xml` | all extrapolation modes, additive positions/colours, normalized/local clocks, looping particle emission and spring lifetimes | 0, 12, 20 |
+| `sequence-markers.xml` | sequences with a positive gap and an overlap (slot-relative keys, open-end normalized and local tracks, a local mask), a `timeOffset`/`timeScale` group with a re-timed particle emitter, `startMarker`/`endMarker`, keys snapped to markers, `beat.N` and `bar.N` with offsets, names and tags | 0, 12, 18 |
 | `material-animation.xml` | shared base color/alpha, emissive, metallic and roughness animation with shadows | 0, 12, 20 |
 | `lengths.xml` | relative lengths, group scopes, mixed-unit motion, host-local masks and physics | 0, 12, 23 |
 | `styles.xml` | load-time color aliases in project and animated material colors, equivalent to `material-animation.xml` | 0, 12, 20 |

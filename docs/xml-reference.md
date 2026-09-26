@@ -1166,8 +1166,9 @@ alternately to the last/first key. One-key tracks always hold.
 `additive="true"` adds the static property value after interpolation and
 extrapolation. For colour this addition occurs in linear light, including
 alpha; the normal output clamps still apply. `timeBase="composition"`
-uses project seconds. `local` uses elapsed host seconds and its ancestor
-group clocks. Masks and modifiers inherit their owning node's clock.
+uses the host's composition timeline: project seconds, unless a re-timed
+group or a sequence encloses the host (see Timeline structure). `local` uses
+elapsed host seconds on that timeline. Masks and modifiers inherit their owning node's clock.
 `normalized` divides those local seconds by the host duration; a missing
 end uses the project end. A zero or nonfinite normalized span is an error.
 Shared scene hosts use the project interval; audio tracks use `start` through
@@ -1201,3 +1202,124 @@ budget and its cost grows with the evaluated emitter time span. Extended
 emission tracks fail rendering if their cumulative index exceeds
 `SR_MAX_PARTICLE_INDEX` (9e15); this keeps integer conversion and one-particle
 steps exact, even when interpolation overshoots its key values.
+
+## Timeline structure (1.1)
+
+Version 1.1 adds a `markers` section (after `scene360`, before
+`composition`), group clocks, the `sequence` node and node names and tags.
+Everything below resolves once at load time; rendering evaluates no marker,
+clock or sequence, so every frame remains a pure function of the scene and
+its time.
+
+```xml
+<markers>
+  <marker id="hit" time="2.5" kind="cue" label="Logo hit" color="#FACC15"/>
+  <marker id="outro" time="8" duration="2" kind="section"/>
+  <beatGrid bpm="120" offset="0.5" beatsPerBar="4"/>
+</markers>
+```
+
+**Markers.** `time` is composition seconds (magnitude at most 1e6);
+`duration` (default 0, non-negative) and `label` (at most 4096 bytes) are
+stored for later consumers; `color` accepts style tokens. `kind` is `cue`
+(default), `section` or `beat`; `chapter`, `comment`, `todo` and `cta` carry
+batch 3 behaviour and are reported as unsupported in this build. `id` is
+optional; a marker without one cannot be referenced. At most 65536 markers.
+
+**Beat grid.** `beatGrid` generates the ids `beat.N` and `bar.M`, 1-based:
+
+    beat.N  at  offset + (N - 1) * 60 / bpm        (N = 1, 2, ...)
+    bar.M   at  the time of beat.((M - 1) * beatsPerBar + 1)
+
+so `beat.1` and `bar.1` are the downbeat at `offset`. The grid generates the
+beats at or before the project end (at most 1048576, else a load error) and
+the bars whose first beat exists. `bpm` is in (0, 1e6], `offset` in +-1e6,
+`beatsPerBar` in [1, 1024]. Generated ids are exactly `beat.` or `bar.`
+followed by a decimal without sign or leading zero. They join the id table
+before any reference resolves: a marker or any other element whose id equals
+a generated id is an error, and only one `beatGrid` is allowed. `source`
+(tempo analysis) is unsupported in this build.
+
+**References.** `startMarker`, `endMarker` and `key/@marker` name a marker
+or a generated id. An unknown id, an id of another element ("is not a
+marker") and a generated id outside the grid (the message gives the grid's
+range) are load errors at the referring line and attribute.
+
+- `startMarker`/`endMarker` set the node's start/end to the marker instant.
+  They exclude `start`/`end` respectively, and the result must satisfy
+  `0 <= start < end` on the node's clock. The node's composition interval is
+  exactly the marker time, whatever clock encloses it.
+- `<key marker="m" time="dt">` places the key at the marker instant plus
+  `dt`, measured in the track's own units (seconds for `composition` and
+  `local`, the normalized unit for `normalized`); `dt` may be negative
+  (at most 1e6 in magnitude), but the resulting key time must not be.
+  Evaluating the track at the marker instant lands exactly on the key.
+  Snapped keys are then sorted and validated like literal keys (unique
+  times, handle placement, bounds), with errors at the key's line.
+
+**Group clocks.** `timeOffset` o (seconds, magnitude at most 1e6, default 0)
+and `timeScale` q (in [1e-6, 1e6], default 1) re-time a group's children.
+With the group's start s, a child at composition time t sees
+
+    child time = (parent time - s) * q + s + o
+
+so at the group's start the children's timeline reads `s + o`, and it runs q
+times faster from there. The defaults leave children on the parent's
+timeline, as in 1.0 (group `start` does not shift children). Nested groups
+compose; the product of their scales must stay in [1e-6, 1e6]. The group's
+own properties, masks and interval stay on its parent's timeline. Node
+`start`/`end` and `composition` keys of the children are read on the child
+timeline; `local` is elapsed seconds since the host's start on it and
+`normalized` divides by the host's duration on it (an open end is the
+project end mapped onto it). Masks, modifiers and mesh-warp points follow
+their node. Materials, cameras, lights, effects, force fields, 3D objects
+and audio tracks keep project time. `timeScale` is not animatable.
+
+Re-timed content: layer media play at `speed * scale`; particle emission,
+ages and the 1/240 s rate grid run on the emitter's timeline (an emitter in
+a `timeScale="2"` group at time t equals the same emitter at 2t outside it).
+Physics simulates on the project clock: offsets are allowed, but a dynamic
+or kinematic rigid body or a soft body under a combined scale other than 1
+is unsupported in this build.
+
+```xml
+<group id="fast" start="2" timeScale="2" timeOffset="0.5">
+  <shape id="ball" shape="ellipse" width="20" height="20">
+    <animate property="position.x">   <!-- child timeline: 2.5 at t = 2 -->
+      <key time="2.5" value="0"/><key time="4.5" value="300"/>
+    </animate>
+  </shape>
+</group>
+```
+
+**Sequences.** `sequence` accepts every group attribute and child, plus
+`timeGap` (seconds, magnitude at most 1e6; negative values overlap). Its
+child nodes, in document order, are items played one after another:
+
+    slot(0)   = sequence start
+    slot(i+1) = slot(i) + end(i) + timeGap
+
+Each item's `start`, `end`, keys and whole subtree are relative to its slot
+(its own `start` is an additional offset). Every item but the last needs a
+finite `end`; `endMarker` on an item is converted into its slot, while
+`startMarker` on an item is an error because the sequence places it. Items
+are placed before `z` sorting, which only changes drawing order. `object3D`
+and `camera` children keep their scene-global timing, as inside any group.
+`transition` and `transitionDuration` are unsupported in this build (batch 3
+transitions). Adjacent items without a gap meet at bitwise-equal instants.
+
+```xml
+<sequence id="story" timeGap="0.25">
+  <group id="intro" end="2">...</group>     <!-- [0, 2) -->
+  <group id="middle" end="3">...</group>    <!-- [2.25, 5.25) -->
+  <group id="outro">...</group>             <!-- [5.5, ...) -->
+</sequence>
+```
+
+**Names and tags.** Every node accepts `name` (text, at most 1024 bytes) and
+`tags` (whitespace-separated name tokens, at most 64 per node and 128 bytes
+each; a repeated tag is an error). Both are stored for diagnostics, which
+quote the node as `group 'id' ("name")`, and for later safe-area checks.
+
+All timeline limits fail the load with the element and attribute. Timing
+adds no input file, so the XML fingerprint still covers resume.

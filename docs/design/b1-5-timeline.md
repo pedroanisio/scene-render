@@ -11,8 +11,11 @@ with batch 3 behaviour (`chapter`, `comment`, `todo`, `cta`; B3-H) and
 the capability gate. `audioTrack/@startMarker` belongs to B3-G.
 
 Everything in this item is resolved at load time. Rendering reads the result
-and never evaluates a marker, a clock or a sequence, so no render-time work
-or allocation is added and the compositor resource ledger is unchanged.
+and never evaluates a marker, a clock or a sequence. The only render-time
+change is the particle clock conversion (a multiply/divide by the node's
+clock rate, exact at 1.0); no render-time allocation is added, so the
+compositor resource ledger is unchanged, and the existing particle
+admission limits (rate cells, candidates) bound re-timed emitters.
 
 ## Clocks
 
@@ -28,8 +31,8 @@ the clock
     C_G(t) = (P_G(t) - s) * q + s + o
 
 The pivot is the group's own start, so at the instant the group starts its
-children are `o` seconds into their content, and `q` changes their speed from
-that instant on. With the defaults (q = 1, o = 0) C_G = P_G: groups without
+children's timeline reads `s + o` (a child starting at `s` is `o` seconds
+into its content), and `q` changes their speed from that instant on. With the defaults (q = 1, o = 0) C_G = P_G: groups without
 the new attributes are unchanged, which keeps 1.0 children in absolute
 composition seconds (their existing meaning). The arithmetic is exact for the
 defaults: q = 1 composes as `b' = b + o` and q = 1, o = 0 copies the parent
@@ -47,8 +50,12 @@ placed one after another. With the sequence's children clock C and start s:
 
 Each item's `start`, `end`, keys and subtree are written relative to its slot:
 the XSD's "a child's own start is an additional offset". Every item but the
-last needs a finite `end` (the next item starts from it); `startMarker` and
-`endMarker` are rejected on items because the sequence places them. A
+last needs a finite `end` (the next item starts from it). An item's
+`endMarker` is converted into its slot (`end = item clock(marker)`), so an
+item can run until a marker; `startMarker` on an item is rejected because
+the sequence decides where the item starts. Item intervals are unmapped as
+`unmap(C, slot + start)` so that, without a gap, an item's end and the next
+item's start are the same double. A
 negative `timeGap` overlaps items. `object3D` and `camera` inside a sequence
 keep their scene-global timing, exactly as inside a group; they are not
 items. Items are placed before `z` sorting, so `z` changes drawing order only.
@@ -81,10 +88,15 @@ compositor, depth cards, relative-length walk and particles already compare
 with composition time; the authored values are kept for diagnostics.
 
 B1-1 computed local clocks at parse time from the sum of ancestor group
-starts. Group starts do not shift children in 1.0, so that offset was wrong
-whenever an ancestor group had a nonzero start (no fixture does). The
-resolver replaces it with the clock above. Parse time now only records the
-time base for node hosts.
+starts. Group starts do not shift children in 1.0 (the compositor compares
+a child's own `start` with composition time), so that offset made a local
+track disagree with its node's visibility whenever an ancestor group had a
+nonzero start: with a group at 2 and a child at 3, the child appears at 3
+but its local time there was -2. No fixture or example uses this (checked
+over every repository scene), and B1-1 is not batch-merged, so the resolver
+replaces it with the clock above instead of freezing it into the contract;
+a regression test pins the corrected value. Parse time now only records
+the time base for node hosts.
 
 Clock consumers that are not tracks:
 
@@ -92,13 +104,21 @@ Clock consumers that are not tracks:
   resolver multiplies `speed` by `a` (exact for a = 1). `source.time` tracks
   get the node clock like every other track.
 - **Particles.** Emission, ages and the 1/240 s rate grid run on the parent
-  clock: `particles.c` converts with the node's `clock_scale`, which is 1.0
-  (exact) for every existing scene. A particle system in a group with
-  timeScale 2 at time t equals the same system at time 2t outside it.
-- **Physics.** Simulation runs on the project clock (it already ignores node
-  `start`). Kinematic bodies follow their re-timed tracks. Dynamic rigid
-  bodies and soft bodies under a clock rate other than 1 are rejected with a
-  diagnostic, because their simulated motion could not follow the clock.
+  clock. With the emitter's absolute start S and clock rate a: local age
+  `now = (t - S) * a`; a local instant u (a birth, a grid point `k/240`) is
+  evaluated at composition time `S + u / a`, where the tracks apply their
+  own clocks; grid lookups use `(t - S) * a / step`; the lifetime bound
+  interval stays `[S, t]` in composition seconds. `a` is 1.0 for every
+  existing scene, where each conversion is exact. A system in a group with
+  timeScale 2 at time t equals the same system at 2t outside it, byte for
+  byte; a dyadic offset reproduces exactly as well.
+- **Physics.** Simulation runs on the project clock and already ignores
+  node `start`; kinematic bodies integrate their configured velocity, not
+  animation tracks. Under a pure offset (sequence items, `timeOffset`) this
+  is unchanged. A dynamic or kinematic rigid body or a soft body under a
+  clock rate other than 1 is rejected ("unsupported in this build"), because
+  its simulated motion could not follow the clock. The physics cache
+  signature is therefore unaffected.
 
 `timeScale` and `timeOffset` are static attributes. The schema does not make
 them animatable (animated time scaling is a time remap, B2), so they get no
@@ -140,9 +160,12 @@ element and attribute.
 
 ## References to markers
 
-- **startMarker / endMarker** set the node's start/end to `P_N(time)`. Each is
+- **startMarker / endMarker** set the node's start/end to `P_N(time)` on its
+  parent clock, and its composition interval to the marker time itself (no
+  map/unmap round trip, which is inexact for scales such as 10). Each is
   exclusive with the literal `start`/`end`. The resolved interval must still
-  satisfy `0 <= start < end`.
+  satisfy `0 <= start < end` on the parent clock and be non-empty in
+  composition seconds.
 - **key marker.** The key's `time` becomes an offset in the track's own
   coordinate: `key.time = clock(track, marker) + time`, where `clock` is the
   track's resolved affine map (identity without a clock). Evaluating the
@@ -212,3 +235,26 @@ renders agree (`frame_order`).
 - Cost: O(nodes x registry rows + markers log markers + keys) at load; zero
   per frame. Scenes without B1-5 constructs take one extra tree walk at load
   and are byte-identical (equivalence oracle).
+
+## Review
+
+A read-only Codex review of this note (before code) raised eight points;
+the design above incorporates them:
+
+1. B1-1 local-clock correction: kept as a deliberate fix of an unreleased
+   B1-1 behaviour (see "Clocks"); no repository scene is affected and the
+   oracle is unchanged.
+2. Kinematic bodies integrate velocity, not tracks: the physics paragraph is
+   corrected and kinematic bodies are rejected under scales with the others.
+3. Marker endpoints are kept exact rather than unmapped.
+4. Tracks with snapped keys skip parse-time finalization entirely and are
+   validated once after resolution (negative offsets, duplicate times after
+   snapping, handles, bounds), including colour channels and shared hosts.
+5. The particle coordinate contract is spelled out above and tested with
+   keyed rates under scale 2 and with a dyadic offset.
+6. Derived work: particle admission limits still apply at render time;
+   media `speed * scale` is checked finite at load; the zero-cost claim is
+   narrowed.
+7. Sequence items accept `endMarker`; only `startMarker` is rejected.
+8. The clock explanation is corrected; the composition-timebase refinement
+   is recorded in `docs/xml-reference.md` next to the B1-1 text.
