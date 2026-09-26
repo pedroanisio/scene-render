@@ -99,6 +99,8 @@ extern const sr_test_case sr_tests_group[];
 extern const sr_test_case sr_tests_raster[];
 extern const sr_test_case sr_tests_mask[];
 extern const sr_test_case sr_tests_path[];
+extern const sr_test_case sr_tests_mask_path[];
+extern const sr_test_case sr_tests_fuzz_mask_path[];
 extern const sr_test_case sr_tests_image[];
 extern const sr_test_case sr_tests_fx[];
 extern const sr_test_case sr_tests_anim_color[];

@@ -1,5 +1,6 @@
 #include "scene_render/vector_path.h"
 #include "vector_path_internal.h"
+#include "compositing_limits_internal.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -17,95 +18,289 @@ void sr_prepared_path_free(SrPreparedPath *path) {
     *path = (SrPreparedPath){0};
 }
 
-static Contour *add_contour(Path *path) {
+typedef struct {
+    const char *text, *cursor, *operation;
+    bool bounded;
+    size_t commands, points;
+    uint64_t available_bytes, owned_bytes;
+    SrPathParseError error;
+    size_t error_offset;
+} PathParser;
+
+static bool parse_fail(PathParser *parser, SrPathParseError error,
+                       const char *position) {
+    if (parser->error == SR_PATH_PARSE_OK) {
+        parser->error = error;
+        parser->error_offset = (size_t)(position - parser->text);
+    }
+    return false;
+}
+
+static bool checked_point(PathParser *parser, Point point) {
+    if (!parser->bounded) return true;
+    if (!isfinite(point.x) || !isfinite(point.y) ||
+        fabs(point.x) > SR_MAX_MASK_COORDINATE ||
+        fabs(point.y) > SR_MAX_MASK_COORDINATE)
+        return parse_fail(parser, SR_PATH_PARSE_COORDINATE, parser->operation);
+    return true;
+}
+
+static void *grow_array(PathParser *parser, void *old, size_t capacity,
+                        size_t next, size_t item_size) {
+    if (next < capacity || next > SIZE_MAX / item_size) {
+        parse_fail(parser, parser->bounded ? SR_PATH_PARSE_STORAGE
+                                          : SR_PATH_PARSE_MEMORY,
+                   parser->operation);
+        return NULL;
+    }
+    size_t bytes = next * item_size;
+    if (parser->bounded && bytes > parser->available_bytes - parser->owned_bytes) {
+        parse_fail(parser, SR_PATH_PARSE_STORAGE, parser->operation);
+        return NULL;
+    }
+    void *items = sr_realloc(old, bytes);
+    if (!items) {
+        parse_fail(parser, SR_PATH_PARSE_MEMORY, parser->operation);
+        return NULL;
+    }
+    if (parser->bounded) parser->owned_bytes += bytes - capacity * item_size;
+    return items;
+}
+
+static Contour *add_contour(PathParser *parser, Path *path) {
+    if (parser->bounded && path->count == SR_MAX_MASK_PATH_CONTOURS) {
+        parse_fail(parser, SR_PATH_PARSE_CONTOURS, parser->operation);
+        return NULL;
+    }
     if (path->count == path->capacity) {
-        size_t capacity=path->capacity?path->capacity*2:4;
-        Contour *items=sr_realloc(path->items,capacity*sizeof(*items));
-        if(!items)return NULL;
-        for(size_t i=path->capacity;i<capacity;++i)items[i]=(Contour){0};
-        path->items=items;path->capacity=capacity;
+        size_t capacity = path->capacity ? path->capacity * 2 : 4;
+        Contour *items = grow_array(parser, path->items, path->capacity,
+                                    capacity, sizeof(*items));
+        if (!items) return NULL;
+        for (size_t i = path->capacity; i < capacity; ++i) items[i] = (Contour){0};
+        path->items = items;
+        path->capacity = capacity;
     }
     return &path->items[path->count++];
 }
 
-static bool add_point(Contour *contour, Point point) {
-    if(contour->count==contour->capacity){size_t capacity=contour->capacity?contour->capacity*2:16;
-        Point *points=sr_realloc(contour->points,capacity*sizeof(*points));
-        if(!points)return false;
-        contour->points=points;contour->capacity=capacity;}
-    contour->points[contour->count++]=point;return true;
+static bool add_point(PathParser *parser, Contour *contour, Point point) {
+    if (!checked_point(parser, point)) return false;
+    if (parser->bounded && parser->points == SR_MAX_MASK_PATH_POINTS)
+        return parse_fail(parser, SR_PATH_PARSE_POINTS, parser->operation);
+    if (contour->count == contour->capacity) {
+        size_t capacity = contour->capacity ? contour->capacity * 2 : 16;
+        Point *points = grow_array(parser, contour->points, contour->capacity,
+                                   capacity, sizeof(*points));
+        if (!points) return false;
+        contour->points = points;
+        contour->capacity = capacity;
+    }
+    contour->points[contour->count++] = point;
+    if (parser->bounded) ++parser->points;
+    return true;
 }
 
 static void separators(const char **cursor) {
-    while (isspace((unsigned char)**cursor) || **cursor==',') ++*cursor;
+    while (isspace((unsigned char)**cursor) || **cursor == ',') ++*cursor;
 }
 
-static bool number(const char **cursor, double *value) {
-    separators(cursor);char *tail=NULL;*value=strtod(*cursor,&tail);
-    if(tail==*cursor||!isfinite(*value))return false;
-    *cursor=tail;return true;
+static bool number(PathParser *parser, double *value) {
+    separators(&parser->cursor);
+    const char *start = parser->cursor;
+    char *tail = NULL;
+    *value = strtod(start, &tail);
+    if (tail == start) return parse_fail(parser, SR_PATH_PARSE_SYNTAX, start);
+    if (!isfinite(*value))
+        return parse_fail(parser, parser->bounded ? SR_PATH_PARSE_COORDINATE
+                                                 : SR_PATH_PARSE_SYNTAX, start);
+    if (parser->bounded && fabs(*value) > SR_MAX_MASK_COORDINATE)
+        return parse_fail(parser, SR_PATH_PARSE_COORDINATE, start);
+    parser->cursor = tail;
+    return true;
 }
 
-static bool pair(const char **cursor,double *x,double *y){return number(cursor,x)&&number(cursor,y);}
-
-static bool flatten_cubic(Contour *contour,Point start,Point a,Point b,Point end){
-    for(int i=1;i<=16;++i){double t=i/16.0,u=1.0-t;
-        Point p={u*u*u*start.x+3*u*u*t*a.x+3*u*t*t*b.x+t*t*t*end.x,
-                 u*u*u*start.y+3*u*u*t*a.y+3*u*t*t*b.y+t*t*t*end.y};
-        if(!add_point(contour,p))return false;}return true;
+static bool pair(PathParser *parser, double *x, double *y) {
+    return number(parser, x) && number(parser, y);
 }
 
-static bool flatten_quadratic(Contour *contour,Point start,Point control,Point end){
-    for(int i=1;i<=12;++i){double t=i/12.0,u=1.0-t;
-        Point p={u*u*start.x+2*u*t*control.x+t*t*end.x,
-                 u*u*start.y+2*u*t*control.y+t*t*end.y};
-        if(!add_point(contour,p))return false;}return true;
+static bool add_curve_point(PathParser *parser, Contour *contour, Point point) {
+    /* Validated Bezier controls bound the mathematical curve. Correct only
+     * finite sample roundoff at the mask limit; authored coordinates and
+     * relative sums still go through the strict check in add_point(). */
+    if (parser->bounded) {
+        if (isfinite(point.x) && fabs(point.x) > SR_MAX_MASK_COORDINATE)
+            point.x = copysign(SR_MAX_MASK_COORDINATE, point.x);
+        if (isfinite(point.y) && fabs(point.y) > SR_MAX_MASK_COORDINATE)
+            point.y = copysign(SR_MAX_MASK_COORDINATE, point.y);
+    }
+    return add_point(parser, contour, point);
 }
 
-/* SR_OK, SR_ERR_ASSET for malformed path data, SR_ERR_MEMORY when a point
- * or contour cannot be stored. */
-static SrStatus parse_path(const char *text,Path *path) {
-    const char *cursor=text;char command=0;Contour *contour=NULL;Point current={0},first={0};
-    while(1){separators(&cursor);if(!*cursor)break;
-        if(isalpha((unsigned char)*cursor))command=*cursor++;
-        else if(!command)return SR_ERR_ASSET;
-        bool relative=islower((unsigned char)command)!=0;char op=(char)toupper((unsigned char)command);
-        if(op=='Z'){if(contour&&contour->count&&
-            (current.x!=first.x||current.y!=first.y)&&!add_point(contour,first))return SR_ERR_MEMORY;
-            if(contour)contour->closed=true;
-            current=first;command=0;continue;}
-        if(op=='M'||op=='L'){double x,y;if(!pair(&cursor,&x,&y))return SR_ERR_ASSET;
-            if(relative){x+=current.x;y+=current.y;}current=(Point){x,y};
-            if(op=='M'){contour=add_contour(path);if(!contour)return SR_ERR_MEMORY;first=current;
-                command=relative?'l':'L';}
-            if(!contour)return SR_ERR_ASSET;
-            if(!add_point(contour,current))return SR_ERR_MEMORY;
-            continue;}
-        if(!contour||!contour->count)return SR_ERR_ASSET;
-        if(op=='H'){double x;if(!number(&cursor,&x))return SR_ERR_ASSET;if(relative)x+=current.x;
-            current.x=x;if(!add_point(contour,current))return SR_ERR_MEMORY;continue;}
-        if(op=='V'){double y;if(!number(&cursor,&y))return SR_ERR_ASSET;if(relative)y+=current.y;
-            current.y=y;if(!add_point(contour,current))return SR_ERR_MEMORY;continue;}
-        if(op=='C'){double ax,ay,bx,by,x,y;if(!pair(&cursor,&ax,&ay)||!pair(&cursor,&bx,&by)||!pair(&cursor,&x,&y))return SR_ERR_ASSET;
-            if(relative){ax+=current.x;ay+=current.y;bx+=current.x;by+=current.y;x+=current.x;y+=current.y;}
-            Point end={x,y};if(!flatten_cubic(contour,current,(Point){ax,ay},(Point){bx,by},end))return SR_ERR_MEMORY;current=end;continue;}
-        if(op=='Q'){double cx,cy,x,y;if(!pair(&cursor,&cx,&cy)||!pair(&cursor,&x,&y))return SR_ERR_ASSET;
-            if(relative){cx+=current.x;cy+=current.y;x+=current.x;y+=current.y;}
-            Point end={x,y};if(!flatten_quadratic(contour,current,(Point){cx,cy},end))return SR_ERR_MEMORY;current=end;continue;}
+static bool flatten_cubic(PathParser *parser, Contour *contour, Point start,
+                          Point a, Point b, Point end) {
+    for (int i = 1; i <= 16; ++i) {
+        double t = i / 16.0, u = 1.0 - t;
+        Point p = {u*u*u*start.x+3*u*u*t*a.x+3*u*t*t*b.x+t*t*t*end.x,
+                   u*u*u*start.y+3*u*u*t*a.y+3*u*t*t*b.y+t*t*t*end.y};
+        if (!add_curve_point(parser, contour, p)) return false;
+    }
+    return true;
+}
+
+static bool flatten_quadratic(PathParser *parser, Contour *contour, Point start,
+                              Point control, Point end) {
+    for (int i = 1; i <= 12; ++i) {
+        double t = i / 12.0, u = 1.0 - t;
+        Point p = {u*u*start.x+2*u*t*control.x+t*t*end.x,
+                   u*u*start.y+2*u*t*control.y+t*t*end.y};
+        if (!add_curve_point(parser, contour, p)) return false;
+    }
+    return true;
+}
+
+static bool parse_path(PathParser *parser, Path *path) {
+    char command = 0;
+    Contour *contour = NULL;
+    Point current = {0}, first = {0};
+    while (1) {
+        separators(&parser->cursor);
+        if (!*parser->cursor) break;
+        parser->operation = parser->cursor;
+        if (parser->bounded && parser->commands++ == SR_MAX_MASK_PATH_COMMANDS)
+            return parse_fail(parser, SR_PATH_PARSE_COMMANDS, parser->operation);
+        if (isalpha((unsigned char)*parser->cursor)) command = *parser->cursor++;
+        else if (!command)
+            return parse_fail(parser, SR_PATH_PARSE_SYNTAX, parser->operation);
+        bool relative = islower((unsigned char)command) != 0;
+        char op = (char)toupper((unsigned char)command);
+        if (op == 'Z') {
+            if (contour && contour->count &&
+                (current.x != first.x || current.y != first.y) &&
+                !add_point(parser, contour, first)) return false;
+            if (contour) contour->closed = true;
+            current = first;
+            command = 0;
+            continue;
+        }
+        if (op == 'M' || op == 'L') {
+            double x, y;
+            if (!pair(parser, &x, &y)) return false;
+            if (relative) {
+                x += current.x;
+                y += current.y;
+            }
+            current = (Point){x, y};
+            if (!checked_point(parser, current)) return false;
+            if (op == 'M') {
+                contour = add_contour(parser, path);
+                if (!contour) return false;
+                first = current;
+                command = relative ? 'l' : 'L';
+            }
+            if (!contour)
+                return parse_fail(parser, SR_PATH_PARSE_SYNTAX, parser->operation);
+            if (!add_point(parser, contour, current)) return false;
+            continue;
+        }
+        if (!contour || !contour->count)
+            return parse_fail(parser, SR_PATH_PARSE_SYNTAX, parser->operation);
+        if (op == 'H') {
+            double x;
+            if (!number(parser, &x)) return false;
+            if (relative) x += current.x;
+            current.x = x;
+            if (!add_point(parser, contour, current)) return false;
+            continue;
+        }
+        if (op == 'V') {
+            double y;
+            if (!number(parser, &y)) return false;
+            if (relative) y += current.y;
+            current.y = y;
+            if (!add_point(parser, contour, current)) return false;
+            continue;
+        }
+        if (op == 'C') {
+            double ax, ay, bx, by, x, y;
+            if (!pair(parser, &ax, &ay) || !pair(parser, &bx, &by) ||
+                !pair(parser, &x, &y)) return false;
+            if (relative) {
+                ax += current.x;
+                ay += current.y;
+                bx += current.x;
+                by += current.y;
+                x += current.x;
+                y += current.y;
+            }
+            Point a = {ax, ay}, b = {bx, by}, end = {x, y};
+            if (!checked_point(parser, a) || !checked_point(parser, b) ||
+                !checked_point(parser, end) ||
+                !flatten_cubic(parser, contour, current, a, b, end)) return false;
+            current = end;
+            continue;
+        }
+        if (op == 'Q') {
+            double cx, cy, x, y;
+            if (!pair(parser, &cx, &cy) || !pair(parser, &x, &y)) return false;
+            if (relative) {
+                cx += current.x;
+                cy += current.y;
+                x += current.x;
+                y += current.y;
+            }
+            Point control = {cx, cy}, end = {x, y};
+            if (!checked_point(parser, control) || !checked_point(parser, end) ||
+                !flatten_quadratic(parser, contour, current, control, end)) return false;
+            current = end;
+            continue;
+        }
+        return parse_fail(parser, SR_PATH_PARSE_SYNTAX, parser->operation);
+    }
+    if (!path->count)
+        return parse_fail(parser, SR_PATH_PARSE_SYNTAX, parser->cursor);
+    for (size_t i = 0; i < path->count; ++i)
+        if (path->items[i].count < 2)
+            return parse_fail(parser, SR_PATH_PARSE_SYNTAX, parser->cursor);
+    return true;
+}
+
+static SrStatus prepare_path(const char *text, bool bounded,
+                              uint64_t available_bytes, SrPreparedPath *out,
+                              SrPathParseInfo *info) {
+    if (info) *info = (SrPathParseInfo){0};
+    if (!out) {
+        if (info) info->error = SR_PATH_PARSE_ARGUMENT;
+        return SR_ERR_ARGUMENT;
+    }
+    *out = (SrPreparedPath){0};
+    if (!text) {
+        if (info) info->error = SR_PATH_PARSE_SYNTAX;
         return SR_ERR_ASSET;
     }
-    if(!path->count)return SR_ERR_ASSET;
-    for(size_t i=0;i<path->count;++i)if(path->items[i].count<2)return SR_ERR_ASSET;
+    if (bounded && strnlen(text, SR_MAX_MASK_PATH_BYTES + 1u) > SR_MAX_MASK_PATH_BYTES) {
+        if (info) *info = (SrPathParseInfo){SR_PATH_PARSE_BYTES, SR_MAX_MASK_PATH_BYTES, 0};
+        return SR_ERR_ASSET;
+    }
+    PathParser parser = {.text = text, .cursor = text, .bounded = bounded,
+        .available_bytes = available_bytes < SR_MAX_COMPOSITE_BYTES
+            ? available_bytes : SR_MAX_COMPOSITE_BYTES};
+    if (!parse_path(&parser, out)) {
+        sr_prepared_path_free(out);
+        if (info) *info = (SrPathParseInfo){parser.error, parser.error_offset, 0};
+        return parser.error == SR_PATH_PARSE_MEMORY ? SR_ERR_MEMORY : SR_ERR_ASSET;
+    }
+    if (info) info->owned_bytes = parser.owned_bytes;
     return SR_OK;
 }
 
 SrStatus sr_prepared_path_parse(const char *text, SrPreparedPath *out) {
-    if (!out) return SR_ERR_ARGUMENT;
-    *out = (SrPreparedPath){0};
-    if (!text) return SR_ERR_ASSET;
-    SrStatus status = parse_path(text, out);
-    if (status != SR_OK) sr_prepared_path_free(out);
-    return status;
+    return prepare_path(text, false, 0, out, NULL);
+}
+
+SrStatus sr_prepared_mask_path_parse(const char *text, uint64_t available_bytes,
+                                      SrPreparedPath *out, SrPathParseInfo *info) {
+    return prepare_path(text, true, available_bytes, out, info);
 }
 
 SrStatus sr_vector_path_check(const char *text) {

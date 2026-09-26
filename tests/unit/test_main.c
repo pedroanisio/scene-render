@@ -60,6 +60,8 @@ int main(int argc, char **argv)
         {"camera", sr_tests_camera},     {"physics", sr_tests_physics},
         {"blend", sr_tests_blend},       {"group", sr_tests_group},
         {"raster", sr_tests_raster},     {"mask", sr_tests_mask},
+        {"mask_path", sr_tests_mask_path},
+        {"fuzz_mask_path", sr_tests_fuzz_mask_path},
         {"path", sr_tests_path},         {"image", sr_tests_image},
         {"encode", sr_tests_encode},     {"encode_faults", sr_tests_encode_faults},
         {"audio", sr_tests_audio},       {"video", sr_tests_video},

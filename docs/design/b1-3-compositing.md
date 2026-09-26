@@ -329,6 +329,20 @@ The existing SVG subset remains M/L/H/V/C/Q/Z, relative and absolute. Keep its
 16-piece cubic and 12-piece quadratic flattening for compatibility. New mask
 parsing adds bounded bytes/commands/contours/points and rejects nonfinite
 coordinates including overflow after relative additions or flattening.
+The internal `sr_prepared_mask_path_parse` entry takes the caller's remaining
+live-byte quota, capped by the shared compositing bound. Its optional result
+reports an error category and zero-based byte offset, or retained heap capacity
+on success. The caller accounts for the authored text and embedded descriptor;
+the parser charges every contour/point capacity, including old plus replacement
+storage during growth. Failed parsing returns an empty, freeable path and zero
+retained bytes. Implicit command repetitions and explicit close commands count;
+closing vertices and all fixed-subdivision samples count as points.
+
+Finite Bezier samples may round outside the convex hull of their already
+validated controls at exactly +/-1e9. The bounded path alone clamps these
+sample coordinates to that boundary. Literal values and relative-derived
+controls/endpoints remain strict; legacy flattening arithmetic is unchanged.
+
 Parsed path storage is immutable and owned by the scene. Validation and
 rendering use the same representation, avoiding parse-per-frame work.
 Polygon/star contours are the separate render-owned parameterized geometry
@@ -475,9 +489,11 @@ features before B1-3 is complete, including direct-C scenes; it remains an
 explicit requirement alongside advanced-mask and matte preparation.
 
 The structural preparation phase now installs the explicit lifecycle and
-2D ownership node/mask/depth checks. Matte/adjustment graph edges, captures,
-bounded path preparation and live surface/work accounting remain pending;
-the named constants below do not imply those consumers are implemented.
+2D ownership node/mask/depth checks. The bounded mask-path parser is implemented
+as an internal preparation primitive; mask ownership/integration,
+matte/adjustment graph edges, captures and shared live surface/work accounting
+remain pending; the named constants below do not imply those consumers are
+implemented.
 
 | Constant | Bound |
 |---|---:|

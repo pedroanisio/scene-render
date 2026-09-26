@@ -37,7 +37,7 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | B1-2 relative lengths and parent-box evaluation | Implemented, enabled, reviewed and verified | Batch merge |
 | B1-2 style tokens | Implemented, reviewed and verified | Batch merge |
 | B1-2 metadata/container tags | Implemented, reviewed and verified | Batch merge |
-| B1-3 blend modes, skew, mattes, masks, adjustment nodes | 22 new color modes, skew, prepared paths and structural preparation verified | Dependency graphs and surface/work accounting, dissolve/parent operators, advanced masks, mattes, adjustment nodes and remaining goldens |
+| B1-3 blend modes, skew, mattes, masks, adjustment nodes | 22 new color modes, skew, structural preparation and bounded path parsing verified | Dependency graphs and surface/work accounting, dissolve/parent operators, advanced masks, mattes, adjustment nodes and remaining goldens |
 | B1-4 shapes, stroke styles, trims, vector constructors | Pending | Geometry/arc lengths/coverage, all listed styles and shapes, golden |
 | B1-4 gradients and paints | Pending | Coordinates, focal/aspect/spread/rotation/stops, interpolation, dither, every paint host, golden |
 | B1-5 markers/beatGrid/snapping, group timing, sequence, names/tags | Pending | Generated ID resolution, timing tests and sequence-markers golden |
@@ -441,6 +441,34 @@ clear -8.4%, compositor -21.4% and stage total -22.2%; the noisy measurements
 do not establish a stable speedup. Existing image hashes and the owner
 baseline are unchanged. See `docs/reviews/b1-compositing-preparation.md`.
 
-Dependency capture graphs, bounded mask paths and live surface/work accounting
+Dependency capture graphs, mask integration and live surface/work accounting
 remain required B1-3 work, along with advanced masks, remaining blend operators,
 mattes and adjustments. This phase does not enable another capability.
+
+
+## Bounded mask-path parsing
+
+The new internal path entry enforces input bytes, explicit/implicit commands,
+contours, aggregate flattened points, coordinates and caller-supplied remaining
+storage. Growth checks include both old and replacement buffers; failed parses
+free partial ownership and report an error category plus byte offset. Legacy
+path grammar, flattening and allocation order remain intact. Advanced masks
+are still gated until their rendering and scene-ownership integration finish.
+
+Six boundary/geometry cases, 1,280 seeded valid/adversarial inputs and complete
+allocation-failure replay pass. One review finding was reproduced before fixing:
+finite Bezier sample roundoff at exactly +/-1e9 is corrected only in bounded
+parsing, after strict control validation. Follow-up review has no remaining
+findings. SDK Release, ASan/UBSan and coverage each pass 78/78, including all
+21 golden frame-order checks, integration and OOM. Coverage is 92.22% lines /
+76.84% branches; raised floors 90.20% / 74.80% pass. The oracle matches
+309 previews, three encodes and two expected rejections against `636ce5e`.
+The strict 2% performance gate passes: clear +1.9%, compositor +0.0% and total
+-5.6%; the noisy measurements do not establish a stable speedup. Existing
+image hashes and the owner baseline remain unchanged. See
+`docs/reviews/b1-compositing-mask-path.md`.
+
+Remaining B1-3 work includes shared compositor interfaces, live surface/work
+accounting, mask integration and rendering, remaining blend operators,
+dependency capture graphs, mattes and adjustments. B1-4 through B1-6 and the
+batch completion audit also remain required.

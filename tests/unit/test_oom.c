@@ -324,6 +324,49 @@ static void prepared_paths_survive_allocation_failures(sr_test_ctx *t) {
     CHECK(t, replay_until_success(t, &invalid, &path) > 2);
 }
 
+typedef struct {
+    SrPreparedPath path;
+    const char *text;
+    uint64_t quota;
+    SrPathParseError expected;
+} MaskPathOom;
+
+static SrStatus mask_path_op(void *opaque) {
+    MaskPathOom *ctx = opaque;
+    SrPathParseInfo info;
+    SrStatus status = sr_prepared_mask_path_parse(ctx->text, ctx->quota,
+                                                  &ctx->path, &info);
+    if (status != SR_OK && (ctx->path.items || ctx->path.count ||
+                           ctx->path.capacity || info.owned_bytes)) return SR_ERR_ARGUMENT;
+    if (status == SR_ERR_MEMORY)
+        return info.error == SR_PATH_PARSE_MEMORY ? status : SR_ERR_ARGUMENT;
+    if (info.error != ctx->expected) return SR_ERR_ARGUMENT;
+    if (status == SR_OK) return info.owned_bytes ? SR_OK : SR_ERR_ARGUMENT;
+    return status == SR_ERR_ASSET ? SR_OK : SR_ERR_ARGUMENT;
+}
+
+static void mask_path_release(void *opaque) {
+    MaskPathOom *ctx = opaque;
+    sr_prepared_path_free(&ctx->path);
+}
+
+static void mask_paths_survive_allocation_failures(sr_test_ctx *t) {
+    const char *prefix = "M0 0C1 0 1 1 0 1Q1 2 3 4Z "
+                         "M0 0H1 M0 0H1 M0 0H1 M0 0H1";
+    char text[256];
+    const char *tails[] = {"", " Q?", " q1000000000 0 0 0", ""};
+    const SrPathParseError errors[] = {SR_PATH_PARSE_OK, SR_PATH_PARSE_SYNTAX,
+                                      SR_PATH_PARSE_COORDINATE, SR_PATH_PARSE_STORAGE};
+    const OomSpec spec = {"bounded mask path", mask_path_op,
+        mask_path_release, NULL, NULL, {SR_ERR_MEMORY}};
+    for (size_t i = 0; i < 4; ++i) {
+        snprintf(text, sizeof(text), "%s%s", prefix, tails[i]);
+        MaskPathOom ctx = {.text = text, .quota = i == 3 ? 1000 : SR_MAX_COMPOSITE_BYTES,
+                           .expected = errors[i]};
+        CHECK(t, replay_until_success(t, &spec, &ctx) > 2);
+    }
+}
+
 /* ---------------------------------------------------------------- loading */
 
 static SrStatus compositing_prepare_op(void *opaque) {
@@ -790,6 +833,8 @@ const sr_test_case sr_tests_oom[] = {
     {"injection_and_leak_check_work", injection_and_leak_check_work},
     {"prepared_paths_survive_allocation_failures",
      prepared_paths_survive_allocation_failures},
+    {"mask_paths_survive_allocation_failures",
+     mask_paths_survive_allocation_failures},
     {"compositing_preparation_survives_allocation_failures",
      compositing_preparation_survives_allocation_failures},
     {"color_parse_survives_allocation_failures",

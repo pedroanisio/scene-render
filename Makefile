@@ -97,7 +97,8 @@ TEST_OBJECTS := $(TEST_SOURCES:tests/unit/%.c=$(BUILD)/unit/%.o)
 UNIT_SUITES := timeline length length_frame length_physics curves geometry \
 	compositor color vector mesh random \
 	scene property xml xml_lengths profile styles metadata \
-	camera physics blend blend_color skew compositing group raster mask path image \
+	camera physics blend blend_color skew compositing group raster mask path \
+	mask_path fuzz_mask_path image \
 	encode encode_faults audio video fx anim_color particles deform shadow text args resume depth \
 	$(P7_UNIT_SUITES)
 TEST_CPPFLAGS := -Isrc -DSR_TEST_DATA_DIR='"$(CURDIR)"' \
