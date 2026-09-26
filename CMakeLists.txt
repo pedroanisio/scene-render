@@ -109,6 +109,8 @@ set(SCENE_RENDER_SOURCES
     src/xml_physics.c
     src/xml_styles.c
     src/xml_metadata.c
+    src/xml_timeline.c
+    src/markers.c
     src/metadata.c
     src/xml_schema.c
     src/xml_capabilities.c
@@ -139,7 +141,7 @@ if(BUILD_TESTING)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/schema-compatibility.py)
     set(SR_UNIT_SUITES timeline length length_frame length_physics
                        curves geometry compositor color vector random
-                       mesh scene property xml xml_lengths profile styles metadata
+                       mesh scene property xml xml_lengths profile styles markers fuzz_markers metadata
                        camera physics blend blend_color skew compositing composite_resources
                        composite_evaluation composite_geometry composite_particles group
                        raster mask path mask_path fuzz_mask_path image

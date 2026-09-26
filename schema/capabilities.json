@@ -7,7 +7,12 @@
     "stylesType/token",
     "scene/metadata",
     "metadataType/meta",
-    "particleEmitterType/mask"
+    "particleEmitterType/mask",
+    "scene/markers",
+    "markersType/marker",
+    "markersType/beatGrid",
+    "compositionType/sequence",
+    "groupType/sequence"
   ],
   "attributes": [
     "groupType/@threeD",
@@ -56,7 +61,36 @@
     "shapeType/@skewX",
     "shapeType/@skewY",
     "particleEmitterType/@skewX",
-    "particleEmitterType/@skewY"
+    "particleEmitterType/@skewY",
+    "groupType/@name",
+    "groupType/@tags",
+    "groupType/@startMarker",
+    "groupType/@endMarker",
+    "layerType/@name",
+    "layerType/@tags",
+    "layerType/@startMarker",
+    "layerType/@endMarker",
+    "shapeType/@name",
+    "shapeType/@tags",
+    "shapeType/@startMarker",
+    "shapeType/@endMarker",
+    "particleEmitterType/@name",
+    "particleEmitterType/@tags",
+    "particleEmitterType/@startMarker",
+    "particleEmitterType/@endMarker",
+    "groupType/@timeOffset",
+    "groupType/@timeScale",
+    "sequenceType/@timeGap",
+    "keyType/@marker",
+    "markerType/@id",
+    "markerType/@time",
+    "markerType/@duration",
+    "markerType/@kind",
+    "markerType/@label",
+    "markerType/@color",
+    "beatGridType/@bpm",
+    "beatGridType/@offset",
+    "beatGridType/@beatsPerBar"
   ],
   "values": {
     "animateType/@extrapolateBefore": [
@@ -263,6 +297,11 @@
       "saturation",
       "color",
       "luminosity"
+    ],
+    "markerType/@kind": [
+      "cue",
+      "section",
+      "beat"
     ]
   },
   "forms": {
@@ -377,6 +416,9 @@
     ],
     "vectorAssetType/@stroke": [
       "token"
+    ],
+    "markerType/@color": [
+      "token"
     ]
   },
   "occurrence_limits": {
@@ -419,5 +461,8 @@
         "implemented": true
       }
     }
+  },
+  "inherits": {
+    "sequenceType": "groupType"
   }
 }

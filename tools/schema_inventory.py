@@ -99,6 +99,18 @@ def inventory(old, new, profile):
                 minimum = 11 if form == 'relative-length' and previous is not None else 10
                 rows.append(('form', host, name, form, minimum,
                              form in profile['forms'].get(key, [])))
+    # A derived type (sequenceType extends groupType) implements every
+    # construct its base implements; only its own additions are listed.
+    inherits = profile.get('inherits', {})
+    implemented = {(kind, host, name, value) for kind, host, name, value, _, supported
+                   in rows if supported}
+    for derived, base in inherits.items():
+        if derived not in new.types or base not in new.types:
+            raise ValueError(f'invalid capability inheritance: {derived}={base}')
+    rows = [(kind, host, name, value, version,
+             supported or (host in inherits and
+                           (kind, inherits[host], name, value) in implemented))
+            for kind, host, name, value, version, supported in rows]
     keys = {kind: set() for kind in ('element', 'attribute', 'value', 'form')}
     for kind, host, name, value, _, _ in rows:
         if kind in keys:

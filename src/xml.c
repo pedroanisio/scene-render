@@ -129,6 +129,10 @@ static void start_shape(ParseContext *ctx, const XML_Char **attrs) {
     sr_xml_start_node(ctx, "shape", attrs, SR_NODE_SHAPE);
 }
 
+static void start_sequence(ParseContext *ctx, const XML_Char **attrs) {
+    sr_xml_start_node(ctx, "sequence", attrs, SR_NODE_GROUP);
+}
+
 static void start_particles(ParseContext *ctx, const XML_Char **attrs) {
     sr_xml_start_node(ctx, "particleEmitter", attrs, SR_NODE_PARTICLES);
 }
@@ -153,9 +157,14 @@ static const ElementDispatch dispatch[] = {
     ENTRY("mesh", P(E_ASSETS), sr_xml_start_mesh, E_MESH, true),
     SECTION("materials", NULL, E_MATERIALS, seen_materials),
     ENTRY("material", P(E_MATERIALS), sr_xml_start_material, E_MATERIAL, false),
+    {"markers", P(E_SCENE), NULL, E_MARKERS, offsetof(ParseContext, seen_markers),
+     11, true, true},
+    {"marker", P(E_MARKERS), sr_xml_start_marker, E_MARKER, 0, 11, true, true},
+    {"beatGrid", P(E_MARKERS), sr_xml_start_beat_grid, E_BEAT_GRID, 0, 11, true, true},
     SECTION("composition", NULL, E_COMPOSITION, seen_composition),
     SECTION("scene360", sr_xml_start_scene360, E_SCENE360, seen_scene360),
     ENTRY("group", CONTAINERS, start_group, E_GROUP, false),
+    {"sequence", CONTAINERS, start_sequence, E_GROUP, 0, 11, true, false},
     ENTRY("layer", CONTAINERS, start_layer, E_LAYER, false),
     ENTRY("shape", CONTAINERS, start_shape, E_LAYER, false),
     ENTRY("particleEmitter", CONTAINERS, start_particles, E_PARTICLES, false),

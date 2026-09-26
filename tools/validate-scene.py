@@ -670,15 +670,18 @@ class Checker:
                         self.r.error("ID-UNIQUE", n, a, "id %r already used at line %d" % (v, self.ids[v].line))
                     else:
                         self.ids[v] = n
-        # generated beat/bar ids (B1-5): beat.N and bar.N over the project
+        # generated beat/bar ids (B1-5): 1-based beat.N and bar.N at or before
+        # the project end (docs/xml-reference.md, Timeline structure)
         for g in self.doc.iter("beatGrid"):
             bpm, off = fnum(g.get("bpm"), 0), fnum(g.get("offset", "0"), 0)
-            per_bar = int(fnum(g.get("beatsPerBar", "4"), 4))
-            if bpm and bpm > 0:
-                beats = int(max(0.0, self.duration - off) * bpm / 60.0) + 1
-                for i in range(beats + 1):
+            per_bar = max(int(fnum(g.get("beatsPerBar", "4"), 4)), 1)
+            if bpm and bpm > 0 and off is not None and off <= self.duration:
+                beats = min(int((self.duration - off) * bpm / 60.0) + 1, 1048577)
+                while beats > 0 and off + (beats - 1) * 60.0 / bpm > self.duration:
+                    beats -= 1
+                for i in range(1, beats + 1):
                     self.ids.setdefault("beat.%d" % i, Node("#beat", {}, None, g.line))
-                for i in range(beats // max(per_bar, 1) + 2):
+                for i in range(1, (beats - 1) // per_bar + 2 if beats else 1):
                     self.ids.setdefault("bar.%d" % i, Node("#beat", {}, None, g.line))
 
     def target_ok(self, allowed, target):
@@ -1336,7 +1339,7 @@ class Checker:
         return s, (e if e is not None else self.duration)
 
     def beat_time(self, ident):
-        """Time of a generated beat.N / bar.N id (first beat grid, N from 0)."""
+        """Time of a generated beat.N / bar.N id (the beat grid, N from 1)."""
         g = next(iter(self.doc.iter("beatGrid")), None)
         if g is None:
             return 0.0
@@ -1344,7 +1347,7 @@ class Checker:
         period = 60.0 / fnum(g.get("bpm"), 120)
         if kind == "bar":
             period *= int(fnum(g.get("beatsPerBar", "4"), 4))
-        return fnum(g.get("offset", "0"), 0.0) + int(num) * period
+        return fnum(g.get("offset", "0"), 0.0) + (int(num) - 1) * period
 
     def top_level_timed(self, n):
         for a in n.ancestors():

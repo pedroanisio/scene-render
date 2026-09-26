@@ -342,6 +342,13 @@ typedef struct SrNode {
     struct SrNode **children;
     size_t child_count;
     size_t child_capacity;
+    /* Timeline structure (B1-5, markers.h): NULL unless the node uses name,
+     * tags, markers, a group clock or is a sequence. After loading,
+     * start_time/end_time are composition seconds and clock_scale/offset
+     * map composition seconds to the node's parent clock (1, 0 unless an
+     * ancestor group re-times it). */
+    struct SrNodeTimeline *timeline;
+    double clock_scale, clock_offset;
 } SrNode;
 
 typedef enum { SR_CODEC_H264, SR_CODEC_H265, SR_CODEC_FFV1 } SrCodec;
@@ -591,6 +598,7 @@ typedef struct {
     bool has_relative_lengths;  /* authored geometry needs per-frame resolution */
     bool compositing_required;  /* opted in; no evaluation after invalidation */
     struct SrCompositePlan *compositing; /* owned immutable authored plan */
+    struct SrTimeline *timeline; /* owned markers and beat grid; may be NULL */
     struct SrFontCache *font_cache; /* text fonts opened while loading assets */
 } SrScene;
 
