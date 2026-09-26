@@ -1,7 +1,10 @@
 #include "scene_render/scene.h"
+#include "scene_render/property.h"
 #include "scene_render/text.h"
 #include "scene_render/video.h"
 #include "scene_render/color.h"
+#include "scene_render/compositing.h"
+#include "particles_internal.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -20,6 +23,8 @@ static void transform_free(SrTransform *transform) {
     anim_free(&transform->rotation_y);
     anim_free(&transform->scale_x);
     anim_free(&transform->scale_y);
+    anim_free(&transform->skew_x);
+    anim_free(&transform->skew_y);
     anim_free(&transform->scale_z);
     anim_free(&transform->anchor_x);
     anim_free(&transform->anchor_y);
@@ -49,6 +54,7 @@ void sr_scene_init(SrScene *scene) {
     scene->output.audio_bitrate = 192000;
     scene->output.color_space = SR_COLOR_SRGB;
     scene->output.spherical_metadata = true;
+    scene->output.embed_metadata = true;
     scene->audio.sample_rate = 48000;
     scene->audio.channels = 2;
     scene->scene360.width = 3840;
@@ -103,15 +109,33 @@ static void light_free(SrLight *light) {
 
 void sr_scene_free(SrScene *scene) {
     if (!scene) return;
+    sr_scene_invalidate_compositing(scene);
     sr_node_free(scene->root);
+    for (size_t i = 0; i < scene->token_count; ++i) {
+        free(scene->tokens[i].name);
+        free(scene->tokens[i].value);
+    }
+    free(scene->tokens);
+    for (size_t i = 0; i < scene->metadata_count; ++i) {
+        free(scene->metadata[i].name);
+        free(scene->metadata[i].value);
+    }
+    free(scene->metadata);
     for (size_t i = 0; i < scene->asset_count; ++i) asset_free(&scene->assets[i]);
     for (size_t i = 0; i < scene->audio.track_count; ++i) {
         free(scene->audio.tracks[i].id);
         free(scene->audio.tracks[i].asset_id);
+        anim_free(&scene->audio.tracks[i].volume);
+        anim_free(&scene->audio.tracks[i].pan);
     }
     for (size_t i = 0; i < scene->camera_count; ++i) camera_free(&scene->cameras[i]);
-    for (size_t i = 0; i < scene->material_count; ++i)
+    for (size_t i = 0; i < scene->material_count; ++i) {
         free(scene->materials[i].id);
+        sr_anim_color_free(&scene->materials[i].base_color);
+        sr_anim_color_free(&scene->materials[i].emissive);
+        anim_free(&scene->materials[i].metallic);
+        anim_free(&scene->materials[i].roughness);
+    }
     for (size_t i = 0; i < scene->light_count; ++i) light_free(&scene->lights[i]);
     for (size_t i = 0; i < scene->object3d_count; ++i) {
         free(scene->objects3d[i].id);
@@ -297,7 +321,7 @@ void sr_node_free(SrNode *node) {
     free(node->masks);
     free(node->children); free(node->modifiers); free(node->physics_samples);
     free(node->id); free(node->asset_id); free(node->particle_preset);
-    free(node->particle_rate_cache);
+    sr_particles_invalidate(node);
     anim_free(&node->opacity); anim_free(&node->source_time);
     anim_free(&node->particle_rate); anim_free(&node->particle_lifetime);
     anim_free(&node->particle_speed); anim_free(&node->particle_spread);
@@ -363,51 +387,31 @@ bool sr_scene_id_exists(const SrScene *scene, const char *id) {
 }
 
 SrAnimValue *sr_node_property(SrNode *node, const char *name) {
-    if (!node || !name) return NULL;
-    if (strcmp(name, "opacity") == 0) return &node->opacity;
-    if (strcmp(name, "position.x") == 0) return &node->transform.x;
-    if (strcmp(name, "position.y") == 0) return &node->transform.y;
-    if (strcmp(name, "rotation") == 0) return &node->transform.rotation;
-    if (strcmp(name, "scale.x") == 0) return &node->transform.scale_x;
-    if (strcmp(name, "scale.y") == 0) return &node->transform.scale_y;
-    if (strcmp(name, "anchor.x") == 0) return &node->transform.anchor_x;
-    if (strcmp(name, "anchor.y") == 0) return &node->transform.anchor_y;
-    if (strcmp(name, "source.time") == 0) return &node->source_time;
-    if (strcmp(name, "depth") == 0) return &node->transform.z;
-    if (strcmp(name, "rotation.x") == 0) return &node->transform.rotation_x;
-    if (strcmp(name, "rotation.y") == 0) return &node->transform.rotation_y;
-    if (node->type == SR_NODE_PARTICLES) {
-        if (strcmp(name, "rate") == 0) return &node->particle_rate;
-        if (strcmp(name, "lifetime") == 0) return &node->particle_lifetime;
-        if (strcmp(name, "speed") == 0) return &node->particle_speed;
-        if (strcmp(name, "spread") == 0) return &node->particle_spread;
-        if (strcmp(name, "size") == 0) return &node->particle_size;
-        if (strcmp(name, "direction") == 0) return &node->particle_direction;
-    }
-    return NULL;
+    const SrProperty *property = sr_property_find(sr_property_node_host(node), name);
+    return property && property->type == SR_PROPERTY_NUMBER
+        ? sr_property_target(property, node) : NULL;
 }
 
 SrAnimColor *sr_node_color_property(SrNode *node, const char *name) {
-    if (!node || !name) return NULL;
-    if (node->type == SR_NODE_SHAPE) {
-        if (strcmp(name, "fill") == 0) return &node->fill;
-        if (strcmp(name, "stroke") == 0) return &node->stroke;
-    } else if (node->type == SR_NODE_PARTICLES) {
-        if (strcmp(name, "color") == 0) return &node->particle_color;
-        if (strcmp(name, "colorEnd") == 0) {
-            node->particle_color_end_set = true;
-            return &node->particle_color_end;
-        }
-    }
-    return NULL;
+    const SrProperty *property = sr_property_find(sr_property_node_host(node), name);
+    if (!property || property->type != SR_PROPERTY_COLOR) return NULL;
+    sr_property_activate(property, node);
+    return sr_property_target(property, node);
 }
+
+static const char *const blend_names[SR_BLEND_COUNT] = {
+    "normal", "add", "multiply", "screen", "overlay", "difference",
+    "plus-lighter", "exclusion", "subtract", "divide", "darken", "lighten",
+    "darker-color", "lighter-color", "color-dodge", "color-burn",
+    "linear-dodge", "linear-burn", "soft-light", "hard-light", "linear-light",
+    "vivid-light", "pin-light", "hard-mix", "hue", "saturation", "color",
+    "luminosity"
+};
 
 bool sr_blend_parse(const char *text, SrBlendMode *mode) {
     if (!text || !mode) return false;
-    static const char *names[] = {"normal", "add", "multiply", "screen",
-                                  "overlay", "difference"};
-    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
-        if (strcmp(text, names[i]) == 0) {
+    for (size_t i = 0; i < SR_BLEND_COUNT; ++i) {
+        if (strcmp(text, blend_names[i]) == 0) {
             *mode = (SrBlendMode)i;
             return true;
         }
@@ -416,8 +420,6 @@ bool sr_blend_parse(const char *text, SrBlendMode *mode) {
 }
 
 const char *sr_blend_name(SrBlendMode mode) {
-    static const char *names[] = {"normal", "add", "multiply", "screen",
-                                  "overlay", "difference"};
-    return mode >= SR_BLEND_NORMAL && mode <= SR_BLEND_DIFFERENCE ? names[mode]
-                                                                  : "unknown";
+    return mode >= SR_BLEND_NORMAL && mode < SR_BLEND_COUNT
+         ? blend_names[mode] : "unknown";
 }

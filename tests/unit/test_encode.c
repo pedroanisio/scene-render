@@ -311,6 +311,53 @@ static void bitexact_output(sr_test_ctx *t) {
     }
 }
 
+static void version11_thread_identity(sr_test_ctx *t) {
+    static const struct { SrCodec codec; const char *extension; } rows[] = {
+        {SR_CODEC_H264, "mp4"}, {SR_CODEC_H265, "mov"}, {SR_CODEC_FFV1, "mkv"},
+    };
+    for (size_t r = 0; r < sizeof(rows) / sizeof(rows[0]); ++r) {
+        uint8_t *data[3] = {NULL, NULL, NULL};
+        size_t length[3] = {0, 0, 0};
+        for (unsigned run = 0; run < 3; ++run) {
+            SrScene scene;
+            enc_scene(&scene, rows[r].codec, "yuv420p", 256, 256);
+            scene.format_version = 11;
+            SrDiagnostics diag = quiet_diag();
+            char name[80], path[1024];
+            snprintf(name, sizeof(name), "enc-v11-%zu-%u.%s", r, run, rows[r].extension);
+            snprintf(path, sizeof(path), "%s", sr_test_tmp_path(name));
+            SrEncoder *encoder = NULL;
+            SrStatus status = sr_encoder_open(&encoder, &scene, path,
+                                               run == 2 ? 0 : run ? 4 : 1, NULL, &diag);
+            uint8_t pixels[256 * 256 * 4];
+            for (unsigned frame = 0; status == SR_OK && frame < 24; ++frame) {
+                for (unsigned y = 0; y < 256; ++y) {
+                    for (unsigned x = 0; x < 256; ++x) {
+                        size_t offset = (y * 256u + x) * 4u;
+                        pixels[offset] = (uint8_t)(x * 3u + frame * 17u);
+                        pixels[offset + 1] = (uint8_t)(y * 5u + frame * 11u);
+                        pixels[offset + 2] = (uint8_t)((x ^ y) * 4u + frame * 7u);
+                        pixels[offset + 3] = 255;
+                    }
+                }
+                status = sr_encoder_write_video(encoder, pixels, &diag);
+            }
+            if (status == SR_OK) status = sr_encoder_finish(encoder, &diag);
+            CHECK_INT(t, status, SR_OK);
+            sr_encoder_destroy(encoder);
+            CHECK(t, read_all(path, &data[run], &length[run]));
+            sr_scene_free(&scene);
+        }
+        for (unsigned run = 1; run < 3; ++run) {
+            if (length[0] != length[run] || !data[0] || !data[run] ||
+                memcmp(data[0], data[run], length[0]))
+                SR_FAIL(t, "1.1 codec %d differs at threads=%u",
+                        rows[r].codec, run == 2 ? 0 : 4);
+        }
+        for (unsigned run = 0; run < 3; ++run) free(data[run]);
+    }
+}
+
 static void spherical_side_data(sr_test_ctx *t) {
     const char *names[] = {"enc-360.mp4", "enc-360.mkv"};
     for (int i = 0; i < 2; ++i) {
@@ -551,6 +598,7 @@ static void spatial_offsets_promote_to_co64(sr_test_ctx *t) {
 }
 
 const sr_test_case sr_tests_encode[] = {
+    {"version11_thread_identity", version11_thread_identity},
     {"h264_mp4_round_trip", h264_mp4_round_trip},
     {"h265_mp4_round_trip", h265_mp4_round_trip},
     {"ffv1_mkv_round_trip", ffv1_mkv_round_trip},

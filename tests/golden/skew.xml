@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Six skew cases: both axes, animation, inherited masks, projected media,
+     particles and soft-body rest geometry. -->
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="2" seed="71"
+           linearLight="false" background="#101824"/>
+  <assets>
+    <vector id="tile" shape="rect" width="36" height="28" fill="#EBAF68"
+            stroke="#FBE9C8" strokeWidth="2"/>
+    <text id="label0" text="Kx then Ky" width="94" height="12" size="8"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label1" text="animated skew" width="94" height="12" size="8"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label2" text="nested mask" width="94" height="12" size="8"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label3" text="projected card" width="94" height="12" size="8"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label4" text="particles" width="94" height="12" size="8"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label5" text="soft rest pose" width="94" height="12" size="8"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+  </assets>
+  <composition>
+    <camera id="camera" z="-400" zoom="400"/>
+    <shape id="panel0" shape="rect" x="6" y="6" width="98" height="80" fill="#1A2A3C"/>
+    <shape id="panel1" shape="rect" x="111" y="6" width="98" height="80" fill="#1A2A3C"/>
+    <shape id="panel2" shape="rect" x="216" y="6" width="98" height="80" fill="#1A2A3C"/>
+    <shape id="panel3" shape="rect" x="6" y="94" width="98" height="80" fill="#1A2A3C"/>
+    <shape id="panel4" shape="rect" x="111" y="94" width="98" height="80" fill="#1A2A3C"/>
+    <shape id="panel5" shape="rect" x="216" y="94" width="98" height="80" fill="#1A2A3C"/>
+    <layer id="text0" asset="label0" x="12" y="11"/>
+    <layer id="text1" asset="label1" x="117" y="11"/>
+    <layer id="text2" asset="label2" x="222" y="11"/>
+    <layer id="text3" asset="label3" x="12" y="99"/>
+    <layer id="text4" asset="label4" x="117" y="99"/>
+    <layer id="text5" asset="label5" x="222" y="99"/>
+    <shape id="reference" shape="rect" x="37" y="38" width="36" height="28"
+           fill="#456074"/>
+    <shape id="static" shape="rect" x="55" y="52" width="36" height="28"
+           anchorX="18" anchorY="14" skewX="30" skewY="-20"
+           fill="#5FC7BCB0" stroke="#A4F0D8" strokeWidth="1"/>
+    <shape id="animated" shape="rect" x="160" y="52" width="36" height="28"
+           anchorX="18" anchorY="14" rotation="-10" fill="#CA7AAC">
+      <animate property="skew.x" defaultInterpolation="sine-in-out">
+        <key time="0" value="-35"/><key time="1" value="35"/><key time="2" value="-20"/>
+      </animate>
+      <animate property="skew.y"><key time="0" value="15"/><key time="2" value="-20"/></animate>
+    </shape>
+    <group id="masked" x="265" y="52" skewX="-20" rotation="12" opacity=".85">
+      <mask type="ellipse" x="-22" y="-18" width="44" height="36"/>
+      <shape id="masked-fill" shape="rect" width="64" height="44"
+             anchorX="32" anchorY="22" skewY="25" fill="#92A0EB"/>
+      <shape id="stripe" shape="rect" x="-6" y="-24" width="8" height="48" fill="#F0D4A1"/>
+    </group>
+    <layer id="card" asset="tile" x="55" y="140" anchorX="18" anchorY="14"
+           threeD="true" rotationY="25" skewX="20" skewY="-12">
+      <mask type="rounded-rect" width="36" height="28" radius="5"/>
+      <animate property="rotation.x"><key time="0" value="-15"/><key time="2" value="15"/></animate>
+    </layer>
+    <particleEmitter id="spark" x="160" y="148" rate="18" lifetime="2" speed="18"
+                     direction="-90" spread="70" size="4" shape="square"
+                     color="#F4B469" skewX="35" skewY="-15" emitterWidth="20">
+      <mask type="rect" x="-34" y="-30" width="68" height="48"/>
+    </particleEmitter>
+    <shape id="cloth" shape="rect" x="245" y="124" width="36" height="28"
+           skewX="25" skewY="-10" fill="#63B6CD" stroke="#AAE5EC" strokeWidth="1">
+      <softBody rows="3" cols="3" mass="1" stiffness="10" damping=".3" pin="top"/>
+    </shape>
+  </composition>
+  <physics fixedStep=".01" gravityY="15"/>
+</scene>

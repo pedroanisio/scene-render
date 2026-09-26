@@ -16,8 +16,13 @@ size_t sr_xml_line(ParseContext *ctx) {
 
 void sr_xml_fail(ParseContext *ctx, const char *element, const char *attribute,
                  const char *message) {
+    sr_xml_fail_at(ctx, sr_xml_line(ctx), element, attribute, message);
+}
+
+void sr_xml_fail_at(ParseContext *ctx, size_t line, const char *element,
+                    const char *attribute, const char *message) {
     if (!ctx->failed) {
-        sr_diag_error(ctx->diag, sr_xml_line(ctx), element, attribute, "%s", message);
+        sr_diag_error(ctx->diag, line, element, attribute, "%s", message);
         ctx->failed = true;
         XML_StopParser(ctx->parser, XML_FALSE);
     }
@@ -87,6 +92,106 @@ void sr_xml_push(ParseContext *ctx, ParseFrame frame, const char *element) {
     ctx->stack[ctx->depth++] = frame;
 }
 
+typedef void (*StartHandler)(ParseContext *, const XML_Char **);
+
+typedef struct {
+    const char *name;
+    uint64_t parents;
+    StartHandler handler;
+    ElementKind kind;
+    size_t seen_offset;
+    unsigned minimum_version;
+    bool implemented;
+    bool push;
+} ElementDispatch;
+
+#define P(kind) (UINT64_C(1) << (kind))
+#define CONTAINERS (P(E_GROUP) | P(E_COMPOSITION))
+#define NODES (P(E_GROUP) | P(E_LAYER) | P(E_PARTICLES))
+#define ANIM_HOSTS (NODES | P(E_CAMERA) | P(E_MASK) | P(E_LIGHT) | \
+                    P(E_EFFECT) | P(E_MODIFIER) | P(E_OBJECT3D) | \
+                    P(E_FORCE_FIELD) | P(E_POINT) | P(E_MATERIAL) | P(E_AUDIO_TRACK))
+#define ENTRY(name, parents, handler, kind, push) \
+    {name, parents, handler, kind, 0, 10, true, push}
+#define SECTION(name, handler, kind, seen) \
+    {name, P(E_SCENE), handler, kind, offsetof(ParseContext, seen), \
+     10, true, true}
+
+static void start_group(ParseContext *ctx, const XML_Char **attrs) {
+    sr_xml_start_node(ctx, "group", attrs, SR_NODE_GROUP);
+}
+
+static void start_layer(ParseContext *ctx, const XML_Char **attrs) {
+    sr_xml_start_node(ctx, "layer", attrs, SR_NODE_MEDIA);
+}
+
+static void start_shape(ParseContext *ctx, const XML_Char **attrs) {
+    sr_xml_start_node(ctx, "shape", attrs, SR_NODE_SHAPE);
+}
+
+static void start_particles(ParseContext *ctx, const XML_Char **attrs) {
+    sr_xml_start_node(ctx, "particleEmitter", attrs, SR_NODE_PARTICLES);
+}
+
+/* Handlers that construct an animation host push their own frame. Plain
+ * sections and asset declarations are pushed here after their handler. */
+static const ElementDispatch dispatch[] = {
+    SECTION("project", sr_xml_start_project, E_PROJECT, seen_project),
+    {"metadata", P(E_SCENE), sr_xml_start_metadata, E_METADATA,
+     offsetof(ParseContext, seen_metadata), 11, true, true},
+    {"meta", P(E_METADATA), sr_xml_start_meta, E_META, 0, 11, true, true},
+    {"styles", P(E_SCENE), NULL, E_STYLES, offsetof(ParseContext, seen_styles),
+     11, true, true},
+    {"token", P(E_STYLES), sr_xml_start_token, E_TOKEN, 0, 11, true, true},
+    SECTION("output", sr_xml_start_output, E_OUTPUT, seen_output),
+    SECTION("assets", NULL, E_ASSETS, seen_assets),
+    ENTRY("image", P(E_ASSETS), sr_xml_start_image, E_IMAGE, true),
+    ENTRY("video", P(E_ASSETS), sr_xml_start_video, E_VIDEO, true),
+    ENTRY("audio", P(E_ASSETS), sr_xml_start_audio, E_AUDIO, true),
+    ENTRY("text", P(E_ASSETS), sr_xml_start_text, E_TEXT, true),
+    ENTRY("vector", P(E_ASSETS), sr_xml_start_vector, E_VECTOR, true),
+    ENTRY("mesh", P(E_ASSETS), sr_xml_start_mesh, E_MESH, true),
+    SECTION("materials", NULL, E_MATERIALS, seen_materials),
+    ENTRY("material", P(E_MATERIALS), sr_xml_start_material, E_MATERIAL, false),
+    SECTION("composition", NULL, E_COMPOSITION, seen_composition),
+    SECTION("scene360", sr_xml_start_scene360, E_SCENE360, seen_scene360),
+    ENTRY("group", CONTAINERS, start_group, E_GROUP, false),
+    ENTRY("layer", CONTAINERS, start_layer, E_LAYER, false),
+    ENTRY("shape", CONTAINERS, start_shape, E_LAYER, false),
+    ENTRY("particleEmitter", CONTAINERS, start_particles, E_PARTICLES, false),
+    ENTRY("object3D", CONTAINERS, sr_xml_start_object3d, E_OBJECT3D, false),
+    ENTRY("camera", CONTAINERS, sr_xml_start_camera, E_CAMERA, false),
+    ENTRY("mask", NODES, sr_xml_start_mask, E_MASK, false),
+    ENTRY("rigidBody", P(E_LAYER) | P(E_PARTICLES), sr_xml_start_rigid_body,
+          E_RIGID_BODY, false),
+    ENTRY("softBody", P(E_LAYER) | P(E_PARTICLES), sr_xml_start_soft_body,
+          E_SOFT_BODY, false),
+    ENTRY("deform", P(E_LAYER) | P(E_PARTICLES), sr_xml_start_deform,
+          E_DEFORM, false),
+    ENTRY("modifier", P(E_DEFORM), sr_xml_start_modifier, E_MODIFIER, false),
+    ENTRY("point", P(E_MODIFIER), sr_xml_start_point, E_POINT, false),
+    ENTRY("animate", ANIM_HOSTS, sr_xml_start_animate, E_ANIMATE, false),
+    ENTRY("key", P(E_ANIMATE), sr_xml_start_key, E_KEY, false),
+    SECTION("audioMix", sr_xml_start_audio_mix, E_AUDIO_MIX, seen_audio_mix),
+    ENTRY("audioTrack", P(E_AUDIO_MIX), sr_xml_start_audio_track,
+          E_AUDIO_TRACK, false),
+    SECTION("lights", NULL, E_LIGHTS, seen_lights),
+    ENTRY("light", P(E_LIGHTS), sr_xml_start_light, E_LIGHT, false),
+    SECTION("effects", NULL, E_EFFECTS, seen_effects),
+    ENTRY("effect", P(E_EFFECTS), sr_xml_start_effect, E_EFFECT, false),
+    SECTION("physics", sr_xml_start_physics, E_PHYSICS, seen_physics),
+    ENTRY("forceField", P(E_PHYSICS), sr_xml_start_force_field,
+          E_FORCE_FIELD, false),
+    ENTRY("constraint", P(E_PHYSICS), sr_xml_start_constraint,
+          E_CONSTRAINT, true)
+};
+
+#undef SECTION
+#undef ENTRY
+#undef ANIM_HOSTS
+#undef NODES
+#undef CONTAINERS
+
 static void XMLCALL on_start(void *user, const XML_Char *name,
                              const XML_Char **attrs) {
     ParseContext *ctx = user;
@@ -98,223 +203,53 @@ static void XMLCALL on_start(void *user, const XML_Char *name,
                  SR_XML_MAX_DEPTH);
         SR_XML_FAIL_RETURN(ctx, name, NULL, message);
     }
-    ParseFrame *p = sr_xml_parent(ctx);
-    if (!p) {
+    ParseFrame *parent = sr_xml_parent(ctx);
+    if (!parent) {
         const char *const allowed[] = {"version"};
         if (strcmp(name, "scene") != 0)
             SR_XML_FAIL_RETURN(ctx, name, NULL, "document root must be <scene>");
         if (!sr_xml_attrs_allowed(ctx, name, attrs, allowed, 1)) return;
         const char *version = sr_xml_required(ctx, name, attrs, "version");
-        if (!version || strcmp(version, "1.0") != 0)
-            SR_XML_FAIL_RETURN(ctx, name, "version",
-                               "this build accepts scene version 1.0");
+        if (!version || (strcmp(version, "1.0") && strcmp(version, "1.1")))
+            SR_XML_FAIL_RETURN(ctx, name, "version", "expected version 1.0 or 1.1");
+        ctx->scene->format_version = !strcmp(version, "1.1") ? 11 : 10;
         sr_xml_push(ctx, (ParseFrame){.kind = E_SCENE,
-                                      .node = ctx->scene->root,
-                                      .curve = SR_CURVE_LINEAR}, name);
+                    .node = ctx->scene->root, .curve = SR_CURVE_LINEAR}, name);
         return;
     }
-    if (strcmp(name, "project") == 0 && p->kind == E_SCENE &&
-        !ctx->seen_project) {
-        sr_xml_start_project(ctx, attrs);
-        if (!ctx->failed) sr_xml_push(ctx, (ParseFrame){.kind = E_PROJECT}, name);
-        return;
-    }
-    if (strcmp(name, "output") == 0 && p->kind == E_SCENE &&
-        !ctx->seen_output) {
-        sr_xml_start_output(ctx, attrs);
-        if (!ctx->failed) sr_xml_push(ctx, (ParseFrame){.kind = E_OUTPUT}, name);
-        return;
-    }
-    if (strcmp(name, "assets") == 0 && p->kind == E_SCENE &&
-        !ctx->seen_assets) {
-        if (attrs && attrs[0])
-            SR_XML_FAIL_RETURN(ctx, name, attrs[0], "assets has no attributes");
-        ctx->seen_assets = true;
-        sr_xml_push(ctx, (ParseFrame){.kind = E_ASSETS}, name);
-        return;
-    }
-    if (strcmp(name, "image") == 0 && p->kind == E_ASSETS) {
-        sr_xml_start_image(ctx, attrs);
-        if (!ctx->failed) sr_xml_push(ctx, (ParseFrame){.kind = E_IMAGE}, name);
-        return;
-    }
-    if (strcmp(name, "video") == 0 && p->kind == E_ASSETS) {
-        sr_xml_start_video(ctx, attrs);
-        if (!ctx->failed) sr_xml_push(ctx, (ParseFrame){.kind = E_VIDEO}, name);
-        return;
-    }
-    if (strcmp(name, "audio") == 0 && p->kind == E_ASSETS) {
-        sr_xml_start_audio(ctx, attrs);
-        if (!ctx->failed) sr_xml_push(ctx, (ParseFrame){.kind = E_AUDIO}, name);
-        return;
-    }
-    if (strcmp(name, "text") == 0 && p->kind == E_ASSETS) {
-        sr_xml_start_text(ctx, attrs);
-        if (!ctx->failed) sr_xml_push(ctx, (ParseFrame){.kind = E_TEXT}, name);
-        return;
-    }
-    if (strcmp(name, "vector") == 0 && p->kind == E_ASSETS) {
-        sr_xml_start_vector(ctx, attrs);
-        if (!ctx->failed) sr_xml_push(ctx, (ParseFrame){.kind = E_VECTOR}, name);
-        return;
-    }
-    if (strcmp(name, "mesh") == 0 && p->kind == E_ASSETS) {
-        sr_xml_start_mesh(ctx, attrs);
-        if (!ctx->failed) sr_xml_push(ctx, (ParseFrame){.kind = E_MESH}, name);
-        return;
-    }
-    if (strcmp(name, "materials") == 0 && p->kind == E_SCENE &&
-        !ctx->seen_materials) {
-        if (attrs && attrs[0])
-            SR_XML_FAIL_RETURN(ctx, name, attrs[0], "materials has no attributes");
-        ctx->seen_materials = true;
-        sr_xml_push(ctx, (ParseFrame){.kind = E_MATERIALS}, name);
-        return;
-    }
-    if (strcmp(name, "material") == 0 && p->kind == E_MATERIALS) {
-        sr_xml_start_material(ctx, attrs);
-        if (!ctx->failed) sr_xml_push(ctx, (ParseFrame){.kind = E_MATERIAL}, name);
-        return;
-    }
-    if (strcmp(name, "composition") == 0 && p->kind == E_SCENE &&
-        !ctx->seen_composition) {
-        if (attrs && attrs[0])
-            SR_XML_FAIL_RETURN(ctx, name, attrs[0],
-                               "composition has no attributes");
-        ctx->seen_composition = true;
-        sr_xml_push(ctx, (ParseFrame){.kind = E_COMPOSITION,
-                                      .node = ctx->scene->root}, name);
-        return;
-    }
-    if (strcmp(name, "scene360") == 0 && p->kind == E_SCENE &&
-        !ctx->seen_scene360) {
-        sr_xml_start_scene360(ctx, attrs);
-        if (!ctx->failed) sr_xml_push(ctx, (ParseFrame){.kind = E_SCENE360}, name);
-        return;
-    }
-    if (strcmp(name, "group") == 0 &&
-        (p->kind == E_GROUP || p->kind == E_COMPOSITION)) {
-        sr_xml_start_node(ctx, name, attrs, SR_NODE_GROUP);
-        return;
-    }
-    if (strcmp(name, "layer") == 0 &&
-        (p->kind == E_GROUP || p->kind == E_COMPOSITION)) {
-        sr_xml_start_node(ctx, name, attrs, SR_NODE_MEDIA);
-        return;
-    }
-    if (strcmp(name, "shape") == 0 &&
-        (p->kind == E_GROUP || p->kind == E_COMPOSITION)) {
-        sr_xml_start_node(ctx, name, attrs, SR_NODE_SHAPE);
-        return;
-    }
-    if (strcmp(name, "particleEmitter") == 0 &&
-        (p->kind == E_GROUP || p->kind == E_COMPOSITION)) {
-        sr_xml_start_node(ctx, name, attrs, SR_NODE_PARTICLES);
-        return;
-    }
-    if (strcmp(name, "object3D") == 0 &&
-        (p->kind == E_GROUP || p->kind == E_COMPOSITION)) {
-        sr_xml_start_object3d(ctx, attrs);
-        return;
-    }
-    if (strcmp(name, "camera") == 0 &&
-        (p->kind == E_GROUP || p->kind == E_COMPOSITION)) {
-        sr_xml_start_camera(ctx, attrs);
-        return;
-    }
-    if (strcmp(name, "mask") == 0 &&
-        (p->kind == E_GROUP || p->kind == E_LAYER)) {
-        sr_xml_start_mask(ctx, attrs);
-        return;
-    }
-    if (strcmp(name, "rigidBody") == 0 && p->kind == E_LAYER) {
-        sr_xml_start_rigid_body(ctx, attrs);
-        return;
-    }
-    if (strcmp(name, "softBody") == 0 && p->kind == E_LAYER) {
-        sr_xml_start_soft_body(ctx, attrs);
-        return;
-    }
-    if (strcmp(name, "deform") == 0 && p->kind == E_LAYER) {
-        sr_xml_start_deform(ctx, attrs);
-        return;
-    }
-    if (strcmp(name, "modifier") == 0 && p->kind == E_DEFORM) {
-        sr_xml_start_modifier(ctx, attrs);
-        return;
-    }
-    if (strcmp(name, "point") == 0 && p->kind == E_MODIFIER) {
-        sr_xml_start_point(ctx, attrs);
-        return;
-    }
-    if (strcmp(name, "animate") == 0 &&
-        (p->kind == E_GROUP || p->kind == E_LAYER || p->kind == E_PARTICLES ||
-         p->kind == E_CAMERA || p->kind == E_MASK ||
-         p->kind == E_LIGHT || p->kind == E_EFFECT || p->kind == E_MODIFIER ||
-         p->kind == E_OBJECT3D || p->kind == E_FORCE_FIELD ||
-         p->kind == E_POINT)) {
-        sr_xml_start_animate(ctx, attrs);
-        return;
-    }
-    if (strcmp(name, "key") == 0 && p->kind == E_ANIMATE) {
-        sr_xml_start_key(ctx, attrs);
-        return;
-    }
-    if (strcmp(name, "audioMix") == 0 && p->kind == E_SCENE &&
-        !ctx->seen_audio_mix) {
-        sr_xml_start_audio_mix(ctx, attrs);
-        if (!ctx->failed)
-            sr_xml_push(ctx, (ParseFrame){.kind = E_AUDIO_MIX}, name);
-        return;
-    }
-    if (strcmp(name, "audioTrack") == 0 && p->kind == E_AUDIO_MIX) {
-        sr_xml_start_audio_track(ctx, attrs);
-        if (!ctx->failed)
-            sr_xml_push(ctx, (ParseFrame){.kind = E_AUDIO_TRACK}, name);
-        return;
-    }
-    if (strcmp(name, "lights") == 0 && p->kind == E_SCENE &&
-        !ctx->seen_lights) {
-        if (attrs && attrs[0])
-            SR_XML_FAIL_RETURN(ctx, name, attrs[0], "lights has no attributes");
-        ctx->seen_lights = true;
-        sr_xml_push(ctx, (ParseFrame){.kind = E_LIGHTS}, name);
-        return;
-    }
-    if (strcmp(name, "light") == 0 && p->kind == E_LIGHTS) {
-        sr_xml_start_light(ctx, attrs);
-        return;
-    }
-    if (strcmp(name, "effects") == 0 && p->kind == E_SCENE &&
-        !ctx->seen_effects) {
-        if (attrs && attrs[0])
-            SR_XML_FAIL_RETURN(ctx, name, attrs[0], "effects has no attributes");
-        ctx->seen_effects = true;
-        sr_xml_push(ctx, (ParseFrame){.kind = E_EFFECTS}, name);
-        return;
-    }
-    if (strcmp(name, "effect") == 0 && p->kind == E_EFFECTS) {
-        sr_xml_start_effect(ctx, attrs);
-        return;
-    }
-    if (strcmp(name, "physics") == 0 && p->kind == E_SCENE &&
-        !ctx->seen_physics) {
-        sr_xml_start_physics(ctx, attrs);
-        if (!ctx->failed) sr_xml_push(ctx, (ParseFrame){.kind = E_PHYSICS}, name);
-        return;
-    }
-    if (strcmp(name, "forceField") == 0 && p->kind == E_PHYSICS) {
-        sr_xml_start_force_field(ctx, attrs);
-        return;
-    }
-    if (strcmp(name, "constraint") == 0 && p->kind == E_PHYSICS) {
-        sr_xml_start_constraint(ctx, attrs);
-        if (!ctx->failed) sr_xml_push(ctx, (ParseFrame){.kind = E_CONSTRAINT}, name);
+    for (size_t i = 0; i < sizeof(dispatch) / sizeof(dispatch[0]); ++i) {
+        const ElementDispatch *entry = &dispatch[i];
+        if (!(entry->parents & P(parent->kind)) || strcmp(name, entry->name))
+            continue;
+        if (!entry->implemented)
+            SR_XML_FAIL_RETURN(ctx, name, NULL, "unsupported in this build");
+        if (entry->minimum_version > ctx->scene->format_version)
+            SR_XML_FAIL_RETURN(ctx, name, NULL, "requires version=\"1.1\"");
+        bool *seen = entry->seen_offset
+            ? (bool *)((char *)ctx + entry->seen_offset) : NULL;
+        if (seen && *seen) break;
+        if (entry->handler) {
+            entry->handler(ctx, attrs);
+        } else if (attrs && attrs[0]) {
+            SR_XML_FAIL_RETURN(ctx, name, attrs[0], "section has no attributes");
+        }
+        if (ctx->failed) return;
+        if (seen) *seen = true;
+        if (entry->push) {
+            ParseFrame frame = {.kind = entry->kind};
+            if (entry->kind == E_COMPOSITION) {
+                frame.node = ctx->scene->root;
+                frame.node->source_line = sr_xml_line(ctx);
+            }
+            sr_xml_push(ctx, frame, name);
+        }
         return;
     }
     sr_xml_fail(ctx, name, NULL,
                 "element is not valid in this context or supported by scene v1");
 }
+
+#undef P
 
 static void XMLCALL on_end(void *user, const XML_Char *name) {
     ParseContext *ctx = user;
@@ -322,21 +257,7 @@ static void XMLCALL on_end(void *user, const XML_Char *name) {
     if (ctx->element_depth) --ctx->element_depth;
     if (ctx->failed || ctx->depth == 0) return;
     ParseFrame *frame = &ctx->stack[ctx->depth - 1];
-    if (frame->kind == E_ANIMATE && frame->color_anim) {
-        if (frame->color_anim->r.count == 0)
-            SR_XML_FAIL_RETURN(ctx, "animate", NULL,
-                               "animation track requires at least one key");
-        if (sr_anim_color_finalize(frame->color_anim) != SR_OK)
-            SR_XML_FAIL_RETURN(ctx, "animate", NULL,
-                               "keyframe times must be unique");
-    } else if (frame->kind == E_ANIMATE) {
-        if (frame->anim->track.count == 0)
-            SR_XML_FAIL_RETURN(ctx, "animate", NULL,
-                               "animation track requires at least one key");
-        if (sr_track_finalize(&frame->anim->track) != SR_OK)
-            SR_XML_FAIL_RETURN(ctx, "animate", NULL,
-                               "keyframe times must be unique");
-    }
+    if (frame->kind == E_ANIMATE && !sr_xml_finish_animation(ctx, frame)) return;
     --ctx->depth;
 }
 
@@ -453,6 +374,11 @@ static size_t find_declaration(const char *data, size_t size) {
 
 SrStatus sr_scene_load_xml(const char *path, SrScene *scene,
                            SrDiagnostics *diag) {
+    return sr_scene_load_xml_report(path, scene, diag, false);
+}
+
+SrStatus sr_scene_load_xml_report(const char *path, SrScene *scene,
+                                 SrDiagnostics *diag, bool report_unsupported) {
     if (!path || !scene || !diag) return SR_ERR_ARGUMENT;
     sr_scene_init(scene);
     scene->source_path = sr_strdup(path);
@@ -481,7 +407,8 @@ SrStatus sr_scene_load_xml(const char *path, SrScene *scene,
         return SR_ERR_XML;
     }
     SrSchemaDeferral deferral;
-    status = sr_xml_schema_check(data, size, path, diag, &deferral);
+    status = sr_xml_schema_check_profile(data, size, path, diag, &deferral,
+                                         report_unsupported, scene);
     if (status != SR_OK) {
         free(data);
         sr_scene_free(scene);

@@ -6,6 +6,46 @@
 
 #include "harness.h"
 
+static void test_color_parse_status(sr_test_ctx *t) {
+    const struct {
+        const char *text;
+        SrColor expected;
+    } valid[] = {
+        {"#012Abf", {1.0 / 255.0, 42.0 / 255.0, 191.0 / 255.0, 1.0}},
+        {"#fF80007F", {1.0, 128.0 / 255.0, 0.0, 127.0 / 255.0}},
+        {"0,1,0.5", {0.0, 1.0, 0.5, 1.0}},
+        {" 0.25 , 5e-1,1,0.75\t", {0.25, 0.5, 1.0, 0.75}},
+        {"0x1p-1,0,1,0", {0.5, 0.0, 1.0, 0.0}},
+    };
+    for (size_t i = 0; i < sizeof(valid) / sizeof(valid[0]); ++i) {
+        SrColor checked = {0}, wrapped = {0};
+        CHECK_INT(t, sr_parse_color_status(valid[i].text, &checked), SR_OK);
+        CHECK(t, sr_parse_color(valid[i].text, &wrapped));
+        CHECK(t, checked.r == valid[i].expected.r);
+        CHECK(t, checked.g == valid[i].expected.g);
+        CHECK(t, checked.b == valid[i].expected.b);
+        CHECK(t, checked.a == valid[i].expected.a);
+        CHECK(t, memcmp(&checked, &wrapped, sizeof(checked)) == 0);
+    }
+    const char *invalid[] = {
+        NULL, "", "#fff", "#1234567", "#gg1234", "#00gg34", "#0012gg",
+        "#001234gg", "#001234 ", "0,1", "0,1,0,1,0", "0,1,0,",
+        "0,,1", "-0.1,0,1", "0,1.1,0", "0,0,0,-0.1", "nan,0,1",
+        "0,inf,1", "0,0,1e999", "0,0,1junk", "red", "var(--brand)",
+    };
+    const SrColor sentinel = {0.2, 0.3, 0.4, 0.5};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        SrColor checked = sentinel, wrapped = sentinel;
+        CHECK_INT(t, sr_parse_color_status(invalid[i], &checked),
+                  SR_ERR_ARGUMENT);
+        CHECK(t, !sr_parse_color(invalid[i], &wrapped));
+        CHECK(t, memcmp(&checked, &sentinel, sizeof(checked)) == 0);
+        CHECK(t, memcmp(&wrapped, &sentinel, sizeof(wrapped)) == 0);
+    }
+    CHECK_INT(t, sr_parse_color_status("#abcdef", NULL), SR_ERR_ARGUMENT);
+    CHECK(t, !sr_parse_color("0,0,0", NULL));
+}
+
 static void test_space_parse_and_name(sr_test_ctx *t)
 {
     SrColorSpace parsed = SR_COLOR_SRGB;
@@ -140,6 +180,7 @@ static void test_to_blend(sr_test_ctx *t)
 }
 
 const sr_test_case sr_tests_color[] = {
+    {"color_parse_status", test_color_parse_status},
     {"space_parse_and_name", test_space_parse_and_name},
     {"rec709_decode_differs_from_srgb", test_rec709_decode_differs_from_srgb},
     {"grey_round_trip_identity", test_grey_round_trip_identity},

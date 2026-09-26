@@ -6,13 +6,13 @@
 #
 # usage: tools/coverage-gate.sh [BUILD_DIR]     (default: build/coverage)
 #
-# The floors are the coverage measured when the gate was introduced minus
-# 2 percentage points (measured: lines 90.30%, branches 71.29%, GCC 15.2 in
-# the Freedesktop SDK 25.08). Raise them when coverage improves; lowering
-# them needs a reason in the commit message.
+# Floors retain about 2 percentage points of headroom below the B1-3
+# node/card consumers (92.25% lines / 77.25% branches, GCC 15.2, SDK 25.08).
+# Raise them when coverage improves; lowering them needs a reason in the
+# commit message.
 set -eu
-LINE_FLOOR=88.30
-BRANCH_FLOOR=69.29
+LINE_FLOOR=90.30
+BRANCH_FLOOR=75.25
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 build=${1:-$root/build/coverage}

@@ -1,5 +1,9 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "scene_render/vector_path.h"
+#include "scene_render/parallel.h"
+#include "vector_path_internal.h"
+
+#include <stdlib.h>
 
 #include "harness.h"
 
@@ -113,8 +117,141 @@ static void test_left_edge_rounding_stays_in_bounds(sr_test_ctx *t)
     CHECK(t, fill[(H - 1) * W] > 0.0f);
 }
 
+static void prepared_path_geometry_and_lifetime(sr_test_ctx *t) {
+    SrPreparedPath path = {0};
+    const char *text = "M .5 .5 H 2.5 V 2.5 H .5 Z M 4 0 q 2 2 4 0 c 1 1 2 1 3 0";
+    CHECK_INT(t, sr_prepared_path_parse(text, &path), SR_OK);
+    CHECK_INT(t, path.count, 2);
+    if (path.count == 2) {
+        CHECK_INT(t, path.items[0].count, 5);
+        CHECK(t, path.items[0].closed);
+        CHECK_INT(t, path.items[1].count, 29);
+        CHECK(t, !path.items[1].closed);
+        const SrPathPoint *p = path.items[1].points;
+        CHECK_NEAR(t, p[6].x, 6, 1e-14);
+        CHECK_NEAR(t, p[6].y, 1, 1e-14);
+        CHECK_NEAR(t, p[12].x, 8, 0);
+        CHECK_NEAR(t, p[12].y, 0, 0);
+        CHECK_NEAR(t, p[20].x, 9.5, 1e-14);
+        CHECK_NEAR(t, p[20].y, .75, 1e-14);
+        CHECK_NEAR(t, p[28].x, 11, 0);
+        CHECK_NEAR(t, p[28].y, 0, 0);
+    }
+    sr_prepared_path_free(&path);
+    CHECK(t, path.items == NULL && path.count == 0 && path.capacity == 0);
+    sr_prepared_path_free(&path);
+    sr_prepared_path_free(NULL);
+
+    CHECK_INT(t, sr_prepared_path_parse("M .5 .5 h 2 v 2 h -2 z", &path), SR_OK);
+    float output[16], outline[16];
+    CHECK_INT(t, sr_prepared_path_coverage(&path, SR_FILL_NONZERO, 0,
+                                           4, 4, output, outline), SR_OK);
+    const float axis[] = {.5f, 1, .5f, 0};
+    for (size_t y = 0; y < 4; ++y) for (size_t x = 0; x < 4; ++x) {
+        CHECK_NEAR(t, output[y*4+x], axis[x]*axis[y], 0);
+        CHECK_NEAR(t, outline[y*4+x], 0, 0);
+    }
+    sr_prepared_path_free(&path);
+    const char *bad[] = {NULL, "", "M 0 0", "M 0 0 L 1 1 M 5 5 Q 2",
+                         "M 0 0 L 1 1 M 4 4 L 5 5 A 1 1"};
+    for (size_t i = 0; i < sizeof(bad)/sizeof(bad[0]); ++i) {
+        CHECK_INT(t, sr_prepared_path_parse(bad[i], &path), SR_ERR_ASSET);
+        CHECK(t, path.items == NULL && path.count == 0 && path.capacity == 0);
+        sr_prepared_path_free(&path);
+    }
+    CHECK_INT(t, sr_prepared_path_parse(text, NULL), SR_ERR_ARGUMENT);
+}
+
+typedef struct {
+    const SrPreparedPath *path;
+    float fill[8][16 * 16], stroke[8][16 * 16];
+    SrStatus status[8];
+} PreparedJobs;
+
+static void prepared_raster_jobs(void *opaque, size_t begin, size_t end) {
+    PreparedJobs *jobs = opaque;
+    for (size_t i = begin; i < end; ++i)
+        jobs->status[i] = sr_prepared_path_coverage(jobs->path,
+            i % 2 ? SR_FILL_EVENODD : SR_FILL_NONZERO, i % 3 ? 1.5 : 0,
+            16, 16, jobs->fill[i], jobs->stroke[i]);
+}
+
+static void prepared_path_reuse_and_threads(sr_test_ctx *t) {
+    const char *text = "M 1 2 C 3 14 11 -2 14 12 L 2 12 Z "
+                       "M 3 3 Q 10 1 12 10 L 4 12 Z M -2 8 H 18";
+    SrPreparedPath path = {0};
+    CHECK_INT(t, sr_prepared_path_parse(text, &path), SR_OK);
+    if (!path.count) return;
+    SrPreparedPath saved = path;
+    uint64_t before = SR_FNV_OFFSET;
+    for (size_t i = 0; i < path.count; ++i) {
+        before = sr_fnv1a64(before, &path.items[i], sizeof(path.items[i]));
+        before = sr_fnv1a64(before, path.items[i].points,
+                            path.items[i].count * sizeof(*path.items[i].points));
+    }
+    PreparedJobs *jobs = sr_alloc(sizeof(*jobs));
+    CHECK(t, jobs != NULL);
+    if (jobs) {
+        jobs->path = &path;
+        CHECK_INT(t, sr_parallel_for(8, 4, prepared_raster_jobs, jobs), SR_OK);
+        for (size_t i = 0; i < 8; ++i) {
+            float expected[256], outline[256];
+            CHECK_INT(t, jobs->status[i], SR_OK);
+            CHECK_INT(t, sr_vector_path_coverage(text,
+                i % 2 ? SR_FILL_EVENODD : SR_FILL_NONZERO, i % 3 ? 1.5 : 0,
+                16, 16, expected, outline), SR_OK);
+            CHECK(t, !memcmp(expected, jobs->fill[i], sizeof(expected)));
+            CHECK(t, !memcmp(outline, jobs->stroke[i], sizeof(outline)));
+        }
+        /* Reuse with different dimensions/rules, then repeat the first grid. */
+        float other[7 * 19];
+        CHECK_INT(t, sr_prepared_path_coverage(&path, SR_FILL_EVENODD,
+                                               0, 7, 19, other, NULL), SR_OK);
+        float repeated[256];
+        CHECK_INT(t, sr_prepared_path_coverage(&path, SR_FILL_NONZERO,
+                                               0, 16, 16, repeated, NULL), SR_OK);
+        CHECK(t, !memcmp(repeated, jobs->fill[0], sizeof(repeated)));
+        free(jobs);
+    }
+    uint64_t after = SR_FNV_OFFSET;
+    for (size_t i = 0; i < path.count; ++i) {
+        after = sr_fnv1a64(after, &path.items[i], sizeof(path.items[i]));
+        after = sr_fnv1a64(after, path.items[i].points,
+                           path.items[i].count * sizeof(*path.items[i].points));
+    }
+    CHECK_INT(t, path.count, saved.count);
+    CHECK(t, !memcmp(&path, &saved, sizeof(path)));
+    CHECK(t, before == after);
+    sr_prepared_path_free(&path);
+}
+
+static void prepared_path_invalid_outputs(sr_test_ctx *t) {
+    SrPreparedPath path = {0}, empty = {0};
+    CHECK_INT(t, sr_prepared_path_parse("M 0 0 H 2 V 2 Z", &path), SR_OK);
+    float out[16], sentinel[16];
+    for (size_t i = 0; i < 16; ++i) out[i] = sentinel[i] = .375f;
+    CHECK_INT(t, sr_prepared_path_coverage(NULL, SR_FILL_NONZERO,
+                                           0, 4, 4, out, NULL), SR_ERR_ARGUMENT);
+    CHECK_INT(t, sr_prepared_path_coverage(&empty, SR_FILL_NONZERO,
+                                           0, 4, 4, out, NULL), SR_ERR_ARGUMENT);
+    SrPreparedPath missing = {.count=1};
+    CHECK_INT(t, sr_prepared_path_coverage(&missing, SR_FILL_NONZERO,
+                                           0, 4, 4, out, NULL), SR_ERR_ARGUMENT);
+    CHECK_INT(t, sr_prepared_path_coverage(&path, SR_FILL_NONZERO,
+                                           0, 4, 4, NULL, NULL), SR_ERR_ARGUMENT);
+    const uint32_t sizes[][2] = {{0,4}, {4,0}, {UINT32_MAX,4}, {4,UINT32_MAX}};
+    for (size_t i = 0; i < sizeof(sizes)/sizeof(sizes[0]); ++i)
+        CHECK_INT(t, sr_prepared_path_coverage(&path, SR_FILL_NONZERO,
+                   0, sizes[i][0], sizes[i][1], out, NULL), SR_ERR_ARGUMENT);
+    CHECK(t, !memcmp(out, sentinel, sizeof(out)));
+    sr_prepared_path_free(&path);
+}
+
 const sr_test_case sr_tests_path[] = {
     {"unit_square_exact", test_unit_square_exact},
+    {"prepared_geometry_and_lifetime", prepared_path_geometry_and_lifetime},
+    {"prepared_reuse_and_threads", prepared_path_reuse_and_threads},
+    {"prepared_invalid_outputs", prepared_path_invalid_outputs},
     {"star_fill_rules", test_star_fill_rules},
     {"stroke_width_coverage", test_stroke_width_coverage},
     {"render_premultiplied", test_render_premultiplied},

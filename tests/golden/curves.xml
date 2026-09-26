@@ -1,0 +1,105 @@
+<scene version="1.1">
+  <project width="320" height="180" fps="24" duration="1" background="#141A25"/>
+  <composition>
+    <shape id="curve0" shape="ellipse" width="10" height="10" x="5" fill="#F87171">
+      <animate property="position.y" defaultInterpolation="hold">
+        <key time="0" value="25"/>
+        <key time="1" value="125"/>
+      </animate>
+    </shape>
+    <shape id="curve1" shape="ellipse" width="10" height="10" x="25" fill="#FB923C">
+      <animate property="position.y" defaultInterpolation="steps">
+        <key time="0" value="25" steps="5" stepPosition="start"/>
+        <key time="1" value="125" steps="5"/>
+      </animate>
+    </shape>
+    <shape id="curve2" shape="ellipse" width="10" height="10" x="45" fill="#FBBF24">
+      <animate property="position.y" defaultInterpolation="sine-in-out">
+        <key time="0" value="25"/>
+        <key time="1" value="125"/>
+      </animate>
+    </shape>
+    <shape id="curve3" shape="ellipse" width="10" height="10" x="65" fill="#FACC15">
+      <animate property="position.y" defaultInterpolation="quad-in-out">
+        <key time="0" value="25"/>
+        <key time="1" value="125"/>
+      </animate>
+    </shape>
+    <shape id="curve4" shape="ellipse" width="10" height="10" x="85" fill="#A3E635">
+      <animate property="position.y" defaultInterpolation="cubic-in-out">
+        <key time="0" value="25"/>
+        <key time="1" value="125"/>
+      </animate>
+    </shape>
+    <shape id="curve5" shape="ellipse" width="10" height="10" x="105" fill="#4ADE80">
+      <animate property="position.y" defaultInterpolation="quart-in-out">
+        <key time="0" value="25"/>
+        <key time="1" value="125"/>
+      </animate>
+    </shape>
+    <shape id="curve6" shape="ellipse" width="10" height="10" x="125" fill="#34D399">
+      <animate property="position.y" defaultInterpolation="quint-in-out">
+        <key time="0" value="25"/>
+        <key time="1" value="125"/>
+      </animate>
+    </shape>
+    <shape id="curve7" shape="ellipse" width="10" height="10" x="145" fill="#2DD4BF">
+      <animate property="position.y" defaultInterpolation="expo-in-out">
+        <key time="0" value="25"/>
+        <key time="1" value="125"/>
+      </animate>
+    </shape>
+    <shape id="curve8" shape="ellipse" width="10" height="10" x="165" fill="#22D3EE">
+      <animate property="position.y" defaultInterpolation="circ-in-out">
+        <key time="0" value="25"/>
+        <key time="1" value="125"/>
+      </animate>
+    </shape>
+    <shape id="curve9" shape="ellipse" width="10" height="10" x="185" fill="#38BDF8">
+      <animate property="position.y" defaultInterpolation="back-in-out">
+        <key time="0" value="25"/>
+        <key time="1" value="125"/>
+      </animate>
+    </shape>
+    <shape id="curve10" shape="ellipse" width="10" height="10" x="205" fill="#60A5FA">
+      <animate property="position.y" defaultInterpolation="elastic-in-out">
+        <key time="0" value="25"/>
+        <key time="1" value="125"/>
+      </animate>
+    </shape>
+    <shape id="curve11" shape="ellipse" width="10" height="10" x="225" fill="#818CF8">
+      <animate property="position.y" defaultInterpolation="bounce-in-out">
+        <key time="0" value="25"/>
+        <key time="1" value="125"/>
+      </animate>
+    </shape>
+    <shape id="curve12" shape="ellipse" width="10" height="10" x="245" fill="#A78BFA">
+      <animate property="position.y" defaultInterpolation="catmull-rom">
+        <key time="0" value="25"/>
+        <key time="0.33" value="125"/>
+        <key time="0.66" value="55"/>
+        <key time="1" value="125"/>
+      </animate>
+    </shape>
+    <shape id="curve13" shape="ellipse" width="10" height="10" x="265" fill="#C084FC">
+      <animate property="position.y" defaultInterpolation="tcb">
+        <key time="0" value="25"/>
+        <key time="0.33" value="125" tension="0.3" continuity="-0.2" bias="0.4"/>
+        <key time="0.66" value="55"/>
+        <key time="1" value="125"/>
+      </animate>
+    </shape>
+    <shape id="curve14" shape="ellipse" width="10" height="10" x="285" fill="#E879F9">
+      <animate property="position.y" defaultInterpolation="spring">
+        <key time="0" value="25" stiffness="100" damping="10" mass="1"/>
+        <key time="1" value="125"/>
+      </animate>
+    </shape>
+    <shape id="curve15" shape="ellipse" width="10" height="10" x="305" fill="#F472B6">
+      <animate property="position.y" defaultInterpolation="cubic-bezier">
+        <key time="0" value="25" easeOut="0.7,0.1"/>
+        <key time="1" value="125" easeIn="0.7,0.1"/>
+      </animate>
+    </shape>
+  </composition>
+</scene>

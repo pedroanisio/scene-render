@@ -250,6 +250,80 @@ static void test_translucent_object_batches(sr_test_ctx *t)
 /* The sphere's center is farther than the box, but its front surface
  * crosses the box. Deferred translucent samples must test the final
  * opaque depth, even when that opaque object was submitted later. */
+static void test_relative_inactive_card_sort(sr_test_ctx *t)
+{
+    char xml[4096];
+    scene(xml, sizeof(xml), " antialias3d=\"2\"", true, 0, 45, 0,
+        "<object3D id=\"far\" primitive=\"sphere\" material=\"alpha-red\" "
+        "x=\"10\" z=\"10\" radius=\"100\"/>"
+        "<shape id=\"front\" shape=\"rect\" x=\"-200\" y=\"35\" width=\"20\" "
+        "height=\"20\" fill=\"#00FF0040\" depth=\"-300\"/>"
+        "<shape id=\"inactive\" shape=\"rect\" x=\"110\" y=\"40\" width=\"20\" "
+        "height=\"20\" fill=\"#FFFFFF40\" depth=\"0\"/>"
+        "<shape id=\"back\" shape=\"rect\" x=\"400\" y=\"50\" width=\"20\" "
+        "height=\"20\" fill=\"#FFFF0040\" depth=\"300\"/>"
+        "<object3D id=\"near\" primitive=\"box\" material=\"alpha-blue\" "
+        "z=\"0\" radius=\"20\"/>");
+    const double times[] = {.75, .25, 1, 0, .75};
+    const float black[4] = {0, 0, 0, 1};
+    for (int inactive = 0; inactive < 3; ++inactive) {
+        SrScene scenes[2];
+        bool a = st_load(t, "sort-length-a.xml", xml, &scenes[0], NULL) == SR_OK;
+        bool b = st_load(t, "sort-length-b.xml", xml, &scenes[1], NULL) == SR_OK;
+        CHECK(t, a && b);
+        if (!a || !b) {
+            if (a) sr_scene_free(&scenes[0]);
+            if (b) sr_scene_free(&scenes[1]);
+            continue;
+        }
+        for (int i = 0; i < 2; ++i) {
+            scenes[i].cameras[0].orthographic = true;
+            scenes[i].cameras[0].z.base = 0;
+            SrNode *node = sr_scene_find_node(&scenes[i], "inactive");
+            if (inactive == 0) node->visible = false;
+            if (inactive == 1) node->end_time = .5;
+            if (inactive == 2) node->opacity.base = 0;
+        }
+        scenes[1].has_relative_lengths = true;
+        for (size_t i = 0; i < scenes[1].root->child_count; ++i) {
+            SrNode *node = scenes[1].root->children[i];
+            node->transform.x.base /= 2;
+            node->transform.x.unit = SR_LENGTH_PERCENT;
+            node->shape_width /= 2;
+            node->shape_width_unit = SR_LENGTH_VW;
+            node->shape_height_unit = SR_LENGTH_VH;
+        }
+        SrCompositor compositors[3];
+        SrFrame frames[3] = {{0}};
+        for (size_t i = 0; i < 3; ++i) {
+            sr_compositor_init(&compositors[i], i == 2 ? 4 : 1);
+            CHECK_INT(t, sr_frame_init(&frames[i], W, H), SR_OK);
+        }
+        for (size_t k = 0; k < sizeof(times) / sizeof(times[0]); ++k) {
+            for (size_t i = 0; i < 3; ++i) {
+                sr_frame_clear(&frames[i], black, 1);
+                CHECK_INT(t, sr_compositor_render_scene(&compositors[i],
+                              &scenes[i ? 1 : 0], times[k], &frames[i], NULL), SR_OK);
+            }
+            CHECK(t, !memcmp(frames[0].px, frames[1].px, (size_t)W * H * 4 * sizeof(float)));
+            CHECK(t, !memcmp(frames[1].px, frames[2].px, (size_t)W * H * 4 * sizeof(float)));
+        }
+        /* Prove that substituting an inactive sort key changes this fixture:
+         * the card splits crossing translucent objects into separate flushes. */
+        SrNode *node = sr_scene_find_node(&scenes[0], "inactive");
+        node->transform.x.base = 0;
+        sr_frame_clear(&frames[0], black, 1);
+        CHECK_INT(t, sr_compositor_render_scene(&compositors[0], &scenes[0], .75,
+                      &frames[0], NULL), SR_OK);
+        CHECK(t, memcmp(frames[0].px, frames[1].px, (size_t)W * H * 4 * sizeof(float)) != 0);
+        for (size_t i = 0; i < 3; ++i) {
+            sr_frame_free(&frames[i]);
+            sr_compositor_free(&compositors[i]);
+        }
+        sr_scene_free(&scenes[0]); sr_scene_free(&scenes[1]);
+    }
+}
+
 static void test_translucent_sphere_crosses_box(sr_test_ctx *t)
 {
     for (int samples = 1; samples <= 4; samples *= 2) {
@@ -691,6 +765,7 @@ const sr_test_case sr_tests_depth[] = {
     {"run_sorting_translucent", test_run_sorting_translucent},
     {"sphere_behind_translucent_card", test_sphere_behind_translucent_card},
     {"translucent_object_batches", test_translucent_object_batches},
+    {"relative_inactive_card_sort", test_relative_inactive_card_sort},
     {"translucent_sphere_crosses_box", test_translucent_sphere_crosses_box},
     {"tilt_trapezoid", test_tilt_trapezoid},
     {"projective_matches_analytic", test_projective_matches_analytic},

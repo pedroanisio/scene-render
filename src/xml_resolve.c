@@ -1,4 +1,5 @@
 #include "xml_internal.h"
+#include "compositing_internal.h"
 
 #include <math.h>
 #include <string.h>
@@ -169,7 +170,7 @@ static bool resolve_physics(ParseContext *ctx) {
                               constraint->id);
                 return false;
             }
-            if (!constraint->rest_length_set)
+            if (!ctx->scene->has_relative_lengths && !constraint->rest_length_set)
                 constraint->rest_length = hypot(
                     constraint->a->transform.x.base - constraint->x,
                     constraint->a->transform.y.base - constraint->y);
@@ -184,7 +185,7 @@ static bool resolve_physics(ParseContext *ctx) {
                           constraint->id);
             return false;
         }
-        if (constraint->rest_length == 0.0) {
+        if (!ctx->scene->has_relative_lengths && constraint->rest_length == 0.0) {
             double dx = constraint->b->transform.x.base -
                         constraint->a->transform.x.base;
             double dy = constraint->b->transform.y.base -
@@ -197,12 +198,26 @@ static bool resolve_physics(ParseContext *ctx) {
 
 
 bool sr_xml_resolve_scene(ParseContext *ctx) {
-    if (!resolve_nodes(ctx, ctx->scene->root, false)) return false;
-    if (!resolve_audio(ctx)) return false;
-    if (!resolve_camera(ctx)) return false;
-    if (!resolve_visual(ctx)) return false;
-    if (!resolve_effects(ctx)) return false;
-    if (!resolve_physics(ctx)) return false;
-    sr_node_sort_children(ctx->scene->root);
-    return true;
+    SrCompositePlan *plan = NULL;
+    if (ctx->scene->compositing_required) {
+        SrStatus status = sr_composite_plan_build(ctx->scene, &plan, ctx->diag);
+        if (status != SR_OK) {
+            ctx->out_of_memory = status == SR_ERR_MEMORY;
+            return false;
+        }
+    }
+    bool ready = sr_xml_resolve_lengths(ctx) &&
+        resolve_nodes(ctx, ctx->scene->root, false) && resolve_audio(ctx) &&
+        resolve_camera(ctx) && resolve_visual(ctx) && resolve_effects(ctx) &&
+        resolve_physics(ctx);
+    if (ready) sr_node_sort_children(ctx->scene->root);
+    sr_composite_plan_free(plan);
+    /* Preflight protects recursive consumers; the published index must follow
+     * the finalized tree, exactly as subsequent explicit preparation does. */
+    if (ready && ctx->scene->compositing_required) {
+        SrStatus status = sr_scene_prepare_compositing(ctx->scene, ctx->diag);
+        ctx->out_of_memory = status == SR_ERR_MEMORY;
+        ready = status == SR_OK;
+    }
+    return ready;
 }

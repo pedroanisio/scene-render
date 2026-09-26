@@ -22,6 +22,13 @@ static void defaults_and_every_option(sr_test_ctx *t)
     char e[256] = "";
     CHECK(t, PARSE(&o, e, "--scene", "s.xml") == SR_OK);
     CHECK_STR(t, o.scene_path, "s.xml");
+    CHECK(t, PARSE(&o, e, "--validate", "--report-unsupported", "s.xml") == SR_OK);
+    CHECK(t, o.report_unsupported && o.render.validate_only);
+    CHECK_STR(t, o.scene_path, "s.xml");
+    CHECK(t, PARSE(&o, e, "s.xml", "--scene", "other.xml") == SR_ERR_ARGUMENT);
+    CHECK_CONTAINS(t, e, "--scene given more than once");
+    CHECK(t, PARSE(&o, e, "--scene", "s.xml", "other.xml") == SR_ERR_ARGUMENT);
+    CHECK(t, PARSE(&o, e, "--scene", "s.xml") == SR_OK);
     CHECK(t, !o.render.preview && !o.render.has_range && !o.render.hash);
     CHECK(t, o.render.preview_path == NULL);
     CHECK_INT(t, o.render.encoder_threads, 0);

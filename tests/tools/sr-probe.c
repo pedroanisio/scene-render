@@ -1,5 +1,7 @@
 /* Stream inspection for tests/run-integration.sh, replacing ffprobe:
  *   sr-probe [--samples] FILE
+ *   sr-probe --tag KEY FILE
+ * --tag prints the exact value plus a newline; exit 3 means the key is absent.
  * prints one line per stream:
  *   stream=<index> type=video codec=<name> width=<w> height=<h> frames=<n>
  *     pix_fmt=<fmt> range=<tv|pc> space=<..> transfer=<..> primaries=<..>
@@ -91,8 +93,9 @@ done:
 
 int main(int argc, char **argv) {
     bool samples = argc == 3 && strcmp(argv[1], "--samples") == 0;
-    if (argc != 2 && !samples) {
-        fprintf(stderr, "usage: %s [--samples] FILE\n", argv[0]);
+    bool tag = argc == 4 && strcmp(argv[1], "--tag") == 0;
+    if (argc != 2 && !samples && !tag) {
+        fprintf(stderr, "usage: %s [--samples] FILE | --tag KEY FILE\n", argv[0]);
         return 2;
     }
     const char *path = argv[argc - 1];
@@ -102,6 +105,13 @@ int main(int argc, char **argv) {
         avformat_find_stream_info(fmt, NULL) < 0) {
         fprintf(stderr, "sr-probe: cannot read %s\n", path);
         return 1;
+    }
+    if (tag) {
+        const AVDictionaryEntry *entry = av_dict_get(fmt->metadata, argv[2], NULL, 0);
+        int result = entry ? 0 : 3;
+        if (entry) printf("%s\n", entry->value);
+        avformat_close_input(&fmt);
+        return result;
     }
     unsigned n = fmt->nb_streams;
     int64_t *count = calloc(n, sizeof(*count));

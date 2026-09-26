@@ -1,0 +1,30 @@
+<scene version="1.1">
+  <project width="64" height="32" fps="12" duration="2"/>
+  <composition>
+    <shape id="s" shape="rect" width="8" height="8" x="3" start="0.25" end="1.75">
+      <animate property="position.x" timeBase="normalized" additive="true"
+               extrapolateBefore="linear" extrapolateAfter="ping-pong">
+        <key time="0" value="0" interpolation="cubic-bezier" easeOut="0.5,0.2"/>
+        <key time="1" value="20" easeIn="0.4,0.3"/>
+      </animate>
+      <animate property="fill" defaultInterpolation="sine-in-out">
+        <key time="0" value="#104080"/><key time="2" value="#F0A020"/>
+      </animate>
+      <mask type="rect" width="8" height="8">
+        <animate property="width" timeBase="local" extrapolateAfter="offset">
+          <key time="0" value="2"/><key time="1" value="8"/>
+        </animate>
+      </mask>
+    </shape>
+    <particleEmitter id="p" x="40" y="24" rate="2" lifetime="1" speed="1" size="1">
+      <animate property="rate" additive="true" extrapolateAfter="loop">
+        <key time="0" value="3" interpolation="steps" steps="4"/>
+        <key time="0.5" value="7"/>
+      </animate>
+      <animate property="lifetime" defaultInterpolation="spring">
+        <key time="0" value="0.3" stiffness="100" damping="4" mass="1"/>
+        <key time="1" value="1"/>
+      </animate>
+    </particleEmitter>
+  </composition>
+</scene>

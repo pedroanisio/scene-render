@@ -53,7 +53,7 @@ pkg_check_modules(TEXT REQUIRED IMPORTED_TARGET
 pkg_check_modules(LIBXML2 REQUIRED IMPORTED_TARGET libxml-2.0>=2.9.14)
 
 # Embed the XSD so the schema the loader enforces is the schema we ship.
-set(SR_XSD ${CMAKE_CURRENT_SOURCE_DIR}/schema/scene-v1.xsd)
+set(SR_XSD ${CMAKE_CURRENT_SOURCE_DIR}/schema/scene-render-1.1.xsd)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SR_XSD})
 file(READ ${SR_XSD} SR_XSD_HEX HEX)
 string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," SR_XSD_BYTES "${SR_XSD_HEX}")
@@ -64,6 +64,7 @@ set(SCENE_RENDER_SOURCES
     src/common.c
     src/card.c
     src/parallel.c
+    src/random.c
     src/color.c
     src/raster.c
     src/vector_path.c
@@ -72,12 +73,20 @@ set(SCENE_RENDER_SOURCES
     src/spatial.c
     src/diagnostics.c
     src/timeline.c
+    src/length.c
+    src/length_frame.c
+    src/curves.c
+    src/property.c
     src/scene.c
     src/assets.c
     src/text.c
     src/procedural.c
     src/audio.c
     src/compositor.c
+    src/compositing.c
+    src/compositor_resources.c
+    src/compositor_evaluation.c
+    src/compositor_geometry.c
     src/camera.c
     src/lighting.c
     src/effects.c
@@ -90,13 +99,19 @@ set(SCENE_RENDER_SOURCES
     src/resume.c
     src/xml.c
     src/xml_elements.c
+    src/xml_lengths.c
+    src/xml_animation.c
     src/xml_nodes.c
     src/xml_resolve.c
     src/xml_audio.c
     src/xml_camera.c
     src/xml_visual.c
     src/xml_physics.c
+    src/xml_styles.c
+    src/xml_metadata.c
+    src/metadata.c
     src/xml_schema.c
+    src/xml_capabilities.c
     src/cli_args.c
     ${CMAKE_CURRENT_BINARY_DIR}/generated/schema_data.c)
 
@@ -115,8 +130,19 @@ sr_configure_target(scene-render)
 
 include(CTest)
 if(BUILD_TESTING)
-    set(SR_UNIT_SUITES timeline geometry compositor color vector mesh scene xml
-                       camera physics blend group raster mask path image
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME schema.capabilities
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/feature-matrix.py --check)
+    add_test(NAME schema.compatibility
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/schema-compatibility.py)
+    set(SR_UNIT_SUITES timeline length length_frame length_physics
+                       curves geometry compositor color vector random
+                       mesh scene property xml xml_lengths profile styles metadata
+                       camera physics blend blend_color skew compositing composite_resources
+                       composite_evaluation composite_geometry composite_particles group
+                       raster mask path mask_path fuzz_mask_path image
                        encode encode_faults audio video
                        fx anim_color particles deform shadow text args resume
                        depth)
@@ -141,6 +167,12 @@ if(BUILD_TESTING)
         PkgConfig::LIBAV PkgConfig::TEXT PkgConfig::LIBXML2 m Threads::Threads
         ${CMAKE_DL_LIBS})
     sr_configure_target(scene-render-testhooks)
+    add_test(NAME tools.verification
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_verification_tools.py)
+    add_test(NAME frame_order
+        COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/frame-order-check.sh
+                $<TARGET_FILE:scene-render> $<TARGET_FILE:scene-render-testhooks>)
     # --- Verification depth (P7) ---------------------------------------
     # unit.golden: reference images in tests/golden/expected/
     # (SR_UPDATE_GOLDEN=1 regenerates them). unit.oom: allocation-failure
@@ -156,7 +188,8 @@ if(BUILD_TESTING)
     # be told to fail.
     foreach(fn avformat_alloc_output_context2 avcodec_find_encoder_by_name
                avcodec_alloc_context3 avcodec_open2 avformat_new_stream
-               avcodec_parameters_from_context avio_open avformat_write_header
+               avcodec_parameters_from_context avio_open avformat_write_header av_dict_set
+               av_opt_set
                sws_getContext av_frame_alloc av_packet_alloc av_frame_get_buffer
                av_frame_make_writable avcodec_send_frame avcodec_receive_packet
                av_interleaved_write_frame av_write_trailer avformat_open_input
@@ -203,9 +236,26 @@ if(BUILD_TESTING)
     add_test(NAME cli.version COMMAND scene-render --version)
     set_tests_properties(cli.version PROPERTIES PASS_REGULAR_EXPRESSION
         "^scene-render ${PROJECT_VERSION}\n$")
+    add_test(NAME cli.schema_matches
+        COMMAND ${CMAKE_COMMAND} -DCMD=${SR_CLI}
+                -DSCHEMA=${CMAKE_CURRENT_SOURCE_DIR}/schema/scene-render-1.1.xsd
+                -P ${SR_CLI_DIR}/schema_matches.cmake)
     add_test(NAME cli.print_schema COMMAND scene-render --print-schema)
     set_tests_properties(cli.print_schema PROPERTIES PASS_REGULAR_EXPRESSION
         "<xs:schema .*</xs:schema>")
+    sr_cli_exit(report_unsupported_requires_validate 2
+        "--report-unsupported requires --validate"
+        --scene ${SR_MEDIA} --report-unsupported)
+    sr_cli_exit(report_unsupported_duplicate 2
+        "--report-unsupported given more than once"
+        --scene ${SR_MEDIA} --validate --report-unsupported --report-unsupported)
+    sr_cli_exit(report_unsupported 3
+        "unsupported in this build: <shape condition=.*unsupported in this build: <effect type="
+        --scene ${SR_CLI_DIR}/unsupported.xml --validate --report-unsupported)
+    sr_cli_exit(validate_positional_profile 0 "valid:"
+        --validate ${CMAKE_CURRENT_SOURCE_DIR}/tests/data-profile.xml)
+    sr_cli_exit(validate_profile 0 "valid:"
+        --scene ${CMAKE_CURRENT_SOURCE_DIR}/tests/data-profile.xml --validate)
     sr_cli_exit(unknown_option 2 "unknown option '--frobnicate'" --frobnicate)
     sr_cli_exit(validate_ok 0 "valid: [^\n]*data-media.xml \\(2 assets, 2 top-level layers\\)"
                 --validate --scene ${SR_MEDIA})

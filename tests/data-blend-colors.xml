@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scene version="1.1">
+  <project width="192" height="128" fps="12" duration="2" seed="19"
+           linearLight="true" background="#2A344380"/>
+  <assets><vector id="paint" shape="ellipse" width="112" height="88" fill="#9FEA7BC0"/></assets>
+  <composition>
+    <shape id="backdrop" shape="rect" width="192" height="128" fill="#70407880"/>
+    <shape id="node0" shape="ellipse" width="156" height="104" x="5" y="2" fill="#F06090B0" blend="plus-lighter">
+      <mask type="ellipse" width="144" height="100"/>
+      <deform><modifier type="wave" axis="x" amount="3" frequency="2"/></deform>
+      <animate property="rotation"><key time="0" value="-10"/><key time="2" value="15"/></animate>
+    </shape>
+    <group id="node1" x="14" y="11" opacity=".7" blend="exclusion">
+      <shape id="child1" shape="rect" width="128" height="96" fill="#61ADCE80"/>
+      <shape id="over1" shape="ellipse" width="120" height="80" x="18" y="8" fill="#DEAF57A0"/>
+    </group>
+    <layer id="node2" asset="paint" x="23" y="20" opacity=".55" blend="subtract"
+           threeD="true" zDepth="8" rotationY="18" anchorX="56" anchorY="44">
+      <animate property="rotation.x"><key time="0" value="-10"/><key time="2" value="20"/></animate>
+    </layer>
+    <particleEmitter id="node3" x="96" y="64" size="20" rate="4" lifetime="2" speed="15"
+                     spread="150" color="#7CA9DEA0" blend="divide">
+      <mask type="rect" x="-80" y="-56" width="160" height="112"/>
+    </particleEmitter>
+    <shape id="node4" shape="ellipse" width="156" height="104" x="41" y="11" fill="#F06090B0" blend="darken">
+      <mask type="ellipse" width="144" height="100"/>
+      <animate property="rotation"><key time="0" value="-10"/><key time="2" value="15"/></animate>
+    </shape>
+    <group id="node5" x="5" y="20" opacity=".7" blend="lighten">
+      <shape id="child5" shape="rect" width="128" height="96" fill="#61ADCE80"/>
+      <shape id="over5" shape="ellipse" width="120" height="80" x="18" y="8" fill="#DEAF57A0"/>
+    </group>
+    <layer id="node6" asset="paint" x="14" y="2" opacity=".55" blend="darker-color"
+           threeD="true" zDepth="8" rotationY="18" anchorX="56" anchorY="44">
+      <animate property="rotation.x"><key time="0" value="-10"/><key time="2" value="20"/></animate>
+    </layer>
+    <particleEmitter id="node7" x="96" y="64" size="20" rate="4" lifetime="2" speed="15"
+                     spread="150" color="#7CA9DEA0" blend="lighter-color">
+      <mask type="rect" x="-80" y="-56" width="160" height="112"/>
+    </particleEmitter>
+    <shape id="node8" shape="ellipse" width="156" height="104" x="32" y="20" fill="#F06090B0" blend="color-dodge">
+      <mask type="ellipse" width="144" height="100"/>
+      <animate property="rotation"><key time="0" value="-10"/><key time="2" value="15"/></animate>
+    </shape>
+    <group id="node9" x="41" y="2" opacity=".7" blend="color-burn">
+      <shape id="child9" shape="rect" width="128" height="96" fill="#61ADCE80"/>
+      <shape id="over9" shape="ellipse" width="120" height="80" x="18" y="8" fill="#DEAF57A0"/>
+    </group>
+    <layer id="node10" asset="paint" x="5" y="11" opacity=".55" blend="linear-dodge"
+           threeD="true" zDepth="8" rotationY="18" anchorX="56" anchorY="44">
+      <animate property="rotation.x"><key time="0" value="-10"/><key time="2" value="20"/></animate>
+    </layer>
+    <particleEmitter id="node11" x="96" y="64" size="20" rate="4" lifetime="2" speed="15"
+                     spread="150" color="#7CA9DEA0" blend="linear-burn">
+      <mask type="rect" x="-80" y="-56" width="160" height="112"/>
+    </particleEmitter>
+    <shape id="node12" shape="ellipse" width="156" height="104" x="23" y="2" fill="#F06090B0" blend="soft-light">
+      <mask type="ellipse" width="144" height="100"/>
+      <animate property="rotation"><key time="0" value="-10"/><key time="2" value="15"/></animate>
+    </shape>
+    <group id="node13" x="32" y="11" opacity=".7" blend="hard-light">
+      <shape id="child13" shape="rect" width="128" height="96" fill="#61ADCE80"/>
+      <shape id="over13" shape="ellipse" width="120" height="80" x="18" y="8" fill="#DEAF57A0"/>
+    </group>
+    <layer id="node14" asset="paint" x="41" y="20" opacity=".55" blend="linear-light"
+           threeD="true" zDepth="8" rotationY="18" anchorX="56" anchorY="44">
+      <animate property="rotation.x"><key time="0" value="-10"/><key time="2" value="20"/></animate>
+    </layer>
+    <particleEmitter id="node15" x="96" y="64" size="20" rate="4" lifetime="2" speed="15"
+                     spread="150" color="#7CA9DEA0" blend="vivid-light">
+      <mask type="rect" x="-80" y="-56" width="160" height="112"/>
+    </particleEmitter>
+    <shape id="node16" shape="ellipse" width="156" height="104" x="14" y="11" fill="#F06090B0" blend="pin-light">
+      <mask type="ellipse" width="144" height="100"/>
+      <animate property="rotation"><key time="0" value="-10"/><key time="2" value="15"/></animate>
+    </shape>
+    <group id="node17" x="23" y="20" opacity=".7" blend="hard-mix">
+      <shape id="child17" shape="rect" width="128" height="96" fill="#61ADCE80"/>
+      <shape id="over17" shape="ellipse" width="120" height="80" x="18" y="8" fill="#DEAF57A0"/>
+    </group>
+    <layer id="node18" asset="paint" x="32" y="2" opacity=".55" blend="hue"
+           threeD="true" zDepth="8" rotationY="18" anchorX="56" anchorY="44">
+      <animate property="rotation.x"><key time="0" value="-10"/><key time="2" value="20"/></animate>
+    </layer>
+    <particleEmitter id="node19" x="96" y="64" size="20" rate="4" lifetime="2" speed="15"
+                     spread="150" color="#7CA9DEA0" blend="saturation">
+      <mask type="rect" x="-80" y="-56" width="160" height="112"/>
+    </particleEmitter>
+    <shape id="node20" shape="ellipse" width="156" height="104" x="5" y="20" fill="#F06090B0" blend="color">
+      <mask type="ellipse" width="144" height="100"/>
+      <animate property="rotation"><key time="0" value="-10"/><key time="2" value="15"/></animate>
+    </shape>
+    <group id="node21" x="14" y="2" opacity=".7" blend="luminosity">
+      <shape id="child21" shape="rect" width="128" height="96" fill="#61ADCE80"/>
+      <shape id="over21" shape="ellipse" width="120" height="80" x="18" y="8" fill="#DEAF57A0"/>
+    </group>
+  </composition>
+</scene>

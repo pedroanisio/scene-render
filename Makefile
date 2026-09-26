@@ -58,7 +58,7 @@ LDLIBS += $(LIBAV_LIBS) $(TEXT_LIBS) $(XML2_LIBS) -lexpat -lm -pthread -ldl
 # libav fault injection for tests/unit/test_encode_faults.c.
 TEST_WRAPS := avformat_alloc_output_context2 avcodec_find_encoder_by_name \
 	avcodec_alloc_context3 avcodec_open2 avformat_new_stream \
-	avcodec_parameters_from_context avio_open avformat_write_header \
+	avcodec_parameters_from_context avio_open avformat_write_header av_dict_set av_opt_set \
 	sws_getContext av_frame_alloc av_packet_alloc av_frame_get_buffer \
 	av_frame_make_writable avcodec_send_frame avcodec_receive_packet \
 	av_interleaved_write_frame av_write_trailer avformat_open_input \
@@ -74,23 +74,34 @@ TEST_LDFLAGS += -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free
 P7_UNIT_SUITES := golden oom
 # ----------------------------------------------------------------------
 
-CORE_SOURCES := src/common.c src/card.c src/parallel.c src/color.c src/raster.c src/vector_path.c src/mesh.c src/gpu.c src/spatial.c src/diagnostics.c src/timeline.c src/scene.c \
-	src/assets.c src/text.c src/procedural.c src/audio.c src/compositor.c src/camera.c \
+CORE_SOURCES := src/common.c src/card.c src/parallel.c src/random.c \
+	src/color.c src/raster.c \
+	src/vector_path.c src/mesh.c src/gpu.c src/spatial.c src/diagnostics.c \
+	src/timeline.c src/length.c src/length_frame.c src/curves.c src/property.c src/scene.c \
+	src/assets.c src/text.c src/procedural.c src/audio.c src/compositor.c \
+	src/compositing.c src/compositor_resources.c src/compositor_evaluation.c \
+	src/compositor_geometry.c src/camera.c \
 	src/lighting.c src/effects.c src/particles.c src/deform.c src/physics.c \
 	src/encoder.c src/video.c src/renderer.c \
 	src/resume.c src/xml.c \
-	src/xml_elements.c src/xml_nodes.c src/xml_resolve.c src/xml_audio.c \
+	src/xml_elements.c src/xml_lengths.c src/xml_animation.c src/xml_nodes.c \
+	src/xml_resolve.c src/xml_audio.c \
 	src/xml_camera.c \
 	src/xml_visual.c \
-	src/xml_physics.c src/xml_schema.c src/cli_args.c
+	src/xml_physics.c src/xml_styles.c src/xml_metadata.c src/metadata.c \
+	src/xml_schema.c src/xml_capabilities.c src/cli_args.c
 # The embedded XSD (generated below) is part of the core library.
 CORE_OBJECTS := $(CORE_SOURCES:src/%.c=$(BUILD)/%.o) $(BUILD)/schema_data.o
 APP_OBJECT := $(BUILD)/main.o
 TEST_SOURCES := $(sort $(wildcard tests/unit/*.c))
 TEST_OBJECTS := $(TEST_SOURCES:tests/unit/%.c=$(BUILD)/unit/%.o)
-UNIT_SUITES := timeline geometry compositor color vector mesh scene xml \
-	camera physics blend group raster mask path image encode encode_faults \
-	audio video fx anim_color particles deform shadow text args resume depth \
+UNIT_SUITES := timeline length length_frame length_physics curves geometry \
+	compositor color vector mesh random \
+	scene property xml xml_lengths profile styles metadata \
+	camera physics blend blend_color skew compositing composite_resources \
+	composite_evaluation composite_geometry composite_particles group raster mask path \
+	mask_path fuzz_mask_path image \
+	encode encode_faults audio video fx anim_color particles deform shadow text args resume depth \
 	$(P7_UNIT_SUITES)
 TEST_CPPFLAGS := -Isrc -DSR_TEST_DATA_DIR='"$(CURDIR)"' \
 	-DSR_TEST_TMP_DIR='"$(abspath $(BUILD))/test_tmp"'
@@ -113,14 +124,14 @@ $(BUILD)/%.o: src/%.c
 	@mkdir -p $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
 
-# schema/scene-v1.xsd as a C byte array (the CMake build does the same with
+# schema/scene-render-1.1.xsd as a C byte array (the CMake build does the same with
 # cmake/schema_data.c.in); od and sed are POSIX, so no CMake or xxd needed.
-$(BUILD)/schema_data.c: schema/scene-v1.xsd
+$(BUILD)/schema_data.c: schema/scene-render-1.1.xsd
 	@mkdir -p $(BUILD)
-	{ echo '/* Generated from schema/scene-v1.xsd by the Makefile. Do not edit. */'; \
+	{ echo '/* Generated from schema/scene-render-1.1.xsd by the Makefile. Do not edit. */'; \
 	  echo '#include "schema_data.h"'; \
 	  echo 'const unsigned char sr_schema_xsd[] = {'; \
-	  od -An -v -tx1 schema/scene-v1.xsd | sed -e 's/[0-9a-f][0-9a-f]/0x&,/g'; \
+	  od -An -v -tx1 schema/scene-render-1.1.xsd | sed -e 's/[0-9a-f][0-9a-f]/0x&,/g'; \
 	  echo '0x00};'; \
 	  echo 'const size_t sr_schema_xsd_len = sizeof sr_schema_xsd - 1;'; \
 	} > $@.tmp && mv $@.tmp $@

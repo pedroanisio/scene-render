@@ -1,0 +1,24 @@
+<scene version="1.1">
+  <project width="32" height="16" fps="4" duration="1" background="#102030"/>
+  <metadata title="" author="Author" description="Résumé ☀&#10;Second line"
+            keywords="schema,metadata" copyright="© 2026" revision="r2"
+            created="2026-01-02T03:04:05Z" modified="2026-02-03T04:05:06-03:00"
+            generator="fixture" language="pt-BR">
+    <meta name="timecode" value="01:02:03:04"/>
+    <meta name="empty" value=""/>
+    <meta name="作品" value="日本語"/>
+    <meta name="x-en" value="English suffix"/>
+    <meta name="x-eng" value="Long English suffix"/>
+    <meta name="x" value="No suffix"/>
+    <meta name="custom note" value="Spaces stay in values"/>
+    <meta name="performer" value="Performer"/>
+    <meta name="track" value="007"/>
+  </metadata>
+  <output path="../build/test-artifacts/metadata.mp4" codec="h264" preset="ultrafast"/>
+  <composition>
+    <shape id="box" shape="rect" width="12" height="8" y="4" fill="#E08040">
+      <animate property="position.x"><key time="0" value="2"/>
+        <key time="1" value="18"/></animate>
+    </shape>
+  </composition>
+</scene>

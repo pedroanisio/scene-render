@@ -43,6 +43,8 @@ bool sr_parse_double(const char *text, double *value);
 bool sr_parse_u32(const char *text, uint32_t *value);
 bool sr_parse_u64(const char *text, uint64_t *value);
 bool sr_parse_bool(const char *text, bool *value);
+/* Leaves color unchanged on failure; decimal parsing may return SR_ERR_MEMORY. */
+SrStatus sr_parse_color_status(const char *text, SrColor *color);
 bool sr_parse_color(const char *text, SrColor *color);
 bool sr_id_valid(const char *text);
 char *sr_path_dirname(const char *path);
@@ -58,7 +60,13 @@ SrMat3 sr_mat_multiply(SrMat3 a, SrMat3 b);
 SrMat3 sr_mat_translate(double x, double y);
 SrMat3 sr_mat_scale(double x, double y);
 SrMat3 sr_mat_rotate(double radians);
+/* Append Kx then Ky; angles are degrees, validated by the caller. Zero
+ * angles perform no multiplication, preserving the legacy transform. */
+SrMat3 sr_mat_apply_skew(SrMat3 matrix, double x, double y);
+bool sr_mat_finite(SrMat3 matrix);
 bool sr_mat_inverse(SrMat3 matrix, SrMat3 *inverse);
+/* Strict inverse for new transforms; leaves legacy inverse policy intact. */
+bool sr_mat_checked_inverse(SrMat3 matrix, SrMat3 *inverse);
 SrVec2 sr_mat_point(SrMat3 matrix, SrVec2 point);
 
 #endif

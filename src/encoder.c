@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "scene_render/encoder.h"
 #include "scene_render/parallel.h"
+#include "metadata.h"
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -133,6 +134,19 @@ static const char *container_for(const char *path) {
     return NULL;
 }
 
+SrStatus sr_encoder_validate_metadata(const SrScene *scene, const char *path,
+                                       SrDiagnostics *diag) {
+    if (!scene) return SR_ERR_ARGUMENT;
+    if (!scene->output.embed_metadata || !scene->metadata_count) return SR_OK;
+    const char *container = path ? container_for(path) : NULL;
+    if (!container) {
+        sr_diag_error(diag, scene->output.source_line, "output", "path",
+                      "metadata output needs a .mp4, .mov or .mkv extension");
+        return SR_ERR_ARGUMENT;
+    }
+    return sr_metadata_validate(scene, container, diag);
+}
+
 /* Tags and Y'CbCr matrix per output color space; the same values the
  * FFmpeg CLI arguments of earlier releases produced. */
 static void color_tags(SrColorSpace space, AVCodecContext *c, int *sws_matrix) {
@@ -234,7 +248,10 @@ static SrStatus open_video(SrEncoder *e, const SrScene *scene, unsigned threads,
     c->framerate = (AVRational){(int)scene->project.fps_num,
                                 (int)scene->project.fps_den};
     c->pix_fmt = format;
-    c->thread_count = (int)threads;
+    /* 1.1 fixes codec workers independently of render/scaler workers. Keep
+     * the legacy policy for 1.0 byte identity. Resume fingerprints this. */
+    unsigned codec_threads = scene->format_version >= 11 ? 1 : threads;
+    c->thread_count = (int)codec_threads;
     c->color_range = output->full_range ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
     int matrix;
     color_tags(output->color_space, c, &matrix);
@@ -256,9 +273,10 @@ static SrStatus open_video(SrEncoder *e, const SrScene *scene, unsigned threads,
              * independent of scheduling. */
             char params[96];
             snprintf(params, sizeof(params),
-                     "pools=%u:frame-threads=1:log-level=%s", threads,
+                     "pools=%u:frame-threads=1:log-level=%s", codec_threads,
                      diag && diag->verbose ? "info" : "error");
-            av_opt_set(c->priv_data, "x265-params", params, 0);
+            int rc = av_opt_set(c->priv_data, "x265-params", params, 0);
+            if (rc < 0) return av_fail(diag, rc, "cannot configure x265 workers");
         }
     }
     int rc = avcodec_open2(c, codec, NULL);
@@ -391,7 +409,7 @@ static SrStatus add_spherical(SrEncoder *e, SrDiagnostics *diag) {
 
 static SrStatus open_streams(SrEncoder *e, const SrScene *scene,
                              const char *path, const char *container,
-                             bool spherical, SrDiagnostics *diag) {
+                             bool final_output, SrDiagnostics *diag) {
     e->vstream = avformat_new_stream(e->fmt, NULL);
     if (!e->vstream) return av_fail(diag, AVERROR(ENOMEM), "cannot add video stream");
     e->vstream->time_base = e->frame_tb;
@@ -404,7 +422,7 @@ static SrStatus open_streams(SrEncoder *e, const SrScene *scene,
     e->vstream->codecpar->codec_tag = 0;
     if (scene->output.codec == SR_CODEC_H265 && strcmp(container, "matroska"))
         e->vstream->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
-    if (spherical && scene->project.mode == SR_MODE_EQUIRECTANGULAR &&
+    if (final_output && scene->project.mode == SR_MODE_EQUIRECTANGULAR &&
         scene->output.spherical_metadata) {
         SrStatus status = add_spherical(e, diag);
         if (status != SR_OK) return status;
@@ -416,6 +434,11 @@ static SrStatus open_streams(SrEncoder *e, const SrScene *scene,
         rc = avcodec_parameters_from_context(e->astream->codecpar, e->audio);
         if (rc < 0) return av_fail(diag, rc, "cannot configure audio stream");
     }
+    bool embed = final_output && scene->output.embed_metadata && scene->metadata_count;
+    if (embed) {
+        SrStatus status = sr_metadata_apply(scene, e->fmt, container, diag);
+        if (status != SR_OK) return status;
+    }
     rc = avio_open(&e->fmt->pb, path, AVIO_FLAG_WRITE);
     if (rc < 0) {
         char message[AV_ERROR_MAX_STRING_SIZE];
@@ -425,13 +448,20 @@ static SrStatus open_streams(SrEncoder *e, const SrScene *scene,
         return rc == AVERROR(ENOMEM) ? SR_ERR_MEMORY : SR_ERR_IO;
     }
     AVDictionary *options = NULL;
-    if (strcmp(container, "matroska"))
-        av_dict_set(&options, "movflags", "+faststart", 0);
+    if (strcmp(container, "matroska")) {
+        rc = av_dict_set(&options, "movflags",
+                         embed ? "+faststart+use_metadata_tags" : "+faststart", 0);
+        if (rc >= 0 && embed) rc = av_dict_set(&options, "write_tmcd", "0", 0);
+        if (rc < 0) {
+            av_dict_free(&options);
+            return av_fail(diag, rc, "cannot allocate container options");
+        }
+    }
     rc = avformat_write_header(e->fmt, &options);
     av_dict_free(&options);
     if (rc < 0) return av_fail(diag, rc, "cannot write container header");
     e->header_written = true;
-    return SR_OK;
+    return embed ? sr_metadata_check(scene, e->fmt, container, diag) : SR_OK;
 }
 
 typedef enum { OPEN_FULL, OPEN_SEGMENT, OPEN_COPY } OpenMode;
@@ -501,6 +531,10 @@ static SrStatus open_encoder(SrEncoder **out, const SrScene *scene,
         sr_diag_error(diag, scene->output.source_line, "output", "codec",
                       "ffv1 requires a .mkv (Matroska) output");
         return SR_ERR_ARGUMENT;
+    }
+    if (mode != OPEN_SEGMENT) {
+        SrStatus status = sr_encoder_validate_metadata(scene, path, diag);
+        if (status != SR_OK) return status;
     }
     if (threads == 0) threads = sr_parallel_thread_count(0, SIZE_MAX);
     SrEncoder *e = calloc(1, sizeof(*e));
@@ -744,6 +778,12 @@ static int drain(SrEncoder *e, AVCodecContext *codec, AVStream *stream) {
         if (rc < 0) return rc;
         if (codec == e->video) {
             e->pkt->duration = 1;
+            /* x265 4.2 initializes its reorder delay at the third input
+             * frame. Short flushes can return an uninitialized DTS; these
+             * one/two-frame streams have no reordered pictures. */
+            if (codec->codec_id == AV_CODEC_ID_HEVC && e->closing &&
+                e->next_pts <= 2)
+                e->pkt->dts = e->pkt->pts;
         } else if (e->closing) {
             rc = mark_audio_padding(e, e->pkt);
             if (rc < 0) {

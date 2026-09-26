@@ -7,8 +7,8 @@
       under 1.1 (with one exception: colour channels above 1, which 1.0 matched
       by accident, are now rejected). New sections, elements and asset kinds
       require version="1.1"; new attributes on 1.0 elements are accepted in both
-      versions. The companion Schematron rules (scene-render-1.1.sch) enforce the
-      version gate and the cross-field rules XSD 1.0 cannot express.
+      versions. The C loader enforces the version gate and cross-field rules XSD 1.0
+      cannot express; these semantic rules are listed in docs/xml-reference.md.
 
       Conventions used everywhere:
         time      seconds (xs:double) on the composition timeline unless stated;
@@ -303,7 +303,11 @@
       Sets attribute @property of the element whose id is @target (resolved in
       the scope of the enclosing instance, layout or variant) to @value.
     </xs:documentation></xs:annotation>
-    <xs:attribute name="target" type="xs:NCName" use="required"/>
+    <xs:attribute name="target" use="required">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:pattern value="[A-Za-z_][A-Za-z0-9_.\-]*(/[A-Za-z_][A-Za-z0-9_.\-]*)*"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
     <xs:attribute name="property" type="xs:NMTOKEN" use="required"/>
     <xs:attribute name="value" type="xs:string" use="required"/>
   </xs:complexType>
@@ -359,12 +363,13 @@
     <xs:annotation><xs:documentation>
       Computes @property every frame. The language is a pure, side-effect-free
       subset of ECMAScript expressions with these built-ins: time, frame, value,
-      index, count, seed, param(name), prop("id.property"), valueAtTime(t),
+      index, count, seed, param(name), prop(id, property), valueAtTime(t),
       wiggle(freq, amp[, octaves, ampMult]), noise(x[,y,z]), random([min,max]),
       loopIn/loopOut(type, n), linear/ease/easeIn/easeOut(t, t0, t1, v0, v1),
       clamp, lerp, smoothstep, spring(t, stiffness, damping, mass),
       audioAmplitude(trackId[, band]), beat(), markerTime(id), textIndex,
       textTotal. random and noise are seeded; no I/O or wall clock exists.
+      The language grammar, limits and property access rules are in docs/expressions.md.
     </xs:documentation></xs:annotation>
     <xs:simpleContent>
       <xs:extension base="expressionString">
@@ -922,6 +927,7 @@
     <xs:attribute name="value" type="xs:string" use="required"/>
   </xs:complexType>
   <xs:complexType name="lottieAssetType">
+    <xs:annotation><xs:documentation>Supported Lottie features: shapes, fills, strokes, gradients, trims, repeaters, merges, offsets, masks, mattes, precomps, time remap, text, images, slots and segment markers. animation selects a member of a .lottie archive. JavaScript expressions and other features are load errors naming the feature and layer.</xs:documentation></xs:annotation>
     <xs:sequence><xs:element name="slot" type="slotType" minOccurs="0" maxOccurs="unbounded"/></xs:sequence>
     <xs:attribute name="id" type="xs:ID" use="required"/>
     <xs:attribute name="src" type="xs:anyURI" use="required"/>
@@ -1034,6 +1040,7 @@
     <xs:attribute name="quietZone" type="xs:nonNegativeInteger" default="4"/>
   </xs:complexType>
   <xs:complexType name="formulaAssetType">
+    <xs:annotation><xs:documentation>TeX math subset: fractions, roots, scripts, big operators and limits, stretchy delimiters, accents, matrices, cases, spacing commands, \text, Greek letters and symbols. Unknown commands are load errors. See docs/xml-reference.md for the command vocabulary.</xs:documentation></xs:annotation>
     <xs:attribute name="id" type="xs:ID" use="required"/>
     <xs:attribute name="tex" type="xs:string" use="required"/>
     <xs:attribute name="width" type="xs:positiveInteger" use="required"/>
@@ -1096,7 +1103,10 @@
       glTF 2.0 metallic-roughness plus the ratified KHR_materials_* extensions
       (clearcoat, transmission, ior, sheen, volume, specular, iridescence,
       anisotropy, dispersion, emissive_strength, unlit). @materialX points to a
-      MaterialX/OpenPBR document that replaces these parameters when present.
+      MaterialX document that replaces these parameters when present. Supported
+      surface shaders are open_pbr_surface, standard_surface and gltf_pbr, with
+      constant or image-node inputs only. Other graphs are load errors naming
+      the unsupported node.
     </xs:documentation></xs:annotation>
     <xs:group ref="animationElements" minOccurs="0" maxOccurs="unbounded"/>
     <xs:attribute name="id" type="xs:ID" use="required"/>
@@ -1178,6 +1188,9 @@
     <xs:attribute name="motionBlur" type="triStateType" default="inherit"/>
     <xs:attribute name="threeD" type="xs:boolean" default="false">
       <xs:annotation><xs:documentation>2.5D: place this 2D node in camera space at depth zDepth with rotationX/rotationY.</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="depth" type="xs:double">
+      <xs:annotation><xs:documentation>Deprecated alias of zDepth. In version 1.0, depth, rotationX or rotationY implicitly enables a depth card; version 1.1 requires threeD="true". Specifying both depth and zDepth is an error.</xs:documentation></xs:annotation>
     </xs:attribute>
     <xs:attribute name="zDepth" type="xs:double" default="0"/>
     <xs:attribute name="rotationX" type="xs:double" default="0"/>
@@ -1286,7 +1299,9 @@
       <xs:element name="transformConstraint" type="transformConstraintType"/>
     </xs:choice>
     <xs:attribute name="id" type="xs:ID" use="required"/>
-    <xs:attribute name="weights" type="xs:anyURI"/>
+    <xs:attribute name="weights" type="xs:anyURI">
+      <xs:annotation><xs:documentation>JSON file {"vertices":[[{"bone":"id","weight":1.0}]]}: one influence array per vertex in mesh order; bone is an id in this skeleton and weight is finite and nonnegative. Each vertex has positive total weight, normalized at load. Duplicate bone ids per vertex are errors. Without a file, weights derive from distance to bones. See docs/xml-reference.md for limits.</xs:documentation></xs:annotation>
+    </xs:attribute>
   </xs:complexType>
 
   <!-- ===================================================== physics per node -->
@@ -1516,7 +1531,9 @@
       Places an asset. timeRemap, when present, replaces speed/reverse/loop.
       fit/boxWidth/boxHeight scale the asset into a box (responsive media);
       crop* trim fractions of the source. textAnimator and textPath apply when
-      the asset is text. volume/mute control a video asset's own audio, which
+      the asset is text. An instance override of the layer property "text"
+      replaces this layer's text only; the shared text asset is unchanged.
+      volume/mute control a video asset's own audio, which
       is mixed into audioMix bus @audioBus (default: master).
     </xs:documentation></xs:annotation>
     <xs:choice minOccurs="0" maxOccurs="unbounded">
@@ -1728,7 +1745,9 @@
     <xs:attribute name="animationOffset" type="xs:double" default="0"/>
     <xs:attribute name="morphWeights" type="numberListType"/>
     <xs:attribute name="materialVariant" type="xs:string"/>
-    <xs:attribute name="instances" type="xs:positiveInteger" default="1"/>
+    <xs:attribute name="instances" type="xs:positiveInteger" default="1">
+      <xs:annotation><xs:documentation>N copies evaluated in ascending index order. Expressions see index in [0,N) and count=N, with independent transforms and no shared mutable evaluation state.</xs:documentation></xs:annotation>
+    </xs:attribute>
   </xs:complexType>
 
   <xs:complexType name="shakeType">
@@ -1767,6 +1786,12 @@
       </xs:restriction></xs:simpleType>
     </xs:attribute>
     <xs:attribute name="fov" type="positiveDecimal" default="60"/>
+    <xs:attribute name="zoom" type="positiveDecimal">
+      <xs:annotation><xs:documentation>Deprecated focal length in pixels; when set, replaces fov with 2 * atan(frameHeight / (2 * zoom)).</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="aperture" type="nonNegativeDecimal" default="0">
+      <xs:annotation><xs:documentation>Deprecated blur-radius aperture, retaining 1.0 semantics. For physical cameras, aperture = focalPixels / (2 * fStop), with focalPixels = frameHeight * focalLength / sensorHeight (all sensor dimensions in mm). Explicit aperture and fStop are mutually exclusive.</xs:documentation></xs:annotation>
+    </xs:attribute>
     <xs:attribute name="near" type="positiveDecimal" default="0.1"/>
     <xs:attribute name="far" type="positiveDecimal" default="10000"/>
     <xs:attribute name="yaw" type="xs:double" default="0"/>
@@ -1962,7 +1987,7 @@
         <xs:enumeration value="stripe"/><xs:enumeration value="squash"/>
         <xs:enumeration value="shuffle"/><xs:enumeration value="carousel"/>
         <xs:enumeration value="light-leak"/><xs:enumeration value="morph"/>
-        <xs:enumeration value="shader"/>
+        
       </xs:restriction></xs:simpleType>
     </xs:attribute>
     <xs:attribute name="from" type="xs:IDREF"/>
@@ -1984,9 +2009,7 @@
     <xs:attribute name="color" type="colorType" default="#000000FF"/>
     <xs:attribute name="softness" type="unitDecimal" default="0.1"/>
     <xs:attribute name="matte" type="xs:IDREF"/>
-    <xs:attribute name="shader" type="xs:anyURI">
-      <xs:annotation><xs:documentation>type="shader": GLSL fragment in the gl-transitions convention (vec4 transition(vec2 uv), uniform float progress).</xs:documentation></xs:annotation>
-    </xs:attribute>
+
     <xs:attribute name="motionBlur" type="xs:boolean" default="true"/>
     <xs:attribute name="audio" default="crossfade">
       <xs:simpleType><xs:restriction base="xs:string">
@@ -2038,7 +2061,7 @@
       (slope/offset/power "r,g,b", saturation; ASC CDL), lut (@src .cube/.clf/
       .3dl, @space), curves (@curve "x,y x,y ..." per @channel), levels,
       white-balance (temperature/tint), exposure, hue-saturation, tonemap.
-      shader: GLSL fragment at @src with param children as uniforms.
+      Custom GLSL shaders are reserved for a later format version.
     </xs:documentation></xs:annotation>
     <xs:choice minOccurs="0" maxOccurs="unbounded">
       <xs:group ref="animationElements"/>
@@ -2094,7 +2117,7 @@
         <xs:enumeration value="matte-choke"/>
         <!-- generative and custom -->
         <xs:enumeration value="fill"/><xs:enumeration value="fractal-noise"/>
-        <xs:enumeration value="god-rays"/><xs:enumeration value="shader"/>
+        <xs:enumeration value="god-rays"/>
       </xs:restriction></xs:simpleType>
     </xs:attribute>
     <xs:attribute name="enabled" type="xs:boolean" default="true"/>
@@ -2679,7 +2702,8 @@
   <xs:complexType name="safeAreaType">
     <xs:annotation><xs:documentation>
       Regions the platform UI covers. Presets carry the renderer's maintained
-      insets for that placement; explicit top/right/bottom/left (fractions of
+      insets for that placement from the renderer's dated preset table
+      (documented in docs/xml-reference.md); explicit top/right/bottom/left (fractions of
       the frame) override them. enforce=warn|error checks that text, captions
       and nodes tagged "cta" or "logo" stay inside the safe region.
     </xs:documentation></xs:annotation>
@@ -2749,6 +2773,13 @@
       display/view transform and tone mapping produce each output's colorSpace
       and transfer. @ocioConfig delegates all of this to an OpenColorIO v2
       config, where @workingSpace, @display, @view and look ids name OCIO objects.
+      Supported transforms: MatrixTransform, FileTransform, ExponentTransform,
+      ExponentWithLinearTransform, LogTransform, LogAffineTransform,
+      LogCameraTransform, CDLTransform, RangeTransform, ExposureContrastTransform,
+      FixedFunctionTransform, GroupTransform, ColorSpaceTransform, LookTransform,
+      DisplayViewTransform and BuiltinTransform (ACES and camera built-ins used
+      by the ACES studio config). Unsupported
+      transforms are load errors. See docs/xml-reference.md for LUT formats.
     </xs:documentation></xs:annotation>
     <xs:sequence><xs:element name="look" type="lookType" minOccurs="0" maxOccurs="unbounded"/></xs:sequence>
     <xs:attribute name="ocioConfig" type="xs:anyURI"/>
@@ -2897,7 +2928,9 @@
       </xs:restriction></xs:simpleType>
     </xs:attribute>
     <xs:attribute name="uri" type="xs:anyURI" use="required"/>
-    <xs:attribute name="credentials" type="xs:NMTOKEN"/>
+    <xs:attribute name="credentials" type="xs:NMTOKEN">
+      <xs:annotation><xs:documentation>Names an environment profile, never a secret value. Delivery resolves the profile outside the render path; credentials must not appear in scene documents or diagnostics.</xs:documentation></xs:annotation>
+    </xs:attribute>
   </xs:complexType>
   <xs:complexType name="outputType">
     <xs:annotation><xs:documentation>
@@ -2959,6 +2992,9 @@
     <xs:attribute name="audioCodec" type="xs:string" default="aac"/>
     <xs:attribute name="audioBitrate" type="xs:positiveInteger" default="192000"/>
     <xs:attribute name="audio" type="xs:boolean" default="true"/>
+    <xs:attribute name="audioLanguages" type="xs:NMTOKENS">
+      <xs:annotation><xs:documentation>Language tags in stream order: one audio stream per listed language, mixed from tracks with that language. Without this attribute all tracks mix into one stream.</xs:documentation></xs:annotation>
+    </xs:attribute>
     <xs:attribute name="colorSpace" type="colorSpaceType" default="srgb"/>
     <xs:attribute name="transfer" type="transferType" default="auto"/>
     <xs:attribute name="colorRange" default="limited">

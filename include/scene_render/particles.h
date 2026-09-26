@@ -3,6 +3,9 @@
 
 #include "scene_render/scene.h"
 
+/* Keeps unit decrements and integer conversions exact in emission walks. */
+#define SR_MAX_PARTICLE_INDEX 9e15
+
 /* One live particle, in the emitter's local space. */
 typedef struct {
     uint64_t index;             /* emission order */

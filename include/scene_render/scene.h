@@ -10,6 +10,9 @@
 #define SR_MAX_LIGHT_INTENSITY 1e6
 #define SR_MAX_EFFECT_OFFSET 1e5
 #define SR_MAX_EFFECT_RADIUS 4096.0
+#define SR_MAX_MATERIALS 4096u
+#define SR_MAX_AUDIO_TRACKS 4096u
+#define SR_MAX_SKEW_DEGREES 89.0
 
 /* The one double -> int conversion for pixel, texel and loop bounds:
  * clamped to [low, high] in double first (NaN gives `low`), so the cast is
@@ -26,7 +29,30 @@ typedef enum {
     SR_BLEND_MULTIPLY,
     SR_BLEND_SCREEN,
     SR_BLEND_OVERLAY,
-    SR_BLEND_DIFFERENCE
+    SR_BLEND_DIFFERENCE,
+    SR_BLEND_PLUS_LIGHTER,
+    SR_BLEND_EXCLUSION,
+    SR_BLEND_SUBTRACT,
+    SR_BLEND_DIVIDE,
+    SR_BLEND_DARKEN,
+    SR_BLEND_LIGHTEN,
+    SR_BLEND_DARKER_COLOR,
+    SR_BLEND_LIGHTER_COLOR,
+    SR_BLEND_COLOR_DODGE,
+    SR_BLEND_COLOR_BURN,
+    SR_BLEND_LINEAR_DODGE,
+    SR_BLEND_LINEAR_BURN,
+    SR_BLEND_SOFT_LIGHT,
+    SR_BLEND_HARD_LIGHT,
+    SR_BLEND_LINEAR_LIGHT,
+    SR_BLEND_VIVID_LIGHT,
+    SR_BLEND_PIN_LIGHT,
+    SR_BLEND_HARD_MIX,
+    SR_BLEND_HUE,
+    SR_BLEND_SATURATION,
+    SR_BLEND_COLOR,
+    SR_BLEND_LUMINOSITY,
+    SR_BLEND_COUNT
 } SrBlendMode;
 
 typedef enum {
@@ -163,6 +189,8 @@ typedef struct {
     SrAnimValue rotation_y;
     SrAnimValue scale_x;
     SrAnimValue scale_y;
+    SrAnimValue skew_x;
+    SrAnimValue skew_y;
     SrAnimValue scale_z;
     SrAnimValue anchor_x;
     SrAnimValue anchor_y;
@@ -176,6 +204,7 @@ typedef struct {
     SrAnimValue width;
     SrAnimValue height;
     SrAnimValue radius;
+    size_t source_line;
 } SrMask;
 
 typedef struct {
@@ -258,6 +287,9 @@ typedef struct SrNode {
     SrShapeType shape;
     double shape_width;
     double shape_height;
+    SrLengthUnit shape_width_unit, shape_height_unit;
+    SrLength group_width, group_height;
+    bool group_width_set, group_height_set;
     SrAnimColor fill;
     SrAnimColor stroke;
     double stroke_width;
@@ -340,6 +372,7 @@ typedef struct {
     SrColorSpace color_space;
     bool full_range;
     bool spherical_metadata;
+    bool embed_metadata;
     size_t source_line;
 } SrOutput;
 
@@ -351,8 +384,8 @@ typedef struct {
     double clip_in;
     double clip_out;
     int64_t loop_count;
-    double volume;
-    double pan;
+    SrAnimValue volume;
+    SrAnimValue pan;
     double fade_in;         /* seconds of linear gain ramp from the start */
     double fade_out;        /* seconds of linear gain ramp to the end */
     double speed;           /* source seconds per output second (> 0) */
@@ -395,10 +428,10 @@ typedef struct {
 
 typedef struct {
     char *id;
-    SrColor base_color;
-    double metallic;
-    double roughness;
-    SrColor emissive;
+    SrAnimColor base_color;
+    SrAnimValue metallic;
+    SrAnimValue roughness;
+    SrAnimColor emissive;
 } SrMaterial;
 
 typedef struct {
@@ -498,13 +531,39 @@ typedef struct {
     size_t field_capacity;
 } SrPhysicsWorld;
 
+#define SR_MAX_STYLE_TOKENS 4096u
+#define SR_MAX_TOKEN_NAME 128u
+#define SR_MAX_TOKEN_VALUE 4096u
+#define SR_MAX_TOKEN_DEPTH 64u
+
 typedef struct {
+    char *name, *value;        /* owned by the scene */
+    size_t source_line;
+    size_t resolved_index;    /* terminal token in the scene's token array */
+    unsigned resolved_hops;
+} SrStyleToken;
+
+#define SR_MAX_METADATA_ENTRIES 256u
+#define SR_MAX_METADATA_NAME 128u
+#define SR_MAX_METADATA_VALUE 4096u
+
+typedef struct {
+    char *name, *value;        /* owned by the scene */
+    size_t source_line;
+} SrMetadataEntry;
+
+typedef struct {
+    unsigned format_version;   /* 10 or 11; zero for in-memory scenes means 1.0 */
     char *source_path;
     char *base_dir;
     uint64_t source_hash;       /* FNV-1a 64 of the exact bytes the XML loader
                                    parsed (the --resume scene fingerprint) */
     SrProject project;
     SrOutput output;
+    SrStyleToken *tokens;      /* document order; immutable after loading */
+    size_t token_count, token_capacity;
+    SrMetadataEntry *metadata; /* document order; immutable after loading */
+    size_t metadata_count, metadata_capacity;
     SrAsset *assets;
     size_t asset_count;
     size_t asset_capacity;
@@ -529,6 +588,9 @@ typedef struct {
     size_t effect_capacity;
     SrPhysicsWorld physics;
     bool has_cards;             /* some node is a depth card (see card.h) */
+    bool has_relative_lengths;  /* authored geometry needs per-frame resolution */
+    bool compositing_required;  /* opted in; no evaluation after invalidation */
+    struct SrCompositePlan *compositing; /* owned immutable authored plan */
     struct SrFontCache *font_cache; /* text fonts opened while loading assets */
 } SrScene;
 

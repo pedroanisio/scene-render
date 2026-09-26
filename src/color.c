@@ -395,11 +395,16 @@ SrStatus sr_anim_color_finalize(SrAnimColor *color) {
 SrColor sr_anim_color_eval(const SrAnimColor *color, double time) {
     if (!color) return (SrColor){0, 0, 0, 0};
     if (color->r.count == 0) return color->base;
+    SrColor base = color->r.additive ? (SrColor){
+        sr_color_decode(color->base.r, color->space),
+        sr_color_decode(color->base.g, color->space),
+        sr_color_decode(color->base.b, color->space), color->base.a}
+        : (SrColor){0, 0, 0, 0};
     return (SrColor){
-        sr_color_encode(sr_track_eval(&color->r, 0.0, time), color->space),
-        sr_color_encode(sr_track_eval(&color->g, 0.0, time), color->space),
-        sr_color_encode(sr_track_eval(&color->b, 0.0, time), color->space),
-        fmax(0.0, fmin(1.0, sr_track_eval(&color->a, 0.0, time)))};
+        sr_color_encode(sr_track_eval(&color->r, base.r, time), color->space),
+        sr_color_encode(sr_track_eval(&color->g, base.g, time), color->space),
+        sr_color_encode(sr_track_eval(&color->b, base.b, time), color->space),
+        fmax(0.0, fmin(1.0, sr_track_eval(&color->a, base.a, time)))};
 }
 
 static double mix_channel(double a, double b, double t, SrColorSpace space) {

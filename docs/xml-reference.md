@@ -1,6 +1,6 @@
 # XML scene reference
 
-The normative grammar is `schema/scene-v1.xsd`. It is embedded in the binary
+The normative grammar is `schema/scene-render-1.1.xsd`. It is embedded in the binary
 at build time (`scene-render --print-schema` prints it) and every scene is
 validated against it with libxml2 before loading: no network access, no
 external entities or DTD loading, no entity substitution. Each schema error
@@ -13,9 +13,62 @@ reference types, 2:1 panorama checks, clip bounds, and supported-codec
 behavior. Its diagnostics use the XML source line plus element and attribute
 whenever Expat exposes them.
 
+## Versions and implemented profile
+
+Both `version="1.0"` and `version="1.1"` are accepted. The complete 1.1
+contract is embedded once; `schema/scene-v1.xsd` is retained as a compatibility
+fixture. The loader checks schema validity first, then the capability table,
+then constructs and resolves the scene. No Schematron engine is used.
+
+The [generated feature matrix](feature-matrix.md) lists every element context,
+attribute, enumeration and extended value form. An entry is enabled only when
+its implementation is available. Explicit unsupported attributes are rejected
+even when their values equal the schema default. For example:
+
+```text
+scene.xml:12: error: <effect> @type: unsupported in this build: <effect type="vhs">
+```
+
+`scene-render --scene scene.xml --validate --report-unsupported` lists all
+unsupported uses, including children of unsupported elements, and exits 3.
+Without the reporting flag, the capability check stops at the first use.
+Invalid XML or XSD violations also exit 3 but retain their distinct diagnostics.
+The reporting flag requires `--validate`; duplicate flags are usage errors.
+The scene path may be positional or supplied with `--scene`, exactly once.
+Checks use document order and do not load assets or evaluate expressions.
+
+Version 1.0 cannot use new elements or new values of an existing enumeration.
+Those uses report `requires version="1.1"`. New attributes on existing elements
+are permitted in both versions, including their own enumerated vocabularies;
+they still must be implemented. The schema itself describes both versions, so
+this cross-field rule is enforced by the C capability pass.
+
+Depth-card semantics are versioned. In 1.0, `depth`, `zDepth`, `rotationX`, or
+`rotationY`, including animated depth rotations, implicitly enables a card.
+In 1.1, a node must explicitly set `threeD="true"`; depth attributes or animations
+without it produce a warning and leave the node in the 2D draw path. `threeD`
+is a boolean, default false. `zDepth` is a finite pixel length along the camera's
+z axis, default zero. `depth` remains its deprecated alias; specifying both
+is an error. Camera `zoom` and `aperture` retain their pixel units and old
+arithmetic. Physical `fStop` remains unsupported until the camera batch.
+
+```xml
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="1"/>
+  <composition>
+    <camera id="cam" z="-300" zoom="300"/>
+    <shape id="card" shape="rect" width="80" height="60"
+           threeD="true" zDepth="40" rotationY="15"/>
+  </composition>
+</scene>
+```
+
+These rules add no mutable render state or random choices. Loader input remains
+bounded by 64 MiB and 256 element levels; all diagnostics retain source lines.
+
 ## Document order
 
-The XSD sequence is:
+The 1.0 subset of the root sequence is:
 
 ```xml
 <scene version="1.0">
@@ -34,6 +87,218 @@ The XSD sequence is:
 
 Runtime paths inside XML are relative to the XML file. CLI output/preview paths
 are relative to the current working directory.
+
+## Metadata
+
+Version 1.1 accepts an optional `metadata` section immediately after `project`:
+
+```xml
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="2"/>
+  <metadata title="Demo" author="Example" language="en"
+            created="2026-01-02T03:04:05Z">
+    <meta name="revision-note" value="Approved&#10;Second line"/>
+  </metadata>
+  <output path="demo.mp4" codec="h264" embedMetadata="true"/>
+  <composition/>
+</scene>
+```
+
+Attributes are `title`, `author`, `description`, `keywords`, `copyright`,
+`revision`, `created`, `modified`, `generator` and `language`. Their names
+become tag names without translation. `created` and `modified` use the schema's
+date-time syntax; their literal strings are preserved. `language` uses the
+schema's language-tag syntax. Each `meta` adds a custom `name` and `value`.
+Empty values are valid; names must be nonempty. XML character references can
+preserve newlines in attribute values. Duplicate names are errors using ASCII
+case-insensitive comparison, including collisions with metadata attributes.
+
+The scene retains entries in document order. Limits are 256 entries total
+(attributes and children), 128 UTF-8 bytes per name and 4096 bytes per value.
+Load errors identify the element, attribute and source line. No creation time,
+generator or other environment-derived value is added automatically.
+
+`output/@embedMetadata` defaults to `true`. MP4, MOV and Matroska outputs embed
+authored tags; `false` retains the entries in the scene but omits the tags.
+The selected final path, including a CLI override, determines the container's
+key rules. Preview, hash and validation-only operations do not embed tags or
+apply container-specific restrictions. Embedding errors occur before output
+or resume-segment work starts.
+
+Every container reserves `encoder`, names beginning with `encoder-`, and
+`creation_time`, compared without ASCII case distinctions. These keys invoke
+muxer behavior that cannot preserve an arbitrary authored string. Use `created`
+for a date-time tag. MP4/MOV also reserve `location` and
+`com.apple.quicktime.artwork`; Matroska also reserves `duration`, `encoding_tool`,
+`stereo_mode` and `alpha_mode`. `embedMetadata="false"` allows retained entries
+with these names. MP4/MOV's `timecode` remains a string tag and creates no extra
+stream.
+
+Matroska uppercases ASCII in names, changes spaces to underscores, maps
+`performer` to `LEAD_PERFORMER` and `track` to `PART_NUMBER`, and rejects any
+resulting collisions or reserved names. For example, `custom note` and
+`CUSTOM_NOTE` cannot coexist in a Matroska output. Reading a Matroska file may
+map the two native aliases back to `performer` and `track`. Suffixes such as
+`x-en` and `x-eng` remain distinct literal names rather than becoming language
+variants. Other non-ASCII bytes and all values remain unchanged. MP4/MOV retain
+the original tag spelling.
+
+Full and resumed final outputs receive the scene's tags. Internal resume
+segments omit them, since their container may differ from the final output.
+The exact XML, including metadata and the embedding flag, is already in the
+resume fingerprint; changing it invalidates segment reuse. Metadata is immutable
+during rendering. With a fixed SDK/toolchain, tags and output bytes are invariant
+under render thread count and timezone. Version 1.1 fixes video codec workers
+to one while rendering and color conversion still use the requested threads;
+its resume manifest fingerprints this policy. Version 1.0 retains its legacy
+codec-thread settings and output bytes. Without authored metadata, container
+tag options remain unchanged.
+
+## Style tokens
+
+In version 1.1, an optional `styles` section after `project` declares tokens:
+
+```xml
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="2"
+           background="var(--background)"/>
+  <styles>
+    <token name="background" value="var(--ink)"/>
+    <token name="ink" value="#102030"/>
+    <token name="accent" value="0.2,0.6,1,1"/>
+  </styles>
+  <composition>
+    <shape id="box" shape="rect" width="80" height="60" fill="var(--accent)">
+      <animate property="fill">
+        <key time="0" value="var(--accent)"/>
+        <key time="2" value="var(--ink)"/>
+      </animate>
+    </shape>
+  </composition>
+</scene>
+```
+
+Names are case-sensitive and contain ASCII letters, digits, `_` or `-`.
+The two hyphens in `var(--name)` are reference syntax: `var(--ink)` looks up
+`name="ink"`, while `var(----ink)` looks up `name="--ink"`. References must
+use the exact form without surrounding whitespace or fallback arguments.
+
+Aliases and forward references are resolved when the scene loads, including
+references in `project`, which precedes `styles`. Duplicate names, unknown
+references, cycles and malformed references fail the load with the declaration
+or consumer's line, element and attribute. Every alias is validated even if
+unused. Values are strings; an unused numeric or empty token is legal, but
+a color consumer must resolve to a valid color. Numeric animation keys do not
+accept token references.
+
+Tokens work in project backgrounds, text colors, vector/shape fills and
+strokes, particle colors, material base/emissive colors, light/effect colors,
+and animated color keys on supported hosts. Text styles, paint references and
+other unsupported attributes retain their capability diagnostics.
+
+Limits are 4096 tokens, 128 bytes per name, 4096 bytes per value, and 64 alias
+hops, independent of declaration order. Literal colors have zero alias hops.
+Only the resolved numeric color reaches rendering; there is no per-frame
+lookup or mutable token state. A token scene renders identically to the
+corresponding literal-color scene. The original XML bytes, including token
+declarations, remain part of the resume fingerprint.
+
+## Relative lengths
+
+Lengths accept unitless pixel values and five relative units: `%`, `vw`, `vh`,
+`vmin` and `vmax`. A value of `25vw` is 25% of the output frame width; `vh` uses
+its height, `vmin` the smaller dimension and `vmax` the larger. These units use
+`project.width` and `project.height`, including in viewport scenes and depth
+cards with their own intermediate raster buffers. There is no `px` suffix.
+
+The following attributes accept these units:
+
+| Host | Attributes | Reference for `%` |
+| --- | --- | --- |
+| `group`, `layer`, `shape`, `particleEmitter` | `x`, `y`, `anchorX`, `anchorY` | Containing group's box |
+| `shape` | `width`, `height` | Containing group's box |
+| `group` | `width`, `height` | Containing group's box |
+| `mask` | `x`, `y`, `width`, `height` | Host's local box |
+
+Horizontal values use the reference width and vertical values use its height.
+A group's explicit dimensions establish the percentage reference for its
+children. Each missing dimension uses the output frame dimension, independently:
+an unsized group nested inside a sized group therefore restores the frame
+reference. Group dimensions do not clip, scale or measure child contents.
+The composition's box is the output frame.
+
+A mask's local box is its shape's resolved size, a layer's intrinsic asset size,
+or a group's box. An emitter's mask uses the output frame; masks on emitters require version 1.1. Scale and rotation
+do not change these references. Node anchors use the **containing group's** box;
+they do not use the node's own width or height.
+
+Existing `position.x`, `position.y`, `anchor.x`, `anchor.y` and mask
+`x`, `y`, `width`, `height` animations accept mixed-unit keys. Conversion to
+pixels precedes interpolation, including neighboring spline keys, additive
+bases and extrapolation. The time-base and curve rules remain the same.
+Shape and group dimensions are static attributes; this feature adds no
+animation properties for them. Other numeric properties keep their numeric
+syntax. Layout attributes and layer `boxWidth`/`boxHeight` remain unsupported.
+
+Relative forms on existing attributes and animation keys require
+`version="1.1"`. Group `width` and `height` are new attributes and are permitted
+in both scene versions, including relative values, under the new-attribute
+compatibility rule. Unitless values retain their existing parsing and ranges.
+Relative values allow decimal notation with an optional minus sign, including
+`.5` and `1.`, but no plus sign, exponent, whitespace or uppercase unit.
+Dimensions must be positive; signed positions and anchors may be zero.
+Relative spellings are limited to 128 bytes and coefficients to an absolute
+value of 1,000,000. Evaluated relative values must be finite and at most
+1,000,000,000,000 pixels in magnitude. A positive relative dimension that
+underflows to zero fails. Animated mask dimensions retain their existing
+zero clamp after interpolation.
+
+Scenes containing relative lengths are limited to 65,536 nodes (including the
+composition), 262,144 masks in total, depth 256 (including the composition),
+and 65,536 physics constraints. The XML nesting limit also applies. Count and
+spelling errors fail loading; evaluation errors fail rendering with the source
+line, element and attribute. Unused values do not become render dependencies:
+for example, physics poses continue to override node position animation.
+
+Physics resolves initial positions, dimensions and soft-body anchors from the
+base values at preparation time. Default constraint distances use those resolved
+positions. Animation does not change the simulation's initial pose. Authored
+values stay unchanged, and the physics cache fingerprints units, geometry,
+frame dimensions and derived constraint distances. The XML source participates
+in the render resume fingerprint.
+
+Each frame performs a bounded pass over nodes and masks, plus logarithmic key
+lookup and at most six conversions per animated length. Buffers are reused;
+there is no additional per-pixel work. Scenes with only unitless lengths keep
+the existing rendering path. Independent and shuffled frame rendering produce
+the same result for the same scene, time and output size.
+
+`python3 tools/length-benchmark.py` measures the feature against an independent
+pixel reference. On the SDK verification machine, its 5,125-node, 5,120-mask
+stress scene added 10.1% median compositor CPU over 24 frames (0.1907 versus
+0.1732 seconds, five alternating runs). All frame hashes matched at 1/4 threads.
+This is a geometry-heavy sample, not a fixed overhead for every scene; see
+`docs/reviews/b1-length-xml.md` for ranges and verification details.
+
+```xml
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="2"/>
+  <composition>
+    <group id="panel" width="200" height="100">
+      <shape id="badge" shape="rect" x="50%" y="25%"
+             width="10vw" height="20vh" fill="#48C9BC">
+        <mask type="rect" width="50%" height="100%"/>
+        <animate property="position.x">
+          <key time="0" value="50%"/><key time="2" value="50vw"/>
+        </animate>
+      </shape>
+    </group>
+  </composition>
+</scene>
+```
+
+Here the shape begins at `(100, 25)`, is `32 × 36` pixels, and its mask is
+`16 × 36` pixels. Its horizontal position animates from 100 to 160 pixels.
 
 ## Project and output
 
@@ -223,6 +488,14 @@ in sequence, or on any thread count. The random streams come from `seed`
 (unsigned 64-bit) when given, else from the project seed XOR a hash of the
 emitter id. At most `maxParticles` (default 10000, up to 10,000,000) are
 alive; when the cap binds the newest are kept.
+
+For reproducibility, the historical particle id hash starts at
+1469598103934665603 and XORs each unsigned id byte before multiplying by
+1099511628211, modulo 2^64. This offset is intentionally different from
+canonical FNV-1a. The shared random module preserves the particle mapping
+`splitmix64(seed XOR splitmix64(index*8 + stream))`; its high 53 bits divided
+by 2^53 give a value in [0,1). All integer arithmetic wraps modulo 2^64.
+An explicit emitter seed, including zero, bypasses id-based derivation.
 
 | Attribute | Default | Notes |
 |---|---|---|
@@ -427,7 +700,25 @@ nodes of scenes without cards, render exactly as before (camera ignored).
 ## Materials, 3D, and lights
 
 `material` requires `id` and accepts `baseColor`, `metallic`, `roughness`, and
-`emissive`.
+`emissive`. Their defaults are white, 0, 0.5, and black respectively.
+In 1.1 these four properties accept nested `animate`. Colors interpolate in
+linear light in the project working space. Metallic and roughness keys must
+lie in `[0,1]`; evaluated overshoot is clamped to that range before shading.
+Animated base-color alpha controls object transparency. Fully transparent
+objects cast no shadow; nonzero alpha retains the existing shadow model.
+Materials use project time: local equals composition time, and normalized
+time spans the project duration. A shared material has the same value on all
+objects at a given time. Values are evaluated once per object per frame into
+render-owned storage; rendering does not change the scene or its tracks.
+Scenes contain at most `SR_MAX_MATERIALS=4096` materials.
+
+```xml
+<material id="metal" roughness="0.3">
+  <animate property="metallic" timeBase="normalized">
+    <key time="0" value="0"/><key time="1" value="1"/>
+  </animate>
+</material>
+```
 
 `object3D` requires `id` and `primitive="sphere|box|plane|mesh"`; it accepts
 `mesh` (required for `primitive="mesh"`), `material`, position, three rotations, three
@@ -616,6 +907,29 @@ asset whose best audio stream is used), and accepts:
 `start`, `clipIn`, `clipOut`, `fadeIn` and `fadeOut` are at most `1e7`
 seconds; larger values are rejected with a diagnostic.
 
+In 1.1 `audioTrack` accepts `animate property="volume"` and
+`animate property="pan"`. Key ranges match the static attributes; evaluation
+clamps overshoot to those ranges. Automation is evaluated at each absolute
+output sample time, before the track's fades and the final mix clamp. Pan has
+no effect on a mono mix. `timeBase="local"` begins at `start`; `normalized`
+spans `start` through the project end, independently of source trimming,
+speed, reverse and loop count. A normalized track starting at or after the
+project end is rejected. Composition time remains project seconds.
+Splitting, shuffling or repeating sample requests gives identical samples;
+there is no mutable automation cursor. Each automated track costs two
+`O(log keys)` scalar evaluations per active sample, plus stereo pan's
+trigonometric functions when pan is nonzero. Scenes contain at most
+`SR_MAX_AUDIO_TRACKS=4096` audio tracks. Gain in decibels, buses and DSP remain
+in the later audio batch.
+
+```xml
+<audioTrack id="voice" asset="tone" start="0.5">
+  <animate property="volume" timeBase="local">
+    <key time="0" value="0"/><key time="0.25" value="0.8"/>
+  </animate>
+</audioTrack>
+```
+
 Every asset is decoded once, in memory, with libswresample to the mix rate and
 channel count (clips longer than 4 hours are rejected), and shared by all its
 tracks. Decoded samples follow the file's timestamps on the same timeline as
@@ -642,9 +956,248 @@ Colors are `#RRGGBB`, `#RRGGBBAA`, or normalized `r,g,b[,a]`, written as
 transfer-encoded values of the project working space. Named color spaces are
 sRGB, Rec.709, Display-P3, and Rec.2020. Assets are decoded from their source
 space into the blend space (the working gamut, linear light when
-`linearLight="true"`, premultiplied float), blending follows the W3C
-separable formulas there (`add` is not clamped until output), and the final
+`linearLight="true"`, premultiplied float), blending follows the formulas
+below (`add` is not clamped until output), and the final
 frame is converted to 8-bit (16-bit for pixel formats deeper than 8 bits) in
 the output space with matching primaries/transfer/matrix/range tags. Times and durations are decimal
 seconds. Frames are selected on a half-open interval; frame N occurs exactly
 at `N × fps_den / fps_num`.
+
+## Compositing preparation for C callers
+
+The XML loader automatically prepares scenes using the new color blend modes
+or skew. Preparation checks the whole authored 2D ownership tree, including
+inactive content, independently of relative lengths. Limits are 65,536 nodes
+including the composition root, 262,144 masks in aggregate and 256 ancestry
+levels. Cycles, shared child ownership and nonzero counts without backing
+arrays fail with source-aware diagnostics before recursive resolution.
+
+Programmatic scenes using these features must call
+`sr_scene_prepare_compositing(scene, diag)` from
+`scene_render/compositing.h` before physics preparation or rendering. The
+scene owns the resulting immutable plan and frees it during `sr_scene_free`.
+Before editing authored fields, call `sr_scene_invalidate_compositing(scene)`;
+after editing, prepare again and check its status. This also applies to edits
+of XML-loaded scenes. Direct field assignments are not automatically detected,
+and preparation or mutation cannot overlap rendering.
+
+Invalidation and failed preparation leave evaluation disabled until a new
+preparation succeeds. They do not restore an older plan. Preparation leaves
+the authored graph untouched; a caller who deliberately constructs a cycle
+or shared child must repair ownership before ordinary scene destruction.
+Legacy scenes that do not use this subsystem retain their existing path.
+
+## Skew transforms
+
+`group`, `layer`, `shape` and `particleEmitter` accept `skewX` and `skewY`
+in degrees, defaulting to zero. As new attributes on existing elements,
+they are legal in both document versions. Animation properties `skew.x`
+and `skew.y` require `version="1.1"`. Static values and keys must be finite
+and within [-89,89] degrees (`SR_MAX_SKEW_DEGREES`). Evaluated values must
+stay within the same range; additive values, overshooting curves and
+extrapolation that exceed it fail that frame with a node diagnostic.
+
+The local matrix is `T(position) * R(rotation) * Kx * Ky * S(scale) *
+T(-anchor)`, where Kx adds `tan(skewX)*y` to x and Ky adds `tan(skewY)*x`
+to y. Thus the rightmost operation acts first on a point. Skew is inherited
+by children, masks and particles and acts on a card's plane before camera
+projection. Emitters shear particle positions; their discs/squares retain
+the existing screen-space size policy. Each zero axis omits its multiplication,
+retaining the previous
+matrix arithmetic when both are zero. Nonfinite or noninvertible skewed
+transforms/projections fail the render. Geometry used for card sorting or
+bounds is validated even when opacity prevents drawing; ordinary inactive
+nodes whose geometry is not consumed remain skipped.
+
+Soft-body preparation uses the base skew in the same matrix order, with
+physics position/rotation overrides retaining priority. Physics cache
+version 6 fingerprints both base values. Animated skew changes the rendered
+soft mesh; the fixed simulation uses its base rest pose. Rigid-body solver
+geometry retains its existing shape policy; skew changes its rendered image.
+Object3D and camera do not accept skew properties.
+
+```xml
+<shape id="slant" shape="rect" width="80" height="40" skewX="20">
+  <animate property="skew.y">
+    <key time="0" value="-10"/><key time="1" value="10"/>
+  </animate>
+</shape>
+```
+
+Skew evaluation allocates nothing and retains no frame state. It adds up to
+two tangent evaluations and two affine multiplications per consumed node;
+pixel cost also depends on how much screen area the transformed shape covers.
+The 320x180, 24-frame fixture measured +24.8% compositor CPU versus zero skew
+(0.024844 versus 0.019914 seconds at four threads), including that coverage
+change. `tools/skew-benchmark.py` repeats the comparison; each variant checks
+all hashes at one/four threads and five alternating runs. Measurement ranges
+and verification details are in `docs/reviews/b1-compositing-skew.md`.
+
+## Color blend modes
+
+`group`, `layer`, `shape` and `particleEmitter` accept `blend`. The default
+is `normal`; the original `add`, `multiply`, `screen`, `overlay` and
+`difference` keep their previous arithmetic. The additional modes below
+require `version="1.1"`. `blend` is static; opacity and source colors can
+still animate. Groups composite their completed isolated image once;
+emitters apply these color modes to each particle in emission order.
+
+Let `s,b` be straight source/backdrop colors, `S,B` their premultiplied
+values, and `a,d` their alphas. Except for plus-lighter, output is
+`(1-d)*S + (1-a)*B + a*d*f(b,s)`, with alpha `a+d*(1-a)`.
+The new modes clamp only the straight inputs to f to [0,1]; uncovered
+premultiplied contributions retain HDR values. They use double intermediate
+color calculations and float output. Below alpha 1e-6 on either input they
+use normal source-over to avoid unstable unpremultiplication. The old six
+modes retain their historical clamp and precision policies.
+
+In this table, `sat` means clamp to [0,1]. Channelwise formulas apply to
+each RGB component; `Lum(C)=.30*R+.59*G+.11*B`, and `Sat(C)=max(C)-min(C)`.
+
+| Mode | f(b,s), or the specified compositing operation |
+|---|---|
+| `exclusion` | `b+s-2*b*s` |
+| `subtract` | `max(0,b-s)` |
+| `divide` | zero if b=0; otherwise one if s=0, else `min(1,b/s)` |
+| `darken`, `lighten` | channelwise min, max |
+| `darker-color`, `lighter-color` | choose the complete RGB color with smaller/larger Lum; exact ties choose backdrop |
+| `color-dodge` | zero if b=0; otherwise one if s=1, else `min(1,b/(1-s))` |
+| `color-burn` | one if b=1; otherwise zero if s=0, else `1-min(1,(1-b)/s)` |
+| `linear-dodge`, `linear-burn` | `min(1,b+s)`, `max(0,b+s-1)` |
+| `hard-light` | `2*b*s` for s<=.5, otherwise `1-2*(1-b)*(1-s)` |
+| `soft-light` | `b-(1-2*s)*b*(1-b)` for s<=.5, otherwise `b+(2*s-1)*(D(b)-b)` |
+| `linear-light` | `sat(b+2*s-1)` |
+| `vivid-light` | color-burn(b,2*s) for s<=.5, otherwise color-dodge(b,2*s-1) |
+| `pin-light` | `min(b,2*s)` for s<=.5, otherwise `max(b,2*s-1)` |
+| `hard-mix` | zero if vivid-light<.5, otherwise one |
+| `hue` | source hue, backdrop saturation and Lum |
+| `saturation` | source saturation, backdrop hue and Lum |
+| `color` | source hue/saturation, backdrop Lum |
+| `luminosity` | backdrop hue/saturation, source Lum |
+| `plus-lighter` | sum premultiplied RGBA, then clamp each component to [0,1] |
+
+Soft-light uses `D(b)=((16*b-12)*b+4)*b` for b<=.25, otherwise `sqrt(b)`.
+The four nonseparable modes use the W3C SetSat/SetLum/ClipColor operations,
+including compression of out-of-gamut RGB about its target luminosity;
+they do not convert to HSL or HSV. W3C-defined modes follow
+[Compositing Level 1](https://www.w3.org/TR/2024/CRD-compositing-1-20240321/#blending).
+Other formulas and the whole-color comparison rule are renderer definitions.
+
+Zero source alpha is a no-op for every color mode, leaving even an HDR
+backdrop bit-identical. This is an explicit exception to plus-lighter's
+clamping rule. Every positive source alpha uses its sum-and-clamp operation,
+including tiny alpha. Thus plus-lighter can add alpha, while `add` retains
+source-over alpha and unclamped RGB; `linear-dodge` clamps the straight blend
+function and also retains source-over alpha.
+
+```xml
+<group id="wash" blend="color" opacity="0.6">
+  <shape id="tint" shape="rect" width="160" height="90" fill="#C85A90"/>
+</group>
+```
+
+The kernels allocate nothing and use bounded three-channel operations with
+no per-frame or per-thread state. The 320x180 `tests/golden/blend-modes.xml`
+sheet shows all 28 implemented color modes over matching translucent
+backdrops. Dissolve and the stencil/silhouette, alpha-add and behind parent
+operators remain unsupported until their separate compositor implementation.
+
+Cost depends on the selected formulas and pixel overlap. In the 192x128,
+24-frame `tests/data-blend-colors.xml` stack, all 22 new modes together used
+65.1% more median compositor CPU than the same stack with normal blending
+(0.182702 versus 0.110646 seconds at four threads). Both variants matched
+every frame at one/four threads and across five alternating measurements.
+Run `tools/blend-benchmark.py` inside the SDK to repeat the comparison;
+ranges and full verification are in `docs/reviews/b1-compositing-colors.md`.
+
+## Extended animation curves and tracks (1.1)
+
+`animate` uses the shared property registry for its host, value type and
+numeric key bounds. The existing scalar and linear-light colour properties
+keep their names and ranges. A second animation of the same property is an
+error. New curves require `version="1.1"`; new attributes on existing
+animation elements are also legal in 1.0 documents.
+
+`hold` aliases `step`. `steps` requires `key/@steps` in [1,1000000];
+`stepPosition="end"` is the default. `start` jumps at the first instant of
+each subinterval, including the first or an interior key. The final key
+holds its exact value. Each key describes its outgoing segment.
+
+The Penner families are `sine`, `quad`, `cubic`, `quart`, `quint`, `expo`,
+`circ`, `back`, `elastic` and `bounce`, each with `-in`, `-out` and
+`-in-out` suffixes. Back uses overshoot 1.70158, multiplied by 1.525 for
+in-out. Elastic uses period 0.3, or 0.45 for in-out, in normalized segment
+time. The existing `ease-in`, `ease-out` and `ease-in-out` retain their exact
+original arithmetic.
+
+`catmull-rom` is cubic Hermite interpolation with the average of adjacent
+per-second secant slopes. At a missing neighbour use the available secant.
+`tcb` weights these incoming and outgoing slopes by `tension`, `continuity`
+and `bias`, each in [-1,1], defaulting to zero. The left outgoing and right
+incoming tangent use their respective keys' parameters. TCB parameters on
+a key without an adjacent TCB segment are errors.
+
+`spring` solves `mass*x'' + damping*x' + stiffness*(x-1)=0` analytically,
+with initial position and velocity zero. Defaults are stiffness 100,
+damping 10 and mass 1. Mass and stiffness must be in [1e-6,1e6]; damping
+must be in [0,1e6]. Time is elapsed local seconds, including for normalized
+tracks. The right key is exact even when the spring has not settled.
+Underdamped, critical and overdamped solutions have no integration state;
+evaluating a frame never depends on earlier frames. Spring-only parameters
+on another interpolation type are errors.
+
+For `cubic-bezier`, `easeOut="influence,speed"` on the left key and
+`easeIn="influence,speed"` on the right key are normalized pairs in [0,1].
+Outgoing controls are `(influence,influence*speed)`; incoming controls are
+`(1-influence,1-influence*speed)`. A missing side uses the original default
+Bezier control for that side. Handles and an explicit `bezier` on the same
+segment conflict. An incoming handle on the first key or an outgoing handle
+on the last key is an error because it has no adjacent segment. Spatial
+handles and roving keys remain unsupported.
+
+`extrapolateBefore` and `extrapolateAfter` default to `hold`. `linear`
+continues the boundary secant; `loop` repeats the key interval; `ping-pong`
+alternates direction; `offset` repeats while adding the endpoint value
+difference per cycle. Negative cycles use floor, not truncation. The
+original closed key interval wins over extrapolation. Outside it, exact
+loop/offset boundaries map to the first key, and ping-pong boundaries map
+alternately to the last/first key. One-key tracks always hold.
+
+`additive="true"` adds the static property value after interpolation and
+extrapolation. For colour this addition occurs in linear light, including
+alpha; the normal output clamps still apply. `timeBase="composition"`
+uses project seconds. `local` uses elapsed host seconds and its ancestor
+group clocks. Masks and modifiers inherit their owning node's clock.
+`normalized` divides those local seconds by the host duration; a missing
+end uses the project end. A zero or nonfinite normalized span is an error.
+Shared scene hosts use the project interval; audio tracks use `start` through
+the project end. Clocks resolve at load time
+and render-time evaluation reads them without mutation.
+
+Tracks have at most 65536 keys and scenes at most 1048576 logical keys.
+Adjacent key times must differ by at least 1e-12. Tracks using new curve or
+track behavior require key/base magnitude at most 1e12, key time magnitude
+at most 1e6, and Bezier ordinate magnitude at most 1e6. Resolved clock
+coefficients are bounded by 1e12. Legacy tracks retain their previous
+numeric range. Existing property clamps, such as opacity in [0,1] and
+nonnegative radii, continue to apply after evaluation.
+
+```xml
+<animate property="position.x" timeBase="local"
+         extrapolateAfter="ping-pong" additive="true">
+  <key time="0" value="0" interpolation="back-out"/>
+  <key time="1" value="100"/>
+</animate>
+```
+
+Extended particle emission tracks use the existing 1/240-second fixed grid
+over the active interval, with synchronized deterministic checkpoints.
+Lifetime bounds include curve overshoot and extrapolation, so culling never
+discards a still-live particle. Physics cache signatures include every curve
+parameter, track option and resolved clock; older cache versions recompute.
+Curve lookup is O(log keys) and each segment evaluation is constant cost.
+Animated particle-rate integration is bounded by the existing rate-cell
+budget and its cost grows with the evaluated emitter time span. Extended
+emission tracks fail rendering if their cumulative index exceeds
+`SR_MAX_PARTICLE_INDEX` (9e15); this keeps integer conversion and one-particle
+steps exact, even when interpolation overshoots its key values.

@@ -6,13 +6,18 @@
 #include <math.h>
 
 /* Composites premultiplied `src` over premultiplied `dst` in place with the
- * separable W3C Compositing Level 1 formula
+ * W3C Compositing Level 1 color-blend formula
  *   co = (1-ab)*cs' + (1-as)*cb' + as*ab*B(cb, cs),  ao = as + ab*(1-as)
  * where cs', cb' are premultiplied and cs, cb straight (unpremultiplied only
  * to evaluate B). ADD (B = cb + cs) is never clamped; screen and overlay
- * clamp their straight inputs to [0,1]. A transparent src is a no-op and a
- * transparent backdrop yields src for every mode. */
+ * clamp their straight inputs to [0,1]. The new color modes clamp the inputs
+ * to B, retaining HDR uncovered contributions. PLUS_LIGHTER instead sums and
+ * clamps all four premultiplied channels. Transparent src is a no-op. */
 void sr_blend_px(SrBlendMode mode, float dst[4], const float src[4]);
+
+/* Dispatcher target for new color modes. Use sr_blend_px for all modes;
+ * the separate entry keeps new kernels out of legacy inline hot paths. */
+void sr_blend_px_color(SrBlendMode mode, float dst[4], const float src[4]);
 
 /* Signed distance (negative inside) from local point (lx, ly) to the
  * rect/ellipse/rounded-rect occupying [x, x+w] x [y, y+h]. The ellipse uses
@@ -68,6 +73,10 @@ static inline float sr_blend_mix(SrBlendMode mode, float cb, float cs) {
 
 static inline void sr_blend_px_inline(SrBlendMode mode, float *dst,
                                       const float *src) {
+    if (mode >= SR_BLEND_PLUS_LIGHTER && mode < SR_BLEND_COUNT) {
+        sr_blend_px_color(mode, dst, src);
+        return;
+    }
     float as = src[3];
     if (!(as > 0.0f)) return;
     float ab = dst[3];

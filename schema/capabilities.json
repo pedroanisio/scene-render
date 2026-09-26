@@ -1,0 +1,423 @@
+{
+  "description": "Implemented additions to the complete 1.0 profile. Missing additions are unsupported, including explicitly authored default values. New enumerations on existing attributes require 1.1; new attributes remain legal in both versions.",
+  "elements": [
+    "materialType/animate",
+    "audioTrackType/animate",
+    "scene/styles",
+    "stylesType/token",
+    "scene/metadata",
+    "metadataType/meta",
+    "particleEmitterType/mask"
+  ],
+  "attributes": [
+    "groupType/@threeD",
+    "groupType/@zDepth",
+    "layerType/@threeD",
+    "layerType/@zDepth",
+    "shapeType/@threeD",
+    "shapeType/@zDepth",
+    "particleEmitterType/@threeD",
+    "particleEmitterType/@zDepth",
+    "animateType/@extrapolateBefore",
+    "animateType/@extrapolateAfter",
+    "animateType/@additive",
+    "animateType/@timeBase",
+    "keyType/@easeIn",
+    "keyType/@easeOut",
+    "keyType/@steps",
+    "keyType/@stepPosition",
+    "keyType/@tension",
+    "keyType/@continuity",
+    "keyType/@bias",
+    "keyType/@stiffness",
+    "keyType/@damping",
+    "keyType/@mass",
+    "tokenType/@name",
+    "tokenType/@value",
+    "metadataType/@title",
+    "metadataType/@author",
+    "metadataType/@description",
+    "metadataType/@keywords",
+    "metadataType/@copyright",
+    "metadataType/@revision",
+    "metadataType/@created",
+    "metadataType/@modified",
+    "metadataType/@generator",
+    "metadataType/@language",
+    "metaType/@name",
+    "metaType/@value",
+    "outputType/@embedMetadata",
+    "groupType/@width",
+    "groupType/@height",
+    "groupType/@skewX",
+    "groupType/@skewY",
+    "layerType/@skewX",
+    "layerType/@skewY",
+    "shapeType/@skewX",
+    "shapeType/@skewY",
+    "particleEmitterType/@skewX",
+    "particleEmitterType/@skewY"
+  ],
+  "values": {
+    "animateType/@extrapolateBefore": [
+      "hold",
+      "linear",
+      "loop",
+      "ping-pong",
+      "offset"
+    ],
+    "animateType/@extrapolateAfter": [
+      "hold",
+      "linear",
+      "loop",
+      "ping-pong",
+      "offset"
+    ],
+    "animateType/@timeBase": [
+      "composition",
+      "local",
+      "normalized"
+    ],
+    "keyType/@stepPosition": [
+      "start",
+      "end"
+    ],
+    "animateType/@defaultInterpolation": [
+      "step",
+      "hold",
+      "steps",
+      "linear",
+      "ease-in",
+      "ease-out",
+      "ease-in-out",
+      "cubic-bezier",
+      "catmull-rom",
+      "tcb",
+      "spring",
+      "sine-in",
+      "sine-out",
+      "sine-in-out",
+      "quad-in",
+      "quad-out",
+      "quad-in-out",
+      "cubic-in",
+      "cubic-out",
+      "cubic-in-out",
+      "quart-in",
+      "quart-out",
+      "quart-in-out",
+      "quint-in",
+      "quint-out",
+      "quint-in-out",
+      "expo-in",
+      "expo-out",
+      "expo-in-out",
+      "circ-in",
+      "circ-out",
+      "circ-in-out",
+      "back-in",
+      "back-out",
+      "back-in-out",
+      "elastic-in",
+      "elastic-out",
+      "elastic-in-out",
+      "bounce-in",
+      "bounce-out",
+      "bounce-in-out"
+    ],
+    "keyType/@interpolation": [
+      "step",
+      "hold",
+      "steps",
+      "linear",
+      "ease-in",
+      "ease-out",
+      "ease-in-out",
+      "cubic-bezier",
+      "catmull-rom",
+      "tcb",
+      "spring",
+      "sine-in",
+      "sine-out",
+      "sine-in-out",
+      "quad-in",
+      "quad-out",
+      "quad-in-out",
+      "cubic-in",
+      "cubic-out",
+      "cubic-in-out",
+      "quart-in",
+      "quart-out",
+      "quart-in-out",
+      "quint-in",
+      "quint-out",
+      "quint-in-out",
+      "expo-in",
+      "expo-out",
+      "expo-in-out",
+      "circ-in",
+      "circ-out",
+      "circ-in-out",
+      "back-in",
+      "back-out",
+      "back-in-out",
+      "elastic-in",
+      "elastic-out",
+      "elastic-in-out",
+      "bounce-in",
+      "bounce-out",
+      "bounce-in-out"
+    ],
+    "groupType/@blend": [
+      "plus-lighter",
+      "exclusion",
+      "subtract",
+      "divide",
+      "darken",
+      "lighten",
+      "darker-color",
+      "lighter-color",
+      "color-dodge",
+      "color-burn",
+      "linear-dodge",
+      "linear-burn",
+      "soft-light",
+      "hard-light",
+      "linear-light",
+      "vivid-light",
+      "pin-light",
+      "hard-mix",
+      "hue",
+      "saturation",
+      "color",
+      "luminosity"
+    ],
+    "layerType/@blend": [
+      "plus-lighter",
+      "exclusion",
+      "subtract",
+      "divide",
+      "darken",
+      "lighten",
+      "darker-color",
+      "lighter-color",
+      "color-dodge",
+      "color-burn",
+      "linear-dodge",
+      "linear-burn",
+      "soft-light",
+      "hard-light",
+      "linear-light",
+      "vivid-light",
+      "pin-light",
+      "hard-mix",
+      "hue",
+      "saturation",
+      "color",
+      "luminosity"
+    ],
+    "shapeType/@blend": [
+      "plus-lighter",
+      "exclusion",
+      "subtract",
+      "divide",
+      "darken",
+      "lighten",
+      "darker-color",
+      "lighter-color",
+      "color-dodge",
+      "color-burn",
+      "linear-dodge",
+      "linear-burn",
+      "soft-light",
+      "hard-light",
+      "linear-light",
+      "vivid-light",
+      "pin-light",
+      "hard-mix",
+      "hue",
+      "saturation",
+      "color",
+      "luminosity"
+    ],
+    "particleEmitterType/@blend": [
+      "plus-lighter",
+      "exclusion",
+      "subtract",
+      "divide",
+      "darken",
+      "lighten",
+      "darker-color",
+      "lighter-color",
+      "color-dodge",
+      "color-burn",
+      "linear-dodge",
+      "linear-burn",
+      "soft-light",
+      "hard-light",
+      "linear-light",
+      "vivid-light",
+      "pin-light",
+      "hard-mix",
+      "hue",
+      "saturation",
+      "color",
+      "luminosity"
+    ]
+  },
+  "forms": {
+    "effectType/@color": [
+      "token"
+    ],
+    "groupType/@anchorX": [
+      "relative-length"
+    ],
+    "groupType/@anchorY": [
+      "relative-length"
+    ],
+    "groupType/@height": [
+      "relative-length"
+    ],
+    "groupType/@width": [
+      "relative-length"
+    ],
+    "groupType/@x": [
+      "relative-length"
+    ],
+    "groupType/@y": [
+      "relative-length"
+    ],
+    "keyType/@value": [
+      "token",
+      "relative-length"
+    ],
+    "layerType/@anchorX": [
+      "relative-length"
+    ],
+    "layerType/@anchorY": [
+      "relative-length"
+    ],
+    "layerType/@x": [
+      "relative-length"
+    ],
+    "layerType/@y": [
+      "relative-length"
+    ],
+    "lightType/@color": [
+      "token"
+    ],
+    "maskType/@height": [
+      "relative-length"
+    ],
+    "maskType/@width": [
+      "relative-length"
+    ],
+    "maskType/@x": [
+      "relative-length"
+    ],
+    "maskType/@y": [
+      "relative-length"
+    ],
+    "materialType/@baseColor": [
+      "token"
+    ],
+    "materialType/@emissive": [
+      "token"
+    ],
+    "particleEmitterType/@anchorX": [
+      "relative-length"
+    ],
+    "particleEmitterType/@anchorY": [
+      "relative-length"
+    ],
+    "particleEmitterType/@color": [
+      "token"
+    ],
+    "particleEmitterType/@colorEnd": [
+      "token"
+    ],
+    "particleEmitterType/@x": [
+      "relative-length"
+    ],
+    "particleEmitterType/@y": [
+      "relative-length"
+    ],
+    "projectType/@background": [
+      "token"
+    ],
+    "shapeType/@anchorX": [
+      "relative-length"
+    ],
+    "shapeType/@anchorY": [
+      "relative-length"
+    ],
+    "shapeType/@fill": [
+      "token"
+    ],
+    "shapeType/@height": [
+      "relative-length"
+    ],
+    "shapeType/@stroke": [
+      "token"
+    ],
+    "shapeType/@width": [
+      "relative-length"
+    ],
+    "shapeType/@x": [
+      "relative-length"
+    ],
+    "shapeType/@y": [
+      "relative-length"
+    ],
+    "textAssetType/@color": [
+      "token"
+    ],
+    "vectorAssetType/@fill": [
+      "token"
+    ],
+    "vectorAssetType/@stroke": [
+      "token"
+    ]
+  },
+  "occurrence_limits": {
+    "scene/output": 1
+  },
+  "vocabularies": {
+    "rigidBodyType/@shape": {
+      "box": {
+        "version": 10,
+        "implemented": true
+      },
+      "circle": {
+        "version": 10,
+        "implemented": true
+      },
+      "capsule": {
+        "version": 11,
+        "implemented": false
+      },
+      "polygon": {
+        "version": 11,
+        "implemented": false
+      },
+      "convex-hull": {
+        "version": 11,
+        "implemented": false
+      },
+      "path": {
+        "version": 11,
+        "implemented": false
+      }
+    },
+    "modifierType/@axis": {
+      "x": {
+        "version": 10,
+        "implemented": true
+      },
+      "y": {
+        "version": 10,
+        "implemented": true
+      }
+    }
+  }
+}

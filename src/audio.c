@@ -396,6 +396,7 @@ SrStatus sr_audio_load(SrScene *scene, SrDiagnostics *diag) {
 
 typedef struct {
     const float *pcm;
+    const SrAudioTrack *automation; /* borrowed, NULL for static gains */
     uint64_t start;       /* first output sample */
     uint64_t clip_first;  /* source sample range [clip_first, clip_end) */
     uint64_t clip_end;
@@ -413,6 +414,7 @@ struct SrMixer {
     SrVoice *voices;
     size_t count;
     uint32_t channels;
+    uint32_t sample_rate;
 };
 
 uint64_t sr_audio_seconds_to_samples(double seconds, uint32_t rate) {
@@ -429,6 +431,7 @@ SrStatus sr_mixer_create(const SrScene *scene, SrMixer **out) {
     SrMixer *mixer = calloc(1, sizeof(*mixer));
     if (!mixer) return SR_ERR_MEMORY;
     mixer->channels = scene->audio.channels;
+    mixer->sample_rate = scene->audio.sample_rate;
     if (scene->audio.track_count) {
         mixer->voices = calloc(scene->audio.track_count, sizeof(SrVoice));
         if (!mixer->voices) {
@@ -442,6 +445,13 @@ SrStatus sr_mixer_create(const SrScene *scene, SrMixer **out) {
         const SrAsset *asset = track->asset;
         if (!asset || !asset->audio_pcm || !asset->audio_frames) continue;
         SrVoice voice = {.pcm = asset->audio_pcm};
+        if (track->volume.track.count || track->pan.track.count) {
+            if (!mixer->sample_rate) {
+                sr_mixer_destroy(mixer);
+                return SR_ERR_ARGUMENT;
+            }
+            voice.automation = track;
+        }
         voice.start = sr_audio_seconds_to_samples(track->start, rate);
         voice.clip_first = sr_audio_seconds_to_samples(track->clip_in, rate);
         voice.clip_end = track->clip_out >= 0.0
@@ -468,16 +478,16 @@ SrStatus sr_mixer_create(const SrScene *scene, SrMixer **out) {
         }
         voice.fade_in = sr_audio_seconds_to_samples(track->fade_in, rate);
         voice.fade_out = sr_audio_seconds_to_samples(track->fade_out, rate);
-        voice.volume = track->volume;
-        voice.gain[0] = voice.gain[1] = track->volume;
-        if (mixer->channels == 2 && track->pan != 0.0) {
+        voice.volume = track->volume.base;
+        voice.gain[0] = voice.gain[1] = track->volume.base;
+        if (mixer->channels == 2 && track->pan.base != 0.0) {
             /* Equal-power pan: gains sqrt(2)*cos/sin of (pan+1)*pi/4, so the
              * summed power of the two gains is constant, pan 0 is unity on
              * both channels, and a mono source (upmixed at -3 dB) panned
              * hard to one side reaches unity on that side. */
-            double angle = (track->pan + 1.0) * SR_PI / 4.0;
-            voice.gain[0] = track->volume * sqrt(2.0) * cos(angle);
-            voice.gain[1] = track->volume * sqrt(2.0) * sin(angle);
+            double angle = (track->pan.base + 1.0) * SR_PI / 4.0;
+            voice.gain[0] = track->volume.base * sqrt(2.0) * cos(angle);
+            voice.gain[1] = track->volume.base * sqrt(2.0) * sin(angle);
         }
         mixer->voices[mixer->count++] = voice;
     }
@@ -529,9 +539,22 @@ void sr_mixer_mix(const SrMixer *mixer, uint64_t first, size_t count,
                 fade *= (double)l / (double)v->fade_in;
             if (v->fade_out && v->total - l < v->fade_out)
                 fade *= (double)(v->total - l) / (double)v->fade_out;
+            double gains[2] = {v->gain[0], v->gain[1]};
+            if (v->automation) {
+                double time = (double)s / mixer->sample_rate;
+                double volume = fmax(0.0, fmin(1.0,
+                    sr_anim_eval(&v->automation->volume, time)));
+                double pan = fmax(-1.0, fmin(1.0,
+                    sr_anim_eval(&v->automation->pan, time)));
+                gains[0] = gains[1] = volume;
+                if (channels == 2 && pan != 0.0) {
+                    double angle = (pan + 1.0) * SR_PI / 4.0;
+                    gains[0] = volume * sqrt(2.0) * cos(angle);
+                    gains[1] = volume * sqrt(2.0) * sin(angle);
+                }
+            }
             for (uint32_t c = 0; c < channels; ++c) {
-                float gain = (float)(fade == 1.0 ? v->gain[c]
-                                                 : v->gain[c] * fade);
+                float gain = (float)(fade == 1.0 ? gains[c] : gains[c] * fade);
                 out[i * channels + c] += voice_sample(v, channels, l, c) * gain;
             }
         }

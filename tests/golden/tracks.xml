@@ -1,0 +1,52 @@
+<scene version="1.1">
+  <project width="160" height="90" fps="24" duration="1" background="#141A25"/>
+  <composition>
+    <shape id="mode0" shape="rect" width="10" height="10" x="10" y="15" fill="#F87171">
+      <animate property="position.y" additive="true" extrapolateBefore="hold" extrapolateAfter="hold">
+        <key time="0.2" value="10"/><key time="0.45" value="25"/>
+      </animate>
+    </shape>
+    <shape id="mode1" shape="rect" width="10" height="10" x="40" y="15" fill="#FBBF24">
+      <animate property="position.y" additive="true" extrapolateBefore="linear" extrapolateAfter="linear">
+        <key time="0.2" value="10"/><key time="0.45" value="25"/>
+      </animate>
+    </shape>
+    <shape id="mode2" shape="rect" width="10" height="10" x="70" y="15" fill="#34D399">
+      <animate property="position.y" additive="true" extrapolateBefore="loop" extrapolateAfter="loop">
+        <key time="0.2" value="10"/><key time="0.45" value="25"/>
+      </animate>
+    </shape>
+    <shape id="mode3" shape="rect" width="10" height="10" x="100" y="15" fill="#60A5FA">
+      <animate property="position.y" additive="true" extrapolateBefore="ping-pong" extrapolateAfter="ping-pong">
+        <key time="0.2" value="10"/><key time="0.45" value="25"/>
+      </animate>
+    </shape>
+    <shape id="mode4" shape="rect" width="10" height="10" x="130" y="15" fill="#C084FC">
+      <animate property="position.y" additive="true" extrapolateBefore="offset" extrapolateAfter="offset">
+        <key time="0.2" value="10"/><key time="0.45" value="25"/>
+      </animate>
+    </shape>
+    <shape id="local" shape="rect" width="18" height="10" x="5" y="75" fill="#204070" start="0.1" end="0.95">
+      <animate property="position.x" additive="true" timeBase="normalized">
+        <key time="0" value="0"/><key time="1" value="20"/>
+      </animate>
+      <animate property="fill" additive="true">
+        <key time="0" value="#00000000"/><key time="1" value="#40502000"/>
+      </animate>
+      <mask type="rect" width="18" height="10">
+        <animate property="width" timeBase="local" extrapolateAfter="loop">
+          <key time="0" value="4"/><key time="0.25" value="18"/>
+        </animate>
+      </mask>
+    </shape>
+    <particleEmitter id="p" x="110" y="80" rate="2" lifetime="1" speed="20" direction="180" spread="20" size="2" color="#F0D080">
+      <animate property="rate" additive="true" extrapolateAfter="loop">
+        <key time="0" value="3"/><key time="0.25" value="7"/>
+      </animate>
+      <animate property="lifetime" defaultInterpolation="spring">
+        <key time="0" value="0.3" stiffness="100" damping="0" mass="1"/>
+        <key time="1" value="1"/>
+      </animate>
+    </particleEmitter>
+  </composition>
+</scene>

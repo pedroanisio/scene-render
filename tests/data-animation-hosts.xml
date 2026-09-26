@@ -1,0 +1,38 @@
+<scene version="1.1">
+  <project width="64" height="32" fps="12" duration="2" background="#101820"/>
+  <output path="../build/test-artifacts/animation-hosts.mkv" codec="ffv1"
+          pixelFormat="yuv444p" audioCodec="pcm_s16le"/>
+  <assets><audio id="tone" src="../examples/assets/tone.wav"/></assets>
+  <materials>
+    <material id="m" baseColor="#102030" metallic="0.2" roughness="0.5">
+      <animate property="baseColor" timeBase="normalized">
+        <key time="0" value="#2080E080"/><key time="1" value="#E08020FF"/>
+      </animate>
+      <animate property="emissive" additive="true">
+        <key time="0" value="#000000"/><key time="2" value="#200810"/>
+      </animate>
+      <animate property="metallic" defaultInterpolation="sine-in-out">
+        <key time="0" value="0"/><key time="2" value="1"/>
+      </animate>
+      <animate property="roughness" timeBase="local" extrapolateAfter="ping-pong">
+        <key time="0" value="0.9"/><key time="1" value="0.1"/>
+      </animate>
+    </material>
+  </materials>
+  <composition>
+    <object3D id="sphere" primitive="sphere" material="m" x="20" y="16" radius="12"/>
+    <object3D id="box" primitive="box" material="m" x="47" y="16" radius="10"/>
+  </composition>
+  <lights><light id="sun" type="directional" yaw="-20" pitch="15" intensity="0.7"/></lights>
+  <audioMix sampleRate="48000" channels="2">
+    <audioTrack id="voice" asset="tone" start="0.25" volume="0.1" loop="2"
+                clipIn="0" clipOut="1" fadeIn="0.1" fadeOut="0.1">
+      <animate property="volume" additive="true" timeBase="local">
+        <key time="0" value="0"/><key time="1.75" value="0.5"/>
+      </animate>
+      <animate property="pan" timeBase="normalized" defaultInterpolation="sine-in-out">
+        <key time="0" value="-1"/><key time="1" value="1"/>
+      </animate>
+    </audioTrack>
+  </audioMix>
+</scene>

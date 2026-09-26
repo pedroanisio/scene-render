@@ -124,7 +124,8 @@ class Node:
 
 
 def parse_document(path, report):
-    data = open(path, "rb").read()
+    with open(path, "rb") as stream:
+        data = stream.read()
     p = xml.parsers.expat.ParserCreate()
     root, stack = [None], []
 
@@ -383,6 +384,8 @@ COLOR_RE = re.compile(
 PAINT_REF_RE = re.compile(r"^url\(#([A-Za-z_][A-Za-z0-9_.\-]*)\)$")
 POINT_RE = re.compile(r"^\s*[-+]?[\d.eE+-]+\s*,\s*[-+]?[\d.eE+-]+\s*$")
 VAR_RE = re.compile(r"var\(--([A-Za-z0-9_\-]+)\)")
+# Match SR_MAX_TOKEN_DEPTH in include/scene_render/scene.h.
+MAX_TOKEN_DEPTH = 64
 TEMPLATE_RE = re.compile(r"\{\{\s*([^}\s]+)\s*\}\}")
 PATH_RE = re.compile(r"^[\sMmLlHhVvCcSsQqTtAaZz0-9eE.,+-]*$")
 PATH_CMD_RE = re.compile(r"[MmLlHhVvCcSsQqTtAaZz]")
@@ -722,24 +725,52 @@ class Checker:
                 self.r.error("REF-KIND", n, a, "layer %r does not show video footage" % t.get("id"))
 
     # ---------------------------------------------------- paints/tokens
+    @staticmethod
+    def resolve_token(tokens, name):
+        seen = set()
+        for depth in range(MAX_TOKEN_DEPTH + 1):
+            if name in seen:
+                return None, "token alias cycle at %r" % name
+            seen.add(name)
+            token = tokens.get(name)
+            if token is None:
+                return None, "var(--%s) has no styles/token" % name
+            value = token.get("value", "")
+            if not value.startswith("var("):
+                return value, None
+            ref = VAR_RE.fullmatch(value)
+            if ref is None:
+                return None, "malformed token reference; expected var(--name)"
+            name = ref.group(1)
+        return None, "token alias chain exceeds %d hops" % MAX_TOKEN_DEPTH
+
     def check_values(self):
         tokens = {}
         for t in self.doc.iter("token"):
             if t.get("name") in tokens:
                 self.r.error("ID-UNIQUE", t, "name", "token %r defined twice" % t.get("name"))
             tokens[t.get("name")] = t
+        resolved = {}
+        for name, token in tokens.items():
+            value, error = self.resolve_token(tokens, name)
+            resolved[name] = value
+            if error:
+                self.r.error("TOKEN-REF", token, "value", error)
         params = {p.get("id") for p in self.doc.iter("param") if p.parent is not None and p.parent.tag == "parameters"}
         for n in self.doc.iter():
             for a, v in n.attrib.items():
                 s = self.attr_simple(n, a)
                 for name in VAR_RE.findall(v):
-                    tok = tokens.get(name)
-                    if tok is None:
+                    if n.tag == "token" and a == "value":
+                        continue                        # Alias graphs were checked above.
+                    if name not in tokens:
                         self.r.error("TOKEN-REF", n, a, "var(--%s) has no styles/token" % name)
-                    elif s is not None and s.family in ("color", "paint") and not COLOR_RE.match(tok.get("value", "").strip()):
-                        self.r.error("TOKEN-REF", n, a, "token --%s = %r is not a colour" % (name, tok.get("value")))
-                    elif s is not None and s.family in ("color", "paint") and VAR_RE.search(tok.get("value", "")):
-                        self.r.error("TOKEN-REF", n, a, "token --%s refers to another token" % name)
+                    elif (resolved[name] is not None and s is not None and
+                          s.family in ("color", "paint") and
+                          (VAR_RE.search(resolved[name]) or
+                           not COLOR_RE.match(resolved[name].strip()))):
+                        self.r.error("TOKEN-REF", n, a,
+                                     "token --%s = %r is not a colour" % (name, resolved[name]))
                 m = PAINT_REF_RE.match(v.strip())
                 if m and s is not None and s.family == "paint":
                     t = self.ids.get(m.group(1))

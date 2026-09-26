@@ -1,0 +1,55 @@
+<scene version="1.1">
+  <project width="64" height="32" fps="12" duration="2" background="var(--background)"/>
+  <styles>
+    <token name="background" value="var(--base)"/>
+    <token name="ink" value="var(--decimal)"/>
+    <token name="base" value="#102030"/>
+    <token name="decimal" value="0.2,0.4,0.6,0.8"/>
+    <token name="end" value="#E0402080"/>
+    <token name="unused-number" value="42"/>
+    <token name="unused-empty" value=""/>
+    <token name="Ink" value="#FFFFFF"/>
+    <token name="--dashed" value="var(--ink)"/>
+    <token name="extra0" value="0"/><token name="extra1" value="1"/>
+    <token name="extra2" value="2"/><token name="extra3" value="3"/>
+    <token name="extra4" value="4"/><token name="extra5" value="5"/>
+    <token name="extra6" value="6"/><token name="extra7" value="7"/>
+  </styles>
+  <assets>
+    <text id="text" text="Tokens" width="32" height="16" size="10" color="var(--ink)"
+          fontFile="../assets/third-party/inter/Inter-Regular.ttf"/>
+    <vector id="vector" shape="rect" width="16" height="16"
+            fill="var(----dashed)" stroke="var(--ink)" strokeWidth="1"/>
+  </assets>
+  <materials>
+    <material id="mat" baseColor="var(--ink)" emissive="var(--ink)">
+      <animate property="baseColor"><key time="0" value="var(--ink)"/></animate>
+      <animate property="emissive"><key time="0" value="var(--ink)"/></animate>
+    </material>
+  </materials>
+  <composition>
+    <shape id="shape" shape="rect" width="16" height="16"
+           fill="var(--ink)" stroke="var(--ink)">
+      <animate property="fill"><key time="0" value="var(--ink)"/>
+        <key time="2" value="var(--end)"/></animate>
+      <animate property="stroke"><key time="0" value="var(--ink)"/></animate>
+    </shape>
+    <particleEmitter id="particles" x="32" y="16" rate="4"
+                     color="var(--ink)" colorEnd="var(--ink)">
+      <animate property="color"><key time="0" value="var(--ink)"/></animate>
+      <animate property="colorEnd"><key time="0" value="var(--ink)"/></animate>
+    </particleEmitter>
+    <layer id="text-layer" asset="text" x="32"/>
+    <layer id="vector-layer" asset="vector" y="16"/>
+  </composition>
+  <lights>
+    <light id="light" type="ambient" color="var(--ink)">
+      <animate property="color"><key time="0" value="var(--ink)"/></animate>
+    </light>
+  </lights>
+  <effects>
+    <effect id="effect" type="drop-shadow" color="var(--ink)">
+      <animate property="color"><key time="0" value="var(--ink)"/></animate>
+    </effect>
+  </effects>
+</scene>

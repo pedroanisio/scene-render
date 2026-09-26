@@ -3,6 +3,7 @@
 
 #include "scene_render/diagnostics.h"
 #include "scene_render/scene.h"
+#include "scene_render/property.h"
 
 #include <expat.h>
 
@@ -12,7 +13,8 @@ typedef enum {
     E_KEY, E_AUDIO_MIX, E_AUDIO_TRACK, E_SCENE360, E_CAMERA, E_MATERIALS,
     E_MATERIAL, E_LIGHTS, E_LIGHT, E_EFFECTS, E_EFFECT, E_PHYSICS,
     E_FORCE_FIELD, E_CONSTRAINT, E_PARTICLES, E_RIGID_BODY, E_SOFT_BODY,
-    E_DEFORM, E_MODIFIER, E_OBJECT3D, E_POINT
+    E_DEFORM, E_MODIFIER, E_OBJECT3D, E_POINT, E_STYLES, E_TOKEN,
+    E_METADATA, E_META
 } ElementKind;
 
 typedef struct {
@@ -24,9 +26,12 @@ typedef struct {
     SrEffect *effect;
     SrModifier *modifier;
     SrObject3D *object3d;
+    SrMaterial *material;
+    SrAudioTrack *audio_track;
     SrMask *mask;
     SrForceField *field;
     SrAnimValue *point;         /* mesh-warp point: [0] = x, [1] = y */
+    const SrProperty *property; /* animate/key: immutable registry entry */
     SrAnimColor *color_anim;    /* animate/key: target color track */
     SrCurve curve;
 } ParseFrame;
@@ -39,8 +44,11 @@ typedef struct {
     size_t depth;
     size_t stack_capacity;
     size_t element_depth;       /* open elements, bounded by SR_XML_MAX_DEPTH */
+    size_t key_count;
     bool failed;
     bool out_of_memory;         /* the failure was an allocation (exit 8) */
+    bool seen_styles;
+    bool seen_metadata;
     bool seen_project;
     bool seen_output;
     bool seen_assets;
@@ -54,8 +62,12 @@ typedef struct {
 } ParseContext;
 
 size_t sr_xml_line(ParseContext *ctx);
+void sr_xml_start_metadata(ParseContext *ctx, const XML_Char **attrs);
+void sr_xml_start_meta(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_fail(ParseContext *ctx, const char *element, const char *attribute,
                  const char *message);
+void sr_xml_fail_at(ParseContext *ctx, size_t line, const char *element,
+                    const char *attribute, const char *message);
 const char *sr_xml_attr(const XML_Char **attrs, const char *name);
 bool sr_xml_attrs_allowed(ParseContext *ctx, const char *element,
                           const XML_Char **attrs, const char *const *allowed,
@@ -65,11 +77,16 @@ const char *sr_xml_required(ParseContext *ctx, const char *element,
 ParseFrame *sr_xml_parent(ParseContext *ctx);
 void sr_xml_push(ParseContext *ctx, ParseFrame frame, const char *element);
 bool sr_xml_resolve_scene(ParseContext *ctx);
+bool sr_xml_resolve_lengths(ParseContext *ctx);
 bool sr_xml_parse_double_attr(ParseContext *ctx, const char *element,
                               const XML_Char **attrs, const char *name,
                               double *target);
 bool sr_xml_parse_node_common(ParseContext *ctx, const char *element,
                               const XML_Char **attrs, SrNode *node);
+
+bool sr_xml_parse_color(ParseContext *ctx, const char *element,
+                         const char *attribute, const char *text, SrColor *color);
+void sr_xml_start_token(ParseContext *ctx, const XML_Char **attrs);
 
 void sr_xml_start_project(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_output(ParseContext *ctx, const XML_Char **attrs);
@@ -100,6 +117,17 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
 void sr_xml_start_mask(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs);
+bool sr_xml_animation_options(ParseContext *ctx, const XML_Char **attrs,
+                               ParseFrame *host, SrAnimValue *value,
+                               SrAnimColor *color);
+bool sr_xml_key_options(ParseContext *ctx, const XML_Char **attrs, SrKeyframe *key);
+bool sr_xml_length_attr(ParseContext *ctx, const char *element,
+                         const XML_Char **attrs, const char *attribute,
+                         double *value, SrLengthUnit *unit, bool positive);
+bool sr_xml_anim_length_attr(ParseContext *ctx, const char *element,
+                              const XML_Char **attrs, const char *attribute,
+                              SrAnimValue *value, bool positive);
+bool sr_xml_finish_animation(ParseContext *ctx, ParseFrame *frame);
 
 #define SR_XML_FAIL_RETURN(context, element, attribute, message)               \
     do {                                                                       \

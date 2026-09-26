@@ -140,7 +140,8 @@ int main(int argc, char **argv) {
     /* libav reports through diagnostics; its own log only when verbose. */
     av_log_set_level(options.verbose ? AV_LOG_INFO : AV_LOG_ERROR);
     SrScene scene;
-    SrStatus status = sr_scene_load_xml(options.scene_path, &scene, &diag);
+    SrStatus status = sr_scene_load_xml_report(options.scene_path, &scene, &diag,
+                                                options.report_unsupported);
     if (status != SR_OK) return status;
     status = apply_overrides(&scene, &options);
     if (status != SR_OK) {

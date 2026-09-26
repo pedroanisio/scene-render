@@ -1,4 +1,5 @@
 #include "xml_internal.h"
+#include "compositing_internal.h"
 
 #include <ctype.h>
 #include <limits.h>
@@ -99,7 +100,7 @@ static bool parse_particles(ParseContext *ctx, const char *name,
     node->particle_speed_variance_set = sr_xml_attr(attrs, "speedVariance") != NULL;
     if (node->particle_size_end_set) node->particle_grow = false;
     const char *value = sr_xml_attr(attrs, "color");
-    if (value && !sr_parse_color(value, &node->particle_color.base)) {
+    if (value && !sr_xml_parse_color(ctx, name, "color", value, &node->particle_color.base)) {
         sr_xml_fail(ctx, name, "color", "invalid color");
         return false;
     }
@@ -109,7 +110,8 @@ static bool parse_particles(ParseContext *ctx, const char *name,
     node->particle_color_end.base.a = 0.0;
     value = sr_xml_attr(attrs, "colorEnd");
     if (value) {
-        if (!sr_parse_color(value, &node->particle_color_end.base)) {
+        if (!sr_xml_parse_color(ctx, name, "colorEnd", value,
+                                &node->particle_color_end.base)) {
             sr_xml_fail(ctx, name, "colorEnd", "invalid color");
             return false;
         }
@@ -157,13 +159,16 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
                        const XML_Char **attrs, SrNodeType type) {
     static const char *const common[] = {"id", "z", "visible", "opacity", "x",
         "y", "rotation", "scaleX", "scaleY", "anchorX", "anchorY", "start",
-        "end", "depth", "rotationX", "rotationY"};
-    const char *allowed[40];
+        "end", "depth", "rotationX", "rotationY", "threeD", "zDepth",
+        "skewX", "skewY"};
+    const char *allowed[42];
     memcpy(allowed, common, sizeof(common));
     size_t count = sizeof(common) / sizeof(common[0]);
     if (type == SR_NODE_GROUP) {
         allowed[count++] = "blend";
         allowed[count++] = "effects";
+        allowed[count++] = "width";
+        allowed[count++] = "height";
     } else if (type == SR_NODE_MEDIA) {
         allowed[count++] = "asset";
         allowed[count++] = "blend";
@@ -215,6 +220,15 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
         SR_XML_FAIL_RETURN(ctx, name, "id", "node id must be unique");
     }
     if (type == SR_NODE_GROUP) {
+        if (!sr_xml_length_attr(ctx, name, attrs, "width", &node->group_width.value,
+                                  &node->group_width.unit, true) ||
+            !sr_xml_length_attr(ctx, name, attrs, "height", &node->group_height.value,
+                                  &node->group_height.unit, true)) {
+            sr_node_free(node);
+            return;
+        }
+        node->group_width_set = sr_xml_attr(attrs, "width") != NULL;
+        node->group_height_set = sr_xml_attr(attrs, "height") != NULL;
         const char *blend = sr_xml_attr(attrs, "blend");
         if (blend && !sr_blend_parse(blend, &node->blend)) {
             sr_node_free(node);
@@ -274,17 +288,19 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
         else if (strcmp(shape, "ellipse") == 0) node->shape = SR_SHAPE_ELLIPSE;
         else { sr_node_free(node); SR_XML_FAIL_RETURN(ctx, name, "shape",
             "expected rect or ellipse"); }
-        if (!sr_xml_parse_double_attr(ctx, name, attrs, "width", &node->shape_width) ||
-            !sr_xml_parse_double_attr(ctx, name, attrs, "height", &node->shape_height) ||
+        if (!sr_xml_length_attr(ctx, name, attrs, "width", &node->shape_width,
+                                  &node->shape_width_unit, true) ||
+            !sr_xml_length_attr(ctx, name, attrs, "height", &node->shape_height,
+                                  &node->shape_height_unit, true) ||
             !sr_xml_parse_double_attr(ctx, name, attrs, "strokeWidth", &node->stroke_width)) {
             sr_node_free(node); return;
         }
         const char *value = sr_xml_attr(attrs, "fill");
-        if (value && !sr_parse_color(value, &node->fill.base)) {
+        if (value && !sr_xml_parse_color(ctx, name, "fill", value, &node->fill.base)) {
             sr_node_free(node); SR_XML_FAIL_RETURN(ctx, name, "fill", "invalid color");
         }
         value = sr_xml_attr(attrs, "stroke");
-        if (value && !sr_parse_color(value, &node->stroke.base)) {
+        if (value && !sr_xml_parse_color(ctx, name, "stroke", value, &node->stroke.base)) {
             sr_node_free(node); SR_XML_FAIL_RETURN(ctx, name, "stroke", "invalid color");
         }
         value = sr_xml_attr(attrs, "blend");
@@ -302,6 +318,7 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
             return;
         }
     }
+    if (sr_node_uses_compositing(node)) ctx->scene->compositing_required = true;
     ParseFrame *p = sr_xml_parent(ctx);
     SrStatus attached = p && p->node ? sr_node_add_child(p->node, node)
                                      : SR_ERR_ARGUMENT;
@@ -312,6 +329,7 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
                                ? "out of memory while attaching node to parent"
                                : "cannot attach node to parent");
     }
-    sr_xml_push(ctx, (ParseFrame){.kind = type == SR_NODE_GROUP ? E_GROUP : E_LAYER,
+    sr_xml_push(ctx, (ParseFrame){.kind = type == SR_NODE_GROUP ? E_GROUP :
+                                  type == SR_NODE_PARTICLES ? E_PARTICLES : E_LAYER,
                                   .node = node, .curve = SR_CURVE_LINEAR}, name);
 }

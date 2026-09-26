@@ -7,10 +7,11 @@
 const char *sr_cli_usage(void) {
     return
         "scene-render " SR_VERSION "\n"
-        "Usage: scene-render --scene FILE [options]\n\n"
+        "Usage: scene-render [--scene] FILE [options]\n\n"
         "  --scene FILE             Scene XML (validated against the embedded XSD)\n"
         "  --output FILE            Override XML output path (.mp4, .mov, .mkv)\n"
         "  --validate               Validate without decoding or rendering\n"
+        "  --report-unsupported     With --validate, list every unsupported use\n"
         "  --print-schema           Print the embedded XSD and exit\n"
         "  --frame-range A:B        Render half-open frame range [A,B)\n"
         "  --preview-frame N, --frame N\n"
@@ -100,7 +101,7 @@ static const char *const option_names[] = {
     "--metrics", "--verbose", "--version", "--help",
     "--scene", "--output", "--frame-range", "--preview-frame", "--preview-out",
     "--mode", "--resolution", "--fps", "--quality", "--threads", "--renderer",
-    "--metrics-trace", "--segment-frames", "--physics-cache"};
+    "--metrics-trace", "--segment-frames", "--physics-cache", "--report-unsupported"};
 enum { OPTION_COUNT = sizeof(option_names) / sizeof(option_names[0]) };
 
 static int option_slot(const char *arg) {
@@ -121,6 +122,14 @@ SrStatus sr_cli_parse(int argc, char *const *argv, SrCliOptions *out,
     bool seen[OPTION_COUNT] = {false};
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
+        if (*arg && *arg != '-') {
+            int scene_slot = option_slot("--scene");
+            if (seen[scene_slot])
+                return fail(error, error_size, "error: --scene given more than once");
+            seen[scene_slot] = true;
+            o.scene_path = arg;
+            continue;
+        }
         int slot = option_slot(arg);
         if (slot < 0) return fail(error, error_size, "error: unknown option '%s'", arg);
         if (seen[slot])
@@ -128,6 +137,10 @@ SrStatus sr_cli_parse(int argc, char *const *argv, SrCliOptions *out,
         seen[slot] = true;
         /* Flags without a value. */
         if (is(arg, "--validate")) { o.render.validate_only = true; continue; }
+        if (is(arg, "--report-unsupported")) {
+            o.report_unsupported = true;
+            continue;
+        }
         if (is(arg, "--print-schema")) { o.print_schema = true; continue; }
         if (is(arg, "--hash")) { o.render.hash = true; continue; }
         if (is(arg, "--resume")) { o.render.resume = true; continue; }
@@ -219,6 +232,9 @@ SrStatus sr_cli_parse(int argc, char *const *argv, SrCliOptions *out,
     if (!o.help && !o.version && !o.print_schema) {
         if (!o.scene_path)
             return fail(error, error_size, "error: --scene is required");
+        if (o.report_unsupported && !o.render.validate_only)
+            return fail(error, error_size,
+                        "error: --report-unsupported requires --validate");
         if (o.render.hash && o.render.preview)
             return fail(error, error_size,
                         "error: --hash cannot be combined with --preview-frame/--frame");

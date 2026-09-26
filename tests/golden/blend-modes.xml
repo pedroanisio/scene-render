@@ -1,0 +1,431 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Color blend sheet, row-major in the documented enum order. Each cell
+     uses the same partially transparent backdrop and animated source. -->
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="2" seed="11"
+           linearLight="false" background="#111722"/>
+  <assets>
+    <text id="label0" text="normal" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label1" text="add" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label2" text="multiply" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label3" text="screen" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label4" text="overlay" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label5" text="difference" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label6" text="plus-lighter" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label7" text="exclusion" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label8" text="subtract" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label9" text="divide" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label10" text="darken" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label11" text="lighten" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label12" text="darker-color" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label13" text="lighter-color" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label14" text="color-dodge" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label15" text="color-burn" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label16" text="linear-dodge" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label17" text="linear-burn" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label18" text="soft-light" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label19" text="hard-light" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label20" text="linear-light" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label21" text="vivid-light" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label22" text="pin-light" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label23" text="hard-mix" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label24" text="hue" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label25" text="saturation" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label26" text="color" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+    <text id="label27" text="luminosity" width="50" height="8" size="5"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D0DAE8"/>
+  </assets>
+  <composition>
+    <group id="tile0" x="4" y="4" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name0" asset="label0"/>
+      <shape id="warm0" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool0" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend0" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="normal">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile1" x="56" y="4" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name1" asset="label1"/>
+      <shape id="warm1" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool1" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend1" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="add">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile2" x="108" y="4" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name2" asset="label2"/>
+      <shape id="warm2" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool2" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend2" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="multiply">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile3" x="160" y="4" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name3" asset="label3"/>
+      <shape id="warm3" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool3" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend3" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="screen">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile4" x="212" y="4" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name4" asset="label4"/>
+      <shape id="warm4" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool4" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend4" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="overlay">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile5" x="264" y="4" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name5" asset="label5"/>
+      <shape id="warm5" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool5" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend5" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="difference">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile6" x="4" y="38" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name6" asset="label6"/>
+      <shape id="warm6" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool6" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend6" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="plus-lighter">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile7" x="56" y="38" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name7" asset="label7"/>
+      <shape id="warm7" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool7" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend7" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="exclusion">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile8" x="108" y="38" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name8" asset="label8"/>
+      <shape id="warm8" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool8" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend8" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="subtract">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile9" x="160" y="38" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name9" asset="label9"/>
+      <shape id="warm9" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool9" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend9" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="divide">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile10" x="212" y="38" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name10" asset="label10"/>
+      <shape id="warm10" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool10" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend10" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="darken">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile11" x="264" y="38" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name11" asset="label11"/>
+      <shape id="warm11" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool11" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend11" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="lighten">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile12" x="4" y="72" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name12" asset="label12"/>
+      <shape id="warm12" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool12" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend12" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="darker-color">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile13" x="56" y="72" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name13" asset="label13"/>
+      <shape id="warm13" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool13" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend13" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="lighter-color">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile14" x="108" y="72" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name14" asset="label14"/>
+      <shape id="warm14" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool14" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend14" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="color-dodge">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile15" x="160" y="72" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name15" asset="label15"/>
+      <shape id="warm15" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool15" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend15" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="color-burn">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile16" x="212" y="72" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name16" asset="label16"/>
+      <shape id="warm16" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool16" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend16" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="linear-dodge">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile17" x="264" y="72" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name17" asset="label17"/>
+      <shape id="warm17" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool17" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend17" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="linear-burn">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile18" x="4" y="106" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name18" asset="label18"/>
+      <shape id="warm18" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool18" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend18" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="soft-light">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile19" x="56" y="106" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name19" asset="label19"/>
+      <shape id="warm19" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool19" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend19" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="hard-light">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile20" x="108" y="106" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name20" asset="label20"/>
+      <shape id="warm20" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool20" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend20" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="linear-light">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile21" x="160" y="106" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name21" asset="label21"/>
+      <shape id="warm21" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool21" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend21" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="vivid-light">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile22" x="212" y="106" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name22" asset="label22"/>
+      <shape id="warm22" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool22" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend22" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="pin-light">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile23" x="264" y="106" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name23" asset="label23"/>
+      <shape id="warm23" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool23" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend23" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="hard-mix">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile24" x="4" y="140" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name24" asset="label24"/>
+      <shape id="warm24" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool24" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend24" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="hue">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile25" x="56" y="140" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name25" asset="label25"/>
+      <shape id="warm25" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool25" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend25" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="saturation">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile26" x="108" y="140" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name26" asset="label26"/>
+      <shape id="warm26" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool26" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend26" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="color">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+    <group id="tile27" x="160" y="140" opacity=".97">
+      <mask type="rect" width="50" height="32"/>
+      <layer id="name27" asset="label27"/>
+      <shape id="warm27" shape="rect" width="25" height="24" y="8" fill="#E8A36A99"/>
+      <shape id="cool27" shape="rect" width="25" height="24" x="25" y="8" fill="#3A7ECA99"/>
+      <shape id="blend27" shape="ellipse" width="40" height="18"
+             x="25" y="20" anchorX="20" anchorY="9" fill="#D059B9C0" blend="luminosity">
+        <animate property="opacity"><key time="0" value=".35"/>
+          <key time="1" value="1"/><key time="2" value=".55"/></animate>
+        <animate property="rotation"><key time="0" value="-12"/>
+          <key time="2" value="12"/></animate>
+      </shape>
+    </group>
+  </composition>
+</scene>

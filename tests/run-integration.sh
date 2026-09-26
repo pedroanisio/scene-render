@@ -77,7 +77,7 @@ if command -v xmllint >/dev/null 2>&1; then
     IFS='
 '
     # shellcheck disable=SC2086
-    xmllint --noout --schema "$root/schema/scene-v1.xsd" $xsd_files
+    xmllint --noout --schema "$root/schema/scene-render-1.1.xsd" $xsd_files
     IFS=$old_ifs
     echo "XSD validation passed"
 else
@@ -138,6 +138,49 @@ depth_b="$work/depth-b.ppm"
     --preview-out "$depth_b" --threads 4
 cmp "$depth_a" "$depth_b"
 golden depth "$depth_a"
+
+# Material and sample-time audio automation: lossless output is invariant
+# across render thread counts, including every encoded PCM sample.
+hosts_preview="$work/animation-hosts.ppm"
+"$binary" --scene "$root/tests/data-animation-hosts.xml" --preview-frame 9 \
+    --preview-out "$hosts_preview" --threads 1
+golden animation-hosts "$hosts_preview"
+hosts_a="$work/animation-hosts-a.mkv"
+hosts_b="$work/animation-hosts-b.mkv"
+"$binary" --scene "$root/tests/data-animation-hosts.xml" --output "$hosts_a" --threads 1
+"$binary" --scene "$root/tests/data-animation-hosts.xml" --output "$hosts_b" --threads 4
+cmp "$hosts_a" "$hosts_b"
+test "$(field "$hosts_a" audio codec)" = "pcm_s16le"
+test "$(field "$hosts_a" audio rate)" = "48000"
+test "$(field "$hosts_a" video frames)" = "24"
+"$probe_tool" --samples "$hosts_a" | awk '
+    /type=audio/ { found=1; for (i=1; i<=NF; ++i) if ($i == "samples=96000") ok=1 }
+    END { exit !(found && ok) }'
+
+# Authored tags round-trip in each container, with exact 1/4-thread output.
+metadata_preview="$work/metadata.ppm"
+"$binary" --scene "$root/tests/data-metadata.xml" --preview-frame 2 \
+    --preview-out "$metadata_preview" --threads 1
+golden metadata "$metadata_preview"
+for extension in mp4 mov mkv; do
+    metadata_a="$work/metadata-a.$extension"
+    metadata_b="$work/metadata-b.$extension"
+    TZ=UTC0 "$binary" --scene "$root/tests/data-metadata.xml" \
+        --output "$metadata_a" --threads 1
+    TZ=EST5EDT "$binary" --scene "$root/tests/data-metadata.xml" \
+        --output "$metadata_b" --threads 4
+    cmp "$metadata_a" "$metadata_b"
+    test "$("$probe_tool" --tag author "$metadata_a")" = "Author"
+    metadata_empty=$("$probe_tool" --tag empty "$metadata_a")
+    test "$metadata_empty" = ""
+    metadata_title=$("$probe_tool" --tag title "$metadata_a")
+    test "$metadata_title" = ""
+    test "$("$probe_tool" --tag timecode "$metadata_a")" = "01:02:03:04"
+    test "$("$probe_tool" --tag x-en "$metadata_a")" = "English suffix"
+    test "$("$probe_tool" --tag x-eng "$metadata_a")" = "Long English suffix"
+    test "$("$probe_tool" --tag x "$metadata_a")" = "No suffix"
+    test "$("$probe_tool" "$metadata_a" | wc -l)" -eq 1
+done
 
 video="$work/integration.mp4"
 "$binary" --scene "$root/examples/keyframe-curves.xml" --resolution 320x180 \

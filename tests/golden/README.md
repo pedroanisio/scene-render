@@ -21,6 +21,8 @@ difference, and keeps the rendered frame in `BUILD/test_tmp/golden/`.
 | Scene | Covers | Frames |
 |---|---|---|
 | `composite.xml` | all six blend modes in linear light, opacity/rotation/fill keys, cubic-bezier key, z order | 0, 12, 23 |
+| `blend-modes.xml` | all 28 color modes over matching translucent backdrops, animated source opacity/rotation, including nonseparable color and plus-lighter alpha | 0, 12, 23 |
+| `skew.xml` | ordered two-axis skew, animated shear, nested masks, projected media, particles and soft-body rest poses | 0, 12, 23 |
 | `groups-masks.xml` | nested isolated groups (blend, opacity), pass-through group with an animated rounded-rect mask and an animated inverted mask, masked shape | 0, 12, 23 |
 | `paths.xml` | cubic/quadratic/relative path commands, evenodd vs nonzero, open and closed strokes, stroked rect/ellipse vectors and shapes | 0, 12, 23 |
 | `images.xml` | 8x8 image magnified 6x to 17.3x, rotated, animated scale; a 1904x1120 PNG resampled to its declared size; edges at the canvas border | 0, 12, 23 |
@@ -34,9 +36,38 @@ difference, and keeps the rendered frame in `BUILD/test_tmp/golden/`.
 | `particles.xml` | parametric emitter with animated rate/direction, square particles with color keys, the four presets | 0, 12, 23 |
 | `physics.xml` | static floor and rotated platform, bouncing circles, spinning box, pin and spring constraints, vortex and wind fields, pinned and free soft bodies | 0, 12, 23 |
 | `deform.xml` | mesh-warp with animated points, bend, twist, wave, squash, stretch | 0, 12, 23 |
+| `curves.xml` | hold/steps, all ten Penner families, Catmull-Rom, TCB, spring and temporal Bezier handles | 0, 8, 20 |
+| `tracks.xml` | all extrapolation modes, additive positions/colours, normalized/local clocks, looping particle emission and spring lifetimes | 0, 12, 20 |
+| `material-animation.xml` | shared base color/alpha, emissive, metallic and roughness animation with shadows | 0, 12, 20 |
+| `lengths.xml` | relative lengths, group scopes, mixed-unit motion, host-local masks and physics | 0, 12, 23 |
+| `styles.xml` | load-time color aliases in project and animated material colors, equivalent to `material-animation.xml` | 0, 12, 20 |
 
 The scenes are at most 320x180 and 24 frames. Assets come from
 `examples/assets/` and `assets/third-party/`.
+
+The new `curves` and `tracks` references capture the schema 1.1 interpolation
+families and track options, including cached particle-rate evaluation. Their
+six frames were visually reviewed; existing references are unchanged.
+
+The three `material-animation` references capture the newly animatable
+material colors, transparency, metallic and roughness. They were visually
+reviewed at frames 0, 12 and 20; all previous references remain unchanged.
+
+The three `styles` references are byte-identical copies of the existing
+`material-animation` references. They verify that token aliases produce the
+same pixels as literal colors. Frames 0, 12 and 20 were visually reviewed;
+no existing reference was regenerated.
+
+The three new `blend-modes` references capture the 22 added color modes
+alongside the six existing modes over matching translucent backdrops. Frames
+0, 12 and 23 were visually reviewed for mode differences, readable labels,
+gamut clipping and animated opacity/rotation. Only these new PNGs were
+generated; all existing references remain unchanged.
+
+The three new `skew` references were visually reviewed at frames 0, 12 and
+23. They record the ordered shear geometry, changing animated shape, inherited
+mask, projected rounded card, particle spread and skewed soft-body rest pose.
+Only these new references were generated for the skew milestone.
 
 ## Determinism scope
 
@@ -86,3 +117,7 @@ its references.
 
 `tests/golden.sha256` is separate: it holds SHA-256 hashes of the PPM
 previews checked by `tests/run-integration.sh`.
+
+`lengths.xml` adds references for scoped relative lengths: mixed-unit motion,
+mask dimensions, partial/unsized groups, media, particles and prepared physics.
+The three new PNGs cover frames 0, 12 and 23; existing references are unchanged.

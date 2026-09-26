@@ -1,0 +1,80 @@
+<!-- Golden: relative group scopes, mixed-unit keys, host-local masks, and physics. -->
+<scene version="1.1">
+  <project width="128" height="96" fps="12" duration="2" seed="31"
+           background="#101824"/>
+  <assets>
+    <vector id="tile" shape="rect" width="16" height="12" fill="#F4BA64"
+            stroke="#FFFFFF" strokeWidth="1"/>
+  </assets>
+  <composition>
+    <group id="panel" x="6.25vw" y="6.25vh"
+           width="62.5vw" height="62.5vh"
+           anchorX="0%" anchorY="0%">
+      <mask type="rect" x="0%" y="0%"
+            width="100%" height="100%"/>
+      <shape id="animated" shape="rect" fill="#48C9BC"
+             x="25%" y="20%"
+             width="50%" height="40%"
+             anchorX="5%" anchorY="5%">
+        <mask type="rect" x="10%" y="25%"
+              width="75%" height="50%">
+          <animate property="width" defaultInterpolation="sine-in-out">
+            <key time="0" value="50%"/>
+            <key time="2" value="25vw"/>
+          </animate>
+        </mask>
+        <animate property="position.x" defaultInterpolation="catmull-rom">
+          <key time="0" value="25%"/>
+          <key time="1" value="37.5vw"/>
+          <key time="2" value="50vmin"/>
+        </animate>
+        <animate property="anchor.y" additive="true">
+          <key time="0" value="0"/><key time="2" value="6.25vh"/>
+        </animate>
+      </shape>
+      <layer id="media" asset="tile" x="62.5%" y="50%"
+             anchorX="5%" anchorY="5%">
+        <mask type="ellipse" x="0%" y="0%"
+              width="100%" height="100%"/>
+      </layer>
+      <group id="partial" width="25vw">
+        <shape id="partial-child" shape="ellipse" fill="#8195F0"
+               x="50%" y="50%"
+               width="25%" height="12.5vh"/>
+      </group>
+    </group>
+    <group id="scope" width="50%" height="50%">
+      <group id="unsized">
+        <shape id="frame-child" shape="rect" fill="#8195F0"
+               x="75%" y="25%"
+               width="12.5vmax" height="12.5vmin"/>
+      </group>
+    </group>
+    <particleEmitter id="spark" x="81.25vw" y="62.5vh"
+                     anchorX="0%" anchorY="0%"
+                     rate="12" lifetime="1" speed="8" size="3"
+                     color="#F4BA64" seed="47">
+      <mask type="rect" x="-25%" y="-25%"
+            width="50%" height="50%"/>
+    </particleEmitter>
+    <group id="bodies" width="50vw" height="50vh">
+      <shape id="a" shape="ellipse" x="25%" y="75vh"
+             width="12.5%" height="12.5vw" fill="#F4BA64">
+        <rigidBody velocityX="5"/>
+      </shape>
+      <shape id="b" shape="rect" x="75%" y="75vh"
+             width="12.5%" height="12.5vw" fill="#E77BA6">
+        <rigidBody type="static"/>
+      </shape>
+      <shape id="cloth" shape="rect" x="50vw" y="75vh"
+             width="25%" height="25%"
+             anchorX="6.25%" anchorY="6.25%" fill="#48C9BC">
+        <softBody rows="3" cols="3" stiffness="10" damping="0.2" pin="top"/>
+      </shape>
+    </group>
+  </composition>
+  <physics fixedStep="0.01" gravityY="10">
+    <constraint id="link" type="spring" a="a" b="b" stiffness="4"/>
+    <constraint id="pin" type="pin" a="a" x="16" y="64" stiffness="3"/>
+  </physics>
+</scene>

@@ -19,6 +19,7 @@ typedef struct {
     bool help;
     bool version;
     bool print_schema;
+    bool report_unsupported;
     bool verbose;
     bool metrics;
     bool override_resolution;

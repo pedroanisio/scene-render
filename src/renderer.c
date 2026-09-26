@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "scene_render/renderer.h"
+#include "compositing_internal.h"
 
 #include "scene_render/assets.h"
 #include "scene_render/audio.h"
@@ -848,6 +849,8 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
         return SR_ERR_ARGUMENT;
     }
     *metrics = (SrRenderMetrics){0};
+    SrStatus ready = sr_composite_scene_ready(scene, diag);
+    if (ready != SR_OK) return ready;
     if (scene->has_cards && scene->project.mode != SR_MODE_STANDARD) {
         sr_diag_error(diag, 0, "project", "mode",
                       "depth cards require mode standard; equirectangular and "
@@ -856,6 +859,12 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
     }
     if (options->validate_only) {
         return SR_OK;
+    }
+    if (!options->preview && !options->hash) {
+        const char *path = options->output_override
+                             ? options->output_override : scene->output.path;
+        SrStatus status = sr_encoder_validate_metadata(scene, path, diag);
+        if (status != SR_OK) return status;
     }
     double wall_start = sr_monotonic_seconds();
     uint64_t video_totals[4] = {0};
