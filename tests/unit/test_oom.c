@@ -249,7 +249,38 @@ static long replay_until_success(sr_test_ctx *t, const OomSpec *spec, void *cont
            "SR_ERR_XML %ld times; identical-result fallbacks %ld (%.1f s)\n", spec->what,
            n, by_status[SR_ERR_MEMORY], by_status[SR_ERR_XML], fallbacks,
            sr_monotonic_seconds() - start);
+    g_label = "";
     return n;
+}
+
+/* ---------------------------------------------------------- color parsing */
+
+static SrStatus color_parse_op(void *opaque) {
+    const char *text = opaque;
+    const SrColor sentinel = {0.2, 0.3, 0.4, 0.5};
+    SrColor parsed = sentinel;
+    SrStatus status = sr_parse_color_status(text, &parsed);
+    if (status != SR_OK && memcmp(&parsed, &sentinel, sizeof(parsed)) != 0)
+        return SR_ERR_ARGUMENT;
+    return status;
+}
+
+static void color_parse_survives_allocation_failures(sr_test_ctx *t) {
+    const OomSpec spec = {"decimal color", color_parse_op, NULL, NULL, NULL,
+                         {SR_ERR_MEMORY}};
+    char rgb[] = "0.1,0.2,0.3", rgba[] = "0.1,0.2,0.3,0.4";
+    CHECK_INT(t, replay_until_success(t, &spec, rgb), 1);
+    CHECK_INT(t, replay_until_success(t, &spec, rgba), 1);
+
+    SrColor parsed = {0.2, 0.3, 0.4, 0.5}, sentinel = parsed;
+    live_start();
+    g_label = "boolean color wrapper";
+    oom_arm(0);
+    bool ok = sr_parse_color(rgb, &parsed);
+    oom_disarm();
+    CHECK(t, !ok && oom_hit());
+    CHECK(t, memcmp(&parsed, &sentinel, sizeof(parsed)) == 0);
+    CHECK_INT(t, live_stop(), 0);
 }
 
 /* ---------------------------------------------------------------- loading */
@@ -564,6 +595,8 @@ static void injection_and_leak_check_work(sr_test_ctx *t) {
 
 const sr_test_case sr_tests_oom[] = {
     {"injection_and_leak_check_work", injection_and_leak_check_work},
+    {"color_parse_survives_allocation_failures",
+     color_parse_survives_allocation_failures},
     {"repeated_render_leaks_nothing", repeated_render_leaks_nothing},
     {"xml_load_survives_allocation_failures", xml_load_survives_allocation_failures},
     {"asset_load_survives_allocation_failures", asset_load_survives_allocation_failures},

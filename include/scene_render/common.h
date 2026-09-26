@@ -43,6 +43,8 @@ bool sr_parse_double(const char *text, double *value);
 bool sr_parse_u32(const char *text, uint32_t *value);
 bool sr_parse_u64(const char *text, uint64_t *value);
 bool sr_parse_bool(const char *text, bool *value);
+/* Leaves color unchanged on failure; decimal parsing may return SR_ERR_MEMORY. */
+SrStatus sr_parse_color_status(const char *text, SrColor *color);
 bool sr_parse_color(const char *text, SrColor *color);
 bool sr_id_valid(const char *text);
 char *sr_path_dirname(const char *path);

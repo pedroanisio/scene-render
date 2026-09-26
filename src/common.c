@@ -127,9 +127,9 @@ static bool sr_hex_byte(const char *text, double *value) {
     return true;
 }
 
-bool sr_parse_color(const char *text, SrColor *color) {
+SrStatus sr_parse_color_status(const char *text, SrColor *color) {
     if (!text || !color) {
-        return false;
+        return SR_ERR_ARGUMENT;
     }
     size_t length = strlen(text);
     if (text[0] == '#' && (length == 7 || length == 9)) {
@@ -138,15 +138,15 @@ bool sr_parse_color(const char *text, SrColor *color) {
             !sr_hex_byte(text + 3, &parsed.g) ||
             !sr_hex_byte(text + 5, &parsed.b) ||
             (length == 9 && !sr_hex_byte(text + 7, &parsed.a))) {
-            return false;
+            return SR_ERR_ARGUMENT;
         }
         *color = parsed;
-        return true;
+        return SR_OK;
     }
     double values[4] = {0.0, 0.0, 0.0, 1.0};
     char *copy = sr_strdup(text);
     if (!copy) {
-        return false;
+        return SR_ERR_MEMORY;
     }
     size_t count = 0;
     char *cursor = copy;
@@ -157,7 +157,7 @@ bool sr_parse_color(const char *text, SrColor *color) {
         }
         if (!sr_parse_double(cursor, &values[count])) {
             free(copy);
-            return false;
+            return SR_ERR_ARGUMENT;
         }
         ++count;
         cursor = next;
@@ -168,10 +168,14 @@ bool sr_parse_color(const char *text, SrColor *color) {
     }
     free(copy);
     if (!valid) {
-        return false;
+        return SR_ERR_ARGUMENT;
     }
     *color = (SrColor){values[0], values[1], values[2], values[3]};
-    return true;
+    return SR_OK;
+}
+
+bool sr_parse_color(const char *text, SrColor *color) {
+    return sr_parse_color_status(text, color) == SR_OK;
 }
 
 char *sr_path_dirname(const char *path) {
