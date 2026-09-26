@@ -98,7 +98,9 @@ the existing evaluator with the original scene time. This preserves global
 extrapolation endpoints and the actual neighbors needed for Hermite tangents.
 It costs O(log keys) time and constant stack memory, without copying all keys,
 allocating per frame or mutating a track. Zero/one/two-key tracks have explicit
-boundary coverage.
+boundary coverage. Relative-key tracks use the existing extended-animation
+time/value/clock bounds, even with legacy linear curves. Finalization recomputes
+the derived relative-key flag from current keys.
 
 First introduce that helper in an isolated, output-neutral refactor. Share
 the exact existing cyclic-time mapping between evaluation and neighborhood
@@ -143,10 +145,19 @@ their existing numeric copies and must not hold pointers into mutable table
 storage. Separate compositors have separate tables and can evaluate one
 immutable scene independently.
 
-Invisible/out-of-lifetime subtrees do not need animated transform or mask
-evaluation. Box propagation is independent of transforms and opacity, so
-the prepass can skip inactive descendants consistently with normal drawing.
-Frame-order tests reuse a compositor across shuffled times and output sizes
+Visibility, lifetime and opacity have distinct consumers. `sr_draw_children`
+evaluates every direct card sibling's pivot before any of those checks.
+Resolve x/y/anchors for these sort keys even for an inactive card under a drawn
+parent. Preserve card runs and lighting flush grouping: an inactive card must
+not be removed or assigned a substitute sort key.
+
+`sr_content_bounds` skips invisible/out-of-lifetime subtrees, but traverses
+zero-opacity descendants of a projective card, including their children.
+Those transforms and dimensions still require evaluated geometry even though
+drawing skips them. Masks are not used by this bounds traversal. Do not apply
+an opacity-based subtree skip to geometry required for bounds. Box propagation
+is independent of transforms and opacity. Frame-order tests reuse a compositor
+across shuffled times and output sizes
 and verify the authored units, keys and dimensions remain unchanged.
 
 ## Physics preparation and fingerprints
@@ -194,8 +205,12 @@ references. No new external file or environment input is introduced.
   neighborhood boundaries, and unitless versus converted-track equivalence.
 - Box fixtures: nested sized/unsized/partially sized groups, masks on each host,
   all transform axes, anchors, shape sizes, viewport output versus panorama,
-  and offscreen depth cards with effects/deformation. Group size alone must not
-  clip or scale its contents.
+  and offscreen depth cards with effects/deformation. Include hidden,
+  out-of-lifetime and zero-opacity cards among visible cards and 3D objects,
+  comparing against literal geometry without changing sorting/flush groups.
+  A tilted projective card with visible geometry and a large zero-opacity
+  child/group verifies that invisible drawing still contributes to bounds.
+  Group size alone must not clip or scale its contents.
 - Physics: relative base positions/dimensions/anchors, rigid and soft bodies,
   implicit and explicit pin/spring/distance rest lengths, changed frame/group
   size or units invalidating caches, cached/uncached output,
@@ -232,3 +247,8 @@ An SDK xmllint probe confirmed that relative spellings reject surrounding
 whitespace, plus signs and exponent notation, accept `.5` and `1.` decimal
 forms, and allow zero only on the signed length type. Unitless exponent
 numbers remain valid. No production changes are part of this design commit.
+
+A subsequent pre-implementation consumer audit and read-only follow-up also
+identified the inactive-card sorting and zero-opacity projective-bounds
+exceptions above. Their evaluation requirements and literal-reference tests
+are part of the geometry integration, not changes to the current draw path.

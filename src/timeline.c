@@ -31,6 +31,7 @@ SrStatus sr_track_add(SrTrack *track, SrKeyframe key) {
         track->capacity = capacity;
     }
     track->keys[track->count++] = key;
+    if (key.unit != SR_LENGTH_PIXELS) track->has_relative = true;
     if (key.curve > SR_CURVE_BEZIER || key.ease_in_set || key.ease_out_set)
         track->extended = true;
     return SR_OK;
@@ -43,7 +44,7 @@ static int sr_key_compare(const void *left, const void *right) {
 }
 
 bool sr_track_extended(const SrTrack *track) {
-    return track && (track->extended || track->additive ||
+    return track && (track->extended || track->has_relative || track->additive ||
         track->time_base != SR_TIME_COMPOSITION || track->clock_set ||
         track->extrapolate_before != SR_EXTRAPOLATE_HOLD ||
         track->extrapolate_after != SR_EXTRAPOLATE_HOLD);
@@ -64,12 +65,17 @@ SrStatus sr_track_finalize(SrTrack *track) {
         track->extrapolate_after > SR_EXTRAPOLATE_OFFSET ||
         track->time_base < SR_TIME_COMPOSITION || track->time_base > SR_TIME_NORMALIZED)
         return SR_ERR_XML;
+    track->has_relative = false;
     if (track->count > 1)
         qsort(track->keys, track->count, sizeof(*track->keys), sr_key_compare);
     for (size_t i = 0; i < track->count; ++i) {
         SrKeyframe *key = &track->keys[i];
         if (!isfinite(key->time) || !isfinite(key->value) ||
             !sr_curve_parameters_valid(key)) return SR_ERR_XML;
+        if (key->unit < SR_LENGTH_PIXELS || key->unit > SR_LENGTH_VMAX ||
+            (key->unit != SR_LENGTH_PIXELS &&
+             fabs(key->value) > SR_MAX_RELATIVE_LENGTH)) return SR_ERR_XML;
+        if (key->unit != SR_LENGTH_PIXELS) track->has_relative = true;
         if (i && fabs(key->time - track->keys[i - 1].time) < SR_MIN_KEY_SPACING)
             return SR_ERR_XML;
         if (key->curve > SR_CURVE_BEZIER || key->ease_in_set || key->ease_out_set)

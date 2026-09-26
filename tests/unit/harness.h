@@ -68,6 +68,7 @@ const char *sr_test_data_path(const char *relative);
 const char *sr_test_tmp_path(const char *name);
 
 extern const sr_test_case sr_tests_timeline[];
+extern const sr_test_case sr_tests_length[];
 extern const sr_test_case sr_tests_curves[];
 extern const sr_test_case sr_tests_geometry[];
 extern const sr_test_case sr_tests_compositor[];

@@ -2,6 +2,7 @@
 #define SCENE_RENDER_TIMELINE_H
 
 #include "scene_render/common.h"
+#include "scene_render/length.h"
 
 #define SR_MAX_TRACK_KEYS 65536u
 #define SR_MAX_SCENE_KEYS 1048576u
@@ -50,6 +51,7 @@ typedef struct {
     double time;
     double value;
     SrCurve curve;
+    SrLengthUnit unit;         /* pixels for ordinary numeric properties */
     double x1, y1, x2, y2;
     uint32_t steps;
     bool step_start;
@@ -70,6 +72,7 @@ typedef struct {
     bool additive;
     bool extended;             /* curve/handle extension, set by add/finalize */
     bool clock_set;
+    bool has_relative;         /* unit-bearing keys, set by add/finalize */
     double clock_scale, clock_offset; /* scene seconds -> track coordinate */
     double seconds_per_unit;   /* normalized tracks: local duration */
     double domain_start, domain_end; /* finite host interval, scene seconds */
@@ -78,6 +81,7 @@ typedef struct {
 typedef struct {
     double base;
     SrTrack track;
+    SrLengthUnit unit;         /* base unit; pixels for ordinary numbers */
 } SrAnimValue;
 
 void sr_track_free(SrTrack *track);

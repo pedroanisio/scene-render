@@ -28,12 +28,12 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | Item | State | Evidence still needed |
 |---|---|---|
 | B1-0 table dispatcher, E_PARTICLES | Implemented and reviewed | Batch merge |
-| B1-0 embedded 1.1, capability and version checks, report CLI | Implemented and reviewed | Performance check and batch merge |
+| B1-0 embedded 1.1, capability and version checks, report CLI | Implemented and reviewed | Batch merge; latest cumulative baseline check passes |
 | B1-0 root sections and multiple outputs | Still gated | Implement and enable alongside dependent items below |
 | B1-1 property registry | Committed `0dd2068`, reviewed and verified | Batch merge; Release/ASan/coverage 65/65, oracle 309 previews + 3 encodes |
 | B1-1 curves, handles, extrapolation, additive and timeBase | Implemented, reviewed and verified in animation worktree | Performance gate and batch merge |
 | B1-1 new animation hosts | Material/audio implemented, reviewed and verified | Performance and merge; new-node hosts alongside B1-4/B1-5 |
-| B1-2 relative lengths and parent-box evaluation | Design and neutral timeline prerequisite reviewed; feature in progress | All required hosts, per-frame evaluation, scoped percentages, docs and goldens |
+| B1-2 relative lengths and parent-box evaluation | Design, neutral timeline helper and typed animation core verified; geometry integration pending | All required hosts, per-frame evaluation, scoped percentages, docs and goldens |
 | B1-2 style tokens | Implemented, reviewed and verified | Batch merge |
 | B1-2 metadata/container tags | Implemented, reviewed and verified | Performance gate and batch merge |
 | B1-3 blend modes, skew, mattes, masks, adjustment nodes | Pending | Every listed mode/parameter, cycle checks, numerical tests, three new goldens |
@@ -205,3 +205,33 @@ samples. Coverage is 91.57% lines / 74.54% branches, floors 89.55% / 72.50%.
 Read-only review found no issues. Strict performance still fails: clear +4.5%,
 total -16.9%, with noisy stages. The separate user render had exited by the
 final process check. The baseline and old image hashes are unchanged. See `docs/reviews/b1-length-neighborhood.md`.
+
+## Typed length core
+
+The core retains unit tags on bases/keys, parses all five relative suffixes
+with bounded grammar, and converts a constant-size key neighborhood before
+interpolation. Static conversion and mixed-unit curves use output-frame or
+parent-box references, preserve authored values and allocate nothing. XML
+capabilities remain gated until geometry and physics consumers are integrated.
+
+Read-only review found a stale relative-track flag after re-finalization and
+unbounded legacy-curve key times on new relative tracks. Both were reproduced
+as failed tests and fixed; follow-up found no remaining issues. Final SDK
+Release, ASan/UBSan and coverage pass 69/69 each, including all 18 golden
+frame-order checks. Ten length cases include 320 parser mutations plus
+truncations, bounds, failure outputs and independent literal-track comparisons.
+The oracle against `7df7caa` matches 309 previews, three encodes and two expected
+rejections. Coverage is 91.64% lines / 74.84% branches; floors 89.60% / 72.80%.
+
+The latest cumulative strict 2% baseline check **passes**: clear +1.9%, total
+-17.5%, all other material stages below baseline. Stages are still marked
+noisy, so this does not establish a stable speedup. Earlier failed measurements
+above are retained as history; this passing result supersedes their open
+baseline-check status for the current tree. New visible features still need
+their own performance verification. The original baseline and all old hashes
+remain unchanged. See `docs/reviews/b1-length-core.md`.
+
+The next geometry integration must preserve two reviewed consumer exceptions:
+hidden card pivots still sort, and zero-opacity projective-card descendants
+still contribute bounds. Their literal-reference and frame-order cases are
+required by the updated relative-length design.
