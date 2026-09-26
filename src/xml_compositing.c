@@ -114,6 +114,10 @@ bool sr_xml_parse_mask(ParseContext *ctx, const XML_Char **attrs, SrMask *mask) 
                          "expected a non-negative innerRadius", &mask->inner_radius_set))
         return false;
     mask->opacity_set = true;
+    /* An omitted innerRadius follows half the evaluated outer radius; a
+     * later innerRadius track (possibly additive) uses half the static outer
+     * radius as its base. */
+    if (!mask->inner_radius_set) mask->inner_radius.base = 0.5 * mask->radius.base;
     if (mask->inner_radius_set && mask->type != SR_MASK_STAR) {
         sr_xml_fail(ctx, "mask", "innerRadius", "innerRadius is valid only for star masks");
         return false;

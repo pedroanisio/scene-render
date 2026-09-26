@@ -335,6 +335,33 @@ static void *scratch(SrCompositeResources *resources, uint64_t count) {
     return sr_composite_alloc(resources, (size_t)count, sizeof(float), count);
 }
 
+static double clamp_to(double value, double high) {
+    return value < 0.0 ? 0.0 : value > high ? high : value;
+}
+
+/* Conservative accumulation work of every edge of `path` translated by
+ * (dx, dy) on a w x h grid: accumulate_edge visits at most ceil(|dy|) + 2
+ * clipped rows and, across them, at most |dx| + 3 columns per row plus the
+ * columns between; charge 16 units per row and 4 per column step. */
+static uint64_t edge_work(const SrPreparedPath *path, double dx, double dy,
+                          uint64_t w, uint64_t h) {
+    uint64_t total = 0;
+    for (size_t c = 0; c < path->count; ++c) {
+        const SrPathContour *contour = &path->items[c];
+        for (size_t i = 0; i < contour->count; ++i) {
+            const SrPathPoint *a = &contour->points[i];
+            const SrPathPoint *b = &contour->points[(i + 1) % contour->count];
+            double ya = clamp_to(a->y + dy, (double)h), yb = clamp_to(b->y + dy, (double)h);
+            double xa = clamp_to(a->x + dx, (double)w), xb = clamp_to(b->x + dx, (double)w);
+            uint64_t rows = (uint64_t)ceil(fabs(yb - ya)) + 2;
+            if (rows > h + 1) rows = h + 1;
+            uint64_t columns = (uint64_t)ceil(fabs(xb - xa)) + 3 * rows;
+            total += 16 * rows + 4 * columns + 48;  /* up to 3 clipped pieces */
+        }
+    }
+    return total;
+}
+
 static bool raster_shape(SrCompositeResources *resources, const MaskValue *value,
                           Rect q, float *out) {
     const SrMask *mask = value->mask;
@@ -377,9 +404,11 @@ static bool raster_shape(SrCompositeResources *resources, const MaskValue *value
         path = &local;
         points = count;
     }
-    /* Each edge visits at most h + 1 cell rows; resolve scans every cell. */
+    /* Resolve scans every cell; the edge charge covers each edge's clipped
+     * row span and the columns it crosses in those rows. */
     float *cells = NULL;
-    bool ok = sr_composite_work(resources, points, 16 * (h + 2)) &&
+    bool ok = sr_composite_work(resources, points, 8) &&
+              sr_composite_work(resources, edge_work(path, dx, dy, w, h), 1) &&
               sr_composite_work(resources, (w + 2) * h, 4) &&
               (cells = scratch(resources, (w + 2) * h)) != NULL;
     if (ok)
