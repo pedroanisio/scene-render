@@ -4,6 +4,7 @@
 #include "scene_render/diagnostics.h"
 #include "scene_render/scene.h"
 #include "scene_render/property.h"
+#include "scene_render/paint.h"
 
 #include <expat.h>
 
@@ -14,7 +15,7 @@ typedef enum {
     E_MATERIAL, E_LIGHTS, E_LIGHT, E_EFFECTS, E_EFFECT, E_PHYSICS,
     E_FORCE_FIELD, E_CONSTRAINT, E_PARTICLES, E_RIGID_BODY, E_SOFT_BODY,
     E_DEFORM, E_MODIFIER, E_OBJECT3D, E_POINT, E_STYLES, E_TOKEN,
-    E_METADATA, E_META
+    E_METADATA, E_META, E_PAINTS, E_PAINT, E_STOP
 } ElementKind;
 
 typedef struct {
@@ -31,6 +32,8 @@ typedef struct {
     SrMask *mask;
     SrForceField *field;
     SrAnimValue *point;         /* mesh-warp point: [0] = x, [1] = y */
+    SrPaint *paint;             /* gradient; valid until the next paint */
+    SrGradientStop *stop;       /* stop; valid until the next sibling stop */
     const SrProperty *property; /* animate/key: immutable registry entry */
     SrAnimColor *color_anim;    /* animate/key: target color track */
     SrCurve curve;
@@ -59,6 +62,7 @@ typedef struct {
     bool seen_lights;
     bool seen_effects;
     bool seen_physics;
+    bool seen_paints;
 } ParseContext;
 
 size_t sr_xml_line(ParseContext *ctx);
@@ -128,6 +132,28 @@ bool sr_xml_anim_length_attr(ParseContext *ctx, const char *element,
                               const XML_Char **attrs, const char *attribute,
                               SrAnimValue *value, bool positive);
 bool sr_xml_finish_animation(ParseContext *ctx, ParseFrame *frame);
+
+/* B1-4 (xml_shapes.c). */
+extern const char *const sr_xml_shape_attribute_names[];
+extern const size_t sr_xml_shape_attribute_count;
+bool sr_xml_parse_paint_ref(ParseContext *ctx, const char *element,
+                            const char *attribute, const char *text,
+                            SrPaintRef *ref);
+bool sr_xml_parse_shape(ParseContext *ctx, const char *name,
+                        const XML_Char **attrs, SrNode *node);
+bool sr_xml_vector_shape_kind(const char *text, SrShapeType *type);
+bool sr_xml_parse_vector_paint(ParseContext *ctx, const XML_Char **attrs,
+                               SrAsset *asset, const char *attribute,
+                               SrColor *color);
+bool sr_xml_parse_vector_style(ParseContext *ctx, const XML_Char **attrs,
+                               SrAsset *asset);
+bool sr_xml_parse_background(ParseContext *ctx, const char *text);
+void sr_xml_start_linear_gradient(ParseContext *ctx, const XML_Char **attrs);
+void sr_xml_start_radial_gradient(ParseContext *ctx, const XML_Char **attrs);
+void sr_xml_start_conic_gradient(ParseContext *ctx, const XML_Char **attrs);
+void sr_xml_start_stop(ParseContext *ctx, const XML_Char **attrs);
+bool sr_xml_resolve_shapes(ParseContext *ctx);
+bool sr_xml_resolve_shape_node(ParseContext *ctx, SrNode *node);
 
 #define SR_XML_FAIL_RETURN(context, element, attribute, message)               \
     do {                                                                       \

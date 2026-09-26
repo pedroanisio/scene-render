@@ -110,7 +110,8 @@ typedef struct {
 #define NODES (P(E_GROUP) | P(E_LAYER) | P(E_PARTICLES))
 #define ANIM_HOSTS (NODES | P(E_CAMERA) | P(E_MASK) | P(E_LIGHT) | \
                     P(E_EFFECT) | P(E_MODIFIER) | P(E_OBJECT3D) | \
-                    P(E_FORCE_FIELD) | P(E_POINT) | P(E_MATERIAL) | P(E_AUDIO_TRACK))
+                    P(E_FORCE_FIELD) | P(E_POINT) | P(E_MATERIAL) | P(E_AUDIO_TRACK) | \
+                    P(E_PAINT) | P(E_STOP))
 #define ENTRY(name, parents, handler, kind, push) \
     {name, parents, handler, kind, 0, 10, true, push}
 #define SECTION(name, handler, kind, seen) \
@@ -151,6 +152,15 @@ static const ElementDispatch dispatch[] = {
     ENTRY("text", P(E_ASSETS), sr_xml_start_text, E_TEXT, true),
     ENTRY("vector", P(E_ASSETS), sr_xml_start_vector, E_VECTOR, true),
     ENTRY("mesh", P(E_ASSETS), sr_xml_start_mesh, E_MESH, true),
+    {"paints", P(E_SCENE), NULL, E_PAINTS, offsetof(ParseContext, seen_paints),
+     11, true, true},
+    {"linearGradient", P(E_PAINTS), sr_xml_start_linear_gradient, E_PAINT, 0,
+     11, true, false},
+    {"radialGradient", P(E_PAINTS), sr_xml_start_radial_gradient, E_PAINT, 0,
+     11, true, false},
+    {"conicGradient", P(E_PAINTS), sr_xml_start_conic_gradient, E_PAINT, 0,
+     11, true, false},
+    {"stop", P(E_PAINT), sr_xml_start_stop, E_STOP, 0, 11, true, false},
     SECTION("materials", NULL, E_MATERIALS, seen_materials),
     ENTRY("material", P(E_MATERIALS), sr_xml_start_material, E_MATERIAL, false),
     SECTION("composition", NULL, E_COMPOSITION, seen_composition),

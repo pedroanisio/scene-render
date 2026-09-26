@@ -140,8 +140,12 @@ void sr_xml_start_text(ParseContext *ctx, const XML_Char **attrs) {
 
 void sr_xml_start_vector(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"id", "shape", "path", "width", "height", "fill",
-                                    "fillRule", "stroke", "strokeWidth"};
-    if (!sr_xml_attrs_allowed(ctx, "vector", attrs, allowed, 9)) return;
+                                    "fillRule", "stroke", "strokeWidth", "radius",
+                                    "points", "innerRadius", "strokeCap",
+                                    "strokeJoin", "miterLimit", "dash",
+                                    "dashOffset", "strokePosition", "paintOrder"};
+    if (!sr_xml_attrs_allowed(ctx, "vector", attrs, allowed,
+                              sizeof(allowed) / sizeof(allowed[0]))) return;
     const char *id = sr_xml_required(ctx, "vector", attrs, "id");
     const char *shape = sr_xml_required(ctx, "vector", attrs, "shape");
     const char *width = sr_xml_required(ctx, "vector", attrs, "width");
@@ -153,10 +157,9 @@ void sr_xml_start_vector(ParseContext *ctx, const XML_Char **attrs) {
     asset->source_line = sr_xml_line(ctx);
     asset->id = sr_strdup(id);
     if (!asset->id) SR_XML_FAIL_RETURN(ctx, "vector", NULL, "out of memory");
-    if (strcmp(shape, "rect") == 0) asset->vector_shape = SR_SHAPE_RECT;
-    else if (strcmp(shape, "ellipse") == 0) asset->vector_shape = SR_SHAPE_ELLIPSE;
-    else if (strcmp(shape,"path")==0) asset->vector_shape=SR_SHAPE_PATH;
-    else SR_XML_FAIL_RETURN(ctx,"vector","shape","expected rect, ellipse, or path");
+    if (!sr_xml_vector_shape_kind(shape, &asset->vector_shape))
+        SR_XML_FAIL_RETURN(ctx, "vector", "shape", "expected rect, ellipse, path, "
+                           "rounded-rect, polygon, star or line");
     const char *path=sr_xml_attr(attrs,"path");
     if(asset->vector_shape==SR_SHAPE_PATH){
         if(!path)SR_XML_FAIL_RETURN(ctx,"vector","path","path is required for shape=path");
@@ -170,22 +173,20 @@ void sr_xml_start_vector(ParseContext *ctx, const XML_Char **attrs) {
     if (!sr_parse_u32(width, &asset->width) || !asset->width ||
         !sr_parse_u32(height, &asset->height) || !asset->height)
         SR_XML_FAIL_RETURN(ctx, "vector", "width/height", "expected positive integers");
-    const char *fill = sr_xml_attr(attrs, "fill");
-    if (fill && !sr_xml_parse_color(ctx, "vector", "fill", fill, &asset->color))
-        SR_XML_FAIL_RETURN(ctx, "vector", "fill", "invalid color");
+    if (!sr_xml_parse_vector_paint(ctx, attrs, asset, "fill", &asset->color)) return;
     const char *rule = sr_xml_attr(attrs, "fillRule");
     if (rule) {
         if (strcmp(rule, "evenodd") == 0) asset->vector_fill_rule = SR_FILL_EVENODD;
         else if (strcmp(rule, "nonzero") == 0) asset->vector_fill_rule = SR_FILL_NONZERO;
         else SR_XML_FAIL_RETURN(ctx, "vector", "fillRule", "expected nonzero or evenodd");
     }
-    const char *stroke = sr_xml_attr(attrs, "stroke");
-    if (stroke && !sr_xml_parse_color(ctx, "vector", "stroke", stroke, &asset->vector_stroke))
-        SR_XML_FAIL_RETURN(ctx, "vector", "stroke", "invalid color");
+    if (!sr_xml_parse_vector_paint(ctx, attrs, asset, "stroke", &asset->vector_stroke))
+        return;
     if (!decimal(ctx, "vector", attrs, "strokeWidth", &asset->vector_stroke_width))
         return;
     if (asset->vector_stroke_width < 0.0)
         SR_XML_FAIL_RETURN(ctx, "vector", "strokeWidth", "expected a non-negative width");
+    sr_xml_parse_vector_style(ctx, attrs, asset);
 }
 
 void sr_xml_start_mesh(ParseContext *ctx, const XML_Char **attrs) {

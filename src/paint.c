@@ -7,6 +7,7 @@
 #include "scene_render/color.h"
 #include "scene_render/parallel.h"
 #include "scene_render/random.h"
+#include "vector_path_internal.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -68,6 +69,60 @@ uint64_t sr_paint_dither_key(const char *id, uint64_t project_seed) {
     hash = sr_fnv1a64(hash, &zero, 1);
     hash = sr_fnv1a64(hash, domain, sizeof(domain) - 1);
     return sr_random_mix64(hash ^ project_seed);
+}
+
+/* ---- shape and vector styles ------------------------------------------ */
+
+void sr_stroke_style_init(SrStrokeStyle *style) {
+    *style = (SrStrokeStyle){.cap = SR_LINE_CAP_BUTT, .join = SR_LINE_JOIN_MITER,
+                             .miter_limit = 4.0, .position = SR_STROKE_CENTER,
+                             .order = SR_PAINT_FILL_STROKE};
+}
+
+void sr_shape_style_init(SrShapeStyle *style) {
+    *style = (SrShapeStyle){.fill_rule = SR_FILL_NONZERO, .points = 5,
+                            .trim_mode = SR_TRIM_SIMULTANEOUS};
+    style->trim_end.base = 1.0;
+    sr_stroke_style_init(&style->stroke);
+}
+
+void sr_stroke_style_free(SrStrokeStyle *style) {
+    if (!style) return;
+    free(style->dash);
+    sr_track_free(&style->dash_offset.track);
+    style->dash = NULL;
+    style->dash_count = 0;
+}
+
+void sr_paint_ref_free(SrPaintRef *ref) {
+    if (!ref) return;
+    free(ref->id);
+    *ref = (SrPaintRef){0};
+}
+
+void sr_shape_style_free(SrShapeStyle *style) {
+    if (!style) return;
+    SrAnimValue *values[] = {&style->radius, &style->inner_radius,
+        &style->outer_radius, &style->inner_roundness, &style->outer_roundness,
+        &style->trim_start, &style->trim_end, &style->trim_offset};
+    for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); ++i)
+        sr_track_free(&values[i]->track);
+    if (style->path) {
+        sr_prepared_path_free(style->path);
+        free(style->path);
+        style->path = NULL;
+    }
+    sr_stroke_style_free(&style->stroke);
+    sr_paint_ref_free(&style->fill_paint);
+    sr_paint_ref_free(&style->stroke_paint);
+}
+
+void sr_vector_ext_free(SrVectorExtension *ext) {
+    if (!ext) return;
+    sr_stroke_style_free(&ext->stroke);
+    sr_paint_ref_free(&ext->fill_paint);
+    sr_paint_ref_free(&ext->stroke_paint);
+    free(ext);
 }
 
 /* ---- Oklab (Ottosson 2020, https://bottosson.github.io/posts/oklab/) --- */
@@ -473,14 +528,13 @@ SrStatus sr_paint_fill_frame(const SrPaint *paint, const SrProject *project,
                              double time, SrFrame *frame, unsigned threads,
                              SrDiagnostics *diag) {
     if (!frame || !frame->px) return SR_ERR_ARGUMENT;
-    SrPaintEval *eval = sr_alloc(sizeof(*eval));
-    if (!eval) return SR_ERR_MEMORY;
+    /* On the calling thread's stack: the fill allocates nothing. */
+    SrPaintEval eval;
     SrStatus status = sr_paint_eval(paint, project, time, frame->width,
-                                    frame->height, eval, diag);
+                                    frame->height, &eval, diag);
     if (status == SR_OK) {
-        FillJob job = {eval, frame};
+        FillJob job = {&eval, frame};
         status = sr_parallel_for(frame->height, threads, fill_rows, &job);
     }
-    free(eval);
     return status;
 }

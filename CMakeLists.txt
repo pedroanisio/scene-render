@@ -90,6 +90,7 @@ set(SCENE_RENDER_SOURCES
     src/compositor_resources.c
     src/compositor_evaluation.c
     src/compositor_geometry.c
+    src/compositor_shape.c
     src/camera.c
     src/lighting.c
     src/effects.c
@@ -109,6 +110,7 @@ set(SCENE_RENDER_SOURCES
     src/xml_audio.c
     src/xml_camera.c
     src/xml_visual.c
+    src/xml_shapes.c
     src/xml_physics.c
     src/xml_styles.c
     src/xml_metadata.c

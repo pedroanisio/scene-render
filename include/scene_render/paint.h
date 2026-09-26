@@ -107,6 +107,16 @@ bool sr_paint_parameter(const SrPaintEval *eval, double x, double y, double *t);
 void sr_oklab_from_linear_srgb(const double rgb[3], double lab[3]);
 void sr_linear_srgb_from_oklab(const double lab[3], double rgb[3]);
 
+/* Schema defaults of a shape style (nonzero fill, miter 4, 5 points,
+ * trimEnd 1, midpoint conventions); `extended` stays false. */
+void sr_shape_style_init(SrShapeStyle *style);
+void sr_stroke_style_init(SrStrokeStyle *style);
+/* Free owned storage; the descriptors stay valid and empty. */
+void sr_shape_style_free(SrShapeStyle *style);
+void sr_stroke_style_free(SrStrokeStyle *style);
+void sr_paint_ref_free(SrPaintRef *ref);
+void sr_vector_ext_free(SrVectorExtension *ext);
+
 /* Fills `frame` with the paint evaluated for the frame box, row-parallel. */
 SrStatus sr_paint_fill_frame(const SrPaint *paint, const SrProject *project,
                              double time, SrFrame *frame, unsigned threads,

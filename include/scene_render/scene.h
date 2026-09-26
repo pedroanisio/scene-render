@@ -314,6 +314,7 @@ typedef struct {
     bool inner_radius_set, outer_radius_set;  /* attribute or track */
     SrAnimValue inner_roundness, outer_roundness;
     struct SrPreparedPath *path;  /* owned, immutable after loading */
+    double path_bounds[4];      /* x0 y0 x1 y1 of the prepared path */
     SrStrokeStyle stroke;
     SrAnimValue trim_start, trim_end, trim_offset;
     SrTrimMode trim_mode;
