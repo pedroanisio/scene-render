@@ -6,6 +6,7 @@
 #include "schema_data.h"
 #include "xml_schema.h"
 #include "xml_capabilities.h"
+#include "xml_styles.h"
 
 #include <libxml/parser.h>
 #include <libxml/tree.h>
@@ -196,12 +197,13 @@ static SrStatus validate_document(xmlDocPtr doc, SrDiagnostics *diag) {
 
 SrStatus sr_xml_schema_check(const char *data, size_t size, const char *name,
                              SrDiagnostics *diag, SrSchemaDeferral *deferral) {
-    return sr_xml_schema_check_profile(data, size, name, diag, deferral, false);
+    return sr_xml_schema_check_profile(data, size, name, diag, deferral, false, NULL);
 }
 
 SrStatus sr_xml_schema_check_profile(const char *data, size_t size,
                                     const char *name, SrDiagnostics *diag,
-                                    SrSchemaDeferral *deferral, bool report_all) {
+                                    SrSchemaDeferral *deferral, bool report_all,
+                                    SrScene *scene) {
     *deferral = (SrSchemaDeferral){0};
     if (!data || size > (size_t)INT_MAX) return SR_ERR_ARGUMENT;
     xmlExternalEntityLoader previous = xmlGetExternalEntityLoader();
@@ -245,6 +247,8 @@ SrStatus sr_xml_schema_check_profile(const char *data, size_t size,
         status = validate_document(doc, diag);
         if (status == SR_OK)
             status = sr_xml_check_capabilities(doc, diag, report_all);
+        if (status == SR_OK && scene)
+            status = sr_xml_prepare_styles(doc, scene, diag);
     }
     xmlFreeDoc(doc);
     xmlFreeParserCtxt(context);

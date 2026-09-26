@@ -175,7 +175,8 @@ void sr_xml_start_project(ParseContext *ctx, const XML_Char **attrs) {
         SR_XML_FAIL_RETURN(ctx, "project", "workingColorSpace",
                            "expected srgb, rec709, display-p3, or rec2020");
     if ((value = sr_xml_attr(attrs, "background")) &&
-        !sr_parse_color(value, &ctx->scene->project.background))
+        !sr_xml_parse_color(ctx, "project", "background", value,
+                            &ctx->scene->project.background))
         SR_XML_FAIL_RETURN(ctx, "project", "background",
                            "expected #RRGGBB, #RRGGBBAA, or r,g,b,a");
     if ((value = sr_xml_attr(attrs, "mode"))) {
@@ -470,7 +471,7 @@ void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs) {
                            "expected a non-negative time in seconds");
     SrColor color_value = {0, 0, 0, 0};
     if (p->color_anim) {
-        if (!sr_parse_color(value_text, &color_value))
+        if (!sr_xml_parse_color(ctx, "key", "value", value_text, &color_value))
             SR_XML_FAIL_RETURN(ctx, "key", "value",
                                "expected a color (#RRGGBB, #RRGGBBAA, or r,g,b[,a])");
     } else if (!sr_parse_double(value_text, &key.value))

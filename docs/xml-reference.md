@@ -88,6 +88,55 @@ The 1.0 subset of the root sequence is:
 Runtime paths inside XML are relative to the XML file. CLI output/preview paths
 are relative to the current working directory.
 
+## Style tokens
+
+In version 1.1, an optional `styles` section after `project` declares tokens:
+
+```xml
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="2"
+           background="var(--background)"/>
+  <styles>
+    <token name="background" value="var(--ink)"/>
+    <token name="ink" value="#102030"/>
+    <token name="accent" value="0.2,0.6,1,1"/>
+  </styles>
+  <composition>
+    <shape id="box" shape="rect" width="80" height="60" fill="var(--accent)">
+      <animate property="fill">
+        <key time="0" value="var(--accent)"/>
+        <key time="2" value="var(--ink)"/>
+      </animate>
+    </shape>
+  </composition>
+</scene>
+```
+
+Names are case-sensitive and contain ASCII letters, digits, `_` or `-`.
+The two hyphens in `var(--name)` are reference syntax: `var(--ink)` looks up
+`name="ink"`, while `var(----ink)` looks up `name="--ink"`. References must
+use the exact form without surrounding whitespace or fallback arguments.
+
+Aliases and forward references are resolved when the scene loads, including
+references in `project`, which precedes `styles`. Duplicate names, unknown
+references, cycles and malformed references fail the load with the declaration
+or consumer's line, element and attribute. Every alias is validated even if
+unused. Values are strings; an unused numeric or empty token is legal, but
+a color consumer must resolve to a valid color. Numeric animation keys do not
+accept token references.
+
+Tokens work in project backgrounds, text colors, vector/shape fills and
+strokes, particle colors, material base/emissive colors, light/effect colors,
+and animated color keys on supported hosts. Text styles, paint references and
+other unsupported attributes retain their capability diagnostics.
+
+Limits are 4096 tokens, 128 bytes per name, 4096 bytes per value, and 64 alias
+hops, independent of declaration order. Literal colors have zero alias hops.
+Only the resolved numeric color reaches rendering; there is no per-frame
+lookup or mutable token state. A token scene renders identically to the
+corresponding literal-color scene. The original XML bytes, including token
+declarations, remain part of the resume fingerprint.
+
 ## Project and output
 
 `project` requires positive `width`, `height`, `duration` (at most 1e6 s),

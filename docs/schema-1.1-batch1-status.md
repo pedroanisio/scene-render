@@ -5,7 +5,8 @@ This file records evidence and outstanding work; partial infrastructure is
 not batch completion.
 
 Loader worktree: `/tmp/scene-render-b1`, branch `b1-0-loader`.
-Active animation worktree: `/tmp/scene-render-b1-anim`, branch `b1-1-animation`.
+Animation worktree: `/tmp/scene-render-b1-anim`, branch `b1-1-animation`.
+Active B1-2 worktree: `/tmp/scene-render-b1-lengths`, branch `b1-2-lengths`.
 Authoritative pre-batch base: `5b7dca1` (main advanced during initial setup).
 Preserved reference executable: `/tmp/scene-render-b1-reference`.
 Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
@@ -33,7 +34,8 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | B1-1 curves, handles, extrapolation, additive and timeBase | Implemented, reviewed and verified in animation worktree | Performance gate and batch merge |
 | B1-1 new animation hosts | Material/audio implemented, reviewed and verified | Performance and merge; new-node hosts alongside B1-4/B1-5 |
 | B1-2 relative lengths and parent-box evaluation | Pending | All required hosts, per-frame evaluation, scoped percentages, docs and goldens |
-| B1-2 tokens and metadata/container tags | Pending | Load-time resolution, unknown-token errors, tags and embedMetadata tests |
+| B1-2 style tokens | Implemented, reviewed and verified | Batch merge |
+| B1-2 metadata/container tags | Design reviewed; implementation pending | Tags, embedMetadata, reserved keys, resume and container tests |
 | B1-3 blend modes, skew, mattes, masks, adjustment nodes | Pending | Every listed mode/parameter, cycle checks, numerical tests, three new goldens |
 | B1-4 shapes, stroke styles, trims, vector constructors | Pending | Geometry/arc lengths/coverage, all listed styles and shapes, golden |
 | B1-4 gradients and paints | Pending | Coordinates, focal/aspect/spread/rotation/stops, interpolation, dither, every paint host, golden |
@@ -120,3 +122,33 @@ remains open; see `docs/reviews/b1-animation-hosts.md`.
 The host slice's strict performance check failed at total +126.1%, with all
 stages noisy during a separate user render using roughly eight CPU cores.
 No baseline was updated and no merge gate was waived.
+
+## Style tokens
+
+The B1-2 root-section design is committed in `7a0adb6`. Its checked color
+parser prerequisite is committed in `160b8c1`, with full 66/66 Release,
+ASan and coverage runs and an unchanged byte oracle. See
+`docs/design/b1-2-styles-metadata.md` and `docs/reviews/b1-color-status.md`.
+
+Style tokens now resolve at load time, including forward project-background
+references, aliases and animated color keys. All 13 existing color-consumer
+contexts use the shared helper. Names, values, counts and alias depth are
+bounded; missing references, cycles and duplicates fail with source positions.
+The original XML remains the resume fingerprint input. Rendering performs no
+token lookups or mutations.
+
+Targeted tests cover every color host, exact limits, declaration-order
+independence, 216 seeded parser mutations and warm/shuffled literal-versus-token
+renders at 1/4 threads. OOM replay covers 120 allocations with no leaks.
+Three new token golden references are byte-identical copies of the existing
+material-animation references, visually reviewed at frames 0, 12 and 20.
+The reviewer found one frame-order tool issue: inserting an output before
+styles violated schema ordering. The failing regression was reproduced and
+fixed; follow-up review found no remaining issues. Release, ASan/UBSan and
+coverage each passed 67/67 CTests, including frame order for all 18 goldens.
+The byte oracle matched all 309 previews, three encodes and two expected
+rejections against `160b8c1`. Coverage reached 91.50% lines / 74.11% branches;
+floors rise to 89.50% / 72.10%. See `docs/reviews/b1-styles.md`.
+
+Metadata and relative lengths remain required B1-2 work. The batch's strict
+performance gate remains open, with its original baseline unchanged.

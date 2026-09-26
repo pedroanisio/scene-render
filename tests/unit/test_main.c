@@ -47,7 +47,7 @@ int main(int argc, char **argv)
         {"compositor", sr_tests_compositor}, {"color", sr_tests_color},
         {"vector", sr_tests_vector},     {"mesh", sr_tests_mesh},
         {"scene", sr_tests_scene}, {"property", sr_tests_property},       {"xml", sr_tests_xml},
-        {"profile", sr_tests_profile},
+        {"profile", sr_tests_profile}, {"styles", sr_tests_styles},
         {"camera", sr_tests_camera},     {"physics", sr_tests_physics},
         {"blend", sr_tests_blend},       {"group", sr_tests_group},
         {"raster", sr_tests_raster},     {"mask", sr_tests_mask},

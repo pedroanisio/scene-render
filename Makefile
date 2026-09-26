@@ -82,13 +82,13 @@ CORE_SOURCES := src/common.c src/card.c src/parallel.c src/color.c src/raster.c 
 	src/xml_elements.c src/xml_animation.c src/xml_nodes.c src/xml_resolve.c src/xml_audio.c \
 	src/xml_camera.c \
 	src/xml_visual.c \
-	src/xml_physics.c src/xml_schema.c src/xml_capabilities.c src/cli_args.c
+	src/xml_physics.c src/xml_styles.c src/xml_schema.c src/xml_capabilities.c src/cli_args.c
 # The embedded XSD (generated below) is part of the core library.
 CORE_OBJECTS := $(CORE_SOURCES:src/%.c=$(BUILD)/%.o) $(BUILD)/schema_data.o
 APP_OBJECT := $(BUILD)/main.o
 TEST_SOURCES := $(sort $(wildcard tests/unit/*.c))
 TEST_OBJECTS := $(TEST_SOURCES:tests/unit/%.c=$(BUILD)/unit/%.o)
-UNIT_SUITES := timeline curves geometry compositor color vector mesh scene property xml profile \
+UNIT_SUITES := timeline curves geometry compositor color vector mesh scene property xml profile styles \
 	camera physics blend group raster mask path image encode encode_faults \
 	audio video fx anim_color particles deform shadow text args resume depth \
 	$(P7_UNIT_SUITES)

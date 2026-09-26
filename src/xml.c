@@ -137,6 +137,9 @@ static void start_particles(ParseContext *ctx, const XML_Char **attrs) {
  * sections and asset declarations are pushed here after their handler. */
 static const ElementDispatch dispatch[] = {
     SECTION("project", sr_xml_start_project, E_PROJECT, seen_project),
+    {"styles", P(E_SCENE), NULL, E_STYLES, offsetof(ParseContext, seen_styles),
+     11, true, true},
+    {"token", P(E_STYLES), sr_xml_start_token, E_TOKEN, 0, 11, true, true},
     SECTION("output", sr_xml_start_output, E_OUTPUT, seen_output),
     SECTION("assets", NULL, E_ASSETS, seen_assets),
     ENTRY("image", P(E_ASSETS), sr_xml_start_image, E_IMAGE, true),
@@ -399,7 +402,7 @@ SrStatus sr_scene_load_xml_report(const char *path, SrScene *scene,
     }
     SrSchemaDeferral deferral;
     status = sr_xml_schema_check_profile(data, size, path, diag, &deferral,
-                                         report_unsupported);
+                                         report_unsupported, scene);
     if (status != SR_OK) {
         free(data);
         sr_scene_free(scene);

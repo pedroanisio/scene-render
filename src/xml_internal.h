@@ -13,7 +13,7 @@ typedef enum {
     E_KEY, E_AUDIO_MIX, E_AUDIO_TRACK, E_SCENE360, E_CAMERA, E_MATERIALS,
     E_MATERIAL, E_LIGHTS, E_LIGHT, E_EFFECTS, E_EFFECT, E_PHYSICS,
     E_FORCE_FIELD, E_CONSTRAINT, E_PARTICLES, E_RIGID_BODY, E_SOFT_BODY,
-    E_DEFORM, E_MODIFIER, E_OBJECT3D, E_POINT
+    E_DEFORM, E_MODIFIER, E_OBJECT3D, E_POINT, E_STYLES, E_TOKEN
 } ElementKind;
 
 typedef struct {
@@ -46,6 +46,7 @@ typedef struct {
     size_t key_count;
     bool failed;
     bool out_of_memory;         /* the failure was an allocation (exit 8) */
+    bool seen_styles;
     bool seen_project;
     bool seen_output;
     bool seen_assets;
@@ -77,6 +78,10 @@ bool sr_xml_parse_double_attr(ParseContext *ctx, const char *element,
                               double *target);
 bool sr_xml_parse_node_common(ParseContext *ctx, const char *element,
                               const XML_Char **attrs, SrNode *node);
+
+bool sr_xml_parse_color(ParseContext *ctx, const char *element,
+                         const char *attribute, const char *text, SrColor *color);
+void sr_xml_start_token(ParseContext *ctx, const XML_Char **attrs);
 
 void sr_xml_start_project(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_output(ParseContext *ctx, const XML_Char **attrs);

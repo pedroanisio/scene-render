@@ -2,7 +2,9 @@
   "description": "Implemented additions to the complete 1.0 profile. Missing additions are unsupported, including explicitly authored default values. New enumerations on existing attributes require 1.1; new attributes remain legal in both versions.",
   "elements": [
     "materialType/animate",
-    "audioTrackType/animate"
+    "audioTrackType/animate",
+    "scene/styles",
+    "stylesType/token"
   ],
   "attributes": [
     "groupType/@threeD",
@@ -26,7 +28,9 @@
     "keyType/@bias",
     "keyType/@stiffness",
     "keyType/@damping",
-    "keyType/@mass"
+    "keyType/@mass",
+    "tokenType/@name",
+    "tokenType/@value"
   ],
   "values": {
     "animateType/@extrapolateBefore": [
@@ -139,7 +143,47 @@
       "bounce-in-out"
     ]
   },
-  "forms": {},
+  "forms": {
+    "effectType/@color": [
+      "token"
+    ],
+    "keyType/@value": [
+      "token"
+    ],
+    "lightType/@color": [
+      "token"
+    ],
+    "materialType/@baseColor": [
+      "token"
+    ],
+    "materialType/@emissive": [
+      "token"
+    ],
+    "particleEmitterType/@color": [
+      "token"
+    ],
+    "particleEmitterType/@colorEnd": [
+      "token"
+    ],
+    "projectType/@background": [
+      "token"
+    ],
+    "shapeType/@fill": [
+      "token"
+    ],
+    "shapeType/@stroke": [
+      "token"
+    ],
+    "textAssetType/@color": [
+      "token"
+    ],
+    "vectorAssetType/@fill": [
+      "token"
+    ],
+    "vectorAssetType/@stroke": [
+      "token"
+    ]
+  },
   "occurrence_limits": {
     "scene/output": 1
   },

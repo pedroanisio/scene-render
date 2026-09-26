@@ -3,6 +3,7 @@
 
 #include "scene_render/diagnostics.h"
 #include "scene_render/common.h"
+#include "scene_render/scene.h"
 
 /* Set when the document was not schema-checked because the Expat pass owns
  * the diagnostic: the file is not well-formed, nests too deeply or has a
@@ -30,10 +31,12 @@ typedef struct {
 SrStatus sr_xml_schema_check(const char *data, size_t size, const char *name,
                              SrDiagnostics *diag, SrSchemaDeferral *deferral);
 
-/* Same checks, optionally listing every unsupported construct. */
+/* Same checks, optionally listing every unsupported construct and preparing
+ * scene-owned tokens from the validated DOM when scene is non-NULL. */
 SrStatus sr_xml_schema_check_profile(const char *data, size_t size,
                                     const char *name, SrDiagnostics *diag,
-                                    SrSchemaDeferral *deferral, bool report_all);
+                                    SrSchemaDeferral *deferral, bool report_all,
+                                    SrScene *scene);
 
 /* Loads the refusing loader has turned away since the process started
  * (tests: proof that nothing was fetched is that nothing was attempted, or

@@ -37,6 +37,7 @@ difference, and keeps the rendered frame in `BUILD/test_tmp/golden/`.
 | `curves.xml` | hold/steps, all ten Penner families, Catmull-Rom, TCB, spring and temporal Bezier handles | 0, 8, 20 |
 | `tracks.xml` | all extrapolation modes, additive positions/colours, normalized/local clocks, looping particle emission and spring lifetimes | 0, 12, 20 |
 | `material-animation.xml` | shared base color/alpha, emissive, metallic and roughness animation with shadows | 0, 12, 20 |
+| `styles.xml` | load-time color aliases in project and animated material colors, equivalent to `material-animation.xml` | 0, 12, 20 |
 
 The scenes are at most 320x180 and 24 frames. Assets come from
 `examples/assets/` and `assets/third-party/`.
@@ -48,6 +49,11 @@ six frames were visually reviewed; existing references are unchanged.
 The three `material-animation` references capture the newly animatable
 material colors, transparency, metallic and roughness. They were visually
 reviewed at frames 0, 12 and 20; all previous references remain unchanged.
+
+The three `styles` references are byte-identical copies of the existing
+`material-animation` references. They verify that token aliases produce the
+same pixels as literal colors. Frames 0, 12 and 20 were visually reviewed;
+no existing reference was regenerated.
 
 ## Determinism scope
 

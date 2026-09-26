@@ -500,6 +500,18 @@ typedef struct {
     size_t field_capacity;
 } SrPhysicsWorld;
 
+#define SR_MAX_STYLE_TOKENS 4096u
+#define SR_MAX_TOKEN_NAME 128u
+#define SR_MAX_TOKEN_VALUE 4096u
+#define SR_MAX_TOKEN_DEPTH 64u
+
+typedef struct {
+    char *name, *value;        /* owned by the scene */
+    size_t source_line;
+    size_t resolved_index;    /* terminal token in the scene's token array */
+    unsigned resolved_hops;
+} SrStyleToken;
+
 typedef struct {
     unsigned format_version;   /* 10 or 11; zero for in-memory scenes means 1.0 */
     char *source_path;
@@ -508,6 +520,8 @@ typedef struct {
                                    parsed (the --resume scene fingerprint) */
     SrProject project;
     SrOutput output;
+    SrStyleToken *tokens;      /* document order; immutable after loading */
+    size_t token_count, token_capacity;
     SrAsset *assets;
     size_t asset_count;
     size_t asset_capacity;

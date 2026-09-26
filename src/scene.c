@@ -105,6 +105,11 @@ static void light_free(SrLight *light) {
 void sr_scene_free(SrScene *scene) {
     if (!scene) return;
     sr_node_free(scene->root);
+    for (size_t i = 0; i < scene->token_count; ++i) {
+        free(scene->tokens[i].name);
+        free(scene->tokens[i].value);
+    }
+    free(scene->tokens);
     for (size_t i = 0; i < scene->asset_count; ++i) asset_free(&scene->assets[i]);
     for (size_t i = 0; i < scene->audio.track_count; ++i) {
         free(scene->audio.tracks[i].id);

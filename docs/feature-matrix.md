@@ -684,7 +684,7 @@ fail at load time; they are never silently ignored.
 | `effectType/link` | 1.1 | unsupported |
 | `effectType/motionPath` | 1.1 | unsupported |
 | `effectType/param` | 1.1 | unsupported |
-| `effectType/@color=token` | 1.0 | unsupported |
+| `effectType/@color=token` | 1.0 | implemented |
 | `effectType/@keyColor=token` | 1.0 | unsupported |
 | `effectType/@paint=paint-reference` | 1.0 | unsupported |
 | `effectType/@paint=token` | 1.0 | unsupported |
@@ -1384,7 +1384,7 @@ fail at load time; they are never silently ignored.
 | `keyType/@time` | 1.0 | implemented |
 | `keyType/@value` | 1.0 | implemented |
 | `keyType/@value=paint-reference` | 1.0 | unsupported |
-| `keyType/@value=token` | 1.0 | unsupported |
+| `keyType/@value=token` | 1.0 | implemented |
 | `keyType/@interpolation=back-in` | 1.1 | implemented |
 | `keyType/@interpolation=back-in-out` | 1.1 | implemented |
 | `keyType/@interpolation=back-out` | 1.1 | implemented |
@@ -1617,7 +1617,7 @@ fail at load time; they are never silently ignored.
 | `lightType/link` | 1.1 | unsupported |
 | `lightType/motionPath` | 1.1 | unsupported |
 | `lightType/transformConstraint` | 1.1 | unsupported |
-| `lightType/@color=token` | 1.0 | unsupported |
+| `lightType/@color=token` | 1.0 | implemented |
 | `lightType/@type=ambient` | 1.0 | implemented |
 | `lightType/@type=directional` | 1.0 | implemented |
 | `lightType/@type=disk-area` | 1.1 | unsupported |
@@ -1800,8 +1800,8 @@ fail at load time; they are never silently ignored.
 | `materialType/link` | 1.1 | unsupported |
 | `materialType/motionPath` | 1.1 | unsupported |
 | `materialType/@attenuationColor=token` | 1.0 | unsupported |
-| `materialType/@baseColor=token` | 1.0 | unsupported |
-| `materialType/@emissive=token` | 1.0 | unsupported |
+| `materialType/@baseColor=token` | 1.0 | implemented |
+| `materialType/@emissive=token` | 1.0 | implemented |
 | `materialType/@sheenColor=token` | 1.0 | unsupported |
 | `materialType/@specularColor=token` | 1.0 | unsupported |
 | `materialType/@alphaMode=blend` | 1.0 | unsupported |
@@ -2226,9 +2226,9 @@ fail at load time; they are never silently ignored.
 | `particleEmitterType/@anchorX=relative-length` | 1.0 | unsupported |
 | `particleEmitterType/@anchorY=relative-length` | 1.0 | unsupported |
 | `particleEmitterType/@color=paint-reference` | 1.0 | unsupported |
-| `particleEmitterType/@color=token` | 1.0 | unsupported |
+| `particleEmitterType/@color=token` | 1.0 | implemented |
 | `particleEmitterType/@colorEnd=paint-reference` | 1.0 | unsupported |
-| `particleEmitterType/@colorEnd=token` | 1.0 | unsupported |
+| `particleEmitterType/@colorEnd=token` | 1.0 | implemented |
 | `particleEmitterType/@margin=relative-length` | 1.0 | unsupported |
 | `particleEmitterType/@x=relative-length` | 1.0 | unsupported |
 | `particleEmitterType/@y=relative-length` | 1.0 | unsupported |
@@ -2433,7 +2433,7 @@ fail at load time; they are never silently ignored.
 | `projectType/@width` | 1.0 | implemented |
 | `projectType/@workingColorSpace` | 1.0 | implemented |
 | `projectType/@background=paint-reference` | 1.0 | unsupported |
-| `projectType/@background=token` | 1.0 | unsupported |
+| `projectType/@background=token` | 1.0 | implemented |
 | `projectType/@mode=equirectangular` | 1.0 | implemented |
 | `projectType/@mode=standard` | 1.0 | implemented |
 | `projectType/@mode=viewport` | 1.0 | implemented |
@@ -2721,7 +2721,7 @@ fail at load time; they are never silently ignored.
 | `scene/project` | 1.0 | implemented |
 | `scene/safeAreas` | 1.1 | unsupported |
 | `scene/scene360` | 1.0 | implemented |
-| `scene/styles` | 1.1 | unsupported |
+| `scene/styles` | 1.1 | implemented |
 | `scene/symbols` | 1.1 | unsupported |
 | `scene/tracking` | 1.1 | unsupported |
 | `scene/output occurrence > 1` | 1.0 | unsupported |
@@ -3006,11 +3006,11 @@ fail at load time; they are never silently ignored.
 | `shapeType/@anchorX=relative-length` | 1.0 | unsupported |
 | `shapeType/@anchorY=relative-length` | 1.0 | unsupported |
 | `shapeType/@fill=paint-reference` | 1.0 | unsupported |
-| `shapeType/@fill=token` | 1.0 | unsupported |
+| `shapeType/@fill=token` | 1.0 | implemented |
 | `shapeType/@height=relative-length` | 1.0 | unsupported |
 | `shapeType/@margin=relative-length` | 1.0 | unsupported |
 | `shapeType/@stroke=paint-reference` | 1.0 | unsupported |
-| `shapeType/@stroke=token` | 1.0 | unsupported |
+| `shapeType/@stroke=token` | 1.0 | implemented |
 | `shapeType/@width=relative-length` | 1.0 | unsupported |
 | `shapeType/@x=relative-length` | 1.0 | unsupported |
 | `shapeType/@y=relative-length` | 1.0 | unsupported |
@@ -3180,7 +3180,7 @@ fail at load time; they are never silently ignored.
 | `stopType/motionPath` | 1.1 | unsupported |
 | `stopType/@color=token` | 1.0 | unsupported |
 | `stylesType/textStyle` | 1.1 | unsupported |
-| `stylesType/token` | 1.1 | unsupported |
+| `stylesType/token` | 1.1 | implemented |
 | `symbolType/@background` | 1.0 | unsupported |
 | `symbolType/@duration` | 1.0 | unsupported |
 | `symbolType/@height` | 1.0 | unsupported |
@@ -3354,7 +3354,7 @@ fail at load time; they are never silently ignored.
 | `textAssetType/@background=paint-reference` | 1.0 | unsupported |
 | `textAssetType/@background=token` | 1.0 | unsupported |
 | `textAssetType/@color=paint-reference` | 1.0 | unsupported |
-| `textAssetType/@color=token` | 1.0 | unsupported |
+| `textAssetType/@color=token` | 1.0 | implemented |
 | `textAssetType/@highlight=paint-reference` | 1.0 | unsupported |
 | `textAssetType/@highlight=token` | 1.0 | unsupported |
 | `textAssetType/@shadowColor=token` | 1.0 | unsupported |
@@ -3511,8 +3511,8 @@ fail at load time; they are never silently ignored.
 | `timeRemapType/@frameBlend=frame-mix` | 1.0 | unsupported |
 | `timeRemapType/@frameBlend=none` | 1.0 | unsupported |
 | `timeRemapType/@frameBlend=optical-flow` | 1.0 | unsupported |
-| `tokenType/@name` | 1.0 | unsupported |
-| `tokenType/@value` | 1.0 | unsupported |
+| `tokenType/@name` | 1.0 | implemented |
+| `tokenType/@value` | 1.0 | implemented |
 | `trackDataType/@footage` | 1.0 | unsupported |
 | `trackDataType/@format` | 1.0 | unsupported |
 | `trackDataType/@id` | 1.0 | unsupported |
@@ -3698,9 +3698,9 @@ fail at load time; they are never silently ignored.
 | `vectorAssetType/@strokeWidth` | 1.0 | implemented |
 | `vectorAssetType/@width` | 1.0 | implemented |
 | `vectorAssetType/@fill=paint-reference` | 1.0 | unsupported |
-| `vectorAssetType/@fill=token` | 1.0 | unsupported |
+| `vectorAssetType/@fill=token` | 1.0 | implemented |
 | `vectorAssetType/@stroke=paint-reference` | 1.0 | unsupported |
-| `vectorAssetType/@stroke=token` | 1.0 | unsupported |
+| `vectorAssetType/@stroke=token` | 1.0 | implemented |
 | `vectorAssetType/@fillRule=evenodd` | 1.0 | implemented |
 | `vectorAssetType/@fillRule=nonzero` | 1.0 | implemented |
 | `vectorAssetType/@paintOrder=fill-stroke` | 1.0 | unsupported |

@@ -5,7 +5,9 @@ import importlib.util
 import pathlib
 import signal
 import subprocess
+import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -19,6 +21,32 @@ def module(name):
 
 
 class VerificationFailures(unittest.TestCase):
+    def test_frame_order_preserves_root_sequence(self):
+        tool = module('frame-order-check')
+        for prelude in ('', '<styles/>', '<metadata/><styles/>',
+                        '<metadata/><parameters/><styles/><colorManagement/>'):
+            for existing in ('', '<output path="old.mp4"/><output path="other.mp4"/>'):
+                with self.subTest(prelude=prelude, existing=existing):
+                    with tempfile.TemporaryDirectory() as directory:
+                        work = pathlib.Path(directory)
+                        scene = work / 'input.xml'
+                        scene.write_text('<scene version="1.1"><project width="16" '
+                                         'height="16" fps="1" duration="1"/>' +
+                                         prelude + existing + '<assets/><composition/></scene>')
+                        expected = ['project'] + [node.tag for node in
+                            ET.fromstring('<root>' + prelude + '</root>')]
+                        expected += ['output', 'assets', 'composition']
+
+                        def inspect_document(args):
+                            root = ET.parse(args[args.index('--scene') + 1]).getroot()
+                            self.assertEqual([node.tag for node in root], expected)
+                            self.assertEqual(root.find('output').get('codec'), 'ffv1')
+                            raise RuntimeError('document order checked')
+
+                        with patch.object(tool, 'run', side_effect=inspect_document):
+                            with self.assertRaisesRegex(RuntimeError, 'document order checked'):
+                                tool.check('renderer', 'hooks', scene, work, 1)
+
     def test_recovering_sanitizer_is_failure(self):
         for name in ('equivalence-oracle', 'frame-order-check'):
             tool = module(name)

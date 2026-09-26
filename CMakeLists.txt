@@ -99,6 +99,7 @@ set(SCENE_RENDER_SOURCES
     src/xml_camera.c
     src/xml_visual.c
     src/xml_physics.c
+    src/xml_styles.c
     src/xml_schema.c
     src/xml_capabilities.c
     src/cli_args.c
@@ -126,7 +127,7 @@ if(BUILD_TESTING)
     add_test(NAME schema.compatibility
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/schema-compatibility.py)
-    set(SR_UNIT_SUITES timeline curves geometry compositor color vector mesh scene property xml profile
+    set(SR_UNIT_SUITES timeline curves geometry compositor color vector mesh scene property xml profile styles
                        camera physics blend group raster mask path image
                        encode encode_faults audio video
                        fx anim_color particles deform shadow text args resume

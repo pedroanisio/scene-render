@@ -123,7 +123,7 @@ void sr_xml_start_text(ParseContext *ctx, const XML_Char **attrs) {
     if (strlen(content) > SR_TEXT_MAX_BYTES)
         SR_XML_FAIL_RETURN(ctx, "text", "text", "text is longer than 1 MiB (1048576 bytes)");
     const char *color = sr_xml_attr(attrs, "color");
-    if (color && !sr_parse_color(color, &asset->color))
+    if (color && !sr_xml_parse_color(ctx, "text", "color", color, &asset->color))
         SR_XML_FAIL_RETURN(ctx, "text", "color", "invalid color");
     const char *font=sr_xml_attr(attrs,"font");
     if(font&&!font_name_valid(font))
@@ -171,7 +171,7 @@ void sr_xml_start_vector(ParseContext *ctx, const XML_Char **attrs) {
         !sr_parse_u32(height, &asset->height) || !asset->height)
         SR_XML_FAIL_RETURN(ctx, "vector", "width/height", "expected positive integers");
     const char *fill = sr_xml_attr(attrs, "fill");
-    if (fill && !sr_parse_color(fill, &asset->color))
+    if (fill && !sr_xml_parse_color(ctx, "vector", "fill", fill, &asset->color))
         SR_XML_FAIL_RETURN(ctx, "vector", "fill", "invalid color");
     const char *rule = sr_xml_attr(attrs, "fillRule");
     if (rule) {
@@ -180,7 +180,7 @@ void sr_xml_start_vector(ParseContext *ctx, const XML_Char **attrs) {
         else SR_XML_FAIL_RETURN(ctx, "vector", "fillRule", "expected nonzero or evenodd");
     }
     const char *stroke = sr_xml_attr(attrs, "stroke");
-    if (stroke && !sr_parse_color(stroke, &asset->vector_stroke))
+    if (stroke && !sr_xml_parse_color(ctx, "vector", "stroke", stroke, &asset->vector_stroke))
         SR_XML_FAIL_RETURN(ctx, "vector", "stroke", "invalid color");
     if (!decimal(ctx, "vector", attrs, "strokeWidth", &asset->vector_stroke_width))
         return;
@@ -226,10 +226,12 @@ void sr_xml_start_material(ParseContext *ctx, const XML_Char **attrs) {
     material->roughness.base = 0.5;
     if (!material->id) SR_XML_FAIL_RETURN(ctx, "material", NULL, "out of memory");
     const char *value = sr_xml_attr(attrs, "baseColor");
-    if (value && !sr_parse_color(value, &material->base_color.base))
+    if (value && !sr_xml_parse_color(ctx, "material", "baseColor", value,
+                                     &material->base_color.base))
         SR_XML_FAIL_RETURN(ctx, "material", "baseColor", "invalid color");
     value = sr_xml_attr(attrs, "emissive");
-    if (value && !sr_parse_color(value, &material->emissive.base))
+    if (value && !sr_xml_parse_color(ctx, "material", "emissive", value,
+                                     &material->emissive.base))
         SR_XML_FAIL_RETURN(ctx, "material", "emissive", "invalid color");
     if (!decimal(ctx, "material", attrs, "metallic", &material->metallic.base) ||
         !decimal(ctx, "material", attrs, "roughness", &material->roughness.base)) return;
@@ -271,7 +273,8 @@ void sr_xml_start_light(ParseContext *ctx, const XML_Char **attrs) {
     else if (!strcmp(type,"spot")) light->type=SR_LIGHT_SPOT;
     else SR_XML_FAIL_RETURN(ctx,"light","type","unsupported light type");
     const char *value = sr_xml_attr(attrs,"color");
-    if (value && !sr_parse_color(value,&light->color.base)) SR_XML_FAIL_RETURN(ctx,"light","color","invalid color");
+    if (value && !sr_xml_parse_color(ctx, "light", "color", value, &light->color.base))
+        SR_XML_FAIL_RETURN(ctx, "light", "color", "invalid color");
     if (!decimal(ctx,"light",attrs,"intensity",&light->intensity.base) ||
         !decimal(ctx,"light",attrs,"x",&light->x.base) || !decimal(ctx,"light",attrs,"y",&light->y.base) ||
         !decimal(ctx,"light",attrs,"z",&light->z.base) || !decimal(ctx,"light",attrs,"yaw",&light->yaw.base) ||
@@ -351,7 +354,9 @@ void sr_xml_start_effect(ParseContext *ctx, const XML_Char **attrs) {
     else if(!strcmp(type,"lighting"))effect->type=SR_EFFECT_LIGHTING;
     else SR_XML_FAIL_RETURN(ctx,"effect","type","unsupported effect type");
     const char *value=sr_xml_attr(attrs,"enabled");if(value&&!sr_parse_bool(value,&effect->enabled))SR_XML_FAIL_RETURN(ctx,"effect","enabled","expected true or false");
-    value=sr_xml_attr(attrs,"color");if(value&&!sr_parse_color(value,&effect->color.base))SR_XML_FAIL_RETURN(ctx,"effect","color","invalid color");
+    value = sr_xml_attr(attrs, "color");
+    if (value && !sr_xml_parse_color(ctx, "effect", "color", value, &effect->color.base))
+        SR_XML_FAIL_RETURN(ctx, "effect", "color", "invalid color");
     if(!anim_decimal(ctx,attrs,"intensity",&effect->intensity)||!anim_decimal(ctx,attrs,"radius",&effect->radius)||
        !anim_decimal(ctx,attrs,"threshold",&effect->threshold)||!anim_decimal(ctx,attrs,"saturation",&effect->saturation)||
        !anim_decimal(ctx,attrs,"contrast",&effect->contrast)||!anim_decimal(ctx,attrs,"brightness",&effect->brightness)||

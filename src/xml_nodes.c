@@ -99,7 +99,7 @@ static bool parse_particles(ParseContext *ctx, const char *name,
     node->particle_speed_variance_set = sr_xml_attr(attrs, "speedVariance") != NULL;
     if (node->particle_size_end_set) node->particle_grow = false;
     const char *value = sr_xml_attr(attrs, "color");
-    if (value && !sr_parse_color(value, &node->particle_color.base)) {
+    if (value && !sr_xml_parse_color(ctx, name, "color", value, &node->particle_color.base)) {
         sr_xml_fail(ctx, name, "color", "invalid color");
         return false;
     }
@@ -109,7 +109,8 @@ static bool parse_particles(ParseContext *ctx, const char *name,
     node->particle_color_end.base.a = 0.0;
     value = sr_xml_attr(attrs, "colorEnd");
     if (value) {
-        if (!sr_parse_color(value, &node->particle_color_end.base)) {
+        if (!sr_xml_parse_color(ctx, name, "colorEnd", value,
+                                &node->particle_color_end.base)) {
             sr_xml_fail(ctx, name, "colorEnd", "invalid color");
             return false;
         }
@@ -280,11 +281,11 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
             sr_node_free(node); return;
         }
         const char *value = sr_xml_attr(attrs, "fill");
-        if (value && !sr_parse_color(value, &node->fill.base)) {
+        if (value && !sr_xml_parse_color(ctx, name, "fill", value, &node->fill.base)) {
             sr_node_free(node); SR_XML_FAIL_RETURN(ctx, name, "fill", "invalid color");
         }
         value = sr_xml_attr(attrs, "stroke");
-        if (value && !sr_parse_color(value, &node->stroke.base)) {
+        if (value && !sr_xml_parse_color(ctx, name, "stroke", value, &node->stroke.base)) {
             sr_node_free(node); SR_XML_FAIL_RETURN(ctx, name, "stroke", "invalid color");
         }
         value = sr_xml_attr(attrs, "blend");

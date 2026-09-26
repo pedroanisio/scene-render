@@ -78,7 +78,10 @@ def check(binary, hooks, scene, work, threads):
         root.remove(output)
     output = ET.Element("output", path=str(work / "unused.mkv"),
                         codec="ffv1", pixelFormat="bgra")
-    root.insert(list(root).index(project) + 1, output)
+    before_output = {"project", "metadata", "parameters", "styles", "colorManagement"}
+    position = next((i for i, node in enumerate(root) if node.tag not in before_output),
+                    len(root))
+    root.insert(position, output)
     local = work / "scene.xml"
     ET.ElementTree(root).write(local, encoding="utf-8", xml_declaration=True)
     common = ["--scene", local, "--threads", threads]
