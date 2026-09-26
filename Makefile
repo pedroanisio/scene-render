@@ -103,6 +103,7 @@ UNIT_SUITES := timeline length length_frame length_physics curves geometry \
 	composite_evaluation composite_geometry composite_particles group raster mask path \
 	mask_path fuzz_mask_path image \
 	encode encode_faults audio video fx anim_color particles deform shadow text args resume depth \
+	blend_operators mask_advanced fuzz_mask_xml matte adjustment \
 	$(P7_UNIT_SUITES)
 TEST_CPPFLAGS := -Isrc -DSR_TEST_DATA_DIR='"$(CURDIR)"' \
 	-DSR_TEST_TMP_DIR='"$(abspath $(BUILD))/test_tmp"'

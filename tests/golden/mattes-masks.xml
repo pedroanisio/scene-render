@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Advanced masks and track mattes: the six combination modes in authored
+     order, path/polygon/star masks with feather, expansion and inner-radius
+     animation, opacity/invert, and the four matte modes from moving sources
+     (one visible). -->
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="2" seed="53"
+           linearLight="false" background="#101824"/>
+  <assets>
+    <text id="label0" text="intersect" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label1" text="add" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label2" text="subtract" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label3" text="lighten" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label4" text="darken" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label5" text="difference" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label6" text="path feather" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label7" text="expand" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label8" text="star auto" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label9" text="star inner" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label10" text="opacity invert" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label11" text="none + add" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label12" text="alpha matte" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label13" text="inverted" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label14" text="luma matte" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label15" text="luma inverted" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label16" text="visible source" width="50" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+  </assets>
+  <composition>
+    <group id="mode0" x="3" y="2"><layer id="name0" asset="label0"/>
+      <shape id="m0" shape="rect" y="10" width="48" height="44" fill="#E8B04C">
+        <mask type="ellipse" x="2" y="4" width="30" height="36" opacity=".85"/>
+        <mask type="rect" y="10" width="22" height="22" mode="intersect" feather="1">
+          <animate property="x"><key time="0" value="4"/>
+            <key time="2" value="24"/></animate></mask>
+      </shape></group>
+    <group id="mode1" x="56" y="2"><layer id="name1" asset="label1"/>
+      <shape id="m1" shape="rect" y="10" width="48" height="44" fill="#E8B04C">
+        <mask type="ellipse" x="2" y="4" width="30" height="36" opacity=".85"/>
+        <mask type="rect" y="10" width="22" height="22" mode="add" feather="1">
+          <animate property="x"><key time="0" value="4"/>
+            <key time="2" value="24"/></animate></mask>
+      </shape></group>
+    <group id="mode2" x="109" y="2"><layer id="name2" asset="label2"/>
+      <shape id="m2" shape="rect" y="10" width="48" height="44" fill="#E8B04C">
+        <mask type="ellipse" x="2" y="4" width="30" height="36" opacity=".85"/>
+        <mask type="rect" y="10" width="22" height="22" mode="subtract" feather="1">
+          <animate property="x"><key time="0" value="4"/>
+            <key time="2" value="24"/></animate></mask>
+      </shape></group>
+    <group id="mode3" x="162" y="2"><layer id="name3" asset="label3"/>
+      <shape id="m3" shape="rect" y="10" width="48" height="44" fill="#E8B04C">
+        <mask type="ellipse" x="2" y="4" width="30" height="36" opacity=".85"/>
+        <mask type="rect" y="10" width="22" height="22" mode="lighten" feather="1">
+          <animate property="x"><key time="0" value="4"/>
+            <key time="2" value="24"/></animate></mask>
+      </shape></group>
+    <group id="mode4" x="215" y="2"><layer id="name4" asset="label4"/>
+      <shape id="m4" shape="rect" y="10" width="48" height="44" fill="#E8B04C">
+        <mask type="ellipse" x="2" y="4" width="30" height="36" opacity=".85"/>
+        <mask type="rect" y="10" width="22" height="22" mode="darken" feather="1">
+          <animate property="x"><key time="0" value="4"/>
+            <key time="2" value="24"/></animate></mask>
+      </shape></group>
+    <group id="mode5" x="268" y="2"><layer id="name5" asset="label5"/>
+      <shape id="m5" shape="rect" y="10" width="48" height="44" fill="#E8B04C">
+        <mask type="ellipse" x="2" y="4" width="30" height="36" opacity=".85"/>
+        <mask type="rect" y="10" width="22" height="22" mode="difference" feather="1">
+          <animate property="x"><key time="0" value="4"/>
+            <key time="2" value="24"/></animate></mask>
+      </shape></group>
+    <group id="type0" x="3" y="60"><layer id="name6" asset="label6"/>
+      <shape id="t0" shape="rect" y="10" width="48" height="44" fill="#5CB6E8">
+        <mask type="path" x="4" y="4" path="M 20 0 C 44 0 44 36 20 36 C -4 36 -4 0 20 0 Z M 20 10 L 28 26 L 12 26 Z"
+              fillRule="evenodd"><animate property="feather"><key time="0" value="0"/>
+          <key time="2" value="6"/></animate></mask>
+      </shape></group>
+    <group id="type1" x="56" y="60"><layer id="name7" asset="label7"/>
+      <shape id="t1" shape="rect" y="10" width="48" height="44" fill="#5CB6E8">
+        <mask type="polygon" x="24" y="22" radius="14" points="6">
+          <animate property="expansion"><key time="0" value="-4"/>
+            <key time="2" value="5.5"/></animate></mask>
+      </shape></group>
+    <group id="type2" x="109" y="60"><layer id="name8" asset="label8"/>
+      <shape id="t2" shape="rect" y="10" width="48" height="44" fill="#5CB6E8">
+        <mask type="star" x="24" y="22" radius="10" points="5">
+          <animate property="radius"><key time="0" value="10"/>
+            <key time="2" value="21"/></animate></mask>
+      </shape></group>
+    <group id="type3" x="162" y="60"><layer id="name9" asset="label9"/>
+      <shape id="t3" shape="rect" y="10" width="48" height="44" fill="#5CB6E8">
+        <mask type="star" x="24" y="22" radius="20" points="7">
+          <animate property="innerRadius"><key time="0" value="4"/>
+            <key time="2" value="17"/></animate></mask>
+      </shape></group>
+    <group id="type4" x="215" y="60"><layer id="name10" asset="label10"/>
+      <shape id="t4" shape="rect" y="10" width="48" height="44" fill="#5CB6E8">
+        <mask type="rounded-rect" x="8" y="6" width="32" height="32" radius="8" invert="true"
+              opacity=".6"/>
+      </shape></group>
+    <group id="type5" x="268" y="60"><layer id="name11" asset="label11"/>
+      <shape id="t5" shape="rect" y="10" width="48" height="44" fill="#5CB6E8">
+        <mask type="ellipse" x="0" y="0" width="48" height="44" mode="none"/>
+        <mask type="star" x="16" y="18" radius="12" points="4" mode="add"/>
+        <mask type="polygon" x="34" y="26" radius="12" points="3" mode="add" feather="2"/>
+      </shape></group>
+    <layer id="name12" asset="label12" x="3" y="118"/>
+    <shape id="src0" shape="ellipse" y="132" width="34" height="40" fill="#FFFFFFC8">
+      <animate property="position.x"><key time="0" value="-5"/>
+        <key time="2" value="37"/></animate></shape>
+    <group id="matte0" matte="src0" matteMode="alpha">
+      <shape id="c0a" shape="rect" x="3" y="130" width="30" height="44" fill="#F0605A"/>
+      <shape id="c0b" shape="rect" x="33" y="130" width="30" height="44" fill="#62D08A"/>
+    </group>
+    <layer id="name13" asset="label13" x="67" y="118"/>
+    <shape id="src1" shape="ellipse" y="132" width="34" height="40" fill="#FFFFFFC8">
+      <animate property="position.x"><key time="0" value="59"/>
+        <key time="2" value="101"/></animate></shape>
+    <group id="matte1" matte="src1" matteMode="alpha-inverted">
+      <shape id="c1a" shape="rect" x="67" y="130" width="30" height="44" fill="#F0605A"/>
+      <shape id="c1b" shape="rect" x="97" y="130" width="30" height="44" fill="#62D08A"/>
+    </group>
+    <layer id="name14" asset="label14" x="131" y="118"/>
+    <group id="src2" x="131" y="130">
+      <shape id="bar20" shape="rect" x="0" width="15" height="44" fill="#FFFFFF"/>
+      <shape id="bar21" shape="rect" x="15" width="15" height="44" fill="#A0A0A0"/>
+      <shape id="bar22" shape="rect" x="30" width="15" height="44" fill="#606060"/>
+      <shape id="bar23" shape="rect" x="45" width="15" height="44" fill="#202020"/>
+      <shape id="orb2" shape="ellipse" y="8" width="26" height="26" fill="#FFFFFF">
+        <animate property="position.x"><key time="0" value="-6"/>
+          <key time="2" value="40"/></animate></shape>
+    </group>
+    <group id="matte2" matte="src2" matteMode="luma">
+      <shape id="c2a" shape="rect" x="131" y="130" width="30" height="44" fill="#F0605A"/>
+      <shape id="c2b" shape="rect" x="161" y="130" width="30" height="44" fill="#62D08A"/>
+    </group>
+    <layer id="name15" asset="label15" x="195" y="118"/>
+    <group id="src3" x="195" y="130">
+      <shape id="bar30" shape="rect" x="0" width="15" height="44" fill="#FFFFFF"/>
+      <shape id="bar31" shape="rect" x="15" width="15" height="44" fill="#A0A0A0"/>
+      <shape id="bar32" shape="rect" x="30" width="15" height="44" fill="#606060"/>
+      <shape id="bar33" shape="rect" x="45" width="15" height="44" fill="#202020"/>
+      <shape id="orb3" shape="ellipse" y="8" width="26" height="26" fill="#FFFFFF">
+        <animate property="position.x"><key time="0" value="-6"/>
+          <key time="2" value="40"/></animate></shape>
+    </group>
+    <group id="matte3" matte="src3" matteMode="luma-inverted">
+      <shape id="c3a" shape="rect" x="195" y="130" width="30" height="44" fill="#F0605A"/>
+      <shape id="c3b" shape="rect" x="225" y="130" width="30" height="44" fill="#62D08A"/>
+    </group>
+    <layer id="name16" asset="label16" x="259" y="118"/>
+    <shape id="src4" shape="ellipse" y="132" width="34" height="40" fill="#FFFFFFC8">
+      <animate property="position.x"><key time="0" value="251"/>
+        <key time="2" value="293"/></animate></shape>
+    <group id="matte4" matte="src4" matteMode="alpha" matteVisible="true">
+      <shape id="c4a" shape="rect" x="259" y="130" width="30" height="44" fill="#F0605A"/>
+      <shape id="c4b" shape="rect" x="289" y="130" width="30" height="44" fill="#62D08A"/>
+    </group>
+  </composition>
+</scene>

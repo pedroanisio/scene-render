@@ -536,7 +536,10 @@ inverse world transform. `x`, `y`, `width`, `height`, and `radius` are
 animatable with nested `<animate property="x|y|width|height|radius">`.
 Group masks apply when an isolated group is composited, or to every child
 draw of a pass-through group, so they compose through nested world
-transforms.
+transforms. Version 1.1 adds path, polygon and star masks, combination
+modes, opacity, feather and expansion; see [Advanced masks](#advanced-masks).
+Nodes also accept track mattes ([Track mattes](#track-mattes)), and
+`adjustment` is a node kind of its own ([Adjustment layers](#adjustment-layers)).
 
 ## Animation
 
@@ -965,8 +968,9 @@ at `N × fps_den / fps_num`.
 
 ## Compositing preparation for C callers
 
-The XML loader automatically prepares scenes using the new color blend modes
-or skew. Preparation checks the whole authored 2D ownership tree, including
+The XML loader automatically prepares scenes using the new color blend modes,
+blend operators, skew, advanced masks, track mattes or adjustment layers.
+Preparation checks the whole authored 2D ownership tree, including
 inactive content, independently of relative lengths. Limits are 65,536 nodes
 including the composition root, 262,144 masks in aggregate and 256 ancestry
 levels. Cycles, shared child ownership and nonzero counts without backing
@@ -986,6 +990,17 @@ preparation succeeds. They do not restore an older plan. Preparation leaves
 the authored graph untouched; a caller who deliberately constructs a cycle
 or shared child must repair ownership before ordinary scene destruction.
 Legacy scenes that do not use this subsystem retain their existing path.
+
+Preparation also validates the B1-3 authored state the renderer will read:
+mask attributes (`sr_mask_validate` rules below), path masks (parsed into
+scene-owned immutable geometry, replacing any earlier parse), adjustment
+nodes (resolved `effect_refs`, no children, not a depth card) and track
+mattes (`node->matte` must point at a group, layer, shape, emitter or
+adjustment of the same composition; the dependency graph must be acyclic).
+Direct-C callers set `node->matte` (the XML loader resolves `matte_id`);
+masks created zero-initialized keep the 1.0 intersect behaviour because
+`opacity_set` false means opacity one. Authored path text, matte ids and
+prepared geometry count toward aggregate prepared ownership.
 
 ## Skew transforms
 
@@ -1099,8 +1114,8 @@ function and also retains source-over alpha.
 The kernels allocate nothing and use bounded three-channel operations with
 no per-frame or per-thread state. The 320x180 `tests/golden/blend-modes.xml`
 sheet shows all 28 implemented color modes over matching translucent
-backdrops. Dissolve and the stencil/silhouette, alpha-add and behind parent
-operators remain unsupported until their separate compositor implementation.
+backdrops; `tests/golden/blend-operators.xml` completes the family with the
+seven flattened operators described next.
 
 Cost depends on the selected formulas and pixel overlap. In the 192x128,
 24-frame `tests/data-blend-colors.xml` stack, all 22 new modes together used
@@ -1109,6 +1124,245 @@ Cost depends on the selected formulas and pixel overlap. In the 192x128,
 every frame at one/four threads and across five alternating measurements.
 Run `tools/blend-benchmark.py` inside the SDK to repeat the comparison;
 ranges and full verification are in `docs/reviews/b1-compositing-colors.md`.
+
+## Blend operators
+
+`dissolve`, `stencil-alpha`, `stencil-luma`, `silhouette-alpha`,
+`silhouette-luma`, `alpha-add` and `behind` are 1.1 values of `blend` on
+`group`, `layer`, `shape`, `particleEmitter` and `adjustment`. Unlike the
+color modes, each operates once on the *flattened* node: the node, with its
+own effects, masks, matte and opacity (and, for an emitter or group, all of
+its particles or children with their own blends), is first drawn with a
+normal root blend into a transparent buffer S. The operator then acts on
+the parent target D. Let `a`, `b` be the alphas of S and D:
+
+| Mode | Result |
+|---|---|
+| `behind` | `C = D + (1-b)*S`, `A = b + (1-b)*a` (destination-over) |
+| `stencil-alpha`, `stencil-luma` | `C = D*k`, `A = b*k` |
+| `silhouette-alpha`, `silhouette-luma` | `C = D*(1-k)`, `A = b*(1-k)` |
+| `alpha-add` | `A = min(a+b,1)`; `C = (S+D)*A/(a+b)`, zero when `a+b = 0` |
+| `dissolve` | S becomes its straight color at alpha one where `U < a`, transparent elsewhere; then source-over |
+
+`k = a` for the alpha variants and `k = a*Y(s)` for the luma variants,
+where `Y` is physical luminance: unpremultiply, clamp straight RGB to
+[0,1], decode the working transfer unless the project is linear-light,
+then dot with the working gamut's Y row (sRGB/Rec.709 .21267290, .71515220,
+.07217500; Display P3 .22897456, .69173852, .07928691; Rec.2020 .26270021,
+.67799807, .05930172). This is distinct from the W3C `Lum` helper used by
+the nonseparable color modes. A transparent source is significant: an
+active stencil whose image is empty clears its whole parent. An inactive,
+invisible or zero-opacity node is absent and performs no operation.
+
+The immediate non-root parent of an operator (or an adjustment) is isolated
+automatically, including when that child is inactive, so activity never
+changes a parent's coordinate system: its buffer starts transparent and
+holds only its children, and its own opacity, masks, matte, effects and
+blend apply when it is composited. At the composition root the operators
+act on the frame itself, including the project background (a root stencil
+cuts the background). Stencil covers the whole receiving clip; the other
+operators are the identity where S is transparent. Inherited pass-through
+coverage (for example a card's own masks) interpolates between D and the
+operated result.
+
+Dissolve's `U` is a stateless value from the project seed, the node id and
+the domain `blend.dissolve`: the seed is 64-bit FNV-1a over the id bytes,
+one zero byte and the domain, XOR the project seed
+(`sr_random_property_seed`), and `U` mixes the integer composition pixel
+x and y separately (`sr_random_pixel_value`). The pattern therefore does
+not depend on frame, thread count, traversal order or buffer origin, and a
+node that moves keeps the choice of each composition pixel. Inside a
+projective card the pixel centre is mapped through the plane-to-screen
+homography and floored first. A dissolve matte source uses the same
+choices as its visible draw.
+
+```xml
+<group id="window">
+  <shape id="scene" shape="rect" width="160" height="90" fill="#3A7ECA"/>
+  <shape id="hole" shape="ellipse" x="40" y="20" width="80" height="50"
+         fill="#FFFFFF" blend="stencil-alpha"/>
+</group>
+```
+
+Each operator node costs one extra target-sized buffer (from the depth pool)
+and one pixel pass over its receiving clip (stencil) or its image (the
+others); luma operators add a transfer decode per pixel. Kernels are pure
+per-pixel functions (`src/raster.c`). `tests/golden/blend-operators.xml`
+shows all seven, including a stencil and a dissolve inside a projected card.
+
+## Advanced masks
+
+In addition to the 1.0 attributes, `mask` accepts (all new attributes, legal
+in both versions; the new `type` values require 1.1):
+
+| Attribute | Meaning |
+|---|---|
+| `type="path"` | `path` (required) in the SVG subset M/L/H/V/C/Q/Z; local coordinates translated by `x`, `y`; `fillRule` `nonzero` (default) or `evenodd` |
+| `type="polygon"` | regular polygon centred at `x`, `y`, outer `radius` > 0, `points` in [3,4096] (default 5) |
+| `type="star"` | star with `2*points` vertices alternating `radius` and `innerRadius` (default half the evaluated outer radius; explicit values in [0, radius]) |
+| `mode` | `intersect` (default, the 1.0 product), `add`, `subtract`, `lighten`, `darken`, `difference`, `none` |
+| `opacity` | coverage multiplier in [0,1], default 1 |
+| `feather` | local pixels in [0,4096]: three box passes approximating a Gaussian of sigma `feather/2` |
+| `expansion` | local pixels within +-4096: grayscale disk dilation (positive) or erosion (negative) |
+
+Polygon and star vertices start pointing up (-y) and advance clockwise in
+the renderer's downward-y space. For path, polygon and star, optional
+`width` and `height` (both or neither) add a clipping box starting at `x`,
+`y`; they never rescale the outline. `path`, `points` and `innerRadius` on
+the simple kinds are errors, as is `innerRadius` on a polygon. `opacity`,
+`feather`, `expansion` and `innerRadius` animate with
+`<animate property="...">` in 1.1 documents; `radius` animation also drives
+polygons and stars. If neither the `innerRadius` attribute nor a track is
+authored, a star's inner radius follows half the evaluated outer radius at
+every time; a track overrides that relation. Evaluated values are checked
+every frame (opacity [0,1], feather [0,4096], |expansion| <= 4096, inner in
+[0, outer], coordinates within +-1e9); an overshooting curve that leaves the
+range fails the render with the mask's line.
+
+Masks combine in document order. `none` masks are skipped. The accumulator
+starts at one when the first participating mode is intersect, subtract or
+darken, and at zero for add, lighten or difference; no participating mask
+means coverage one. For accumulated A and mask coverage B: intersect `A*B`,
+add `A+B-A*B`, subtract `A*(1-B)`, lighten `max(A,B)`, darken `min(A,B)`,
+difference `|A-B|`. Each mask's B is: antialiased shape coverage, then
+expansion, then feather, then inversion, then opacity, clamped to [0,1].
+Inversion also applies outside the stored raster, so an inverted mask keeps
+coverage one far from its shape.
+
+Masks that use only the 1.0 kinds with intersect mode and default opacity,
+feather and expansion (including explicitly authored defaults) keep the
+analytic output-resolution coverage and are byte-identical to 1.0. Any other
+mask makes the node use a node-local coverage raster with one sample per
+local pixel (centres at half-integers), cropped to the inverse-mapped
+receiving clip plus each mask's filter halo, and sampled bilinearly through
+the node's inverse transform. Feather and expansion are therefore local
+distances that follow node scale, skew and card projection. Rect, ellipse
+and rounded-rect coverage uses the analytic distance at one local pixel;
+paths, polygons and stars use the exact-area scanline rasterizer of
+`vector_path.c`. Expansion takes the maximum (minimum) over the integer
+disk `dx*dx+dy*dy <= r*r`, interpolating between the floor and ceiling
+radii for fractions; feather blends the neighbouring integer box radii as
+the group blur does, with transparent samples outside the shape included
+in the normalization.
+
+```xml
+<shape id="badge" shape="rect" width="120" height="120" fill="#E8B04C">
+  <mask type="star" x="60" y="60" radius="50" points="6" feather="3"/>
+  <mask type="ellipse" x="40" y="40" width="40" height="40" mode="subtract"/>
+</shape>
+```
+
+Limits: raster width and height at most 16,384 local pixels including halo,
+path text at most 1 MiB, 65,536 commands, 4,096 contours and 262,144
+flattened points, 4,096 outer polygon/star points. All rasters, morphology
+rows, blur scratch and polygon vertices are frame-owned and charged to the
+compositing resource budget, with work reserved before each pass (disk
+morphology costs `(2r+1)` row extrema per pixel, feather six running-sum
+passes per blended radius). Exceeding a limit fails the render with the
+mask's source line; nothing is silently dropped.
+
+## Track mattes
+
+`group`, `layer`, `shape`, `particleEmitter` and `adjustment` accept `matte`
+(the id of another group, layer, shape, emitter or adjustment), `matteMode`
+(`alpha` default, `alpha-inverted`, `luma`, `luma-inverted`) and
+`matteVisible` (default false). These are new attributes, legal in both
+versions. The consumer's coverage is multiplied by the source image's alpha,
+or by alpha times physical luminance `Y` (as for the luma operators);
+inverted modes use one minus that value, including outside the image.
+Matte coverage applies after the consumer's own effects and masks and
+before its opacity and blend; a group with a matte is isolated.
+
+The source image is the source node rendered alone into a transparent,
+composition-sized buffer: its own subtree, effects, masks, matte and opacity
+apply with a normal root blend (a dissolve source keeps its dissolved
+image). Ancestors contribute only placement and opacity: transforms, card
+projection, relative-length scopes, clocks, physics poses, visibility,
+lifetime and the product of their opacities. Ancestor masks, mattes,
+effects, blends and siblings are excluded. An `adjustment` source's image
+is its effected parent prefix (the preceding siblings, on the project
+background at the root) multiplied by its own opacity, masks and matte.
+A source is not drawn normally unless at least one consumer sets
+`matteVisible="true"`; this static OR ignores consumer activity. Suppression
+does not change sibling order, card-run membership or sort keys.
+
+Consumers sample the source image at their own composition-pixel position
+(through the card homography inside a projective card), so the source and
+consumer share the consumer's parent space. A source under an inactive
+ancestor, or outside its lifetime, has empty coverage.
+
+`matte` ids resolve through a sorted id index before children are sorted;
+unknown ids and ids of other kinds (assets, effects, cameras, 3D objects)
+fail with the consumer's line. Preparation builds a bounded dependency
+graph: capturing source A draws A's subtree, so A depends on the matte of
+every consumer inside it, and an adjustment source also depends on the
+mattes inside its preceding siblings. A cycle, including a node using itself
+or an ancestor as its matte, fails with the id chain, for example
+`track matte dependency cycle: a -> b -> a`. A group may use its own
+descendant. At most 65,536 sources, 1,048,576 edges.
+
+```xml
+<shape id="spot" shape="ellipse" x="40" y="20" width="80" height="50"
+       fill="#FFFFFF"/>
+<group id="lit" matte="spot" matteMode="luma">
+  <layer id="photo" asset="photo"/>
+</group>
+```
+
+Each frame renders every source that some potentially drawn consumer uses,
+once, in dependency order, before the main traversal. A capture costs one
+composition-sized RGBA scratch (shared by all captures) and a retained
+two-float-per-pixel coverage image for the frame; all are charged to the
+compositing budget. Captures never write the frame, the shared depth buffer
+or the 3D pass: card sources are depth-clipped only, and 3D objects are
+not part of captured images. `object3D` cannot be a matte source in this
+build.
+
+## Adjustment layers
+
+`<adjustment id effects="...">` is a 1.1 node in `composition` and `group`.
+It has no children other than `mask`, `animate` and the common node
+attributes `z`, `visible`, `opacity`, `start`, `end`, `x`, `y`, `rotation`,
+`scaleX`, `scaleY`, `anchorX`, `anchorY`, `skewX`, `skewY`, `matte`,
+`matteMode`, `matteVisible` and `blend`. `effects` is required and every id
+must resolve. `threeD`, depth rotations, `parent`, markers, names and tags
+remain unsupported for adjustments.
+
+At its position in draw order the adjustment copies the completed parent
+backdrop D (the frame with the background and every earlier sibling at the
+root, or the parent's isolated buffer, which is created automatically),
+applies its effects in order to the copy F with its local-to-parent
+transform, and writes `D + w*(F - D)` in premultiplied RGBA, where `w` is
+its opacity times its masks and matte. A non-normal `blend` first computes
+the selected blend (or operator) of F over D, then interpolates from D with
+`w`. The effects read the whole parent, not only the mask bounds: a blur
+inside a mask gathers pixels from outside it. The transform positions masks
+and effect coordinates; it does not move the backdrop. Results clamp alpha
+to [0,1] and floor negative color at zero. Later siblings are unaffected.
+
+```xml
+<adjustment id="mono" effects="grey" opacity="0.8">
+  <mask type="ellipse" x="40" y="20" width="240" height="140" feather="12"/>
+</adjustment>
+```
+
+An adjustment costs one flush of queued draws, one target-sized copy of the
+receiving clip grown by the effects' reach, the effects themselves, and one
+replacement pass. Effect scratch is reserved from the compositing budget for
+the duration of each effect.
+
+## Compositing resource limits
+
+Scenes that need compositing preparation render under one frame-owned
+resource ledger (`src/compositor_resources.c`) with 2 GiB of live bytes,
+536,870,912 live scalar-equivalent pixels and 1,073,741,824 work units per
+frame, independent of thread count and render history. B1-3 features charge
+their buffers, coverage rasters, captures, adjustment copies and effect or
+depth-of-field scratch reservations before use; exhaustion fails the render
+with the owning element, attribute and line, and allocation failure returns
+`SR_ERR_MEMORY`. The ledger does not yet cover 2D/3D lighting scratch, the
+renderer's outer composition/viewport targets or whole-frame global
+effects, so it is not a complete per-frame memory bound for every scene.
 
 ## Extended animation curves and tracks (1.1)
 

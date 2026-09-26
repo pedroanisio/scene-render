@@ -295,27 +295,37 @@ static void xml_hosts_and_pixels(sr_test_ctx *t) {
     }
 }
 
+/* Every 1.1 blend value is a new enumeration: accepted in 1.1 on all four
+ * hosts, rejected with a version diagnostic in 1.0. */
 static void version_and_pending_gates(sr_test_ctx *t) {
-    static const char *const pending[] = {"dissolve", "stencil-alpha",
+    static const char *const operators[] = {"dissolve", "stencil-alpha",
         "stencil-luma", "silhouette-alpha", "silhouette-luma", "alpha-add",
         "behind"};
     for (unsigned host = 0; host < 4; ++host) {
-        for (size_t m = 0; m < ARRAY_COUNT(color_names) + ARRAY_COUNT(pending); ++m) {
-            bool implemented = m < ARRAY_COUNT(color_names);
-            const char *mode = implemented ? color_names[m]
-                : pending[m - ARRAY_COUNT(color_names)];
+        for (size_t m = 0; m < ARRAY_COUNT(color_names) + ARRAY_COUNT(operators); ++m) {
+            const char *mode = m < ARRAY_COUNT(color_names) ? color_names[m]
+                : operators[m - ARRAY_COUNT(color_names)];
             char xml[1536];
-            host_xml(xml, sizeof(xml), implemented ? "1.0" : "1.1", host, mode);
+            host_xml(xml, sizeof(xml), "1.0", host, mode);
             char *message = NULL;
             SrScene scene;
             SrStatus status = st_load(t, "blend-gate.xml", xml, &scene, &message);
             CHECK_INT(t, status, SR_ERR_XML);
-            CHECK_CONTAINS(t, message, implemented ? "requires version=\"1.1\""
-                                                  : "unsupported in this build");
+            CHECK_CONTAINS(t, message, "requires version=\"1.1\"");
             CHECK_CONTAINS(t, message, ":5: error:");
             CHECK_CONTAINS(t, message, "@blend:");
             if (status == SR_OK) sr_scene_free(&scene);
             free(message);
+            if (m < ARRAY_COUNT(color_names)) continue;
+            host_xml(xml, sizeof(xml), "1.1", host, mode);
+            status = st_load(t, "blend-gate.xml", xml, &scene, NULL);
+            CHECK_INT(t, status, SR_OK);
+            if (status == SR_OK) {
+                SrNode *node = sr_scene_find_node(&scene, "n");
+                CHECK(t, node && node->blend == (SrBlendMode)(SR_BLEND_COLOR_END +
+                    (m - ARRAY_COUNT(color_names))));
+                sr_scene_free(&scene);
+            }
         }
     }
 }

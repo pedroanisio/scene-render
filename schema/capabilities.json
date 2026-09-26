@@ -7,7 +7,11 @@
     "stylesType/token",
     "scene/metadata",
     "metadataType/meta",
-    "particleEmitterType/mask"
+    "particleEmitterType/mask",
+    "compositionType/adjustment",
+    "groupType/adjustment",
+    "adjustmentType/mask",
+    "adjustmentType/animate"
   ],
   "attributes": [
     "groupType/@threeD",
@@ -56,7 +60,47 @@
     "shapeType/@skewX",
     "shapeType/@skewY",
     "particleEmitterType/@skewX",
-    "particleEmitterType/@skewY"
+    "particleEmitterType/@skewY",
+    "maskType/@path",
+    "maskType/@points",
+    "maskType/@innerRadius",
+    "maskType/@fillRule",
+    "maskType/@feather",
+    "maskType/@expansion",
+    "maskType/@opacity",
+    "maskType/@mode",
+    "groupType/@matte",
+    "groupType/@matteMode",
+    "groupType/@matteVisible",
+    "layerType/@matte",
+    "layerType/@matteMode",
+    "layerType/@matteVisible",
+    "shapeType/@matte",
+    "shapeType/@matteMode",
+    "shapeType/@matteVisible",
+    "particleEmitterType/@matte",
+    "particleEmitterType/@matteMode",
+    "particleEmitterType/@matteVisible",
+    "adjustmentType/@matte",
+    "adjustmentType/@matteMode",
+    "adjustmentType/@matteVisible",
+    "adjustmentType/@id",
+    "adjustmentType/@z",
+    "adjustmentType/@visible",
+    "adjustmentType/@opacity",
+    "adjustmentType/@x",
+    "adjustmentType/@y",
+    "adjustmentType/@rotation",
+    "adjustmentType/@scaleX",
+    "adjustmentType/@scaleY",
+    "adjustmentType/@anchorX",
+    "adjustmentType/@anchorY",
+    "adjustmentType/@start",
+    "adjustmentType/@end",
+    "adjustmentType/@skewX",
+    "adjustmentType/@skewY",
+    "adjustmentType/@effects",
+    "adjustmentType/@blend"
   ],
   "values": {
     "animateType/@extrapolateBefore": [
@@ -190,7 +234,14 @@
       "hue",
       "saturation",
       "color",
-      "luminosity"
+      "luminosity",
+      "dissolve",
+      "stencil-alpha",
+      "stencil-luma",
+      "silhouette-alpha",
+      "silhouette-luma",
+      "alpha-add",
+      "behind"
     ],
     "layerType/@blend": [
       "plus-lighter",
@@ -214,7 +265,14 @@
       "hue",
       "saturation",
       "color",
-      "luminosity"
+      "luminosity",
+      "dissolve",
+      "stencil-alpha",
+      "stencil-luma",
+      "silhouette-alpha",
+      "silhouette-luma",
+      "alpha-add",
+      "behind"
     ],
     "shapeType/@blend": [
       "plus-lighter",
@@ -238,7 +296,14 @@
       "hue",
       "saturation",
       "color",
-      "luminosity"
+      "luminosity",
+      "dissolve",
+      "stencil-alpha",
+      "stencil-luma",
+      "silhouette-alpha",
+      "silhouette-luma",
+      "alpha-add",
+      "behind"
     ],
     "particleEmitterType/@blend": [
       "plus-lighter",
@@ -262,7 +327,99 @@
       "hue",
       "saturation",
       "color",
-      "luminosity"
+      "luminosity",
+      "dissolve",
+      "stencil-alpha",
+      "stencil-luma",
+      "silhouette-alpha",
+      "silhouette-luma",
+      "alpha-add",
+      "behind"
+    ],
+    "maskType/@type": [
+      "path",
+      "polygon",
+      "star"
+    ],
+    "maskType/@mode": [
+      "intersect",
+      "add",
+      "subtract",
+      "lighten",
+      "darken",
+      "difference",
+      "none"
+    ],
+    "maskType/@fillRule": [
+      "nonzero",
+      "evenodd"
+    ],
+    "groupType/@matteMode": [
+      "alpha",
+      "alpha-inverted",
+      "luma",
+      "luma-inverted"
+    ],
+    "layerType/@matteMode": [
+      "alpha",
+      "alpha-inverted",
+      "luma",
+      "luma-inverted"
+    ],
+    "shapeType/@matteMode": [
+      "alpha",
+      "alpha-inverted",
+      "luma",
+      "luma-inverted"
+    ],
+    "particleEmitterType/@matteMode": [
+      "alpha",
+      "alpha-inverted",
+      "luma",
+      "luma-inverted"
+    ],
+    "adjustmentType/@matteMode": [
+      "alpha",
+      "alpha-inverted",
+      "luma",
+      "luma-inverted"
+    ],
+    "adjustmentType/@blend": [
+      "normal",
+      "dissolve",
+      "add",
+      "plus-lighter",
+      "multiply",
+      "screen",
+      "overlay",
+      "difference",
+      "exclusion",
+      "subtract",
+      "divide",
+      "darken",
+      "lighten",
+      "darker-color",
+      "lighter-color",
+      "color-dodge",
+      "color-burn",
+      "linear-dodge",
+      "linear-burn",
+      "soft-light",
+      "hard-light",
+      "linear-light",
+      "vivid-light",
+      "pin-light",
+      "hard-mix",
+      "hue",
+      "saturation",
+      "color",
+      "luminosity",
+      "stencil-alpha",
+      "stencil-luma",
+      "silhouette-alpha",
+      "silhouette-luma",
+      "alpha-add",
+      "behind"
     ]
   },
   "forms": {
@@ -377,6 +534,18 @@
     ],
     "vectorAssetType/@stroke": [
       "token"
+    ],
+    "adjustmentType/@x": [
+      "relative-length"
+    ],
+    "adjustmentType/@y": [
+      "relative-length"
+    ],
+    "adjustmentType/@anchorX": [
+      "relative-length"
+    ],
+    "adjustmentType/@anchorY": [
+      "relative-length"
     ]
   },
   "occurrence_limits": {

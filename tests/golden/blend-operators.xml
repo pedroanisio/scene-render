@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Flattened-node operators (completes the blend-modes family): dissolve,
+     stencil/silhouette alpha and luma, alpha-add and behind, each acting on
+     its automatically isolated parent; the last tile runs a stencil and a
+     dissolve inside a projected card. -->
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="2" seed="37"
+           linearLight="false" background="#121A26"/>
+  <assets>
+    <text id="label0" text="dissolve" width="74" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label1" text="stencil-alpha" width="74" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label2" text="stencil-luma" width="74" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label3" text="silhouette-alpha" width="74" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label4" text="silhouette-luma" width="74" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label5" text="alpha-add" width="74" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label6" text="behind" width="74" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+    <text id="label7" text="stencil in card" width="74" height="10" size="7"
+          fontFile="../../assets/third-party/inter/Inter-Regular.ttf" color="#D4DEEC"/>
+  </assets>
+  <composition>
+    <camera id="cam" z="-500" zoom="500" active="true"/>
+    <group id="tile0" x="4" y="6">
+      <layer id="name0" asset="label0"/>
+      <group id="parent0" y="14">
+        <shape id="warm0" shape="rect" width="36" height="56" fill="#E8A36AE0"/>
+        <shape id="cool0" shape="rect" x="36" width="36" height="56" fill="#3A7ECAC0"/>
+        <shape id="band0" shape="rect" y="22" width="72" height="12" fill="#F2E8D2"/>
+        <shape id="op0" shape="ellipse" x="36" y="28" width="46" height="34"
+               anchorX="23" anchorY="17" fill="#F04C8AFF" blend="dissolve">
+          <animate property="rotation"><key time="0" value="-20"/>
+            <key time="2" value="25"/></animate>
+          <animate property="opacity"><key time="0" value=".45"/>
+            <key time="1" value="1"/><key time="2" value=".7"/></animate>
+        </shape>
+      </group>
+    </group>
+    <group id="tile1" x="83" y="6">
+      <layer id="name1" asset="label1"/>
+      <group id="parent1" y="14">
+        <shape id="warm1" shape="rect" width="36" height="56" fill="#E8A36AE0"/>
+        <shape id="cool1" shape="rect" x="36" width="36" height="56" fill="#3A7ECAC0"/>
+        <shape id="band1" shape="rect" y="22" width="72" height="12" fill="#F2E8D2"/>
+        <shape id="op1" shape="ellipse" x="36" y="28" width="46" height="34"
+               anchorX="23" anchorY="17" fill="#FFFFFFD0" blend="stencil-alpha">
+          <animate property="rotation"><key time="0" value="-20"/>
+            <key time="2" value="25"/></animate>
+          <animate property="opacity"><key time="0" value=".45"/>
+            <key time="1" value="1"/><key time="2" value=".7"/></animate>
+        </shape>
+      </group>
+    </group>
+    <group id="tile2" x="162" y="6">
+      <layer id="name2" asset="label2"/>
+      <group id="parent2" y="14">
+        <shape id="warm2" shape="rect" width="36" height="56" fill="#E8A36AE0"/>
+        <shape id="cool2" shape="rect" x="36" width="36" height="56" fill="#3A7ECAC0"/>
+        <shape id="band2" shape="rect" y="22" width="72" height="12" fill="#F2E8D2"/>
+        <group id="op2" x="36" y="28" anchorX="30" anchorY="20" blend="stencil-luma">
+          <animate property="rotation"><key time="0" value="-15"/>
+            <key time="2" value="20"/></animate>
+          <shape id="l2a" shape="rect" width="20" height="40" fill="#FFFFFF"/>
+          <shape id="l2b" shape="rect" x="20" width="20" height="40" fill="#8C8C8C"/>
+          <shape id="l2c" shape="ellipse" x="36" y="6" width="24" height="28" fill="#404040"/>
+        </group>
+      </group>
+    </group>
+    <group id="tile3" x="241" y="6">
+      <layer id="name3" asset="label3"/>
+      <group id="parent3" y="14">
+        <shape id="warm3" shape="rect" width="36" height="56" fill="#E8A36AE0"/>
+        <shape id="cool3" shape="rect" x="36" width="36" height="56" fill="#3A7ECAC0"/>
+        <shape id="band3" shape="rect" y="22" width="72" height="12" fill="#F2E8D2"/>
+        <shape id="op3" shape="ellipse" x="36" y="28" width="46" height="34"
+               anchorX="23" anchorY="17" fill="#FFFFFFD0" blend="silhouette-alpha">
+          <animate property="rotation"><key time="0" value="-20"/>
+            <key time="2" value="25"/></animate>
+          <animate property="opacity"><key time="0" value=".45"/>
+            <key time="1" value="1"/><key time="2" value=".7"/></animate>
+        </shape>
+      </group>
+    </group>
+    <group id="tile4" x="4" y="94">
+      <layer id="name4" asset="label4"/>
+      <group id="parent4" y="14">
+        <shape id="warm4" shape="rect" width="36" height="56" fill="#E8A36AE0"/>
+        <shape id="cool4" shape="rect" x="36" width="36" height="56" fill="#3A7ECAC0"/>
+        <shape id="band4" shape="rect" y="22" width="72" height="12" fill="#F2E8D2"/>
+        <group id="op4" x="36" y="28" anchorX="30" anchorY="20" blend="silhouette-luma">
+          <animate property="rotation"><key time="0" value="-15"/>
+            <key time="2" value="20"/></animate>
+          <shape id="l4a" shape="rect" width="20" height="40" fill="#FFFFFF"/>
+          <shape id="l4b" shape="rect" x="20" width="20" height="40" fill="#8C8C8C"/>
+          <shape id="l4c" shape="ellipse" x="36" y="6" width="24" height="28" fill="#404040"/>
+        </group>
+      </group>
+    </group>
+    <group id="tile5" x="83" y="94">
+      <layer id="name5" asset="label5"/>
+      <group id="parent5" y="14">
+        <shape id="warm5" shape="rect" width="36" height="56" fill="#E8A36AE0"/>
+        <shape id="cool5" shape="rect" x="36" width="36" height="56" fill="#3A7ECAC0"/>
+        <shape id="band5" shape="rect" y="22" width="72" height="12" fill="#F2E8D2"/>
+        <shape id="op5" shape="ellipse" x="36" y="28" width="46" height="34"
+               anchorX="23" anchorY="17" fill="#C04CF080" blend="alpha-add">
+          <animate property="rotation"><key time="0" value="-20"/>
+            <key time="2" value="25"/></animate>
+          <animate property="opacity"><key time="0" value=".45"/>
+            <key time="1" value="1"/><key time="2" value=".7"/></animate>
+        </shape>
+      </group>
+    </group>
+    <group id="tile6" x="162" y="94">
+      <layer id="name6" asset="label6"/>
+      <group id="parent6" y="14">
+        <shape id="warm6" shape="rect" width="36" height="56" fill="#E8A36AE0"/>
+        <shape id="cool6" shape="rect" x="36" width="36" height="56" fill="#3A7ECAC0"/>
+        <shape id="band6" shape="rect" y="22" width="72" height="12" fill="#F2E8D2"/>
+        <shape id="hole6" shape="ellipse" x="12" y="8" width="48" height="40" fill="#00000000"/>
+        <shape id="op6" shape="ellipse" x="36" y="28" width="46" height="34"
+               anchorX="23" anchorY="17" fill="#9CE07A" blend="behind">
+          <animate property="rotation"><key time="0" value="-20"/>
+            <key time="2" value="25"/></animate>
+          <animate property="opacity"><key time="0" value=".45"/>
+            <key time="1" value="1"/><key time="2" value=".7"/></animate>
+        </shape>
+      </group>
+    </group>
+    <group id="tile7" x="241" y="94">
+      <layer id="name7" asset="label7"/>
+      <group id="parent7" x="36" y="42" anchorX="36" anchorY="28" threeD="true">
+        <animate property="rotation.y"><key time="0" value="-35"/>
+          <key time="2" value="35"/></animate>
+        <shape id="warm7" shape="rect" width="36" height="56" fill="#E8A36AE0"/>
+        <shape id="cool7" shape="rect" x="36" width="36" height="56" fill="#3A7ECAC0"/>
+        <shape id="band7" shape="rect" y="22" width="72" height="12" fill="#F2E8D2"/>
+        <shape id="op7" shape="ellipse" x="36" y="28" width="46" height="34"
+               anchorX="23" anchorY="17" fill="#FFFFFFD8" blend="stencil-alpha">
+          <animate property="rotation"><key time="0" value="-20"/>
+            <key time="2" value="25"/></animate>
+          <animate property="opacity"><key time="0" value=".45"/>
+            <key time="1" value="1"/><key time="2" value=".7"/></animate>
+        </shape>
+        <shape id="dz7" shape="rect" x="4" y="40" width="64" height="14" fill="#F04C8AB0" blend="dissolve"/>
+      </group>
+    </group>
+  </composition>
+</scene>

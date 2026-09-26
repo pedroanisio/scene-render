@@ -613,6 +613,7 @@ static void xml_load_survives_allocation_failures(sr_test_ctx *t) {
     check_load(t, "tests/data-metadata.xml", 50);
     check_load(t, "tests/data-lengths.xml", 50);
     check_load(t, "tests/golden/skew.xml", 40);
+    check_load(t, "tests/data-compositing.xml", 60);
     check_load(t, "examples/feature-parity.xml", 50);
 }
 
@@ -727,9 +728,10 @@ static bool render_same_result(void *opaque) {
 
 static void frame_render_survives_allocation_failures(sr_test_ctx *t) {
     static const unsigned threads[] = {1, 3};
-    for (size_t i = 0; i < 4; ++i) {
+    for (size_t i = 0; i < 6; ++i) {
         RenderContext c = {.threads = threads[i % 2],
-            .fixture = i == 3 ? "tests/data-animation-hosts.xml" :
+            .fixture = i >= 4 ? "tests/data-compositing.xml" :
+                i == 3 ? "tests/data-animation-hosts.xml" :
                 i == 2 ? "tests/data-animation.xml" : "tests/data-oom.xml"};
         snprintf(c.path, sizeof(c.path), "%s", sr_test_tmp_path("oom-frame.ppm"));
         render_prepare(&c);
@@ -748,7 +750,7 @@ static void frame_render_survives_allocation_failures(sr_test_ctx *t) {
                               render_same_result,
                               {SR_ERR_MEMORY}};
         long n = replay_until_success(t, &spec, &c);
-        CHECK(t, n >= (i >= 2 ? 12 : 21));
+        CHECK(t, n >= (i >= 4 ? 40 : i >= 2 ? 12 : 21));
         free(c.reference);
         if (c.loaded) sr_scene_free(&c.scene);
     }
