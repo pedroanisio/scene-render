@@ -679,6 +679,8 @@ class Checker:
                 beats = min(int((self.duration - off) * bpm / 60.0) + 1, 1048577)
                 while beats > 0 and off + (beats - 1) * 60.0 / bpm > self.duration:
                     beats -= 1
+                while beats < 1048577 and off + beats * 60.0 / bpm <= self.duration:
+                    beats += 1
                 for i in range(1, beats + 1):
                     self.ids.setdefault("beat.%d" % i, Node("#beat", {}, None, g.line))
                 for i in range(1, (beats - 1) // per_bar + 2 if beats else 1):

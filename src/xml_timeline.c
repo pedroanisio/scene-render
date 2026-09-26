@@ -482,6 +482,11 @@ typedef struct {
     Clock base;                /* clock of the enclosing group's children */
     double shift;              /* sequence item: its slot start on `base` */
     bool item;                 /* placed by a sequence */
+    /* Sequence junction: where the previous item ended, on `base` and in
+     * composition seconds. An item starting exactly there reuses the
+     * composition instant, so marker ends leave no gap. */
+    bool junction;
+    double junction_parent, junction_absolute;
 } Placement;
 
 static bool resolve_node(ParseContext *ctx, SrNode *node, Placement placement,
@@ -518,6 +523,9 @@ static bool node_interval(ParseContext *ctx, SrNode *node, Placement placement,
                          "startMarker", &time)) return false;
         host->start = clock_map(parent, time);
         host->absolute_start = time;
+    } else if (placement.junction &&
+               placement.shift + host->start == placement.junction_parent) {
+        host->absolute_start = placement.junction_absolute;
     } else {
         host->absolute_start = absolute(placement, host->start);
     }
@@ -539,9 +547,12 @@ static bool node_interval(ParseContext *ctx, SrNode *node, Placement placement,
                  host->end);
         return resolve_error(ctx, node->source_line, element, attribute, message);
     }
-    if (!isfinite(host->absolute_start) ||
-        fabs(host->absolute_start) > SR_MAX_CLOCK_OFFSET ||
-        isnan(host->absolute_end) || !(host->absolute_end > host->absolute_start)) {
+    /* Identity placement keeps the 1.0 acceptance of any 0 <= start < end. */
+    bool retimed = !clock_identity(placement.base) || placement.shift != 0.0 ||
+        start_marker || end_marker;
+    if (!isfinite(host->absolute_start) || isnan(host->absolute_end) ||
+        !(host->absolute_end > host->absolute_start) ||
+        (retimed && fabs(host->absolute_start) > SR_MAX_CLOCK_OFFSET)) {
         snprintf(message, sizeof(message), "%s: the interval in composition "
                  "seconds is empty or exceeds 1e12 seconds", label);
         return resolve_error(ctx, node->source_line, element, attribute, message);
@@ -605,18 +616,20 @@ static bool resolve_children(ParseContext *ctx, SrNode *node, Clock clock,
     if (!timeline || !timeline->sequence) {
         for (size_t i = 0; i < node->child_count; ++i) {
             double end;
-            if (!resolve_node(ctx, node->children[i], (Placement){clock, 0.0, false},
+            if (!resolve_node(ctx, node->children[i],
+                              (Placement){clock, 0.0, false, false, 0.0, 0.0},
                               &end)) return false;
         }
         return true;
     }
     /* Children are still in document order: z sorting happens afterwards. */
     double cursor = start;
+    Placement placement = {clock, cursor, true, false, 0.0, 0.0};
     for (size_t i = 0; i < node->child_count; ++i) {
         SrNode *child = node->children[i];
         double end;
-        if (!resolve_node(ctx, child, (Placement){clock, cursor, true}, &end))
-            return false;
+        placement.shift = cursor;
+        if (!resolve_node(ctx, child, placement, &end)) return false;
         if (i + 1 == node->child_count) break;
         char label[256], message[512];
         if (!isfinite(end)) {
@@ -625,6 +638,9 @@ static bool resolve_children(ParseContext *ctx, SrNode *node, Clock clock,
             return resolve_error(ctx, child->source_line, node_element(child), "end",
                                  message);
         }
+        placement.junction = true;
+        placement.junction_parent = cursor + end;
+        placement.junction_absolute = child->end_time;
         cursor = cursor + end + timeline->time_gap;
         if (!isfinite(cursor) || fabs(cursor) > SR_MAX_CLOCK_OFFSET) {
             snprintf(message, sizeof(message), "%s: the sequence position exceeds "
@@ -638,7 +654,16 @@ static bool resolve_children(ParseContext *ctx, SrNode *node, Clock clock,
 static bool resolve_node(ParseContext *ctx, SrNode *node, Placement placement,
                          double *authored_end) {
     Clock parent = placement.base;
-    if (placement.shift != 0.0) parent.b = placement.base.b - placement.shift;
+    if (placement.shift != 0.0) {
+        parent.b = placement.base.b - placement.shift;
+        if (!isfinite(parent.b) || fabs(parent.b) > SR_MAX_CLOCK_OFFSET) {
+            char label[256], message[512];
+            snprintf(message, sizeof(message), "%s: the sequence clock offset "
+                     "exceeds 1e12 seconds", node_label(node, label, sizeof(label)));
+            return resolve_error(ctx, node->source_line, node_element(node), "start",
+                                 message);
+        }
+    }
     Host host;
     if (!node_interval(ctx, node, placement, parent, &host)) return false;
     *authored_end = host.end;
@@ -746,7 +771,7 @@ bool sr_xml_resolve_timeline(ParseContext *ctx) {
                                  ? "beatGrid" : "marker", NULL, problem);
         if (timeline->grid.present && !generated_collisions(ctx)) return false;
     }
-    Placement top = {{1.0, 0.0}, 0.0, false};
+    Placement top = {{1.0, 0.0}, 0.0, false, false, 0.0, 0.0};
     for (size_t i = 0; i < scene->root->child_count; ++i) {
         double end;
         if (!resolve_node(ctx, scene->root->children[i], top, &end)) return false;

@@ -248,6 +248,15 @@ static void nested_group_clocks(sr_test_ctx *t) {
 
 static void default_groups_keep_absolute_children(sr_test_ctx *t) {
     SrScene scene;
+    /* Identity placement keeps 1.0 acceptance: no new bound on starts. */
+    if (expect_ok(t, "<scene version=\"1.0\"><project width=\"32\" height=\"16\" "
+                  "fps=\"8\" duration=\"1\"/><composition>"
+                  "<group id=\"g\" start=\"10000000000000\"/></composition></scene>", &scene))
+        sr_scene_free(&scene);
+    /* A sequence shift is bounded even for a node without tracks. */
+    expect_error(t, HEAD("1") "<composition><sequence id=\"s\" start=\"1000000000000\" "
+                 "timeScale=\"2\"><group id=\"a\"/></sequence></composition></scene>",
+                 "exceeds 1e12 seconds");
     /* A 1.0-style group start does not shift its children; local time is
      * elapsed seconds since the node's own start (B1-1 regression). */
     if (!expect_ok(t, HEAD("8") "<composition><group id=\"g\" start=\"2\">"
@@ -326,6 +335,22 @@ static void sequence_placement(sr_test_ctx *t) {
 
 static void timed_sequence_items_meet_exactly(sr_test_ctx *t) {
     SrScene scene;
+    /* A marker end whose clock round trip is inexact (0.79166666666666663
+     * maps back to ...674): the next item still starts at the marker, so
+     * frame 19 at 24 fps shows one of them. */
+    if (expect_ok(t, "<scene version=\"1.1\"><project width=\"32\" height=\"16\" "
+                  "fps=\"24\" duration=\"2\"/><markers><marker id=\"m\" "
+                  "time=\"0.7916666666666666\"/></markers><composition>"
+                  "<sequence id=\"s\" timeScale=\"10\" timeOffset=\"0.3\">"
+                  "<shape id=\"a\" shape=\"rect\" width=\"2\" height=\"2\" endMarker=\"m\"/>"
+                  "<shape id=\"b\" shape=\"rect\" width=\"2\" height=\"2\"/>"
+                  "</sequence></composition></scene>", &scene)) {
+        const SrNode *a = sr_scene_find_node(&scene, "a");
+        const SrNode *b = sr_scene_find_node(&scene, "b");
+        CHECK(t, a && b && a->end_time == 0.7916666666666666 &&
+                 b->start_time == a->end_time);
+        sr_scene_free(&scene);
+    }
     if (!expect_ok(t, HEAD("10") "<composition>"
         "<sequence id=\"s\" start=\"0.3\" timeScale=\"3\" timeOffset=\"0.1\">"
         "<shape id=\"a\" shape=\"rect\" width=\"2\" height=\"2\" end=\"0.7\"/>"

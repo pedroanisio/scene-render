@@ -139,8 +139,8 @@ static void generated_id_strings(sr_test_ctx *t) {
             value = sr_random_mix64(value);
             id[i] = alphabet[value % (sizeof(alphabet) - 1)];
         }
+        if (sample % 3 == 0 && length >= 5) memcpy(id, "beat.", 5);
         id[length] = '\0';
-        if (sample % 3 == 0) memcpy(id, "beat.", 5);
         bool bar;
         uint64_t number;
         bool parsed = sr_beat_id_parse(id, &bar, &number);
