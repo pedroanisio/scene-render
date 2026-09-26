@@ -392,3 +392,19 @@ Shared graph/surface limits remain a required B1-3 preparation step for all
 new compositing features, including direct-C scenes. Advanced masks, parent
 operators/dissolve, track mattes and adjustment nodes remain, followed by the
 later batch items and final merge/completion gates.
+
+## Prepared vector-path prerequisite
+
+Path parsing now exposes owned immutable flattened geometry for reuse by
+advanced-mask preparation. Existing public path functions use the same
+parser, subdivision and coverage calculations; no capability is enabled by
+this extraction. Independent geometry, four-thread reuse, immutable-storage
+and allocation-failure tests pass. Read-only review found no issues.
+
+Full SDK Release, ASan/UBSan and coverage each pass 75/75 CTests, including
+all 21 golden frame-order checks. Coverage is 92.07% lines / 76.46% branches;
+floors 90.05% / 74.45% pass. The oracle against `cef4400` matches 309 previews,
+three encodes and two expected rejections. Existing image hashes and the
+baseline are unchanged. The strict 2% performance gate passes: clear +1.5%,
+compositor -11.2% and stage total -12.7%; measurements are noisy and do not
+establish a stable speedup. See `docs/reviews/b1-compositing-prepared-path.md`.

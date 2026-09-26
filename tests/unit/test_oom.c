@@ -19,6 +19,8 @@
  * cannot run (it needs ptrace, which the Flatpak SDK sandbox denies). The
  * sanitizer build (SR_SANITIZE=ON) turns invalid accesses into failures.
  * SR_OOM_BACKTRACE=1 prints a backtrace of every injected failure. */
+#include "vector_path_internal.h"
+
 #include <execinfo.h>
 #include <inttypes.h>
 #include <pthread.h>
@@ -284,6 +286,41 @@ static void color_parse_survives_allocation_failures(sr_test_ctx *t) {
     CHECK(t, !ok && oom_hit());
     CHECK(t, memcmp(&parsed, &sentinel, sizeof(parsed)) == 0);
     CHECK_INT(t, live_stop(), 0);
+}
+
+/* The descriptor is caller-owned; successful and partial parses, raster
+ * scratch and stroke indices must all unwind independently. */
+static SrStatus prepared_path_op(void *opaque) {
+    SrPreparedPath *path = opaque;
+    SrStatus status = sr_prepared_path_parse(
+        "M 1 1 C 2 8 8 2 9 9 Q 5 11 1 9 Z M 3 3 L 7 4 L 4 8 Z", path);
+    float fill[144], stroke[144];
+    if (status == SR_OK)
+        status = sr_prepared_path_coverage(path, SR_FILL_EVENODD,
+                                           1.5, 12, 12, fill, stroke);
+    return status;
+}
+
+static SrStatus prepared_path_bad_op(void *opaque) {
+    SrPreparedPath *path = opaque;
+    SrStatus status = sr_prepared_path_parse(
+        "M 1 1 C 2 8 8 2 9 9 Q 5 11 1 9 Z M 3 3 L 7 4 L 4 8 Z Q nope", path);
+    if (path->items || path->count || path->capacity) return SR_ERR_ARGUMENT;
+    return status == SR_ERR_ASSET ? SR_OK : status;
+}
+
+static void prepared_path_release(void *opaque) {
+    sr_prepared_path_free(opaque);
+}
+
+static void prepared_paths_survive_allocation_failures(sr_test_ctx *t) {
+    SrPreparedPath path = {0};
+    const OomSpec valid = {"prepared path and coverage", prepared_path_op,
+        prepared_path_release, NULL, NULL, {SR_ERR_MEMORY}};
+    CHECK(t, replay_until_success(t, &valid, &path) > 5);
+    const OomSpec invalid = {"partial prepared path", prepared_path_bad_op,
+        prepared_path_release, NULL, NULL, {SR_ERR_MEMORY}};
+    CHECK(t, replay_until_success(t, &invalid, &path) > 2);
 }
 
 /* ---------------------------------------------------------------- loading */
@@ -708,6 +745,8 @@ static void injection_and_leak_check_work(sr_test_ctx *t) {
 
 const sr_test_case sr_tests_oom[] = {
     {"injection_and_leak_check_work", injection_and_leak_check_work},
+    {"prepared_paths_survive_allocation_failures",
+     prepared_paths_survive_allocation_failures},
     {"color_parse_survives_allocation_failures",
      color_parse_survives_allocation_failures},
     {"repeated_render_leaks_nothing", repeated_render_leaks_nothing},

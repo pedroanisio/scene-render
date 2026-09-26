@@ -1,17 +1,20 @@
 #include "scene_render/vector_path.h"
+#include "vector_path_internal.h"
 
 #include <ctype.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct { double x, y; } Point;
-typedef struct { Point *points; size_t count, capacity; bool closed; } Contour;
-typedef struct { Contour *items; size_t count, capacity; } Path;
+typedef SrPathPoint Point;
+typedef SrPathContour Contour;
+typedef SrPreparedPath Path;
 
-static void path_free(Path *path) {
-    for (size_t i=0;i<path->count;++i) free(path->items[i].points);
+void sr_prepared_path_free(SrPreparedPath *path) {
+    if (!path) return;
+    for (size_t i = 0; i < path->count; ++i) free(path->items[i].points);
     free(path->items);
+    *path = (SrPreparedPath){0};
 }
 
 static Contour *add_contour(Path *path) {
@@ -96,11 +99,19 @@ static SrStatus parse_path(const char *text,Path *path) {
     return SR_OK;
 }
 
-SrStatus sr_vector_path_check(const char *text) {
+SrStatus sr_prepared_path_parse(const char *text, SrPreparedPath *out) {
+    if (!out) return SR_ERR_ARGUMENT;
+    *out = (SrPreparedPath){0};
     if (!text) return SR_ERR_ASSET;
-    Path path={0};
-    SrStatus status=parse_path(text,&path);
-    path_free(&path);
+    SrStatus status = parse_path(text, out);
+    if (status != SR_OK) sr_prepared_path_free(out);
+    return status;
+}
+
+SrStatus sr_vector_path_check(const char *text) {
+    Path path = {0};
+    SrStatus status = sr_prepared_path_parse(text, &path);
+    sr_prepared_path_free(&path);
     return status;
 }
 
@@ -390,28 +401,34 @@ SrStatus sr_vector_path_coverage(const char *text, SrFillRule rule,
         (size_t)height > SIZE_MAX / sizeof(float) / ((size_t)width + 2))
         return SR_ERR_ARGUMENT;
     Path path = {0};
-    SrStatus parsed = parse_path(text, &path);
-    if (parsed != SR_OK) {
-        path_free(&path);
-        return parsed;
-    }
+    SrStatus status = sr_prepared_path_parse(text, &path);
+    if (status == SR_OK)
+        status = sr_prepared_path_coverage(&path, rule, stroke_width, width,
+                                           height, fill, stroke);
+    sr_prepared_path_free(&path);
+    return status;
+}
+
+SrStatus sr_prepared_path_coverage(const SrPreparedPath *path, SrFillRule rule,
+                                   double stroke_width, uint32_t width,
+                                   uint32_t height, float *fill, float *stroke) {
+    if (!path || !path->count || !path->items || !fill || !width || !height ||
+        width > INT32_MAX - 2 || height > INT32_MAX ||
+        (size_t)height > SIZE_MAX / sizeof(float) / ((size_t)width + 2))
+        return SR_ERR_ARGUMENT;
     size_t cells = ((size_t)width + 2) * height;
     Accumulator acc = {sr_alloc(cells * sizeof(float)), (int)width + 2,
                        (int)height};
-    if (!acc.cells) {
-        path_free(&path);
-        return SR_ERR_MEMORY;
-    }
-    for (size_t c = 0; c < path.count; ++c)
-        accumulate_polygon(&acc, path.items[c].points, path.items[c].count);
+    if (!acc.cells) return SR_ERR_MEMORY;
+    for (size_t c = 0; c < path->count; ++c)
+        accumulate_polygon(&acc, path->items[c].points, path->items[c].count);
     resolve(&acc, rule, fill);
     if (stroke) {
         if (stroke_width > 0.0) {
-            SrStatus stroked = stroke_coverage(&path, stroke_width * 0.5,
+            SrStatus stroked = stroke_coverage(path, stroke_width * 0.5,
                                                width, height, stroke);
             if (stroked != SR_OK) {
                 free(acc.cells);
-                path_free(&path);
                 return stroked;
             }
         } else {
@@ -419,7 +436,6 @@ SrStatus sr_vector_path_coverage(const char *text, SrFillRule rule,
         }
     }
     free(acc.cells);
-    path_free(&path);
     return SR_OK;
 }
 
