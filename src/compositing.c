@@ -274,6 +274,9 @@ static SrStatus prepare_nodes(const SrScene *scene, SrCompositePlan *plan,
             if (node->child_count)
                 return fail(scene, node, diag, SR_ERR_RENDER, NULL,
                             "an adjustment layer has no children");
+            if (node->card)
+                return fail(scene, node, diag, SR_ERR_RENDER, "threeD",
+                            "adjustment depth cards are unsupported in this build");
             if (!node->effect_ref_count || !node->effect_refs)
                 return fail(scene, node, diag, SR_ERR_RENDER, "effects",
                             "an adjustment layer requires resolved effects");

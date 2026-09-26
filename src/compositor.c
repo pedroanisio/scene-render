@@ -1708,6 +1708,35 @@ static SrStatus sr_composite_effects(SrDrawContext *context, const SrNode *node,
     return status;
 }
 
+/* Depth-of-field blur of a card buffer. Bounded renders reserve its two
+ * RGBA copies of the grown rectangle plus the three box passes' row
+ * scratch, and six passes of each copy, before the call. */
+static SrStatus sr_card_depth_blur(SrDrawContext *context, const SrNode *node,
+                                   SrFrame *frame, SrEffectRect *rect,
+                                   double radius) {
+    SrCompositeResources *resources = context->compositor->resources;
+    if (!resources)
+        return sr_effects_blur_rect(frame, rect, radius, context->compositor->threads);
+    /* The deviation saturates at 64 px: reach at most 3 * 65 px. */
+    uint64_t reach = 3 * 65;
+    uint64_t w = (uint64_t)(rect->x1 - rect->x0) + 2 * reach;
+    uint64_t h = (uint64_t)(rect->y1 - rect->y0) + 2 * reach;
+    if (w > frame->width) w = frame->width;
+    if (h > frame->height) h = frame->height;
+    uint64_t pixels = 2 * w * h * 4 + h * (4 * w + 48);
+    uint64_t bytes = pixels * sizeof(float) + 4096;
+    SrCompositeOwner previous = sr_composite_owner(resources,
+        sr_composite_node_owner(context->scene, node, "zDepth/focusDistance"));
+    SrStatus status = SR_ERR_RENDER;
+    if (sr_composite_reserve(resources, bytes, pixels, 0) &&
+        sr_composite_work(resources, w * h, 2 * 3 * 16 + 16)) {
+        status = sr_effects_blur_rect(frame, rect, radius, context->compositor->threads);
+        sr_composite_release(resources, bytes, pixels);
+    }
+    sr_composite_owner(resources, previous);
+    return status;
+}
+
 /* The coverage chain of one node draw: its own masks (analytic 1.0 masks,
  * or an advanced coverage grid), its track matte, then `outer`. The chain
  * links live in this struct, so it must not move while draws borrow them.
@@ -2644,8 +2673,7 @@ static SrStatus sr_draw_card(SrDrawContext *context, const SrNode *node,
         status = sr_composite_effects(context, node, &buffer->frame, to_canvas,
                                       &rect);
     if (status == SR_OK && blur > 1e-3 && rect.x1 > rect.x0 && rect.y1 > rect.y0)
-        status = sr_effects_blur_rect(&buffer->frame, &rect, blur,
-                                      context->compositor->threads);
+        status = sr_card_depth_blur(context, node, &buffer->frame, &rect, blur);
     if (status != SR_OK) return status;
     buffer->x0 = rect.x0; buffer->y0 = rect.y0;
     buffer->x1 = rect.x1; buffer->y1 = rect.y1;
