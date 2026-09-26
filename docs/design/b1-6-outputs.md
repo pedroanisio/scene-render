@@ -80,9 +80,16 @@ longer a once-only section, and `poster`/`thumbnail` are children of
   acceptance exactly (`crf`/`preset` on FFV1 remain accepted and unused).
 - Sequence paths hold exactly one integer conversion (`%d` or `%0Nd`,
   N ≤ 9), `%%` escapes, nothing else.
-- Every output path, sequence pattern and still path is distinct.
-- Still count per output ≤ `SR_MAX_OUTPUT_STILLS` (16); `0 <= time <
-  duration`; still `width` ≤ 16384.
+- No two writers can produce the same file: plain paths are compared
+  exactly; a sequence pattern collides with another pattern when their
+  literal prefix and suffix are equal (so `f-%d.png` and `f-%04d.png`
+  collide), and with a plain path the pattern can generate. The check runs
+  at load and again at plan time on the effective paths (after `--output`).
+- Still count per output ≤ `SR_MAX_OUTPUT_STILLS` (16); the still time must
+  lie inside its output's `[start, end)`; still `width` ≤ 16384 and the
+  derived height is in `[1, 16384]`.
+- Per-output `fps` is between 1 and 1000 frames per second (bounds the
+  per-frame audio block and the frame count).
 
 The resolve pass fills per-codec defaults when not authored: pixel format
 (ProRes `yuv422p10le` or `yuv444p10le` for 4444/4444xq, VP9/AV1 `yuv420p`,
@@ -101,7 +108,13 @@ listed in §9 are flipped when rendering, tests and docs are complete.
 - `--output-id ID[,ID...]`: the listed outputs, in document order; an
   unknown id is an argument error (exit 2) that names the id.
 - `--output FILE` overrides the path of the single selected output; with
-  more than one selected output it is an argument error.
+  more than one selected output it is an argument error. The container of
+  a 1.0 codec, or of a new codec without `container`, is derived from the
+  effective path (so `--output x.mkv` still switches to Matroska).
+- `--resolution` and `--fps` change the project; outputs without their own
+  `width`/`height`/`fps` inherit them, authored per-output values win.
+- `--quality` applies to every selected output whose codec has rate
+  control (h264, h265, vp9, av1), as it does to the single 1.0 output.
 - `--preview-frame N` and `--hash` operate on exactly one output: the one
   given by `--output-id` (which must then name one output) or the first
   output. They render at that output's width, height, fps and colour space.
@@ -155,7 +168,9 @@ for H.264/H.265 (unchanged) and `.mkv` for the rest.
 
 ### Stills
 
-A still shows the frame of its output that is displayed at `time`:
+The still's time must lie inside its output's range (load error
+otherwise), so the slice of a sliced render that contains the still's frame
+also renders that output. A still shows the frame of its output that is displayed at `time`:
 `floor(time * r + 1e-9)` at the output's rate. It is rendered after the
 output's frames, inside the same pass when it has the output's width, or in
 a stills-only pass at `width x round(width * H / W)` otherwise (render, not
@@ -178,7 +193,7 @@ are byte-identical at every count (existing tested property). H.264's
 |---|---|---|---|---|---|
 | prores | prores_ks | mov, mkv | yuv422p10le (4444: yuv444p10le) | `proresProfile` | thread_count 1 |
 | vp9 | libvpx-vp9 | webm, mkv, mp4 | yuv420p | `crf` (0–63, `b=0`) or `bitrate` | threads 1, row-mt 0, deadline good, cpu-used from `preset` |
-| av1 | libsvtav1 | mp4, mkv, webm | yuv420p | `crf` (0–63) or `bitrate` | thread_count 1, `lp=1`, preset from `preset` |
+| av1 | libsvtav1 | mp4, mkv, webm | yuv420p | `crf` (1–63; FFmpeg 7.1 ignores 0) or `bitrate` | thread_count 1, `svtav1-params lp=1`, preset from `preset` |
 | gif | gif | gif | pal8 | — | per-frame palette (below) |
 | apng | apng | apng | rgb24 | — | — |
 | png-sequence | png | files | rgb24 | — | one file per frame |
@@ -196,9 +211,11 @@ their muxers; sequences use no container. With `container`, the muxer is
 the attribute's and the extension is free.
 
 **EXR** receives linear-light values: the blend-space frame is
-unpremultiplied, decoded with the exact working-space transfer function
-(no LUT), converted to the output gamut, then premultiplied again (EXR
-convention). Values are not clamped. The planes are filled directly
+unpremultiplied; when the project is not `linearLight` it is decoded with
+an extended-range form of the working-space transfer function (the same
+curve, sign-symmetric and not clamped, unlike `sr_color_decode`); linear
+projects are not decoded again. It is then converted to the output gamut
+and premultiplied again (EXR convention). Values are not clamped. The planes are filled directly
 (G, B, R[, A]) instead of going through swscale.
 
 **GIF palette.** Each frame is quantized on its own (frame-order safe): the
@@ -236,9 +253,15 @@ changes are:
 - `SrWriteSlot` carries one buffer per sink; the writer encodes each sink
   whose range contains the frame, in sink order, then its audio block. With
   one sink the call sequence is exactly the current one.
-- The first sink is converted inside `sr_render_frame` as today (8/16 bit,
-  GPU when requested); other sinks are converted from the same float frame
-  with their own `SrColorOutput`. A 32-bit (EXR) conversion is a new branch
+- The first sink is converted inside `sr_render_frame` as today; other
+  sinks are converted from the same float frame with their own
+  `SrColorOutput`. The OpenCL conversion is used only for a pass with one
+  sink whose output is a 1.0 output (today's behaviour); every other sink
+  uses the CPU conversion, so a sink's bytes never depend on which other
+  outputs are selected. The GPU call takes the sink's colour space.
+- Audio is opened and written per sink: gif, apng and the sequences never
+  get an audio stream (info diagnostic when the scene has audio); the
+  others get it when the scene has audio tracks, as today. A 32-bit (EXR) conversion is a new branch
   that calls `sr_output_convert_linear` (new module).
 - The encoder API gains `*_output` variants that take the `SrOutput`
   explicitly; the existing functions wrap them with `&scene->output`.
@@ -258,6 +281,9 @@ are shared).
 | `SR_MAX_OUTPUT_DIMENSION` | 16384 px | `output@width/height`, still `@width` |
 | `SR_MAX_PASS_FRAME_BYTES` | 1 GiB of per-frame sink buffers in one shared pass (x3 slots) | `output` |
 | sequence frame numbers | < 10^9 | `output@path` |
+| output fps | 1 to 1000 per second | `output@fps` |
+| still height | derived, 1 to 16384 | still `@width` |
+| `loopCount` | ≤ 65535 (APNG `plays` / GIF `loop` bounds) | `output@loopCount` |
 | GIF quantizer | frame pixels (already bounded by the frame) | — |
 
 ## 8. Determinism
@@ -281,7 +307,12 @@ The manifest already hashes the scene bytes, so XML attributes are covered.
 For outputs that use any new attribute or codec, a new `output=` line records
 the effective settings, including the pass size and rate from CLI overrides,
 the selected id, container, GOP, B-frames, faststart and ProRes profile.
-Legacy outputs write no new line, so 1.0 manifests are byte-identical.
+The line also names the libav library versions (`av_version_info()` and the
+libavcodec/libavformat/libswscale version integers), since new encoders
+live in them. Legacy outputs write no new line, so 1.0 manifests are
+byte-identical; fingerprinting library versions for 1.0 outputs would
+invalidate existing parts directories and is left to the batch-wide
+fingerprint policy (recorded in the evidence file).
 
 ## 10. Tests
 
@@ -304,7 +335,25 @@ Legacy outputs write no new line, so 1.0 manifests are byte-identical.
 - Byte oracle for the renderer and encoder refactor (309 previews, 3
   encodes, 2 rejections).
 
-## 11. Performance budget
+- Frame-order: the golden scene joins `tools/frame-order-check.py`
+  (shuffled previews, slices, killed-and-resumed encodes at 1 and 4
+  threads); the multi-output unit tests compare shared-pass sinks with the
+  same output rendered alone, and sliced/resumed renders with full ones.
+- A lossless GIF check: a synthetic frame with at most 256 colours
+  round-trips exactly.
+- Writer failure injection: a failing second sink stops the render with its
+  status and leaks nothing (fault and OOM suites).
+
+## 11. Review record
+
+Codex design review (read-only, 11 findings) was folded in: per-sink CPU
+conversion (1), effective-path collision rules (2), CLI precedence (3),
+stills inside the output range (4), EXR transfer (5), SVT CRF/`lp` and
+ProRes mappings (6), derived-size and fps bounds (7), loop bounds (8),
+per-sink audio (9), library versions in the fingerprint (10), extra tests
+(11).
+
+## 12. Performance budget
 
 Scenes with one output take the same path (one pass, one sink); budget < 2 %
 on `benchmarks/perf-scene.xml`. The cost of the feature: a shared pass adds
