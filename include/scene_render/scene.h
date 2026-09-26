@@ -351,7 +351,40 @@ typedef struct SrNode {
     double clock_scale, clock_offset;
 } SrNode;
 
-typedef enum { SR_CODEC_H264, SR_CODEC_H265, SR_CODEC_FFV1 } SrCodec;
+/* Values are written to resume manifests: append only. */
+typedef enum {
+    SR_CODEC_H264, SR_CODEC_H265, SR_CODEC_FFV1,
+    SR_CODEC_PRORES, SR_CODEC_VP9, SR_CODEC_AV1, SR_CODEC_GIF, SR_CODEC_APNG,
+    SR_CODEC_PNG_SEQUENCE, SR_CODEC_TIFF_SEQUENCE, SR_CODEC_EXR_SEQUENCE
+} SrCodec;
+
+/* SR_CONTAINER_AUTO derives the container (see docs/xml-reference.md). */
+typedef enum {
+    SR_CONTAINER_AUTO, SR_CONTAINER_MP4, SR_CONTAINER_MOV, SR_CONTAINER_MKV,
+    SR_CONTAINER_WEBM
+} SrContainer;
+
+typedef enum {
+    SR_PRORES_AUTO, SR_PRORES_PROXY, SR_PRORES_LT, SR_PRORES_422,
+    SR_PRORES_HQ, SR_PRORES_4444, SR_PRORES_4444XQ
+} SrProresProfile;
+
+typedef enum { SR_STILL_POSTER, SR_STILL_THUMBNAIL } SrStillKind;
+typedef enum { SR_STILL_JPEG, SR_STILL_PNG } SrStillFormat;
+
+#define SR_MAX_OUTPUTS 16u
+#define SR_MAX_OUTPUT_STILLS 16u
+#define SR_MAX_OUTPUT_DIMENSION 16384u
+
+typedef struct {
+    SrStillKind kind;
+    SrStillFormat format;
+    double time;                /* seconds of composition time */
+    char *path;                 /* owned; relative to the scene directory */
+    uint32_t width;             /* 0: the output's width */
+    double quality;             /* JPEG, 0..1 */
+    size_t source_line;
+} SrStill;
 
 typedef struct {
     uint32_t width;
@@ -381,6 +414,25 @@ typedef struct {
     bool spherical_metadata;
     bool embed_metadata;
     size_t source_line;
+    /* Schema 1.1 (B1-6). Zero-initialised values mean "not authored" and
+     * keep the 1.0 behaviour; see src/outputs.c. */
+    char *id;                   /* owned; NULL when absent */
+    SrContainer container;
+    uint32_t width, height;     /* 0: the project's (after CLI overrides) */
+    uint32_t fps_num, fps_den;  /* 0: the project's */
+    double start, end;          /* seconds; end valid when has_end */
+    bool has_end;
+    double keyframe_interval;   /* seconds; 0: codec default */
+    int b_frames;               /* -1 when not authored (set by init) */
+    bool faststart_authored;
+    bool faststart;             /* mp4/mov +faststart; true by default */
+    bool loop_count_authored;
+    uint32_t loop_count;        /* plays; 0 = infinite */
+    SrProresProfile prores_profile;
+    bool pixel_format_authored, audio_codec_authored;
+    bool crf_authored, preset_authored, bitrate_authored;
+    SrStill *stills;            /* owned, document order */
+    size_t still_count;
 } SrOutput;
 
 typedef struct {
@@ -566,7 +618,9 @@ typedef struct {
     uint64_t source_hash;       /* FNV-1a 64 of the exact bytes the XML loader
                                    parsed (the --resume scene fingerprint) */
     SrProject project;
-    SrOutput output;
+    SrOutput output;           /* the first <output>, or the default */
+    SrOutput *extra_outputs;   /* second and later <output>, document order */
+    size_t extra_output_count, extra_output_capacity;
     SrStyleToken *tokens;      /* document order; immutable after loading */
     size_t token_count, token_capacity;
     SrMetadataEntry *metadata; /* document order; immutable after loading */

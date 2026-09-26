@@ -28,6 +28,12 @@ unsigned sr_encoder_input_bits(const char *pixel_format);
 SrStatus sr_encoder_validate_metadata(const SrScene *scene, const char *path,
                                        SrDiagnostics *diag);
 
+/* Like sr_encoder_validate_metadata for an explicit output. */
+SrStatus sr_encoder_validate_output_metadata(const SrScene *scene,
+                                              const SrOutput *output,
+                                              const char *path,
+                                              SrDiagnostics *diag);
+
 /* Opens `path` (.mp4/.mov -> MP4/QuickTime, .mkv -> Matroska) for the scene's
  * project size/rate and SrOutput settings. `threads` controls conversion;
  * 0 uses the online CPU count. Version 1.1 fixes video codec workers to 1;
@@ -37,12 +43,28 @@ SrStatus sr_encoder_validate_metadata(const SrScene *scene, const char *path,
 SrStatus sr_encoder_open(SrEncoder **out, const SrScene *scene,
                          const char *path, unsigned threads,
                          const SrEncoderAudio *audio, SrDiagnostics *diag);
+/* sr_encoder_open for an explicit output (borrowed; must outlive the
+ * encoder) instead of scene->output: its codec, container, pixel format
+ * and options (docs/xml-reference.md "Outputs"). Image sequences write one
+ * file per frame named from the `path` pattern (sr_encoder_set_first_number
+ * gives the number of the first frame). gif, apng and sequences never
+ * carry audio (see sr_encoder_has_audio). */
+SrStatus sr_encoder_open_output(SrEncoder **out, const SrScene *scene,
+                                const SrOutput *output, const char *path,
+                                unsigned threads, const SrEncoderAudio *audio,
+                                SrDiagnostics *diag);
+void sr_encoder_set_first_number(SrEncoder *encoder, uint64_t number);
+bool sr_encoder_has_audio(const SrEncoder *encoder);
 /* Video-only encoder for one --resume segment: like sr_encoder_open without
  * an audio stream or scene metadata (the final mux adds both authored tags
  * and spherical metadata). */
 SrStatus sr_encoder_open_segment(SrEncoder **out, const SrScene *scene,
                                  const char *path, unsigned threads,
                                  SrDiagnostics *diag);
+SrStatus sr_encoder_open_segment_output(SrEncoder **out, const SrScene *scene,
+                                        const SrOutput *output,
+                                        const char *path, unsigned threads,
+                                        SrDiagnostics *diag);
 /* Pass-through mode for concatenating segments: the video stream takes its
  * parameters (codec, size, extradata) from the video stream of the finished
  * segment `video_template` and receives packets only through
@@ -52,6 +74,11 @@ SrStatus sr_encoder_open_segment(SrEncoder **out, const SrScene *scene,
 SrStatus sr_encoder_open_copy(SrEncoder **out, const SrScene *scene,
                               const char *path, const char *video_template,
                               const SrEncoderAudio *audio, SrDiagnostics *diag);
+SrStatus sr_encoder_open_copy_output(SrEncoder **out, const SrScene *scene,
+                                     const SrOutput *output, const char *path,
+                                     const char *video_template,
+                                     const SrEncoderAudio *audio,
+                                     SrDiagnostics *diag);
 /* Copies every video packet of `segment_path` into a pass-through encoder,
  * timestamps shifted by `first_frame` frames (1/fps units, relative to the
  * output's first frame). Fails with SR_ERR_ENCODER when the segment cannot
@@ -68,9 +95,14 @@ SrStatus sr_encoder_copy_video(SrEncoder *encoder, const char *segment_path,
 SrStatus sr_encoder_check_segment(const SrScene *scene, const char *path,
                                   uint64_t frame_count, char *why,
                                   size_t why_size);
-/* Bits per component this encoder expects in sr_encoder_write_video. */
+SrStatus sr_encoder_check_segment_output(const SrScene *scene,
+                                         const SrOutput *output,
+                                         const char *path, uint64_t frame_count,
+                                         char *why, size_t why_size);
+/* Bits per component this encoder expects (32: linear float, EXR) in sr_encoder_write_video. */
 unsigned sr_encoder_bits(const SrEncoder *encoder);
-/* One frame: width*height*4 components of 8 or 16 bits, tightly packed. */
+/* One frame: width*height*4 components of 8 or 16 bits (straight), or
+ * 32-bit floats (linear premultiplied, EXR), tightly packed. */
 SrStatus sr_encoder_write_video(SrEncoder *encoder, const void *rgba,
                                 SrDiagnostics *diag);
 /* `samples` frames of interleaved float PCM (channels values each); values

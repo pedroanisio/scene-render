@@ -36,6 +36,9 @@ typedef struct {
     uint64_t first_frame;
     uint64_t end_frame;
     const char *output_override;
+    /* Comma-separated output ids (--output-id); NULL selects every output
+     * (docs/xml-reference.md "Outputs"). */
+    const char *output_ids;
     unsigned encoder_threads;
     bool request_gpu;
     bool report_metrics;

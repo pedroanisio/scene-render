@@ -61,7 +61,7 @@ static bool fixture_open(Fixture *f)
     f->scene.source_hash = 0x1234;
     f->sink = tmpfile();
     sr_diag_init(&f->diag, "resume", f->sink ? f->sink : stderr);
-    f->settings = (SrResumeSettings){1, 8, "cpu"};
+    f->settings = (SrResumeSettings){1, 8, "cpu", NULL};
     return f->scene.output.pixel_format && f->scene.output.preset;
 }
 
