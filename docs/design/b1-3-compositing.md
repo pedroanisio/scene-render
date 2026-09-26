@@ -42,6 +42,43 @@ depth and per-frame caches. Queued operations borrow immutable surfaces whose
 owners survive the last queue flush. Discarding a failed queue releases its
 borrows before recycling surfaces. No render changes a scene field.
 
+### Programmatic preparation
+
+New B1-3 features require explicit preparation of authored state before scene
+evaluation, including physics preparation. Add
+`sr_scene_prepare_compositing(scene, diag)` and
+`sr_scene_invalidate_compositing(scene)`. XML performs preparation as part of
+loading. Direct-C callers prepare after construction, invalidate before
+editing, then prepare again after the edits, including direct assignments.
+This contract also applies when modifying an XML-loaded scene. Mutation
+during rendering is prohibited. Rendering borrows the scene-owned immutable
+plan; it never prepares or publishes that plan lazily.
+
+Prepared authored state stays unchanged until invalidation. A scene-pointer
+or generation cache cannot discover arbitrary field assignments, and no such
+detection is promised. Invalidation immediately makes the previous plan
+unusable; failed preparation publishes no usable replacement. A local
+"new feature requires compositing preparation" render diagnostic is an
+additional defense, not a claim that an earlier malformed subtree can be
+detected without preflight. Legacy scenes that never use this subsystem
+retain their existing path without another per-frame traversal.
+
+Preflight uses a bounded iterative walk over all authored reachable nodes,
+including inactive subtrees. Count nodes and masks, check ancestry depth
+before pushing, validate count/pointer consistency and use a bounded pointer
+lookup to reject containment cycles and duplicate node ownership. Visit
+children in authored order; pointer hash iteration never determines drawing
+order. XML's structural check runs before existing recursive reference
+resolution, constraint lookup and sorting; final dependency preparation
+follows resolution. Both are independent of `has_relative_lengths`.
+
+Frame-owned evaluation-depth, capture, allocation and work budgets supplement
+preflight. The legacy draw `depth` argument indexes isolated buffers and is
+not an ancestry-depth counter. Failed preparation releases only its own
+storage, leaving the caller's graph untouched. Existing scene destruction
+requires an acyclic ownership tree; tests that deliberately construct a
+cycle or shared child must repair it before ordinary scene cleanup.
+
 ## Blend arithmetic
 
 Reference: [W3C Compositing Level 1, sections 9 and 10](https://www.w3.org/TR/2024/CRD-compositing-1-20240321/).

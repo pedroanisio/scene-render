@@ -408,3 +408,10 @@ three encodes and two expected rejections. Existing image hashes and the
 baseline are unchanged. The strict 2% performance gate passes: clear +1.5%,
 compositor -11.2% and stage total -12.7%; measurements are noisy and do not
 establish a stable speedup. See `docs/reviews/b1-compositing-prepared-path.md`.
+
+The next preparation phase has a reviewed explicit prepare/invalidate
+contract for programmatic scenes. It avoids stale plans after direct field
+edits without adding a per-frame traversal to legacy scenes. XML prepares
+automatically; direct-C callers must invalidate before authored edits and
+prepare afterwards. The APIs and shared limits remain pending implementation;
+see `docs/reviews/b1-compositing-design.md`.

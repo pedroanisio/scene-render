@@ -35,3 +35,26 @@ for captures. The review covers determinism, frame order, thread safety,
 resource limits, OOM ownership, fingerprints and legacy bypass. Follow-up
 review closes both draft findings with no remaining issues. This is design
 approval, not evidence that any visible B1-3 feature is complete.
+
+## Preparation lifecycle amendment
+
+The follow-up interface audit found that arbitrary direct-C field edits,
+complete preflight validation and no extra legacy per-frame traversal cannot
+all be guaranteed automatically. Pointer-keyed caches miss edits; draw
+counters skip inactive authored subtrees and run after recursive physics
+collection. The primary pass and independent reviewer therefore selected an
+explicit prepare/invalidate lifecycle for new B1-3 scene features.
+
+The amendment requires XML preflight before recursive resolution and sorting,
+and direct-C preparation before evaluation. Prepared authored state is
+immutable until invalidation; callers invalidate before editing and prepare
+again afterwards. No automatic detection of undeclared direct assignments is
+promised. Failed or invalidated plans cannot be reused. Iterative structural
+checks cover inactive nodes, aggregate counts, depth, cycles and duplicate
+ownership; independent frame budgets cover evaluated work and surfaces.
+
+Read-only follow-up review found no actionable contract gaps. Its wording
+clarification, "invalidate before editing", is incorporated. Deliberately
+invalid graph tests must restore an acyclic ownership tree before ordinary
+scene cleanup. This is an approved implementation contract; the preparation
+APIs and shared limits are still pending.
