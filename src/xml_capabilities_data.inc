@@ -6306,7 +6306,7 @@
     {SR_CAP_ATTRIBUTE, "stillType", "format",
      "", 10, true},
     {SR_CAP_ATTRIBUTE, "stillType", "marker",
-     "xs:IDREF", 10, false},
+     "xs:IDREF", 10, true},
     {SR_CAP_ATTRIBUTE, "stillType", "path",
      "xs:anyURI", 10, true},
     {SR_CAP_ATTRIBUTE, "stillType", "quality",

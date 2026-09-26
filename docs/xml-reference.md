@@ -472,8 +472,9 @@ one frame of their output:
 | `format` | `jpeg` | `png` (8-bit RGBA, the preview format) or `jpeg` (baseline 4:2:0, full range); `webp` and `avif` are unsupported in this build |
 | `width` | output width | the still renders at `width x round(width * H / W)` (render, not rescale; height 1–16384) |
 | `quality` | 0.9 | JPEG quantizer `round(2 + (1 - quality) * 29)` |
+| `marker` | none | a marker id or generated `beat.N`/`bar.N` (see Timeline structure); the still's time is the marker instant. Exclusive with `time`; the instant must still lie in the output's `[start, end)`. Unknown ids, ids of other elements and ids outside the beat grid are load errors |
 
-`marker` (a B1-5 marker id) is unsupported in this build. Stills render after
+Stills render after
 their output's frames, in their output's colour space. They are written on
 full renders and by the `--frame-range` slice that contains their frame;
 `--hash`, `--preview-frame` and `--validate` write none.

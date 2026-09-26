@@ -3161,7 +3161,7 @@ fail at load time; they are never silently ignored.
 | `spanType/@textTransform=small-caps` | 1.0 | unsupported |
 | `spanType/@textTransform=uppercase` | 1.0 | unsupported |
 | `stillType/@format` | 1.0 | implemented |
-| `stillType/@marker` | 1.0 | unsupported |
+| `stillType/@marker` | 1.0 | implemented |
 | `stillType/@path` | 1.0 | implemented |
 | `stillType/@quality` | 1.0 | implemented |
 | `stillType/@time` | 1.0 | implemented |

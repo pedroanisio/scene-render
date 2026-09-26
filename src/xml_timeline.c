@@ -6,6 +6,7 @@
  * docs/design/b1-5-timeline.md. */
 #include "xml_internal.h"
 #include "scene_render/markers.h"
+#include "scene_render/outputs.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -801,6 +802,18 @@ bool sr_xml_resolve_timeline(ParseContext *ctx) {
         if (!resolve_node(ctx, scene->root->children[i], top, &end)) return false;
     }
     if (timeline && timeline->reference_count && !resolve_shared(ctx)) return false;
+    /* Poster/thumbnail times from markers; sr_outputs_resolve then checks
+     * that each lies inside its output's range. */
+    for (size_t i = 0; i < sr_scene_output_count(scene); ++i) {
+        SrOutput *output = sr_scene_output_at(scene, i);
+        for (size_t j = 0; j < output->still_count; ++j) {
+            SrStill *still = &output->stills[j];
+            if (!still->marker) continue;
+            const char *element = still->kind == SR_STILL_POSTER ? "poster" : "thumbnail";
+            if (!marker_time(ctx, still->marker, still->source_line, element, "marker",
+                             &still->time)) return false;
+        }
+    }
     if (timeline && timeline->pending_tracks)
         return resolve_error(ctx, timeline->pending_line, "key", "marker",
                              "unsupported in this build: key marker on this "

@@ -380,6 +380,8 @@ typedef struct {
     SrStillKind kind;
     SrStillFormat format;
     double time;                /* seconds of composition time */
+    char *marker;               /* owned marker id (B1-5); time is resolved
+                                   from it at load; NULL when absent */
     char *path;                 /* owned; relative to the scene directory */
     uint32_t width;             /* 0: the output's width */
     double quality;             /* JPEG, 0..1 */

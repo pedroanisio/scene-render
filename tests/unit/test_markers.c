@@ -663,6 +663,8 @@ static void every_construct_fixture(sr_test_ctx *t) {
         CHECK(t, dot->clock_offset == 0.5);
     }
     CHECK_INT(t, scene.timeline->pending_tracks, 0);
+    CHECK(t, scene.output.still_count == 2 && scene.output.stills[0].time == 0.5 &&
+             scene.output.stills[1].time == 0.75);
     CHECK(t, scene.audio.tracks[0].volume.track.keys[1].time == 1.0);
     CHECK(t, scene.lights[0].intensity.track.keys[0].time == 1.25);
     CHECK(t, scene.effects[0].intensity.track.keys[0].time == 0.25);
@@ -671,6 +673,48 @@ static void every_construct_fixture(sr_test_ctx *t) {
     CHECK(t, fx_render(t, &scene, 1.1, clear, &frame));
     sr_frame_free(&frame);
     sr_scene_free(&scene);
+}
+
+static void still_markers(sr_test_ctx *t) {
+    SrScene scene;
+#define STILL_HEAD "<scene version=\"1.1\"><project width=\"32\" height=\"16\" " \
+    "fps=\"8\" duration=\"4\"/>"
+#define STILL_MARKERS "<markers><marker id=\"m\" time=\"1.5\"/>" \
+    "<beatGrid bpm=\"60\" offset=\"0.25\"/></markers>"
+    if (expect_ok(t, STILL_HEAD "<output id=\"a\" path=\"a.mp4\" codec=\"h264\" start=\"1\">"
+                  "<poster path=\"p.png\" format=\"png\" marker=\"m\"/>"
+                  "<thumbnail path=\"t.jpg\" marker=\"beat.3\"/></output>"
+                  "<output id=\"b\" path=\"b.mp4\" codec=\"h264\"><poster path=\"q.png\" marker=\"bar.1\"/>"
+                  "</output>" STILL_MARKERS "<composition/></scene>", &scene)) {
+        CHECK_INT(t, scene.output.still_count, 2);
+        if (scene.output.still_count == 2) {
+            CHECK(t, scene.output.stills[0].time == 1.5);
+            CHECK(t, scene.output.stills[1].time == 2.25);
+            CHECK_STR(t, scene.output.stills[0].marker, "m");
+        }
+        CHECK(t, scene.extra_output_count == 1 && scene.extra_outputs[0].still_count == 1 &&
+                 scene.extra_outputs[0].stills[0].time == 0.25);
+        sr_scene_free(&scene);
+    }
+    /* The marker must still fall inside the output's range. */
+    expect_error(t, STILL_HEAD "<output path=\"a.mp4\" codec=\"h264\" end=\"1\"><poster path=\"p.png\" "
+                 "marker=\"m\"/></output>" STILL_MARKERS "<composition/></scene>",
+                 "must lie inside its output's range");
+    expect_error(t, STILL_HEAD "<output path=\"a.mp4\" codec=\"h264\"><poster path=\"p.png\" "
+                 "marker=\"beat.9\"/></output>" STILL_MARKERS "<composition/></scene>",
+                 "beat.1 to beat.4");
+    expect_error(t, STILL_HEAD "<output path=\"a.mp4\" codec=\"h264\"><thumbnail path=\"t.jpg\" "
+                 "marker=\"s\"/></output>" STILL_MARKERS "<composition><shape id=\"s\" "
+                 "shape=\"rect\" width=\"1\" height=\"1\"/></composition></scene>",
+                 "'s' is not a marker");
+    expect_error(t, STILL_HEAD "<output path=\"a.mp4\" codec=\"h264\"><poster path=\"p.png\" "
+                 "marker=\"none\"/></output><composition/></scene>",
+                 "unknown marker id 'none'");
+    expect_error(t, STILL_HEAD "<output path=\"a.mp4\" codec=\"h264\"><poster path=\"p.png\" time=\"1\" "
+                 "marker=\"m\"/></output>" STILL_MARKERS "<composition/></scene>",
+                 "time and marker are mutually exclusive");
+#undef STILL_HEAD
+#undef STILL_MARKERS
 }
 
 const sr_test_case sr_tests_markers[] = {
@@ -689,5 +733,6 @@ const sr_test_case sr_tests_markers[] = {
     {"media_and_physics_clocks", media_and_physics_clocks},
     {"particles_follow_clock", particles_follow_clock},
     {"every_construct_fixture", every_construct_fixture},
+    {"still_markers", still_markers},
     {NULL, NULL},
 };

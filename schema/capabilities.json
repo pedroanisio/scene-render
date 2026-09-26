@@ -109,7 +109,8 @@
     "markerType/@color",
     "beatGridType/@bpm",
     "beatGridType/@offset",
-    "beatGridType/@beatsPerBar"
+    "beatGridType/@beatsPerBar",
+    "stillType/@marker"
   ],
   "values": {
     "animateType/@extrapolateBefore": [

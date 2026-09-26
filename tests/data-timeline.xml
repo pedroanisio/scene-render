@@ -1,6 +1,11 @@
 <scene version="1.1">
   <project width="64" height="32" fps="12" duration="2" background="#101820"/>
   <styles><token name="accent" value="#E08020"/></styles>
+  <output id="main" path="../build/test-artifacts/timeline.mkv" codec="ffv1"
+          pixelFormat="yuv444p" audioCodec="pcm_s16le">
+    <poster path="../build/test-artifacts/timeline-poster.png" format="png" marker="cue"/>
+    <thumbnail path="../build/test-artifacts/timeline-thumb.jpg" marker="beat.2"/>
+  </output>
   <assets>
     <image id="tile" src="data-oom-tile.png" width="8" height="8"/>
     <audio id="tone" src="../examples/assets/tone.wav"/>
