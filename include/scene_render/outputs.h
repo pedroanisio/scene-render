@@ -53,6 +53,9 @@ bool sr_output_is_legacy(const SrOutput *output);
  * container cannot be derived (*why then holds a reason). */
 const char *sr_output_muxer(const SrOutput *output, const char *path,
                             const char **why);
+/* Encoder speed level for vp9 (cpu-used) and av1 (SVT preset) from an x264
+ * preset name; -1 for an unknown name or another codec. */
+int sr_output_preset_level(SrCodec codec, const char *preset);
 /* Encoder input bits per component: 8, 16, or 32 (linear float, EXR). */
 unsigned sr_output_input_bits(const SrOutput *output);
 
@@ -62,6 +65,12 @@ unsigned sr_output_input_bits(const SrOutput *output);
 bool sr_sequence_pattern_valid(const char *pattern);
 bool sr_sequence_format(const char *pattern, uint64_t number, char *out,
                         size_t size);
+
+/* True when two written paths can name the same file. A sequence pattern
+ * collides with a pattern of equal literal prefix and suffix, and with a
+ * plain path it can generate (prefix, digits, suffix). */
+bool sr_output_paths_collide(const char *a, bool a_sequence, const char *b,
+                             bool b_sequence);
 
 /* Frame index of time t at rate num/den: ceil(t * num / den - 1e-12). */
 uint64_t sr_output_frame_at(double seconds, uint32_t fps_num, uint32_t fps_den);

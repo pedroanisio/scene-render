@@ -45,12 +45,23 @@ static bool reserved_key(const char *key, bool matroska) {
            !strcmp(upper, "COM.APPLE.QUICKTIME.ARTWORK");
 }
 
+/* WebM is Matroska: same tag model and reserved keys. */
+static bool is_matroska(const char *container) {
+    return !strcmp(container, "matroska") || !strcmp(container, "webm");
+}
+
 SrStatus sr_metadata_validate(const SrScene *scene, const char *container,
                                SrDiagnostics *diag) {
-    if (!scene->output.embed_metadata || !scene->metadata_count) return SR_OK;
+    return sr_metadata_validate_embed(scene, scene->output.embed_metadata,
+                                      container, diag);
+}
+
+SrStatus sr_metadata_validate_embed(const SrScene *scene, bool embed,
+                                     const char *container, SrDiagnostics *diag) {
+    if (!embed || !scene->metadata_count) return SR_OK;
     if (scene->metadata_count > SR_MAX_METADATA_ENTRIES || !scene->metadata)
         return SR_ERR_ARGUMENT;
-    bool matroska = !strcmp(container, "matroska");
+    bool matroska = is_matroska(container);
     char keys[SR_MAX_METADATA_ENTRIES][SR_MAX_METADATA_NAME + 1];
     for (size_t i = 0; i < scene->metadata_count; ++i) {
         const SrMetadataEntry *entry = &scene->metadata[i];
@@ -82,7 +93,7 @@ SrStatus sr_metadata_validate(const SrScene *scene, const char *container,
 
 SrStatus sr_metadata_apply(const SrScene *scene, AVFormatContext *format,
                             const char *container, SrDiagnostics *diag) {
-    bool matroska = !strcmp(container, "matroska");
+    bool matroska = is_matroska(container);
     for (size_t i = 0; i < scene->metadata_count; ++i) {
         const SrMetadataEntry *entry = &scene->metadata[i];
         char key[SR_MAX_METADATA_NAME + 1];
@@ -99,7 +110,7 @@ SrStatus sr_metadata_apply(const SrScene *scene, AVFormatContext *format,
 
 SrStatus sr_metadata_check(const SrScene *scene, const AVFormatContext *format,
                             const char *container, SrDiagnostics *diag) {
-    bool matroska = !strcmp(container, "matroska");
+    bool matroska = is_matroska(container);
     for (size_t i = 0; i < scene->metadata_count; ++i) {
         const SrMetadataEntry *entry = &scene->metadata[i];
         char key[SR_MAX_METADATA_NAME + 1];

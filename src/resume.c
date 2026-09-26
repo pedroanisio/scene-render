@@ -1,6 +1,12 @@
 #define _POSIX_C_SOURCE 200809L
 #include "scene_render/resume.h"
+#include "scene_render/outputs.h"
 #include "scene_render/text.h"
+
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/avutil.h>
+#include <libswscale/swscale.h>
 
 #include <dirent.h>
 #include <errno.h>
@@ -163,6 +169,20 @@ void sr_resume_inputs_free(SrResumeInputs *inputs) {
 
 /* ---------------------------------------------------------- manifest */
 
+/* Effective settings of a 1.1 output beyond the 1.0 video line, plus the
+ * libav versions its encoders come from. 1.0 outputs write no such line,
+ * so their manifests are unchanged. */
+static void write_output_line(FILE *out, const SrOutput *o) {
+    fprintf(out, "output=id:%s codec:%d container:%d pixfmt:%s audio:%s "
+            "keyint:%.17g bframes:%d faststart:%d loop:%u prores:%d "
+            "start:%.17g end:%.17g/%d\n", o->id ? o->id : "-", (int)o->codec,
+            (int)o->container, o->pixel_format, o->audio_codec,
+            o->keyframe_interval, o->b_frames, (int)o->faststart, o->loop_count,
+            (int)o->prores_profile, o->start, o->end, (int)o->has_end);
+    fprintf(out, "libav=%s avcodec:%u avformat:%u swscale:%u\n", av_version_info(),
+            avcodec_version(), avformat_version(), swscale_version());
+}
+
 /* The manifest text; NULL when out of memory. */
 static char *build_manifest(const SrScene *scene, const SrResume *resume,
                             const SrResumeInputs *inputs,
@@ -172,7 +192,7 @@ static char *build_manifest(const SrScene *scene, const SrResume *resume,
     FILE *out = open_memstream(&text, &size);
     if (!out) return NULL;
     const SrProject *p = &scene->project;
-    const SrOutput *o = &scene->output;
+    const SrOutput *o = settings->output ? settings->output : &scene->output;
     /* Revision 3 invalidates segments rendered before the clipping, depth,
      * transparency, deformation bounds and media-boundary corrections. */
     fprintf(out, "scene-render-resume 3\nversion=%s\nscene=%016llx\n", SR_VERSION,
@@ -205,6 +225,8 @@ static char *build_manifest(const SrScene *scene, const SrResume *resume,
             (int)o->full_range);
     fprintf(out, "threads=%u bits=%u backend=%s\n", settings->threads,
             settings->bits, settings->backend ? settings->backend : "cpu");
+    if (!sr_output_is_legacy(o))
+        write_output_line(out, o);
     bool failed = ferror(out) != 0;
     if (fclose(out) != 0 || failed) {
         free(text);
@@ -376,7 +398,8 @@ SrStatus sr_resume_open(SrResume *resume, const SrScene *scene,
     resume->end = end;
     resume->segment_frames = segment_frames;
     resume->segment_count = (end - first + segment_frames - 1) / segment_frames;
-    resume->extension = scene->output.codec == SR_CODEC_FFV1 ? "mkv" : "mp4";
+    resume->extension = scene->output.codec == SR_CODEC_H264 ||
+                        scene->output.codec == SR_CODEC_H265 ? "mp4" : "mkv";
     size_t length = strlen(output_path) + sizeof(".parts");
     resume->directory = sr_alloc(length);
     if (!resume->directory) return SR_ERR_MEMORY;
@@ -471,6 +494,11 @@ SrStatus sr_resume_prepare(SrResume *resume, const SrScene *scene,
                            SrDiagnostics *diag) {
     SrStatus status = sr_resume_open(resume, scene, output_path, first, end,
                                      segment_frames, diag);
+    const SrOutput *output = settings && settings->output ? settings->output
+                                                          : &scene->output;
+    if (status == SR_OK)
+        resume->extension = output->codec == SR_CODEC_H264 ||
+                            output->codec == SR_CODEC_H265 ? "mp4" : "mkv";
     if (status == SR_OK) {
         status = sr_resume_sync(resume, scene, inputs, settings, diag);
         if (status != SR_OK) sr_resume_close(resume);

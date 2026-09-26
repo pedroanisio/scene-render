@@ -9,7 +9,10 @@ const char *sr_cli_usage(void) {
         "scene-render " SR_VERSION "\n"
         "Usage: scene-render [--scene] FILE [options]\n\n"
         "  --scene FILE             Scene XML (validated against the embedded XSD)\n"
-        "  --output FILE            Override XML output path (.mp4, .mov, .mkv)\n"
+        "  --output FILE            Override the output path (.mp4, .mov, .mkv);\n"
+        "                           needs exactly one selected output\n"
+        "  --output-id ID[,ID...]   Render only these outputs (default: all);\n"
+        "                           --preview-frame and --hash use one output\n"
         "  --validate               Validate without decoding or rendering\n"
         "  --report-unsupported     With --validate, list every unsupported use\n"
         "  --print-schema           Print the embedded XSD and exit\n"
@@ -101,7 +104,8 @@ static const char *const option_names[] = {
     "--metrics", "--verbose", "--version", "--help",
     "--scene", "--output", "--frame-range", "--preview-frame", "--preview-out",
     "--mode", "--resolution", "--fps", "--quality", "--threads", "--renderer",
-    "--metrics-trace", "--segment-frames", "--physics-cache", "--report-unsupported"};
+    "--metrics-trace", "--segment-frames", "--physics-cache", "--report-unsupported",
+    "--output-id"};
 enum { OPTION_COUNT = sizeof(option_names) / sizeof(option_names[0]) };
 
 static int option_slot(const char *arg) {
@@ -165,6 +169,13 @@ SrStatus sr_cli_parse(int argc, char *const *argv, SrCliOptions *out,
             o.scene_path = value;
         } else if (is(arg, "--output")) {
             o.render.output_override = value;
+        } else if (is(arg, "--output-id")) {
+            /* Ids are XML names: no empty item, no leading or trailing comma. */
+            size_t length = strlen(value);
+            if (value[0] == ',' || value[length - 1] == ',' || strstr(value, ",,"))
+                return fail(error, error_size,
+                            "error: --output-id expects ID or ID,ID,...");
+            o.render.output_ids = value;
         } else if (is(arg, "--frame-range")) {
             if (!parse_pair(value, ':', &o.render.first_frame, &o.render.end_frame) ||
                 o.render.end_frame <= o.render.first_frame)

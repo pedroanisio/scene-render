@@ -194,7 +194,10 @@ const char *sr_output_muxer(const SrOutput *output, const char *path,
             container = info->default_container;
         }
     }
-    if (!(info->containers & (1u << container))) {
+    /* 1.0 codecs derived from the extension keep the 1.0 checks (the
+     * encoder reports ffv1 outside Matroska itself). */
+    bool derived_legacy = info->legacy && output->container == SR_CONTAINER_AUTO;
+    if (!derived_legacy && !(info->containers & (1u << container))) {
         if (why) *why = "names a container this codec cannot be stored in";
         return NULL;
     }
@@ -233,7 +236,8 @@ static bool sequence_walk(const char *pattern, uint64_t number, char *out,
                 if (*cursor < '1' || *cursor > '9') return false;
                 width = (unsigned)(*cursor++ - '0');
             }
-            if (*cursor != 'd' || ++conversions > 1) return false;
+            if (*cursor != 'd' || ++conversions > 1 || strchr(cursor, '/'))
+                return false;
             if (number >= UINT64_C(1000000000)) return false;
             int written = zero
                 ? snprintf(piece, sizeof(piece), "%0*llu", (int)width,
@@ -268,4 +272,63 @@ bool sr_sequence_format(const char *pattern, uint64_t number, char *out,
 uint64_t sr_output_frame_at(double seconds, uint32_t fps_num, uint32_t fps_den) {
     if (!(seconds > 0.0) || !fps_num || !fps_den) return 0;
     return (uint64_t)ceil(seconds * fps_num / fps_den - 1e-12);
+}
+
+int sr_output_preset_level(SrCodec codec, const char *preset) {
+    static const char *const names[] = {
+        "ultrafast", "superfast", "veryfast", "faster", "fast", "medium",
+        "slow", "slower", "veryslow", "placebo"};
+    static const int vp9[] = {5, 5, 4, 4, 3, 2, 1, 1, 0, 0};
+    static const int av1[] = {12, 11, 10, 9, 8, 7, 5, 4, 2, 1};
+    if (!preset || (codec != SR_CODEC_VP9 && codec != SR_CODEC_AV1)) return -1;
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
+        if (!strcmp(preset, names[i])) return codec == SR_CODEC_VP9 ? vp9[i] : av1[i];
+    return -1;
+}
+
+/* Literal text before and after the conversion ("%%" unescaped). */
+static bool split_pattern(const char *pattern, char *prefix, char *suffix,
+                          size_t size) {
+    size_t used = 0;
+    char *target = prefix;
+    bool seen = false;
+    for (const char *at = pattern; *at; ++at) {
+        char c = *at;
+        if (c == '%' && at[1] == '%') {
+            ++at;
+        } else if (c == '%') {
+            while (*at != 'd') ++at;
+            target[used] = '\0';
+            target = suffix;
+            used = 0;
+            seen = true;
+            continue;
+        }
+        if (used + 1 >= size) return false;
+        target[used++] = c;
+    }
+    target[used] = '\0';
+    return seen;
+}
+
+/* True when `name` is prefix + one or more digits + suffix. */
+static bool pattern_matches(const char *prefix, const char *suffix,
+                            const char *name) {
+    size_t p = strlen(prefix), s = strlen(suffix), n = strlen(name);
+    if (n < p + s + 1 || strncmp(name, prefix, p) || strcmp(name + n - s, suffix))
+        return false;
+    for (size_t i = p; i < n - s; ++i)
+        if (name[i] < '0' || name[i] > '9') return false;
+    return true;
+}
+
+bool sr_output_paths_collide(const char *a, bool a_sequence, const char *b,
+                             bool b_sequence) {
+    if (!a_sequence && !b_sequence) return strcmp(a, b) == 0;
+    enum { SIZE = 4096 };
+    static _Thread_local char ap[SIZE], as[SIZE], bp[SIZE], bs[SIZE];
+    if (a_sequence && !split_pattern(a, ap, as, SIZE)) return true;
+    if (b_sequence && !split_pattern(b, bp, bs, SIZE)) return true;
+    if (a_sequence && b_sequence) return !strcmp(ap, bp) && !strcmp(as, bs);
+    return a_sequence ? pattern_matches(ap, as, b) : pattern_matches(bp, bs, a);
 }

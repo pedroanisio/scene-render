@@ -95,6 +95,9 @@ set(SCENE_RENDER_SOURCES
     src/physics.c
     src/encoder.c
     src/outputs.c
+    src/gif_palette.c
+    src/output_plan.c
+    src/output_media.c
     src/outputs_resolve.c
     src/video.c
     src/renderer.c

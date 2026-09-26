@@ -1,4 +1,5 @@
 #include "scene_render/cli_args.h"
+#include "scene_render/outputs.h"
 #include "scene_render/renderer.h"
 #include "scene_render/xml.h"
 
@@ -8,21 +9,35 @@
 #include <stdlib.h>
 #include <string.h>
 
-static SrStatus apply_quality(SrScene *scene, SrQuality quality) {
+static SrStatus apply_quality_to(SrOutput *output, SrQuality quality) {
     const char *preset;
+    int crf;
     switch (quality) {
-    case SR_QUALITY_LOW: scene->output.crf = 28; preset = "veryfast"; break;
-    case SR_QUALITY_MEDIUM: scene->output.crf = 23; preset = "medium"; break;
-    case SR_QUALITY_HIGH: scene->output.crf = 18; preset = "slow"; break;
+    case SR_QUALITY_LOW: crf = 28; preset = "veryfast"; break;
+    case SR_QUALITY_MEDIUM: crf = 23; preset = "medium"; break;
+    case SR_QUALITY_HIGH: crf = 18; preset = "slow"; break;
     case SR_QUALITY_KEEP:
     default: return SR_OK;
     }
     char *copy = sr_strdup(preset);
     if (!copy) return SR_ERR_MEMORY;
-    free(scene->output.preset);
-    scene->output.preset = copy;
-    scene->output.bitrate = 0;
+    output->crf = crf;
+    free(output->preset);
+    output->preset = copy;
+    output->bitrate = 0;
     return SR_OK;
+}
+
+/* --quality: the 1.0 output as before, and every later output whose codec
+ * has rate control (h264, h265, vp9, av1). */
+static SrStatus apply_quality(SrScene *scene, SrQuality quality) {
+    SrStatus status = apply_quality_to(&scene->output, quality);
+    for (size_t i = 1; status == SR_OK && i < sr_scene_output_count(scene); ++i) {
+        SrOutput *output = sr_scene_output_at(scene, i);
+        if (sr_codec_info(output->codec)->rate_control)
+            status = apply_quality_to(output, quality);
+    }
+    return status;
 }
 
 /* Command-line overrides of the loaded scene. */

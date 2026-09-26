@@ -82,7 +82,7 @@ CORE_SOURCES := src/common.c src/card.c src/parallel.c src/random.c \
 	src/compositing.c src/compositor_resources.c src/compositor_evaluation.c \
 	src/compositor_geometry.c src/camera.c \
 	src/lighting.c src/effects.c src/particles.c src/deform.c src/physics.c \
-	src/encoder.c src/outputs.c src/outputs_resolve.c src/video.c src/renderer.c \
+	src/encoder.c src/outputs.c src/outputs_resolve.c src/gif_palette.c src/output_plan.c src/output_media.c src/video.c src/renderer.c \
 	src/resume.c src/xml.c \
 	src/xml_elements.c src/xml_lengths.c src/xml_animation.c src/xml_nodes.c \
 	src/xml_resolve.c src/xml_audio.c \

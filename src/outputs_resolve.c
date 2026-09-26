@@ -99,6 +99,14 @@ static SrStatus resolve_codec(SrOutput *o, SrDiagnostics *diag) {
                !set_default(&o->pixel_format, info->default_pixel_format)) {
         return SR_ERR_MEMORY;
     }
+    if ((o->codec == SR_CODEC_VP9 || o->codec == SR_CODEC_AV1) &&
+        sr_output_preset_level(o->codec, o->preset) < 0)
+        FAIL(o->source_line, "output", "preset",
+             "expected ultrafast, superfast, veryfast, faster, fast, medium, "
+             "slow, slower, veryslow or placebo");
+    if (o->codec == SR_CODEC_AV1 && o->crf_authored && o->crf == 0)
+        FAIL(o->source_line, "output", "crf",
+             "av1 crf must be in [1,63] (FFmpeg 7.1 ignores 0)");
     if (o->codec == SR_CODEC_GIF && strcmp(o->pixel_format, "pal8"))
         FAIL(o->source_line, "output", "pixelFormat",
              "gif output uses pixelFormat pal8 (a per-frame palette)");
@@ -134,36 +142,44 @@ static SrStatus resolve_range(const SrScene *scene, const SrOutput *o,
         FAIL(o->source_line, "output", "width/height",
              "an equirectangular project renders at its panorama size; "
              "per-output sizes need mode standard or viewport");
+    if (o->fps_num && ((uint64_t)o->fps_num < o->fps_den ||
+                       (uint64_t)o->fps_num > 1000u * (uint64_t)o->fps_den))
+        FAIL(o->source_line, "output", "fps",
+             "expected between 1 and 1000 frames per second");
     for (size_t i = 0; i < o->still_count; ++i) {
         const SrStill *still = &o->stills[i];
         const char *element = still->kind == SR_STILL_POSTER ? "poster" : "thumbnail";
-        if (!(still->time < duration))
+        if (!(still->time >= o->start && still->time < end))
             FAIL(still->source_line, element, "time",
-                 "time %.17g must be before the project duration %.17g",
-                 still->time, duration);
+                 "time %.17g must lie inside its output's range [%.17g, %.17g)",
+                 still->time, o->start, end);
     }
     return SR_OK;
 }
 
 /* Every file an output writes is distinct: two writers of one path would
- * silently overwrite each other. */
+ * silently overwrite each other. Paths are compared as authored (they all
+ * resolve against the scene directory); the plan repeats the check on the
+ * effective paths. */
 static SrStatus check_paths(const SrScene *scene, SrDiagnostics *diag) {
     size_t count = sr_scene_output_count(scene);
     for (size_t i = 0; i < count; ++i) {
         const SrOutput *a = sr_scene_output_const(scene, i);
         for (size_t s = 0; s <= a->still_count; ++s) {
             const char *path = s == 0 ? a->path : a->stills[s - 1].path;
+            bool sequence = s == 0 && sr_codec_info(a->codec)->sequence;
             size_t line = s == 0 ? a->source_line : a->stills[s - 1].source_line;
             for (size_t j = i; j < count; ++j) {
                 const SrOutput *b = sr_scene_output_const(scene, j);
                 for (size_t t = j == i ? s + 1 : 0; t <= b->still_count; ++t) {
                     const char *other = t == 0 ? b->path : b->stills[t - 1].path;
+                    bool other_sequence = t == 0 && sr_codec_info(b->codec)->sequence;
                     size_t other_line = t == 0 ? b->source_line
                                                : b->stills[t - 1].source_line;
-                    if (!strcmp(path, other))
+                    if (sr_output_paths_collide(path, sequence, other, other_sequence))
                         FAIL(other_line, t == 0 ? "output" : "poster/thumbnail",
-                             "path", "path '%s' is already written by line %zu",
-                             other, line);
+                             "path", "path '%s' can overwrite a file written by "
+                             "line %zu", other, line);
                 }
             }
         }

@@ -1,6 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 #include "scene_render/renderer.h"
 #include "compositing_internal.h"
+#include "output_media_internal.h"
+#include "output_plan_internal.h"
 
 #include "scene_render/assets.h"
 #include "scene_render/audio.h"
@@ -11,6 +13,7 @@
 #include "scene_render/effects.h"
 #include "scene_render/gpu.h"
 #include "scene_render/lighting.h"
+#include "scene_render/outputs.h"
 #include "scene_render/parallel.h"
 #include "scene_render/physics.h"
 #include "scene_render/resume.h"
@@ -241,8 +244,10 @@ static bool sr_has_suffix(const char *path, const char *suffix) {
 typedef struct {
     SrCompositor compositor;
     SrColorOutput color;
-    unsigned bits;      /* 8 or 16 per component in `pixels` */
+    unsigned bits;      /* 8 or 16 per component in `pixels`; 32: linear float */
     void *pixels;       /* straight RGBA handed to encoder/cache/preview */
+    SrColorSpace space; /* colour space of the first sink */
+    bool allow_gpu;     /* OpenCL conversion: one 1.0 sink only */
 } SrFrameState;
 
 static SrStatus sr_render_frame(SrScene *scene, uint64_t index,
@@ -288,14 +293,16 @@ static SrStatus sr_render_frame(SrScene *scene, uint64_t index,
         sr_stage_end(times, SR_STAGE_EFFECTS, mark);
     }
     mark = sr_stage_begin();
-    if (status == SR_OK && state->bits == 16) {
+    if (status == SR_OK && state->bits == 32) {
+        status = sr_output_convert_linear(&state->color, &scene->project, output,
+                                          state->pixels, threads);
+    } else if (status == SR_OK && state->bits == 16) {
         status = sr_color_convert_frame16(&state->color, output, state->pixels,
                                           threads);
     } else if (status == SR_OK) {
-        if (gpu && gpu->implementation) {
+        if (gpu && gpu->implementation && state->allow_gpu) {
             status = sr_gpu_convert_frame(gpu, output, state->pixels,
-                                          &scene->project,
-                                          scene->output.color_space, diag);
+                                          &scene->project, state->space, diag);
             if (status != SR_OK) {
                 sr_diag_warning(diag, 0, NULL, NULL,
                                 "OpenCL conversion failed; using CPU fallback");
@@ -329,7 +336,50 @@ typedef struct {
     uint32_t channels;
     const SrResumeInputs *inputs;   /* --resume: fingerprinted input files */
     size_t audio_values;    /* floats in one frame's block (run->audio) */
+    const SrPlanPass *pass;
+    struct SrRunSink *sinks;        /* pass->sink_count entries */
 } SrRun;
+
+/* One output of a pass while it renders. The first sink converts inside
+ * sr_render_frame (state->pixels); later sinks convert the same float frame
+ * into their own buffers. */
+typedef struct SrRunSink {
+    const SrPlanSink *plan;
+    SrEncoder *encoder;
+    SrColorOutput color;    /* sinks after the first */
+    unsigned bits;
+    size_t frame_bytes;
+    void *pixels;           /* sinks after the first */
+} SrRunSink;
+
+static bool sr_sink_has(const SrRunSink *sink, uint64_t index) {
+    return sink->encoder && index >= sink->plan->first && index < sink->plan->end;
+}
+
+/* Converts the rendered float frame for every later sink that encodes
+ * frame `index`, into buffers[k] (buffers[0] is unused). */
+static SrStatus sr_run_convert_sinks(SrRun *run, uint64_t index, void **buffers,
+                                     SrStageTimes *times) {
+    SrStatus status = SR_OK;
+    size_t count = run->pass ? run->pass->sink_count : 1;
+    for (size_t k = 1; k < count && status == SR_OK; ++k) {
+        SrRunSink *sink = &run->sinks[k];
+        if (!sr_sink_has(sink, index)) continue;
+        SrStageMark mark = sr_stage_begin();
+        unsigned threads = run->options->encoder_threads;
+        if (sink->bits == 32)
+            status = sr_output_convert_linear(&sink->color, &run->scene->project,
+                                              run->frame, buffers[k], threads);
+        else if (sink->bits == 16)
+            status = sr_color_convert_frame16(&sink->color, run->frame, buffers[k],
+                                              threads);
+        else
+            status = sr_color_convert_frame(&sink->color, run->frame, buffers[k],
+                                            threads);
+        sr_stage_end(times, SR_STAGE_CONVERT, mark);
+    }
+    return status;
+}
 
 static SrStatus sr_run_audio_open(SrRun *run) {
     SrScene *scene = run->scene;
@@ -425,13 +475,16 @@ static SrStatus sr_run_hash(SrRun *run, uint64_t first, uint64_t end) {
 enum { SR_WRITE_SLOTS = 3 };
 
 typedef struct {
-    void *pixels;           /* frame_bytes of encoder input */
+    void *pixels;           /* frame_bytes of encoder input (first sink) */
+    void *extra[SR_MAX_OUTPUTS];    /* later sinks' input, index = sink */
     float *audio;           /* run->audio_values floats; NULL: no audio */
     size_t samples;
+    uint64_t index;         /* frame index */
 } SrWriteSlot;
 
 typedef struct {
-    SrEncoder *encoder;
+    SrRunSink *sinks;
+    size_t sink_count;
     SrWriteSlot slots[SR_WRITE_SLOTS];
     bool owned[SR_WRITE_SLOTS];     /* buffers allocated by the writer */
     unsigned head;          /* oldest queued slot: the one being encoded */
@@ -449,6 +502,24 @@ typedef struct {
     size_t log_size;
 } SrWriter;
 
+/* Encodes one frame into every sink that covers it, in sink order: video,
+ * then that sink's audio block. With one sink this is exactly the 1.0
+ * sequence of calls. */
+static SrStatus sr_write_frame(SrRunSink *sinks, size_t count,
+                               const SrWriteSlot *slot, SrDiagnostics *diag) {
+    SrStatus status = SR_OK;
+    for (size_t k = 0; k < count && status == SR_OK; ++k) {
+        SrRunSink *sink = &sinks[k];
+        if (!sr_sink_has(sink, slot->index)) continue;
+        status = sr_encoder_write_video(sink->encoder,
+                                        k == 0 ? slot->pixels : slot->extra[k], diag);
+        if (status == SR_OK && slot->audio && sr_encoder_has_audio(sink->encoder))
+            status = sr_encoder_write_audio(sink->encoder, slot->audio,
+                                            slot->samples, diag);
+    }
+    return status;
+}
+
 static void *sr_writer_main(void *arg) {
     SrWriter *w = arg;
     pthread_mutex_lock(&w->lock);
@@ -457,10 +528,7 @@ static void *sr_writer_main(void *arg) {
         if (w->count == 0) break;   /* closing and drained */
         SrWriteSlot *slot = &w->slots[w->head];
         pthread_mutex_unlock(&w->lock);
-        SrStatus status = sr_encoder_write_video(w->encoder, slot->pixels, &w->diag);
-        if (status == SR_OK && slot->audio)
-            status = sr_encoder_write_audio(w->encoder, slot->audio, slot->samples,
-                                            &w->diag);
+        SrStatus status = sr_write_frame(w->sinks, w->sink_count, slot, &w->diag);
         pthread_mutex_lock(&w->lock);
         w->head = (w->head + 1) % SR_WRITE_SLOTS;
         --w->count;
@@ -477,16 +545,17 @@ static void sr_writer_free_buffers(SrWriter *w) {
         if (w->owned[i]) {
             free(w->slots[i].pixels);
             free(w->slots[i].audio);
+            for (size_t k = 1; k < w->sink_count; ++k) free(w->slots[i].extra[k]);
         }
     }
 }
 
 /* Starts the writer; false (nothing to release) when it cannot run, and
  * the caller then encodes serially. Slot 0 borrows the run's own buffers. */
-static bool sr_writer_start(SrWriter *w, SrRun *run, SrEncoder *encoder,
-                            bool with_audio) {
+static bool sr_writer_start(SrWriter *w, SrRun *run, bool with_audio) {
     *w = (SrWriter){0};
-    w->encoder = encoder;
+    w->sinks = run->sinks;
+    w->sink_count = run->pass->sink_count;
     w->status = SR_OK;
     bool ok = true;
     for (unsigned i = 0; i < SR_WRITE_SLOTS && ok; ++i) {
@@ -494,12 +563,18 @@ static bool sr_writer_start(SrWriter *w, SrRun *run, SrEncoder *encoder,
         if (i == 0) {
             slot->pixels = run->state->pixels;
             slot->audio = with_audio ? run->audio : NULL;
+            for (size_t k = 1; k < w->sink_count; ++k)
+                slot->extra[k] = run->sinks[k].pixels;
             continue;
         }
         w->owned[i] = true;
         slot->pixels = malloc(run->frame_bytes);
         slot->audio = with_audio ? malloc(run->audio_values * sizeof(float)) : NULL;
         ok = slot->pixels && (!with_audio || slot->audio);
+        for (size_t k = 1; ok && k < w->sink_count; ++k) {
+            slot->extra[k] = malloc(run->sinks[k].frame_bytes);
+            ok = slot->extra[k] != NULL;
+        }
     }
     if (ok) {
         w->log = open_memstream(&w->log_text, &w->log_size);
@@ -563,39 +638,43 @@ static SrStatus sr_writer_finish(SrWriter *w, SrDiagnostics *diag) {
     return w->status;
 }
 
-/* Renders [first, end) into an open encoder on this thread. */
-static SrStatus sr_run_frames_serial(SrRun *run, SrEncoder *encoder,
-                                     uint64_t first, uint64_t end,
+/* Renders [first, end) into the open sink encoders on this thread. */
+static SrStatus sr_run_frames_serial(SrRun *run, uint64_t first, uint64_t end,
                                      uint64_t total, bool with_audio) {
     SrStatus status = SR_OK;
+    SrWriteSlot slot = {.pixels = run->state->pixels,
+                        .audio = with_audio ? run->audio : NULL};
+    for (size_t k = 1; k < run->pass->sink_count; ++k)
+        slot.extra[k] = run->sinks[k].pixels;
     for (uint64_t index = first; index < end && status == SR_OK; ++index) {
         SrStageTimes times = {0};
         status = sr_run_render(run, index, &times);
+        if (status == SR_OK)
+            status = sr_run_convert_sinks(run, index, slot.extra, &times);
         if (status != SR_OK) break;
         SrStageMark mark = sr_stage_begin();
-        status = sr_encoder_write_video(encoder, run->state->pixels, run->diag);
-        if (status == SR_OK && with_audio) {
-            size_t samples = sr_run_mix(run, index, run->audio);
-            status = sr_encoder_write_audio(encoder, run->audio, samples, run->diag);
-        }
+        slot.index = index;
+        if (with_audio) slot.samples = sr_run_mix(run, index, run->audio);
+        status = sr_write_frame(run->sinks, run->pass->sink_count, &slot, run->diag);
         sr_stage_end(&times, SR_STAGE_ENCODE, mark);
         if (status == SR_OK) sr_run_account(run, index, total, &times);
     }
     return status;
 }
 
-/* Renders [first, end) into an open encoder; audio too when `with_audio`.
- * Encoding runs on a writer thread unless --threads 1 asked for a single
- * worker (or the writer cannot start). The encode stage is the time the
- * render thread spends waiting for a free slot, mixing and queueing, plus
- * the final drain; the encoder's own busy time is sr_encoder_seconds. */
-static SrStatus sr_run_frames(SrRun *run, SrEncoder *encoder, uint64_t first,
-                              uint64_t end, uint64_t total, bool with_audio) {
+/* Renders [first, end) into the open sink encoders; audio too when
+ * `with_audio`. Encoding runs on a writer thread unless --threads 1 asked
+ * for a single worker (or the writer cannot start). The encode stage is the
+ * time the render thread spends waiting for a free slot, mixing and
+ * queueing, plus the final drain; the encoders' own busy time is
+ * sr_encoder_seconds. */
+static SrStatus sr_run_frames(SrRun *run, uint64_t first, uint64_t end,
+                              uint64_t total, bool with_audio) {
     with_audio = with_audio && run->mixer;
     SrWriter writer;
     if (run->options->encoder_threads == 1 ||
-        !sr_writer_start(&writer, run, encoder, with_audio))
-        return sr_run_frames_serial(run, encoder, first, end, total, with_audio);
+        !sr_writer_start(&writer, run, with_audio))
+        return sr_run_frames_serial(run, first, end, total, with_audio);
     void *own_pixels = run->state->pixels;
     SrStatus status = SR_OK;
     for (uint64_t index = first; index < end; ++index) {
@@ -605,7 +684,10 @@ static SrStatus sr_run_frames(SrRun *run, SrEncoder *encoder, uint64_t first,
         sr_stage_end(&times, SR_STAGE_ENCODE, mark);
         if (!slot) break;
         run->state->pixels = slot->pixels;
+        slot->index = index;
         status = sr_run_render(run, index, &times);
+        if (status == SR_OK)
+            status = sr_run_convert_sinks(run, index, slot->extra, &times);
         if (status != SR_OK) break;
         mark = sr_stage_begin();
         if (with_audio) slot->samples = sr_run_mix(run, index, slot->audio);
@@ -625,20 +707,56 @@ static SrEncoderAudio sr_run_audio_format(const SrRun *run) {
                             run->mixer ? run->channels : 0};
 }
 
-static SrStatus sr_run_encode(SrRun *run, const char *path, uint64_t first,
-                              uint64_t end) {
+static bool sr_wants_spherical(const SrScene *scene, const SrOutput *output,
+                               const char *path) {
+    if (scene->project.mode != SR_MODE_EQUIRECTANGULAR || !output->spherical_metadata)
+        return false;
+    if (sr_codec_info(output->codec)->legacy && output->container == SR_CONTAINER_AUTO)
+        return sr_spatial_is_mp4(path);
+    const char *muxer = sr_output_muxer(output, path, NULL);
+    return muxer && (!strcmp(muxer, "mp4") || !strcmp(muxer, "mov"));
+}
+
+/* Opens every active sink, renders the pass's frames into them and
+ * finishes them all (a failure still finishes the others' files). */
+static SrStatus sr_run_encode(SrRun *run, uint64_t first, uint64_t end) {
     SrEncoderAudio audio = sr_run_audio_format(run);
-    SrEncoder *encoder = NULL;
-    SrStatus status = sr_encoder_open(&encoder, run->scene, path,
-                                      run->options->encoder_threads, &audio,
-                                      run->diag);
-    if (status == SR_OK) {
-        status = sr_run_frames(run, encoder, first, end, end - first, true);
-        SrStatus finished = sr_encoder_finish(encoder, run->diag);
-        if (status == SR_OK) status = finished;
+    size_t count = run->pass->sink_count;
+    SrStatus status = SR_OK;
+    bool any_audio = false;
+    for (size_t k = 0; k < count && status == SR_OK; ++k) {
+        SrRunSink *sink = &run->sinks[k];
+        if (sink->plan->first >= sink->plan->end) continue;
+        status = sr_make_parent_dirs(sink->plan->path, run->diag);
+        if (status == SR_OK)
+            status = sr_encoder_open_output(&sink->encoder, run->scene,
+                                            sink->plan->output, sink->plan->path,
+                                            run->options->encoder_threads, &audio,
+                                            run->diag);
+        if (status == SR_OK) {
+            sr_encoder_set_first_number(sink->encoder, sink->plan->first);
+            any_audio |= sr_encoder_has_audio(sink->encoder);
+            if (run->mixer && !sr_encoder_has_audio(sink->encoder))
+                sr_diag_info(run->diag, "output '%s' carries no audio",
+                             sink->plan->path);
+        }
     }
-    run->metrics->encode_seconds += sr_encoder_seconds(encoder);
-    sr_encoder_destroy(encoder);
+    if (status == SR_OK)
+        status = sr_run_frames(run, first, end, end - first, any_audio);
+    for (size_t k = 0; k < count; ++k) {
+        SrRunSink *sink = &run->sinks[k];
+        if (!sink->encoder) continue;
+        SrStatus finished = sr_encoder_finish(sink->encoder, run->diag);
+        if (status == SR_OK) status = finished;
+        run->metrics->encode_seconds += sr_encoder_seconds(sink->encoder);
+        sr_encoder_destroy(sink->encoder);
+        sink->encoder = NULL;
+        /* --resume injects into its temporary file before the rename. */
+        if (status == SR_OK &&
+            sr_wants_spherical(run->scene, sink->plan->output, sink->plan->path))
+            status = sr_spatial_inject_mp4(sink->plan->path, run->scene->project.width,
+                                           run->scene->project.height, run->diag);
+    }
     return status;
 }
 
@@ -662,7 +780,8 @@ static void sr_run_maybe_abort(uint64_t committed) {
 
 /* The colour-conversion backend frames are actually converted with. */
 static void sr_run_backend(const SrRun *run, char *out, size_t size) {
-    if (run->state->bits == 8 && run->gpu && run->gpu->implementation)
+    if (run->state->bits == 8 && run->state->allow_gpu && run->gpu &&
+        run->gpu->implementation)
         snprintf(out, size, "opencl:%s", sr_gpu_device_name(run->gpu));
     else
         snprintf(out, size, "cpu");
@@ -679,17 +798,19 @@ static SrStatus sr_run_segment(SrRun *run, SrResume *resume, uint64_t k,
     char *partial = NULL;
     SrStatus status = sr_resume_segment_begin(resume, k, &partial, run->diag);
     if (status != SR_OK) return status;
-    SrEncoder *encoder = NULL;
-    status = sr_encoder_open_segment(&encoder, run->scene, partial,
-                                     run->options->encoder_threads, run->diag);
+    SrRunSink *sink = &run->sinks[0];
+    status = sr_encoder_open_segment_output(&sink->encoder, run->scene,
+                                            sink->plan->output, partial,
+                                            run->options->encoder_threads,
+                                            run->diag);
     if (status == SR_OK) {
-        status = sr_run_frames(run, encoder, from, to, resume->end - resume->first,
-                               false);
-        SrStatus finished = sr_encoder_finish(encoder, run->diag);
+        status = sr_run_frames(run, from, to, resume->end - resume->first, false);
+        SrStatus finished = sr_encoder_finish(sink->encoder, run->diag);
         if (status == SR_OK) status = finished;
     }
-    run->metrics->encode_seconds += sr_encoder_seconds(encoder);
-    sr_encoder_destroy(encoder);
+    run->metrics->encode_seconds += sr_encoder_seconds(sink->encoder);
+    sr_encoder_destroy(sink->encoder);
+    sink->encoder = NULL;
     if (status == SR_OK)
         status = sr_resume_inputs_verify(run->inputs, "rendering", run->diag);
     if (status == SR_OK) {
@@ -713,8 +834,9 @@ static SrStatus sr_run_assemble(SrRun *run, const SrResume *resume,
     if (!template_path) return SR_ERR_MEMORY;
     SrEncoderAudio audio = sr_run_audio_format(run);
     SrEncoder *encoder = NULL;
-    SrStatus status = sr_encoder_open_copy(&encoder, run->scene, path,
-                                           template_path, &audio, run->diag);
+    SrStatus status = sr_encoder_open_copy_output(&encoder, run->scene,
+                                                  run->sinks[0].plan->output, path,
+                                                  template_path, &audio, run->diag);
     free(template_path);
     for (uint64_t k = 0; status == SR_OK && k < resume->segment_count; ++k) {
         uint64_t from, to;
@@ -740,11 +862,6 @@ static SrStatus sr_run_assemble(SrRun *run, const SrResume *resume,
     return status;
 }
 
-static bool sr_wants_spherical(const SrScene *scene, const char *path) {
-    return scene->project.mode == SR_MODE_EQUIRECTANGULAR &&
-           scene->output.spherical_metadata && sr_spatial_is_mp4(path);
-}
-
 /* A committed segment is reused only when it demuxes as expected;
  * otherwise it is deleted and rendered again. */
 static SrStatus sr_run_check_segment(SrRun *run, SrResume *resume, uint64_t k,
@@ -756,8 +873,10 @@ static SrStatus sr_run_check_segment(SrRun *run, SrResume *resume, uint64_t k,
     char *path = sr_resume_segment_path(resume, k);
     if (!path) return SR_ERR_MEMORY;
     char why[256];
-    SrStatus status = sr_encoder_check_segment(run->scene, path, to - from, why,
-                                               sizeof(why));
+    SrStatus status = sr_encoder_check_segment_output(run->scene,
+                                                      run->sinks[0].plan->output,
+                                                      path, to - from, why,
+                                                      sizeof(why));
     if (status == SR_OK) {
         *valid = true;
     } else if (status == SR_ERR_ENCODER) {
@@ -780,7 +899,7 @@ static SrStatus sr_run_resume(SrRun *run, const char *path, uint64_t first,
     SrResumeSettings settings = {
         options->encoder_threads ? options->encoder_threads
                                  : sr_parallel_thread_count(0, SIZE_MAX),
-        run->state->bits, backend};
+        run->state->bits, backend, run->sinks[0].plan->output};
     uint32_t segment_frames = options->segment_frames
                                   ? options->segment_frames
                                   : SR_RESUME_DEFAULT_SEGMENT_FRAMES;
@@ -824,7 +943,8 @@ static SrStatus sr_run_resume(SrRun *run, const char *path, uint64_t first,
     if (status == SR_OK) {
         SrStageMark mark = sr_stage_begin();
         status = sr_run_assemble(run, &resume, temporary);
-        if (status == SR_OK && sr_wants_spherical(run->scene, path))
+        if (status == SR_OK &&
+            sr_wants_spherical(run->scene, run->sinks[0].plan->output, path))
             status = sr_spatial_inject_mp4(temporary, run->scene->project.width,
                                            run->scene->project.height, run->diag);
         if (status == SR_OK)
@@ -843,42 +963,56 @@ static SrStatus sr_run_resume(SrRun *run, const char *path, uint64_t first,
     return status;
 }
 
-SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
-                   SrRenderMetrics *metrics, SrDiagnostics *diag) {
-    if (!scene || !options || !metrics) {
-        return SR_ERR_ARGUMENT;
+/* Poster and thumbnail frames of the pass, after its video: each is
+ * rendered again (frames are a pure function of the index) and converted
+ * to 8 bits in its own output's colour space. */
+static SrStatus sr_run_stills(SrRun *run) {
+    const SrPlanPass *pass = run->pass;
+    SrStatus status = SR_OK;
+    uint8_t *rgba = NULL;
+    if (pass->still_count) {
+        rgba = sr_alloc((size_t)run->frame->width * run->frame->height * 4);
+        if (!rgba) return SR_ERR_MEMORY;
     }
-    *metrics = (SrRenderMetrics){0};
-    SrStatus ready = sr_composite_scene_ready(scene, diag);
-    if (ready != SR_OK) return ready;
-    if (scene->has_cards && scene->project.mode != SR_MODE_STANDARD) {
-        sr_diag_error(diag, 0, "project", "mode",
-                      "depth cards require mode standard; equirectangular and "
-                      "viewport canvases are not projected by a camera");
-        return SR_ERR_ARGUMENT;
-    }
-    if (options->validate_only) {
-        return SR_OK;
-    }
-    if (!options->preview && !options->hash) {
-        const char *path = options->output_override
-                             ? options->output_override : scene->output.path;
-        SrStatus status = sr_encoder_validate_metadata(scene, path, diag);
-        if (status != SR_OK) return status;
-    }
-    double wall_start = sr_monotonic_seconds();
-    uint64_t video_totals[4] = {0};
-    FILE *trace = NULL;
-    if (options->trace_path) {
-        if (sr_make_parent_dirs(options->trace_path, diag) != SR_OK)
-            return SR_ERR_IO;
-        trace = fopen(options->trace_path, "w");
-        if (!trace) {
-            sr_diag_error(diag, 0, NULL, NULL, "cannot write trace '%s': %s",
-                          options->trace_path, strerror(errno));
-            return SR_ERR_IO;
+    for (size_t i = 0; i < pass->still_count && status == SR_OK; ++i) {
+        const SrPlanStill *still = &pass->stills[i];
+        SrStageTimes times = {0};
+        status = sr_run_render(run, still->frame, &times);
+        SrColorOutput color;
+        if (status == SR_OK)
+            status = sr_color_output_init_bits(&color, &run->scene->project,
+                                               still->output->color_space, 8);
+        if (status == SR_OK) {
+            status = sr_color_convert_frame(&color, run->frame, rgba,
+                                            run->options->encoder_threads);
+            sr_color_output_free(&color);
         }
+        if (status == SR_OK) status = sr_make_parent_dirs(still->path, run->diag);
+        if (status == SR_OK)
+            status = sr_output_write_still(still->still, still->path,
+                                           run->frame->width, run->frame->height,
+                                           rgba, run->diag);
+        if (status == SR_OK) sr_stage_accumulate(run->metrics, &times);
     }
+    free(rgba);
+    return status;
+}
+
+static void sr_run_sinks_free(SrRunSink *sinks, size_t count) {
+    for (size_t k = 0; sinks && k < count; ++k) {
+        sr_encoder_destroy(sinks[k].encoder);
+        sr_color_output_free(&sinks[k].color);
+        free(sinks[k].pixels);
+    }
+    free(sinks);
+}
+
+/* One pass of the plan: the pre-B1-6 body of sr_render, at the pass's
+ * size and rate (already applied to scene->project). */
+static SrStatus render_pass(SrScene *scene, const SrRenderOptions *options,
+                            const SrPlanPass *pass, SrRenderMetrics *metrics,
+                            FILE *trace, SrDiagnostics *diag) {
+    uint64_t video_totals[4] = {0};
     SrStageMark setup = sr_stage_begin();
     SrGpu gpu = {0};
     if (options->request_gpu) {
@@ -899,15 +1033,13 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
     if (status == SR_OK && options->resume && !options->hash && !options->preview)
         status = sr_resume_inputs_add_fonts(&inputs, scene, diag);
     if (status == SR_OK) status = sr_physics_prepare(scene, diag);
-    metrics->physics_steps = scene->physics.steps_simulated;
+    metrics->physics_steps += scene->physics.steps_simulated;
     metrics->physics_cache_hit = scene->physics.cache_hit;
-    metrics->setup_wall_seconds = sr_monotonic_seconds() - setup.wall;
-    metrics->setup_cpu_seconds = sr_process_cpu_seconds() - setup.cpu;
+    metrics->setup_wall_seconds += sr_monotonic_seconds() - setup.wall;
+    metrics->setup_cpu_seconds += sr_process_cpu_seconds() - setup.cpu;
     if (status != SR_OK) {
         sr_resume_inputs_free(&inputs);
         sr_gpu_close(&gpu);
-        sr_trace_summary(trace, metrics, status);
-        if (trace) fclose(trace);
         return status;
     }
     uint32_t canvas_width = scene->project.mode == SR_MODE_VIEWPORT
@@ -916,6 +1048,10 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
         ? scene->scene360.height : scene->project.height;
     SrFrame composition = {0}, viewport = {0};
     SrFrameState state = {0};
+    SrRunSink *sinks = NULL;
+    size_t sink_count = pass->sink_count;
+    const SrOutput *first_output = sink_count ? pass->sinks[0].output
+                                 : pass->stills[0].output;
     sr_compositor_init(&state.compositor, options->encoder_threads);
     status = sr_frame_init(&composition, canvas_width, canvas_height);
     if (status != SR_OK) {
@@ -923,7 +1059,6 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
                       canvas_width, canvas_height);
         sr_resume_inputs_free(&inputs);
         sr_gpu_close(&gpu);
-        if (trace) fclose(trace);
         return status;
     }
     SrFrame *frame = &composition;
@@ -935,10 +1070,13 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
     }
     /* Previews are 8-bit; video output feeds the encoder whatever depth its
      * pixel format needs. */
-    state.bits = options->preview ? 8
-                                  : sr_encoder_input_bits(scene->output.pixel_format);
+    state.bits = options->preview || !sink_count ? 8
+                                                 : sr_output_input_bits(first_output);
+    state.space = first_output->color_space;
+    state.allow_gpu = sink_count <= 1 && sr_output_is_legacy(first_output);
     status = sr_color_output_init_bits(&state.color, &scene->project,
-                                       scene->output.color_space, state.bits);
+                                       first_output->color_space,
+                                       state.bits == 32 ? 16 : state.bits);
     if (status != SR_OK) goto cleanup;
     size_t frame_bytes = (size_t)frame->width * frame->height * 4 * (state.bits / 8);
     state.pixels = sr_alloc(frame_bytes);
@@ -946,16 +1084,43 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
         status = SR_ERR_MEMORY;
         goto cleanup;
     }
-    double exact_frames = scene->project.duration * scene->project.fps_num /
-                          scene->project.fps_den;
-    uint64_t total_frames = (uint64_t)ceil(exact_frames - 1e-12);
-    uint64_t first = options->has_range ? options->first_frame : 0;
-    uint64_t end = options->has_range ? options->end_frame : total_frames;
-    if (end > total_frames) end = total_frames;
-    if (first >= end) {
+    sinks = sr_alloc((sink_count ? sink_count : 1) * sizeof(*sinks));
+    if (!sinks) {
+        status = SR_ERR_MEMORY;
+        goto cleanup;
+    }
+    memset(sinks, 0, (sink_count ? sink_count : 1) * sizeof(*sinks));
+    for (size_t k = 0; k < sink_count; ++k) {
+        sinks[k].plan = &pass->sinks[k];
+        sinks[k].bits = k == 0 ? state.bits : sr_output_input_bits(sinks[k].plan->output);
+        sinks[k].frame_bytes = (size_t)frame->width * frame->height * 4 *
+                               (sinks[k].bits / 8);
+    }
+    for (size_t k = 1; k < sink_count && !options->preview && !options->hash; ++k) {
+        status = sr_color_output_init_bits(&sinks[k].color, &scene->project,
+                                           sinks[k].plan->output->color_space,
+                                           sinks[k].bits == 32 ? 16 : sinks[k].bits);
+        if (status == SR_OK) {
+            sinks[k].pixels = sr_alloc(sinks[k].frame_bytes);
+            if (!sinks[k].pixels) status = SR_ERR_MEMORY;
+        }
+        if (status != SR_OK) goto cleanup;
+    }
+    uint64_t total_frames = pass->total_frames;
+    /* The pass renders the union of its sinks' ranges. */
+    uint64_t first = UINT64_MAX, end = 0;
+    for (size_t k = 0; k < sink_count; ++k) {
+        if (pass->sinks[k].first >= pass->sinks[k].end) continue;
+        if (pass->sinks[k].first < first) first = pass->sinks[k].first;
+        if (pass->sinks[k].end > end) end = pass->sinks[k].end;
+    }
+    if (first >= end && !pass->still_count) {
+        uint64_t from = options->has_range ? options->first_frame : 0;
+        uint64_t to = options->has_range ? options->end_frame : total_frames;
+        if (to > total_frames) to = total_frames;
         sr_diag_error(diag, 0, NULL, NULL,
                       "empty frame range [%llu, %llu) for %llu-frame scene",
-                      (unsigned long long)first, (unsigned long long)end,
+                      (unsigned long long)from, (unsigned long long)to,
                       (unsigned long long)total_frames);
         status = SR_ERR_ARGUMENT;
         goto cleanup;
@@ -997,37 +1162,33 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
         goto cleanup;
     }
     SrRun run = {scene, options, metrics, diag, &state, &composition, frame,
-                 &gpu, trace, frame_bytes, NULL, NULL, 0, &inputs, 0};
+                 &gpu, trace, frame_bytes, NULL, NULL, 0, &inputs, 0, pass, sinks};
     status = sr_run_audio_open(&run);
     if (status == SR_OK) {
         if (options->hash) {
             status = sr_run_hash(&run, first, end);
         } else {
-            char *path = options->output_override
-                             ? sr_strdup(options->output_override)
-                             : sr_path_join(scene->base_dir, scene->output.path);
-            status = path ? sr_make_parent_dirs(path, diag) : SR_ERR_MEMORY;
-            if (status == SR_OK)
-                status = options->resume ? sr_run_resume(&run, path, first, end)
-                                         : sr_run_encode(&run, path, first, end);
-            /* --resume injects into its temporary file before the rename. */
-            if (status == SR_OK && !options->resume &&
-                sr_wants_spherical(scene, path))
-                status = sr_spatial_inject_mp4(path, scene->project.width,
-                                               scene->project.height, diag);
-            free(path);
+            if (first < end && options->resume) {
+                status = sr_make_parent_dirs(sinks[0].plan->path, diag);
+                if (status == SR_OK)
+                    status = sr_run_resume(&run, sinks[0].plan->path, first, end);
+            } else if (first < end) {
+                status = sr_run_encode(&run, first, end);
+            }
+            if (status == SR_OK) status = sr_run_stills(&run);
         }
     }
     sr_mixer_destroy(run.mixer);
     free(run.audio);
 
 cleanup:
+    sr_run_sinks_free(sinks, sink_count);
     sr_resume_inputs_free(&inputs);
     sr_assets_video_stats(scene, &metrics->video_sources, video_totals);
-    metrics->video_requests = video_totals[0];
-    metrics->video_cache_hits = video_totals[1];
-    metrics->video_decoded = video_totals[2];
-    metrics->video_seeks = video_totals[3];
+    metrics->video_requests += video_totals[0];
+    metrics->video_cache_hits += video_totals[1];
+    metrics->video_decoded += video_totals[2];
+    metrics->video_seeks += video_totals[3];
     sr_gpu_close(&gpu);
     sr_compositor_free(&state.compositor);
     /* Effect scratch and transfer tables are cached per thread across
@@ -1038,6 +1199,72 @@ cleanup:
     free(state.pixels);
     sr_frame_free(&viewport);
     sr_frame_free(&composition);
+    return status;
+}
+
+SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
+                   SrRenderMetrics *metrics, SrDiagnostics *diag) {
+    if (!scene || !options || !metrics) {
+        return SR_ERR_ARGUMENT;
+    }
+    *metrics = (SrRenderMetrics){0};
+    SrStatus ready = sr_composite_scene_ready(scene, diag);
+    if (ready != SR_OK) return ready;
+    if (scene->has_cards && scene->project.mode != SR_MODE_STANDARD) {
+        sr_diag_error(diag, 0, "project", "mode",
+                      "depth cards require mode standard; equirectangular and "
+                      "viewport canvases are not projected by a camera");
+        return SR_ERR_ARGUMENT;
+    }
+    SrOutputPlan plan;
+    SrStatus status = sr_output_plan_build(&plan, scene, options, diag);
+    if (status != SR_OK || options->validate_only) {
+        sr_output_plan_free(&plan);
+        return status;
+    }
+    for (size_t p = 0; !options->preview && !options->hash && p < plan.pass_count;
+         ++p) {
+        const SrPlanPass *pass = &plan.passes[p];
+        for (size_t k = 0; k < pass->sink_count && status == SR_OK; ++k) {
+            const SrPlanSink *sink = &pass->sinks[k];
+            /* The 1.0 check saw the unjoined path; the extension is the same. */
+            const char *path = options->output_override
+                ? options->output_override : sink->path;
+            status = sr_encoder_validate_output_metadata(scene, sink->output, path,
+                                                         diag);
+        }
+    }
+    if (status != SR_OK) {
+        sr_output_plan_free(&plan);
+        return status;
+    }
+    double wall_start = sr_monotonic_seconds();
+    FILE *trace = NULL;
+    if (options->trace_path) {
+        if (sr_make_parent_dirs(options->trace_path, diag) != SR_OK) {
+            sr_output_plan_free(&plan);
+            return SR_ERR_IO;
+        }
+        trace = fopen(options->trace_path, "w");
+        if (!trace) {
+            sr_diag_error(diag, 0, NULL, NULL, "cannot write trace '%s': %s",
+                          options->trace_path, strerror(errno));
+            sr_output_plan_free(&plan);
+            return SR_ERR_IO;
+        }
+    }
+    SrProject saved = scene->project;
+    for (size_t p = 0; p < plan.pass_count && status == SR_OK; ++p) {
+        const SrPlanPass *pass = &plan.passes[p];
+        /* Between passes only: frames never see a project change. */
+        scene->project.width = pass->width;
+        scene->project.height = pass->height;
+        scene->project.fps_num = pass->fps_num;
+        scene->project.fps_den = pass->fps_den;
+        status = render_pass(scene, options, pass, metrics, trace, diag);
+        scene->project = saved;
+    }
+    sr_output_plan_free(&plan);
     metrics->wall_seconds = sr_monotonic_seconds() - wall_start;
     struct rusage usage;
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
