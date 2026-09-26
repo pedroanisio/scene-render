@@ -6,7 +6,8 @@ not batch completion.
 
 Loader worktree: `/tmp/scene-render-b1`, branch `b1-0-loader`.
 Animation worktree: `/tmp/scene-render-b1-anim`, branch `b1-1-animation`.
-Active B1-2 worktree: `/tmp/scene-render-b1-lengths`, branch `b1-2-lengths`.
+B1-2 worktree: `/tmp/scene-render-b1-lengths`, branch `b1-2-lengths`.
+Active B1-3 worktree: `/tmp/scene-render-b1-compositing`, branch `b1-3-compositing`.
 Authoritative pre-batch base: `5b7dca1` (main advanced during initial setup).
 Preserved reference executable: `/tmp/scene-render-b1-reference`.
 Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
@@ -36,7 +37,7 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | B1-2 relative lengths and parent-box evaluation | Implemented, enabled, reviewed and verified | Batch merge |
 | B1-2 style tokens | Implemented, reviewed and verified | Batch merge |
 | B1-2 metadata/container tags | Implemented, reviewed and verified | Batch merge |
-| B1-3 blend modes, skew, mattes, masks, adjustment nodes | Pending | Every listed mode/parameter, cycle checks, numerical tests, three new goldens |
+| B1-3 blend modes, skew, mattes, masks, adjustment nodes | Design reviewed; shared randomness prerequisite verified | Every listed mode/parameter, cycle checks, numerical tests, three new goldens |
 | B1-4 shapes, stroke styles, trims, vector constructors | Pending | Geometry/arc lengths/coverage, all listed styles and shapes, golden |
 | B1-4 gradients and paints | Pending | Coordinates, focal/aspect/spread/rotation/stops, interpolation, dither, every paint host, golden |
 | B1-5 markers/beatGrid/snapping, group timing, sequence, names/tags | Pending | Generated ID resolution, timing tests and sequence-markers golden |
@@ -303,3 +304,26 @@ historical open baseline checks for the preceding animation/metadata slices.
 
 B1-3 through B1-6, dependent loader/animation hosts, batch merges and the final
 completion audit remain. No merge or push is included in this milestone.
+
+## Compositing design and shared randomness
+
+The B1-3 design is reviewed and committed as `54c094d`. It defines the complete
+blend, skew, mask, matte and adjustment contract, including bounded evaluation
+dependencies, private source rendering and legacy fast paths. Review corrected
+adjustment-card resampling identity and animated star contour ownership before
+feature implementation. See `docs/reviews/b1-compositing-design.md`.
+
+The first neutral prerequisite extracts stateless particle randomness into
+the shared module, preserving the old APIs, arithmetic, historical id hash,
+explicit seed behavior and hot-path inlining. Three fixed-vector tests pin
+compatibility. The read-only code review found no issues. Release, ASan/UBSan
+and coverage each pass 73/73 CTests, including all 19 frame-order cases.
+Coverage is 91.88% lines / 75.77% branches, above unchanged floors; random.c
+has full line/branch coverage. The `6eb035b` oracle matches all 309 previews,
+three encodes and two expected rejections.
+
+The strict 2% performance check passes with an unchanged baseline and output
+hashes: clear -1.1%, stage total -18.1%, all material stages below baseline.
+No stable speedup is claimed from these noisy measurements. See
+`docs/reviews/b1-compositing-random.md`. B1-3 visible features remain gated;
+the next implementation milestone is the color blend kernels.

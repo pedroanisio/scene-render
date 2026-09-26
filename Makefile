@@ -74,7 +74,8 @@ TEST_LDFLAGS += -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free
 P7_UNIT_SUITES := golden oom
 # ----------------------------------------------------------------------
 
-CORE_SOURCES := src/common.c src/card.c src/parallel.c src/color.c src/raster.c \
+CORE_SOURCES := src/common.c src/card.c src/parallel.c src/random.c \
+	src/color.c src/raster.c \
 	src/vector_path.c src/mesh.c src/gpu.c src/spatial.c src/diagnostics.c \
 	src/timeline.c src/length.c src/length_frame.c src/curves.c src/property.c src/scene.c \
 	src/assets.c src/text.c src/procedural.c src/audio.c src/compositor.c src/camera.c \
@@ -93,7 +94,7 @@ APP_OBJECT := $(BUILD)/main.o
 TEST_SOURCES := $(sort $(wildcard tests/unit/*.c))
 TEST_OBJECTS := $(TEST_SOURCES:tests/unit/%.c=$(BUILD)/unit/%.o)
 UNIT_SUITES := timeline length length_frame length_physics curves geometry \
-	compositor color vector mesh \
+	compositor color vector mesh random \
 	scene property xml xml_lengths profile styles metadata \
 	camera physics blend group raster mask path image encode encode_faults \
 	audio video fx anim_color particles deform shadow text args resume depth \

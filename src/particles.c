@@ -1,5 +1,7 @@
 #include "scene_render/particles.h"
 #include "scene_render/color.h"
+#include "scene_render/random.h"
+#include "random_internal.h"
 
 #include <math.h>
 #include <pthread.h>
@@ -20,27 +22,13 @@
 /* Grid index standing for "beyond any time this emitter can reach". */
 #define FAR_CELL (UINT64_C(1) << 62)
 
-static uint64_t splitmix64(uint64_t x) {
-    x += UINT64_C(0x9E3779B97F4A7C15);
-    x = (x ^ (x >> 30)) * UINT64_C(0xBF58476D1CE4E5B9);
-    x = (x ^ (x >> 27)) * UINT64_C(0x94D049BB133111EB);
-    return x ^ (x >> 31);
-}
-
 double sr_particles_random(uint64_t seed, uint64_t index, unsigned stream) {
-    uint64_t h = splitmix64(seed ^ splitmix64(index * 8 + stream));
-    return (double)(h >> 11) * (1.0 / 9007199254740992.0);
+    return sr_random_particle_value_inline(seed, index, stream);
 }
 
 uint64_t sr_particles_seed(const SrScene *scene, const SrNode *node) {
     if (node->particle_seed_set) return node->particle_seed;
-    uint64_t hash = UINT64_C(1469598103934665603);
-    for (const unsigned char *p = (const unsigned char *)(node->id ? node->id : "");
-         *p; ++p) {
-        hash ^= *p;
-        hash *= UINT64_C(1099511628211);
-    }
-    return scene->project.seed ^ hash;
+    return sr_random_particle_seed(scene->project.seed, node->id);
 }
 
 /* Upper bound of an animated value over all time (curves may overshoot

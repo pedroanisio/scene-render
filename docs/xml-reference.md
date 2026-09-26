@@ -489,6 +489,14 @@ in sequence, or on any thread count. The random streams come from `seed`
 emitter id. At most `maxParticles` (default 10000, up to 10,000,000) are
 alive; when the cap binds the newest are kept.
 
+For reproducibility, the historical particle id hash starts at
+1469598103934665603 and XORs each unsigned id byte before multiplying by
+1099511628211, modulo 2^64. This offset is intentionally different from
+canonical FNV-1a. The shared random module preserves the particle mapping
+`splitmix64(seed XOR splitmix64(index*8 + stream))`; its high 53 bits divided
+by 2^53 give a value in [0,1). All integer arithmetic wraps modulo 2^64.
+An explicit emitter seed, including zero, bypasses id-based derivation.
+
 | Attribute | Default | Notes |
 |---|---|---|
 | `rate` | 10 | particles per second, ≥ 0 |

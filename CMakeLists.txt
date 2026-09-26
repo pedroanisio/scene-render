@@ -64,6 +64,7 @@ set(SCENE_RENDER_SOURCES
     src/common.c
     src/card.c
     src/parallel.c
+    src/random.c
     src/color.c
     src/raster.c
     src/vector_path.c
@@ -133,7 +134,7 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/schema-compatibility.py)
     set(SR_UNIT_SUITES timeline length length_frame length_physics
-                       curves geometry compositor color vector
+                       curves geometry compositor color vector random
                        mesh scene property xml xml_lengths profile styles metadata
                        camera physics blend group raster mask path image
                        encode encode_faults audio video

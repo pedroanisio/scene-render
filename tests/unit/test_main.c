@@ -43,6 +43,7 @@ typedef struct suite {
 int main(int argc, char **argv)
 {
     const suite suites[] = {
+        {"random", sr_tests_random},
         {"length", sr_tests_length},
         {"xml_lengths", sr_tests_xml_lengths},
         {"length_frame", sr_tests_length_frame},
