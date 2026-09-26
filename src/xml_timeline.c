@@ -478,16 +478,26 @@ static bool resolve_node_tracks(ParseContext *ctx, SrNode *node, const Host *hos
     return true;
 }
 
+/* An instant known on `base` and in composition seconds: the enclosing
+ * group's start or end, or where the previous sequence item ended. A node
+ * starting or ending exactly there reuses the composition instant instead
+ * of unmapping it again, so marker endpoints and junctions stay exact
+ * through any depth of nesting. */
+typedef struct {
+    bool set;
+    double parent, absolute;
+} Anchor;
+
 typedef struct {
     Clock base;                /* clock of the enclosing group's children */
     double shift;              /* sequence item: its slot start on `base` */
     bool item;                 /* placed by a sequence */
-    /* Sequence junction: where the previous item ended, on `base` and in
-     * composition seconds. An item starting exactly there reuses the
-     * composition instant, so marker ends leave no gap. */
-    bool junction;
-    double junction_parent, junction_absolute;
+    Anchor start, end;
 } Placement;
+
+static bool anchored(Anchor anchor, double parent) {
+    return anchor.set && anchor.parent == parent;
+}
 
 static bool resolve_node(ParseContext *ctx, SrNode *node, Placement placement,
                          double *authored_end);
@@ -523,9 +533,8 @@ static bool node_interval(ParseContext *ctx, SrNode *node, Placement placement,
                          "startMarker", &time)) return false;
         host->start = clock_map(parent, time);
         host->absolute_start = time;
-    } else if (placement.junction &&
-               placement.shift + host->start == placement.junction_parent) {
-        host->absolute_start = placement.junction_absolute;
+    } else if (anchored(placement.start, placement.shift + host->start)) {
+        host->absolute_start = placement.start.absolute;
     } else {
         host->absolute_start = absolute(placement, host->start);
     }
@@ -534,9 +543,12 @@ static bool node_interval(ParseContext *ctx, SrNode *node, Placement placement,
                          "endMarker", &time)) return false;
         host->end = clock_map(parent, time);
         host->absolute_end = time;
+    } else if (!isfinite(host->end)) {
+        host->absolute_end = host->end;
+    } else if (anchored(placement.end, placement.shift + host->end)) {
+        host->absolute_end = placement.end.absolute;
     } else {
-        host->absolute_end = isfinite(host->end) ? absolute(placement, host->end)
-                                                 : host->end;
+        host->absolute_end = absolute(placement, host->end);
     }
     const char *attribute = start_marker ? "startMarker" : end_marker ? "endMarker"
                                                                       : "start";
@@ -610,21 +622,35 @@ static bool clock_consumers(ParseContext *ctx, SrNode *node, Clock clock) {
     return true;
 }
 
-static bool resolve_children(ParseContext *ctx, SrNode *node, Clock clock,
-                             double start) {
+/* A parent-clock instant of `node` on its children's clock. */
+static double children_value(const SrNode *node, double start, double parent) {
     const SrNodeTimeline *timeline = node->timeline;
+    if (!timeline || (timeline->time_scale == 1.0 && timeline->time_offset == 0.0))
+        return parent;
+    if (timeline->time_scale == 1.0) return parent + timeline->time_offset;
+    return (parent - start) * timeline->time_scale + start + timeline->time_offset;
+}
+
+static bool resolve_children(ParseContext *ctx, SrNode *node, Clock clock,
+                             const Host *host) {
+    const SrNodeTimeline *timeline = node->timeline;
+    double start = host->start;
+    Anchor first = {true, children_value(node, start, start), host->absolute_start};
+    Anchor last = {false, 0.0, 0.0};
+    if (isfinite(host->end))
+        last = (Anchor){true, children_value(node, start, host->end), host->absolute_end};
     if (!timeline || !timeline->sequence) {
         for (size_t i = 0; i < node->child_count; ++i) {
             double end;
             if (!resolve_node(ctx, node->children[i],
-                              (Placement){clock, 0.0, false, false, 0.0, 0.0},
-                              &end)) return false;
+                              (Placement){clock, 0.0, false, first, last}, &end))
+                return false;
         }
         return true;
     }
     /* Children are still in document order: z sorting happens afterwards. */
     double cursor = start;
-    Placement placement = {clock, cursor, true, false, 0.0, 0.0};
+    Placement placement = {clock, cursor, true, first, last};
     for (size_t i = 0; i < node->child_count; ++i) {
         SrNode *child = node->children[i];
         double end;
@@ -638,9 +664,7 @@ static bool resolve_children(ParseContext *ctx, SrNode *node, Clock clock,
             return resolve_error(ctx, child->source_line, node_element(child), "end",
                                  message);
         }
-        placement.junction = true;
-        placement.junction_parent = cursor + end;
-        placement.junction_absolute = child->end_time;
+        placement.start = (Anchor){true, cursor + end, child->end_time};
         cursor = cursor + end + timeline->time_gap;
         if (!isfinite(cursor) || fabs(cursor) > SR_MAX_CLOCK_OFFSET) {
             snprintf(message, sizeof(message), "%s: the sequence position exceeds "
@@ -676,7 +700,7 @@ static bool resolve_node(ParseContext *ctx, SrNode *node, Placement placement,
     if (node->type != SR_NODE_GROUP) return true;
     Clock children;
     if (!children_clock(ctx, node, parent, host.start, &children)) return false;
-    return resolve_children(ctx, node, children, host.start);
+    return resolve_children(ctx, node, children, &host);
 }
 
 static bool collision(ParseContext *ctx, const char *id, size_t line,
@@ -771,7 +795,7 @@ bool sr_xml_resolve_timeline(ParseContext *ctx) {
                                  ? "beatGrid" : "marker", NULL, problem);
         if (timeline->grid.present && !generated_collisions(ctx)) return false;
     }
-    Placement top = {{1.0, 0.0}, 0.0, false, false, 0.0, 0.0};
+    Placement top = {{1.0, 0.0}, 0.0, false, {false, 0.0, 0.0}, {false, 0.0, 0.0}};
     for (size_t i = 0; i < scene->root->child_count; ++i) {
         double end;
         if (!resolve_node(ctx, scene->root->children[i], top, &end)) return false;

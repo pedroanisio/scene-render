@@ -54,8 +54,13 @@ last needs a finite `end` (the next item starts from it). An item's
 `endMarker` is converted into its slot (`end = item clock(marker)`), so an
 item can run until a marker; `startMarker` on an item is rejected because
 the sequence decides where the item starts. Item intervals are unmapped as
-`unmap(C, slot + start)` so that, without a gap, an item's end and the next
-item's start are the same double. A
+`unmap(C, slot + start)`. Composition endpoints are anchored: a node whose
+start (end) on its parent clock equals its enclosing group's start (end),
+or, for a sequence item, the previous item's end, reuses that composition
+instant instead of unmapping again. Marker endpoints and gapless junctions
+therefore stay bitwise exact at any nesting depth (a marker end under a
+scale-10 clock leaves no blank frame before the next item or its
+descendants). A
 negative `timeGap` overlaps items. `object3D` and `camera` inside a sequence
 keep their scene-global timing, exactly as inside a group; they are not
 items. Items are placed before `z` sorting, so `z` changes drawing order only.

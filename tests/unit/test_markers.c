@@ -172,6 +172,16 @@ static void marker_table(sr_test_ctx *t) {
                   "<shape id=\"beat.9\" shape=\"rect\" width=\"1\" height=\"1\"/>"
                   "</composition></scene>", &scene))
         sr_scene_free(&scene);
+    expect_error(t, HEAD("1") "<markers><beatGrid bpm=\"2000000\"/></markers>"
+                 "<composition/></scene>", "(0,1e6] bpm");
+    expect_error(t, HEAD("1") "<markers><beatGrid bpm=\"60\" beatsPerBar=\"1025\"/>"
+                 "</markers><composition/></scene>", "[1,1024]");
+    expect_error(t, HEAD("4") "<assets><image id=\"beat.1\" src=\"x.png\" width=\"1\" "
+                 "height=\"1\"/></assets><markers><beatGrid bpm=\"60\"/></markers>"
+                 "<composition/></scene>", "id 'beat.1' equals an id generated");
+    expect_error(t, HEAD("4") "<markers><beatGrid bpm=\"60\"/></markers><composition/>"
+                 "<effects><effect id=\"bar.1\" type=\"glow\"/></effects></scene>",
+                 "id 'bar.1' equals an id generated");
     expect_error(t, HEAD("1") "<markers><marker time=\"0\" kind=\"chapter\"/></markers>"
                  "<composition/></scene>", "unsupported in this build");
     expect_error(t, HEAD("1") "<markers><beatGrid bpm=\"60\" source=\"x\"/></markers>"
@@ -242,6 +252,11 @@ static void nested_group_clocks(sr_test_ctx *t) {
                  "combined time scale");
     expect_error(t, HEAD("1") "<composition><group id=\"a\" timeScale=\"2000000\"/>"
                  "</composition></scene>", "[1e-6,1e6]");
+    /* A normalized track on a node that starts after the project end. */
+    expect_error(t, HEAD("1") "<composition><shape id=\"s\" shape=\"rect\" width=\"1\" "
+                 "height=\"1\" start=\"2\"><animate property=\"opacity\" "
+                 "timeBase=\"normalized\"><key time=\"0\" value=\"0\"/></animate>"
+                 "</shape></composition></scene>", "finite positive host span");
     expect_error(t, HEAD("1") "<composition><group id=\"a\" timeOffset=\"2e6\"/>"
                  "</composition></scene>", "at most 1e6 seconds");
 }
@@ -351,6 +366,29 @@ static void timed_sequence_items_meet_exactly(sr_test_ctx *t) {
                  b->start_time == a->end_time);
         sr_scene_free(&scene);
     }
+    /* The same junction reaches descendants of a group item. */
+    if (expect_ok(t, "<scene version=\"1.1\"><project width=\"32\" height=\"16\" "
+                  "fps=\"24\" duration=\"2\"/><markers><marker id=\"m\" "
+                  "time=\"0.7916666666666666\"/><marker id=\"e\" time=\"1.2\"/>"
+                  "</markers><composition>"
+                  "<sequence id=\"s\" timeScale=\"10\" timeOffset=\"0.3\">"
+                  "<shape id=\"a\" shape=\"rect\" width=\"2\" height=\"2\" endMarker=\"m\"/>"
+                  "<group id=\"b\" endMarker=\"e\"><group id=\"c\" timeOffset=\"0\">"
+                  "<shape id=\"d\" shape=\"rect\" width=\"2\" height=\"2\"/></group>"
+                  "<shape id=\"f\" shape=\"rect\" width=\"2\" height=\"2\" start=\"1\"/>"
+                  "</group></sequence></composition></scene>", &scene)) {
+        const SrNode *a = sr_scene_find_node(&scene, "a");
+        const SrNode *b = sr_scene_find_node(&scene, "b");
+        const SrNode *d = sr_scene_find_node(&scene, "d");
+        const SrNode *f = sr_scene_find_node(&scene, "f");
+        CHECK(t, a && b && d && f);
+        if (a && b && d && f) {
+            CHECK(t, b->start_time == a->end_time && d->start_time == a->end_time);
+            CHECK(t, b->end_time == 1.2);
+            CHECK(t, f->start_time > b->start_time && isinf(f->end_time));
+        }
+        sr_scene_free(&scene);
+    }
     if (!expect_ok(t, HEAD("10") "<composition>"
         "<sequence id=\"s\" start=\"0.3\" timeScale=\"3\" timeOffset=\"0.1\">"
         "<shape id=\"a\" shape=\"rect\" width=\"2\" height=\"2\" end=\"0.7\"/>"
@@ -374,6 +412,16 @@ static void timed_sequence_items_meet_exactly(sr_test_ctx *t) {
 
 static void node_markers(sr_test_ctx *t) {
     SrScene scene;
+    /* A child authored to end with its group keeps the group's exact end. */
+    if (expect_ok(t, HEAD("4") "<markers><marker id=\"q\" time=\"0.7\"/></markers>"
+                  "<composition><group id=\"g\" timeScale=\"10\" timeOffset=\"0.3\">"
+                  "<group id=\"h\" end=\"7.3\"><shape id=\"s\" shape=\"rect\" width=\"2\" "
+                  "height=\"2\" end=\"7.3\"/></group></group></composition></scene>", &scene)) {
+        const SrNode *h = sr_scene_find_node(&scene, "h");
+        const SrNode *s = sr_scene_find_node(&scene, "s");
+        CHECK(t, h && s && s->end_time == h->end_time);
+        sr_scene_free(&scene);
+    }
     /* The scale 10 clock does not round-trip 0.1 exactly: endpoints must
      * still be the marker instants. */
     if (expect_ok(t, HEAD("4") "<markers><marker id=\"p\" time=\"0.1\"/>"
