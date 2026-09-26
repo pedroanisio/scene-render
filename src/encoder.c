@@ -372,8 +372,6 @@ static SrStatus open_video(SrEncoder *e, const SrScene *scene, unsigned threads,
         SrStatus status = configure_new_codec(e, c, diag);
         if (status != SR_OK) return status;
     }
-    if (output->codec == SR_CODEC_AV1 && !(diag && diag->verbose))
-        setenv("SVT_LOG", "1", 0);    /* SVT-AV1 prints its banner otherwise */
     int rc = avcodec_open2(c, codec, NULL);
     if (rc < 0) {
         char what[160];

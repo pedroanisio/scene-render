@@ -943,7 +943,30 @@ typedef struct {
     bool loaded;
     char scene_path[1024];
     SrOutputPlan plan;
+    unsigned threads;
+    uint8_t *reference[2];      /* a.mkv and b-01.png of the uninjected run */
+    size_t reference_size[2];
 } OutputsContext;
+
+static const char *const outputs_checked[2] = {"oom-out/a.mkv", "oom-out/b-01.png"};
+
+/* The writer thread cannot start when its slot buffers cannot be
+ * allocated; the render then encodes serially, which must give the same
+ * files. */
+static bool outputs_same_result(void *opaque) {
+    OutputsContext *c = opaque;
+    bool same = true;
+    for (int i = 0; i < 2 && same; ++i) {
+        char path[1100];
+        snprintf(path, sizeof(path), "%s", sr_test_tmp_path(outputs_checked[i]));
+        uint8_t *data = NULL;
+        size_t size = 0;
+        same = read_all(path, &data, &size) && size == c->reference_size[i] &&
+               memcmp(data, c->reference[i], size) == 0;
+        free(data);
+    }
+    return same;
+}
 
 /* Several outputs in one shared pass and separate passes, an image
  * sequence, a GIF palette, an APNG and both still formats: every core
@@ -952,7 +975,7 @@ static SrStatus outputs_render_op(void *opaque) {
     OutputsContext *c = opaque;
     if (!c->loaded) return SR_ERR_ARGUMENT;
     SrDiagnostics diag = quiet_diag("oom-outputs");
-    SrRenderOptions options = {.encoder_threads = 1};
+    SrRenderOptions options = {.encoder_threads = c->threads ? c->threads : 1};
     SrRenderMetrics metrics;
     return sr_render(&c->scene, &options, &metrics, &diag);
 }
@@ -1022,6 +1045,20 @@ static void outputs_survive_allocation_failures(sr_test_ctx *t) {
                             outputs_render_op, outputs_release, outputs_prepare,
                             NULL, {SR_ERR_MEMORY}};
     CHECK(t, replay_until_success(t, &render, &c) > 20);
+    /* Again with the writer thread and several sinks per slot. */
+    c.threads = 3;
+    CHECK_INT(t, outputs_render_op(&c), SR_OK);
+    for (int i = 0; i < 2; ++i)
+        CHECK(t, read_all(sr_test_tmp_path(outputs_checked[i]), &c.reference[i],
+                          &c.reference_size[i]));
+    outputs_release(&c);
+    outputs_prepare(&c);
+    const OomSpec threaded = {"multi-output writer thread", outputs_render_op,
+                              outputs_release, outputs_prepare, outputs_same_result,
+                              {SR_ERR_MEMORY}};
+    CHECK(t, replay_until_success(t, &threaded, &c) > 20);
+    for (int i = 0; i < 2; ++i) free(c.reference[i]);
+    c.threads = 1;
     outputs_release(&c);
     snprintf(c.scene_path, sizeof(c.scene_path), "%s",
              sr_test_data_path("tests/data-outputs.xml"));

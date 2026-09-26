@@ -213,6 +213,10 @@ static void sequence_patterns(sr_test_ctx *t) {
     CHECK(t, sr_output_paths_collide("f-%03d.png", true, "f-7.png", false));
     CHECK(t, !sr_output_paths_collide("f-%03d.png", true, "f-x.png", false));
     CHECK(t, !sr_output_paths_collide("f-%03d.png", true, "f-.png", false));
+    CHECK(t, sr_output_paths_collide("f-%01d.png", true, "f-1%01d.png", true));
+    CHECK(t, sr_output_paths_collide("f-%01d.png", true, "f-%01d0.png", true));
+    CHECK(t, !sr_output_paths_collide("f-%01d.png", true, "fx%01d.png", true));
+    CHECK(t, !sr_output_paths_collide("f-%01d.png", true, "f-1%01dx.png", true));
     CHECK(t, sr_output_paths_collide("a.mp4", false, "a.mp4", false));
     CHECK(t, !sr_output_paths_collide("a.mp4", false, "b.mp4", false));
 }
@@ -1298,7 +1302,81 @@ static void render_errors(sr_test_ctx *t) {
     free(text);
 }
 
+/* Regressions for the Codex diff review of B1-6. */
+static void review_regressions(sr_test_ctx *t) {
+    char dir[1024], scene_path[1100];
+    snprintf(dir, sizeof(dir), "%s", scratch_dir("review"));
+    snprintf(scene_path, sizeof(scene_path), "%s/scene.xml", dir);
+    SrScene scene;
+    FILE *log;
+    SrDiagnostics diag;
+    SrOutputPlan plan;
+    char *message = NULL;
+    /* 1: a malformed sequence override is an argument error (no scan past
+     * the pattern). */
+    write_scene(scene_path, "<output id=\"s\" path=\"s-%02d.png\" "
+                "codec=\"png-sequence\"><poster path=\"p.png\"/></output>");
+    st_diag(&diag, &log);
+    if (sr_scene_load_xml(scene_path, &scene, &diag) == SR_OK) {
+        SrRenderOptions bad = {.output_override = "bad-%s.png"};
+        CHECK_INT(t, plan_with(&scene, bad, &plan, &message), SR_ERR_ARGUMENT);
+        CHECK_CONTAINS(t, message, "not a sequence pattern");
+        free(message);
+        sr_output_plan_free(&plan);
+        SrRenderOptions trailing = {.output_override = "bad-%"};
+        CHECK_INT(t, plan_with(&scene, trailing, &plan, NULL), SR_ERR_ARGUMENT);
+        sr_output_plan_free(&plan);
+        sr_scene_free(&scene);
+    }
+    if (log) fclose(log);
+    /* 4: an output skipped by the range in its own pass does not fail the
+     * render; 5: disjoint ranges render only their own frames. */
+    write_scene(scene_path, "<output id=\"a\" path=\"a.mkv\" codec=\"ffv1\" "
+                "end=\"0.2\"/><output id=\"b\" path=\"b.mov\" codec=\"prores\" "
+                "start=\"0.8\"/><output id=\"c\" path=\"c.mkv\" codec=\"ffv1\" "
+                "width=\"16\" height=\"9\" end=\"0.5\"/>");
+    CHECK_INT(t, render_file(scene_path, (SrRenderOptions){.has_range = true,
+              .first_frame = 4, .end_frame = 6}, NULL), SR_OK);
+    st_diag(&diag, &log);
+    if (sr_scene_load_xml(scene_path, &scene, &diag) == SR_OK) {
+        SrRenderOptions options = {.output_ids = "a,b", .encoder_threads = 2};
+        SrRenderMetrics metrics;
+        CHECK_INT(t, sr_render(&scene, &options, &metrics, &diag), SR_OK);
+        CHECK_INT(t, metrics.frames, 3);    /* frames 0, 1 and 5 */
+        /* 7: inherited sizes and rates obey the output limits. */
+        scene.project.width = 20000;
+        CHECK_INT(t, plan_with(&scene, (SrRenderOptions){0}, &plan, &message),
+                  SR_ERR_ARGUMENT);
+        CHECK_CONTAINS(t, message, "at most 16384");
+        free(message);
+        sr_output_plan_free(&plan);
+        sr_scene_free(&scene);
+    }
+    if (log) fclose(log);
+    /* 6: --output cannot silently change a 1.1 output's container or make
+     * an authored faststart meaningless. */
+    write_scene(scene_path, "<output path=\"w.webm\" codec=\"vp9\"/>");
+    CHECK_INT(t, render_file(scene_path, (SrRenderOptions){.output_override =
+              "w.mp4"}, &message), SR_ERR_ARGUMENT);
+    CHECK_CONTAINS(t, message, "changes the container");
+    free(message);
+    write_scene(scene_path, "<output path=\"h.mp4\" codec=\"h264\" "
+                "faststart=\"false\"/>");
+    CHECK_INT(t, render_file(scene_path, (SrRenderOptions){.output_override =
+              "h.mkv"}, &message), SR_ERR_ARGUMENT);
+    CHECK_CONTAINS(t, message, "faststart applies only");
+    free(message);
+    /* 8: 1.0 lexical crf forms stay accepted. */
+    expect_load(t, "<scene version=\"1.0\"><project width=\"8\" height=\"8\" "
+                "fps=\"1\" duration=\"1\"/><output path=\"a.mp4\" "
+                "codec=\"h264\" crf=\"+18\"/><composition/></scene>", SR_OK, NULL);
+    expect_load(t, "<scene version=\"1.0\"><project width=\"8\" height=\"8\" "
+                "fps=\"1\" duration=\"1\"/><output path=\"a.mp4\" "
+                "codec=\"h264\" crf=\"-0\"/><composition/></scene>", SR_OK, NULL);
+}
+
 const sr_test_case sr_tests_outputs[] = {
+    {"review_regressions", review_regressions},
     {"sequence_patterns", sequence_patterns},
     {"frame_ranges_closed_form", frame_ranges_closed_form},
     {"codec_table_and_muxers", codec_table_and_muxers},

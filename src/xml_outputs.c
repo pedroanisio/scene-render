@@ -5,6 +5,8 @@
 #include "scene_render/color.h"
 #include "scene_render/outputs.h"
 
+#include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +36,17 @@ static bool parse_fps(const char *text, uint32_t *num, uint32_t *den) {
         *den = 1;
     }
     return ok && *num > 0 && *den > 0 && *num <= INT32_MAX && *den <= INT32_MAX;
+}
+
+/* The 1.0 integer parser (strtol: sign and leading blanks accepted). */
+static bool parse_int(const char *text, int *value) {
+    errno = 0;
+    char *tail = NULL;
+    long result = strtol(text, &tail, 10);
+    if (errno || tail == text || *tail || result < INT_MIN || result > INT_MAX)
+        return false;
+    *value = (int)result;
+    return true;
 }
 
 static bool parse_dimension(const char *text, uint32_t *value) {
@@ -71,15 +84,15 @@ static void parse_legacy(ParseContext *ctx, SrOutput *output,
         output->preset_authored = true;
     }
     if ((value = sr_xml_attr(attrs, "crf"))) {
-        uint32_t crf;
+        int crf;
         int limit = info->max_crf > 51 ? info->max_crf : 51;
-        if (!sr_parse_u32(value, &crf) || crf > (uint32_t)limit) {
+        if (!parse_int(value, &crf) || crf < 0 || crf > limit) {
             char message[64];
             snprintf(message, sizeof(message), "expected an integer in [0,%d]",
                      limit);
             SR_XML_FAIL_RETURN(ctx, "output", "crf", message);
         }
-        output->crf = (int)crf;
+        output->crf = crf;
         output->crf_authored = true;
     }
     if ((value = sr_xml_attr(attrs, "bitrate"))) {

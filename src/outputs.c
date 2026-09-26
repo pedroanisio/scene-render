@@ -297,7 +297,8 @@ static bool split_pattern(const char *pattern, char *prefix, char *suffix,
         if (c == '%' && at[1] == '%') {
             ++at;
         } else if (c == '%') {
-            while (*at != 'd') ++at;
+            while (*at && *at != 'd') ++at;
+            if (!*at) return false;
             target[used] = '\0';
             target = suffix;
             used = 0;
@@ -309,6 +310,21 @@ static bool split_pattern(const char *pattern, char *prefix, char *suffix,
     }
     target[used] = '\0';
     return seen;
+}
+
+/* True when the longer of `a` and `b` is the shorter plus only digits (at
+ * the end for prefixes, at the start for suffixes): two patterns whose
+ * prefixes and suffixes relate so can generate one file name. */
+static bool digits_extend(const char *a, const char *b, bool prefix) {
+    size_t la = strlen(a), lb = strlen(b);
+    const char *longer = la >= lb ? a : b, *shorter = la >= lb ? b : a;
+    size_t ls = la >= lb ? lb : la, ll = la >= lb ? la : lb;
+    const char *extra = prefix ? longer + ls : longer;
+    if (prefix ? strncmp(longer, shorter, ls) : strcmp(longer + ll - ls, shorter))
+        return false;
+    for (size_t i = 0; i < ll - ls; ++i)
+        if (extra[i] < '0' || extra[i] > '9') return false;
+    return true;
 }
 
 /* True when `name` is prefix + one or more digits + suffix. */
@@ -329,6 +345,7 @@ bool sr_output_paths_collide(const char *a, bool a_sequence, const char *b,
     static _Thread_local char ap[SIZE], as[SIZE], bp[SIZE], bs[SIZE];
     if (a_sequence && !split_pattern(a, ap, as, SIZE)) return true;
     if (b_sequence && !split_pattern(b, bp, bs, SIZE)) return true;
-    if (a_sequence && b_sequence) return !strcmp(ap, bp) && !strcmp(as, bs);
+    if (a_sequence && b_sequence)
+        return digits_extend(ap, bp, true) && digits_extend(as, bs, false);
     return a_sequence ? pattern_matches(ap, as, b) : pattern_matches(bp, bs, a);
 }

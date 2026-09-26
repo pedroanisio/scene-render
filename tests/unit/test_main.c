@@ -42,6 +42,7 @@ typedef struct suite {
 
 int main(int argc, char **argv)
 {
+    setenv("SVT_LOG", "1", 0);  /* SVT-AV1 banners, as scene-render does */
     const suite suites[] = {
         {"random", sr_tests_random},
         {"blend_color", sr_tests_blend_color},

@@ -356,6 +356,14 @@ static bool sr_sink_has(const SrRunSink *sink, uint64_t index) {
     return sink->encoder && index >= sink->plan->first && index < sink->plan->end;
 }
 
+/* True when some sink encodes frame `index`: a pass whose outputs have
+ * disjoint ranges skips the frames between them. */
+static bool sr_run_needed(const SrRun *run, uint64_t index) {
+    for (size_t k = 0; k < run->pass->sink_count; ++k)
+        if (sr_sink_has(&run->sinks[k], index)) return true;
+    return false;
+}
+
 /* Converts the rendered float frame for every later sink that encodes
  * frame `index`, into buffers[k] (buffers[0] is unused). */
 static SrStatus sr_run_convert_sinks(SrRun *run, uint64_t index, void **buffers,
@@ -647,6 +655,7 @@ static SrStatus sr_run_frames_serial(SrRun *run, uint64_t first, uint64_t end,
     for (size_t k = 1; k < run->pass->sink_count; ++k)
         slot.extra[k] = run->sinks[k].pixels;
     for (uint64_t index = first; index < end && status == SR_OK; ++index) {
+        if (!sr_run_needed(run, index)) continue;
         SrStageTimes times = {0};
         status = sr_run_render(run, index, &times);
         if (status == SR_OK)
@@ -678,6 +687,7 @@ static SrStatus sr_run_frames(SrRun *run, uint64_t first, uint64_t end,
     void *own_pixels = run->state->pixels;
     SrStatus status = SR_OK;
     for (uint64_t index = first; index < end; ++index) {
+        if (!sr_run_needed(run, index)) continue;
         SrStageTimes times = {0};
         SrStageMark mark = sr_stage_begin();
         SrWriteSlot *slot = sr_writer_acquire(&writer, &status);
@@ -1022,8 +1032,9 @@ static void sr_run_sinks_free(SrRunSink *sinks, size_t count) {
 /* One pass of the plan: the pre-B1-6 body of sr_render, at the pass's
  * size and rate (already applied to scene->project). */
 static SrStatus render_pass(SrScene *scene, const SrRenderOptions *options,
-                            const SrPlanPass *pass, SrRenderMetrics *metrics,
-                            FILE *trace, SrDiagnostics *diag) {
+                            const SrPlanPass *pass, bool single_output,
+                            SrRenderMetrics *metrics, FILE *trace,
+                            SrDiagnostics *diag) {
     uint64_t video_totals[4] = {0};
     SrStageMark setup = sr_stage_begin();
     SrGpu gpu = {0};
@@ -1085,7 +1096,11 @@ static SrStatus render_pass(SrScene *scene, const SrRenderOptions *options,
     state.bits = options->preview || !sink_count ? 8
                                                  : sr_output_input_bits(first_output);
     state.space = first_output->color_space;
-    state.allow_gpu = sink_count <= 1 && sr_output_is_legacy(first_output);
+    /* OpenCL conversion only on the 1.0 path: a scene with one 1.0 output.
+     * Any scene with several outputs converts on the CPU whatever is
+     * selected, so a sink's bytes never depend on the selection. */
+    state.allow_gpu = single_output && sink_count <= 1 &&
+                      sr_output_is_legacy(first_output);
     status = sr_color_output_init_bits(&state.color, &scene->project,
                                        first_output->color_space,
                                        state.bits == 32 ? 16 : state.bits);
@@ -1268,12 +1283,19 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
     SrProject saved = scene->project;
     for (size_t p = 0; p < plan.pass_count && status == SR_OK; ++p) {
         const SrPlanPass *pass = &plan.passes[p];
+        /* Outputs skipped by --frame-range leave passes with nothing to
+         * do; only a selection with no frame at all is an error (below,
+         * from the one pass of that selection). */
+        if (plan.active && !options->preview && !options->hash &&
+            !sr_plan_pass_active(pass))
+            continue;
         /* Between passes only: frames never see a project change. */
         scene->project.width = pass->width;
         scene->project.height = pass->height;
         scene->project.fps_num = pass->fps_num;
         scene->project.fps_den = pass->fps_den;
-        status = render_pass(scene, options, pass, metrics, trace, diag);
+        status = render_pass(scene, options, pass, plan.single_output, metrics,
+                             trace, diag);
         scene->project = saved;
     }
     sr_output_plan_free(&plan);

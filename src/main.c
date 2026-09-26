@@ -154,6 +154,9 @@ int main(int argc, char **argv) {
     diag.verbose = options.verbose;
     /* libav reports through diagnostics; its own log only when verbose. */
     av_log_set_level(options.verbose ? AV_LOG_INFO : AV_LOG_ERROR);
+    /* SVT-AV1 logs through its own channel; keep it at errors unless the
+     * caller asked for more (process start, before any thread exists). */
+    if (!options.verbose) setenv("SVT_LOG", "1", 0);
     SrScene scene;
     SrStatus status = sr_scene_load_xml_report(options.scene_path, &scene, &diag,
                                                 options.report_unsupported);

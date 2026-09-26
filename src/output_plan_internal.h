@@ -37,7 +37,12 @@ typedef struct {
 typedef struct {
     SrPlanPass *passes;
     size_t pass_count;
+    bool active;                /* some sink has a frame or some still exists */
+    bool single_output;         /* the scene declares one output */
 } SrOutputPlan;
+
+/* True when the pass has a frame to encode or a still to write. */
+bool sr_plan_pass_active(const SrPlanPass *pass);
 
 /* Selection, ranges, grouping and effective paths for `options`, checked
  * before anything renders: SR_ERR_ARGUMENT (diagnostic) for CLI conflicts,

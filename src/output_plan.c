@@ -19,6 +19,13 @@ uint64_t sr_output_total_frames(double duration, uint32_t fps_num,
     return (uint64_t)ceil(exact_frames - 1e-12);
 }
 
+bool sr_plan_pass_active(const SrPlanPass *pass) {
+    if (pass->still_count) return true;
+    for (size_t i = 0; i < pass->sink_count; ++i)
+        if (pass->sinks[i].first < pass->sinks[i].end) return true;
+    return false;
+}
+
 void sr_output_plan_free(SrOutputPlan *plan) {
     if (!plan) return;
     for (size_t p = 0; p < plan->pass_count; ++p) {
@@ -139,6 +146,52 @@ static SrStatus check_pass_memory(const SrOutputPlan *plan, SrDiagnostics *diag)
     return SR_OK;
 }
 
+/* Settings that only exist after CLI overrides: the effective size and
+ * rate of a 1.1 output, and its container once --output replaced the path.
+ * A scene with one 1.0 output keeps the 1.0 behaviour exactly. */
+static SrStatus check_effective(const SrOutput *o, uint32_t width,
+                                uint32_t height, uint32_t num, uint32_t den,
+                                const char *override, bool check_size,
+                                SrDiagnostics *diag) {
+    const SrCodecInfo *info = sr_codec_info(o->codec);
+    if (check_size && (width > SR_MAX_OUTPUT_DIMENSION ||
+                       height > SR_MAX_OUTPUT_DIMENSION ||
+                       (uint64_t)num < den || (uint64_t)num > 1000u * (uint64_t)den)) {
+        sr_diag_error(diag, o->source_line, "output", NULL,
+                      "output '%s' renders at %ux%u, %u/%u fps; outputs need at "
+                      "most %u pixels per side and 1 to 1000 fps", label(o), width,
+                      height, num, den, SR_MAX_OUTPUT_DIMENSION);
+        return SR_ERR_ARGUMENT;
+    }
+    if (!override) return SR_OK;
+    if (info->sequence) {
+        if (!sr_sequence_pattern_valid(override)) {
+            sr_diag_error(diag, 0, NULL, NULL,
+                          "--output '%s' is not a sequence pattern (one %%0Nd)",
+                          override);
+            return SR_ERR_ARGUMENT;
+        }
+        return SR_OK;
+    }
+    const char *authored = sr_output_muxer(o, o->path, NULL);
+    const char *effective = sr_output_muxer(o, override, NULL);
+    if (!info->legacy && authored && effective && strcmp(authored, effective)) {
+        sr_diag_error(diag, o->source_line, "output", "container",
+                      "--output '%s' changes the container of output '%s' from %s "
+                      "to %s; set container= or keep the extension", override,
+                      label(o), authored, effective);
+        return SR_ERR_ARGUMENT;
+    }
+    if (o->faststart_authored && effective && strcmp(effective, "mp4") &&
+        strcmp(effective, "mov")) {
+        sr_diag_error(diag, o->source_line, "output", "faststart",
+                      "--output '%s' is not mp4 or mov; faststart applies only "
+                      "to mp4 and mov", override);
+        return SR_ERR_ARGUMENT;
+    }
+    return SR_OK;
+}
+
 static SrStatus plan_stills(SrOutputPlan *plan, const SrScene *scene,
                             const SrOutput *o, const SrRenderOptions *options,
                             uint32_t width, uint32_t height, uint32_t num,
@@ -212,6 +265,10 @@ SrStatus sr_output_plan_build(SrOutputPlan *plan, const SrScene *scene,
         uint32_t height = o->height ? o->height : project->height;
         uint32_t num = o->fps_num ? o->fps_num : project->fps_num;
         uint32_t den = o->fps_num ? o->fps_den : project->fps_den;
+        status = check_effective(o, width, height, num, den,
+                                 single ? NULL : options->output_override,
+                                 outputs > 1 || !sr_output_is_legacy(o), diag);
+        if (status != SR_OK) return status;
         uint64_t total = sr_output_total_frames(project->duration, num, den);
         uint64_t first = sr_output_frame_at(o->start, num, den);
         uint64_t end = o->has_end ? sr_output_frame_at(o->end, num, den) : total;
@@ -241,7 +298,10 @@ SrStatus sr_output_plan_build(SrOutputPlan *plan, const SrScene *scene,
                                  total, diag);
         if (single) break;
     }
-    (void)active;
+    plan->single_output = outputs == 1;
+    for (size_t p = 0; p < plan->pass_count; ++p)
+        active = active || plan->passes[p].still_count;
+    plan->active = active;
     if (status == SR_OK && !single) status = check_collisions(plan, diag);
     if (status == SR_OK && !single) status = check_pass_memory(plan, diag);
     return status;
