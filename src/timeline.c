@@ -1,5 +1,6 @@
 #include "scene_render/timeline.h"
 #include "curves_internal.h"
+#include "timeline_internal.h"
 
 #include <float.h>
 #include <math.h>
@@ -196,6 +197,71 @@ static double sample(const SrTrack *track, double time) {
     return a->value + (b->value - a->value) * curved;
 }
 
+typedef struct {
+    double time;
+    double cycles;
+} CycleSample;
+
+static CycleSample cycle_sample(double first, double last, double time,
+                                 SrExtrapolation mode) {
+    double span = last - first;
+    double elapsed = time - first;
+    double period = mode == SR_EXTRAPOLATE_PING_PONG ? 2.0 * span : span;
+    double local = fmod(elapsed, period);
+    if (local < 0.0) local += period;
+    if (mode == SR_EXTRAPOLATE_PING_PONG && local > span)
+        local = period - local;
+    /* Decimal spans can divide to an exact integer while fmod is
+     * just below the span. Snap representable cycle products, but
+     * never discard the remainder/parity of enormous quotients. */
+    double nearest = round(elapsed / span);
+    double edge_distance = fmin(local, fabs(span - local));
+    double edge_tolerance = fmin(4.0 * DBL_EPSILON * fmax(span, fabs(elapsed)),
+                                 1e-7 * span);
+    bool boundary = fabs(nearest) < 0x1p52 && elapsed == nearest * span &&
+        edge_distance <= edge_tolerance;
+    if (boundary)
+        local = mode == SR_EXTRAPOLATE_PING_PONG
+            ? fmod(fabs(nearest), 2.0) * span : 0.0;
+    CycleSample mapped = {.time = first + local};
+    if (mode == SR_EXTRAPOLATE_OFFSET) {
+        double remainder = fmod(elapsed, span);
+        mapped.cycles = boundary ? nearest
+            : round((elapsed - remainder) / span) - (remainder < 0.0 ? 1.0 : 0.0);
+    }
+    return mapped;
+}
+
+size_t sr_track_neighborhood(const SrTrack *track, double time,
+                             size_t indices[SR_TRACK_NEIGHBORHOOD]) {
+    if (!track || !track->count || !indices) return 0;
+    indices[0] = 0;
+    if (track->count == 1) return 1;
+    if (track->clock_set) time = time * track->clock_scale + track->clock_offset;
+    double first = track->keys[0].time;
+    double last = track->keys[track->count - 1].time;
+    if (time < first || time > last) {
+        SrExtrapolation mode = time < first ? track->extrapolate_before
+                                            : track->extrapolate_after;
+        if (mode >= SR_EXTRAPOLATE_LOOP)
+            time = cycle_sample(first, last, time, mode).time;
+    }
+    size_t low = 0, high = track->count - 1;
+    while (high - low > 1) {
+        size_t mid = low + (high - low) / 2;
+        if (track->keys[mid].time <= time) low = mid;
+        else high = mid;
+    }
+    size_t begin = low ? low - 1 : low;
+    size_t end = high + 1 < track->count ? high + 1 : high;
+    size_t count = 1;
+    for (size_t i = begin; i <= end; ++i)
+        if (i != indices[count - 1]) indices[count++] = i;
+    if (indices[count - 1] != track->count - 1)
+        indices[count++] = track->count - 1;
+    return count;
+}
+
 double sr_track_eval(const SrTrack *track, double base, double time) {
     if (!track || track->count == 0) return base;
     if (track->clock_set) time = time * track->clock_scale + track->clock_offset;
@@ -216,32 +282,10 @@ double sr_track_eval(const SrTrack *track, double base, double time) {
             value = a->value + (b->value - a->value) *
                 ((time - a->time) / (b->time - a->time));
         } else {
-            double span = last->time - first->time;
-            double elapsed = time - first->time;
-            double period = mode == SR_EXTRAPOLATE_PING_PONG ? 2.0 * span : span;
-            double local = fmod(elapsed, period);
-            if (local < 0.0) local += period;
-            if (mode == SR_EXTRAPOLATE_PING_PONG && local > span)
-                local = period - local;
-            /* Decimal spans can divide to an exact integer while fmod is
-             * just below the span. Snap representable cycle products, but
-             * never discard the remainder/parity of enormous quotients. */
-            double nearest = round(elapsed / span);
-            double edge_distance = fmin(local, fabs(span - local));
-            double edge_tolerance = fmin(4.0 * DBL_EPSILON * fmax(span, fabs(elapsed)),
-                                         1e-7 * span);
-            bool boundary = fabs(nearest) < 0x1p52 && elapsed == nearest * span &&
-                edge_distance <= edge_tolerance;
-            if (boundary)
-                local = mode == SR_EXTRAPOLATE_PING_PONG
-                    ? fmod(fabs(nearest), 2.0) * span : 0.0;
-            value = sample(track, first->time + local);
-            if (mode == SR_EXTRAPOLATE_OFFSET) {
-                double remainder = fmod(elapsed, span);
-                double cycles = boundary ? nearest
-                    : round((elapsed - remainder) / span) - (remainder < 0.0 ? 1.0 : 0.0);
-                value += cycles * (last->value - first->value);
-            }
+            CycleSample mapped = cycle_sample(first->time, last->time, time, mode);
+            value = sample(track, mapped.time);
+            if (mode == SR_EXTRAPOLATE_OFFSET)
+                value += mapped.cycles * (last->value - first->value);
         }
     }
     return track->additive ? base + value : value;

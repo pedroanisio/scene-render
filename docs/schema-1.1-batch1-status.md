@@ -33,7 +33,7 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | B1-1 property registry | Committed `0dd2068`, reviewed and verified | Batch merge; Release/ASan/coverage 65/65, oracle 309 previews + 3 encodes |
 | B1-1 curves, handles, extrapolation, additive and timeBase | Implemented, reviewed and verified in animation worktree | Performance gate and batch merge |
 | B1-1 new animation hosts | Material/audio implemented, reviewed and verified | Performance and merge; new-node hosts alongside B1-4/B1-5 |
-| B1-2 relative lengths and parent-box evaluation | Design reviewed; implementation pending | All required hosts, per-frame evaluation, scoped percentages, docs and goldens |
+| B1-2 relative lengths and parent-box evaluation | Design and neutral timeline prerequisite reviewed; feature in progress | All required hosts, per-frame evaluation, scoped percentages, docs and goldens |
 | B1-2 style tokens | Implemented, reviewed and verified | Batch merge |
 | B1-2 metadata/container tags | Implemented, reviewed and verified | Performance gate and batch merge |
 | B1-3 blend modes, skew, mattes, masks, adjustment nodes | Pending | Every listed mode/parameter, cycle checks, numerical tests, three new goldens |
@@ -187,3 +187,21 @@ The metadata slice's strict 2% performance run failed at total +24.9%
 (13.034 versus 10.437 CPU seconds), with every material stage marked noisy
 while a separate user render used roughly eight CPU cores. Frame hashes match.
 The result does not clear the gate; the original baseline remains unchanged.
+
+## Relative-length prerequisite
+
+The reviewed design is committed as `0834161`, including scoped boxes,
+output-frame viewport units, bounded immutable geometry and preparation-owned
+physics constraint defaults. A private six-key timeline neighborhood helper
+and shared cyclic-time mapping provide constant-size mixed-unit evaluation
+without copying complete tracks. Relative-length capability entries remain
+unsupported pending the parser, all geometry consumers and physics integration.
+
+The neutral prerequisite passes SDK Release, ASan/UBSan and coverage 68/68
+each, all 18 golden frame-order checks, and the byte oracle against `d106925`
+(309 previews, three encodes, two expected rejections). A direct comparison
+against the exact old evaluator finds zero bit differences across 2.18 million
+samples. Coverage is 91.57% lines / 74.54% branches, floors 89.55% / 72.50%.
+Read-only review found no issues. Strict performance still fails: clear +4.5%,
+total -16.9%, with noisy stages. The separate user render had exited by the
+final process check. The baseline and old image hashes are unchanged. See `docs/reviews/b1-length-neighborhood.md`.
