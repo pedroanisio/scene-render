@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scene-render.local/schema/asset-spec-1.schema.json",
+  "title": "scene-render asset generation spec",
+  "description": "The creative prompt and the exact technical requirements for every media asset a scene needs. tools/asset-gen/generate_assets.py reads it, generates each asset, post-processes it to the declared size, alpha, rate, channels and duration, and pins the results by SHA-256 (docs/schema-1.1-batch3-proposal.md D7). Paths are relative to project.outputRoot, which is relative to this file.",
+  "type": "object",
+  "required": ["version", "project", "assets"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 1 },
+    "project": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "scene": { "type": "string", "description": "Scene document whose <assets> this spec must match (checked unless --no-scene-check)." },
+        "outputRoot": { "type": "string", "default": "." }
+      }
+    },
+    "style": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Style bible prepended to every image prompt.",
+      "properties": {
+        "prompt": { "type": "string" },
+        "palette": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" }
+        },
+        "avoid": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": { "$ref": "#/$defs/imageParams" },
+        "speech": { "$ref": "#/$defs/speechParams" }
+      }
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/asset" }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$" },
+    "relPath": { "type": "string", "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).+$" },
+    "dimension": { "type": "integer", "minimum": 1, "maximum": 16384 },
+    "alpha": { "enum": ["none", "straight"] },
+    "focus": {
+      "type": "array", "prefixItems": [{ "type": "number", "minimum": 0, "maximum": 1 }, { "type": "number", "minimum": 0, "maximum": 1 }],
+      "minItems": 2, "maxItems": 2,
+      "description": "Point kept in view when the generated image is cropped to the target aspect (0..1)."
+    },
+    "imageParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model": { "type": "string", "description": "An OpenAI image model; transparency needs gpt-image-2.5-sunburst or gpt-image-2.5-flare." },
+        "quality": { "enum": ["auto", "low", "medium", "high", "xhigh", "max"] },
+        "moderation": { "enum": ["auto", "low"] },
+        "inputFidelity": { "enum": ["low", "high"] },
+        "maxPixels": { "type": "integer", "minimum": 655360, "maximum": 8294400, "description": "Cap on the requested API size; above 2560x1440 is marked experimental by OpenAI." }
+      }
+    },
+    "speechParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model": { "type": "string" },
+        "voice": { "type": "string" },
+        "instructions": { "type": "string", "description": "Delivery direction (gpt-4o-mini-tts models only)." },
+        "speed": { "type": "number", "minimum": 0.25, "maximum": 4 }
+      }
+    },
+    "image": {
+      "type": "object",
+      "required": ["id", "kind", "path", "width", "height", "alpha", "prompt"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "const": "image" },
+        "path": { "$ref": "#/$defs/relPath" },
+        "width": { "$ref": "#/$defs/dimension" },
+        "height": { "$ref": "#/$defs/dimension" },
+        "alpha": { "$ref": "#/$defs/alpha" },
+        "prompt": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "description": "Exact lettering the image must show; lifts the default no-text rule." },
+        "fit": { "enum": ["cover", "contain"], "default": "cover" },
+        "focus": { "$ref": "#/$defs/focus" },
+        "grid": {
+          "type": "object",
+          "required": ["cols", "rows"],
+          "additionalProperties": false,
+          "description": "Sprite sheet: one object per cell; cell borders are cleared after resizing.",
+          "properties": {
+            "cols": { "type": "integer", "minimum": 1, "maximum": 16 },
+            "rows": { "type": "integer", "minimum": 1, "maximum": 16 },
+            "gutter": { "type": "integer", "minimum": 0, "maximum": 64, "default": 2 }
+          }
+        },
+        "references": { "type": "array", "items": { "$ref": "#/$defs/id" }, "maxItems": 15, "description": "Assets whose generated images guide this one (images.edit)." },
+        "params": { "$ref": "#/$defs/imageParams" },
+        "notes": { "type": "string" }
+      }
+    },
+    "imageSequence": {
+      "type": "object",
+      "required": ["id", "kind", "pattern", "first", "last", "width", "height", "alpha", "prompt", "frames"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "const": "imageSequence" },
+        "pattern": { "allOf": [{ "$ref": "#/$defs/relPath" }, { "pattern": "%0?[0-9]*d" }] },
+        "first": { "type": "integer" },
+        "last": { "type": "integer" },
+        "fps": { "type": "number", "exclusiveMinimum": 0 },
+        "width": { "$ref": "#/$defs/dimension" },
+        "height": { "$ref": "#/$defs/dimension" },
+        "alpha": { "$ref": "#/$defs/alpha" },
+        "prompt": { "type": "string", "minLength": 1 },
+        "frames": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Either one prompt per frame, or stages keyed by progress (0 = first frame, 1 = last frame).",
+          "properties": {
+            "prompts": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+            "stages": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["until", "text"],
+                "additionalProperties": false,
+                "properties": {
+                  "until": { "type": "number", "minimum": 0, "maximum": 1 },
+                  "text": { "type": "string" }
+                }
+              }
+            }
+          },
+          "oneOf": [{ "required": ["prompts"] }, { "required": ["stages"] }]
+        },
+        "consistency": { "enum": ["chain", "key", "independent"], "default": "chain", "description": "chain: each frame references the first and the previous frame; key: only the first; independent: none." },
+        "fit": { "enum": ["cover", "contain"], "default": "cover" },
+        "focus": { "$ref": "#/$defs/focus" },
+        "references": { "type": "array", "items": { "$ref": "#/$defs/id" }, "maxItems": 13 },
+        "params": { "$ref": "#/$defs/imageParams" },
+        "notes": { "type": "string" }
+      }
+    },
+    "speech": {
+      "type": "object",
+      "required": ["id", "kind", "path", "text", "sampleRate", "channels"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "const": "speech" },
+        "path": { "allOf": [{ "$ref": "#/$defs/relPath" }, { "pattern": "\\.wav$" }] },
+        "text": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "sampleRate": { "enum": [16000, 22050, 24000, 32000, 44100, 48000, 96000] },
+        "channels": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "bitDepth": { "enum": [16, 24], "default": 24 },
+        "duration": { "type": "number", "exclusiveMinimum": 0, "description": "Exact output length in seconds; see fitDuration." },
+        "fitDuration": { "enum": ["pad", "trim", "pad-or-trim"], "default": "pad-or-trim" },
+        "params": { "$ref": "#/$defs/speechParams" },
+        "notes": { "type": "string" }
+      }
+    },
+    "externalAudio": {
+      "type": "object",
+      "required": ["id", "kind", "path", "sampleRate", "channels", "brief"],
+      "additionalProperties": false,
+      "description": "Music, ambience and sound effects: OpenAI has no endpoint for them. The file is produced elsewhere; the tool checks it against this spec.",
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "enum": ["music", "ambience", "soundEffect"] },
+        "provider": { "const": "external" },
+        "path": { "allOf": [{ "$ref": "#/$defs/relPath" }, { "pattern": "\\.wav$" }] },
+        "sampleRate": { "type": "integer", "minimum": 8000, "maximum": 192000 },
+        "channels": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "duration": { "type": "number", "exclusiveMinimum": 0 },
+        "bpm": { "type": "number", "exclusiveMinimum": 0 },
+        "brief": { "type": "string", "minLength": 1 },
+        "notes": { "type": "string" }
+      }
+    },
+    "asset": {
+      "oneOf": [
+        { "$ref": "#/$defs/image" },
+        { "$ref": "#/$defs/imageSequence" },
+        { "$ref": "#/$defs/speech" },
+        { "$ref": "#/$defs/externalAudio" }
+      ]
+    }
+  }
+}
