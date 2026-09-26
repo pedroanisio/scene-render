@@ -12,6 +12,7 @@ static SrEffect *find_effect(SrScene *scene, const char *id) {
 }
 
 static bool resolve_nodes(ParseContext *ctx, SrNode *node, bool in_card) {
+    if (!sr_xml_resolve_shape_node(ctx, node)) return false;
     if (node->card) {
         if (in_card) {
             sr_diag_error(ctx->diag, node->source_line, NULL, "depth",
@@ -204,6 +205,8 @@ static bool resolve_outputs(ParseContext *ctx) {
 }
 
 bool sr_xml_resolve_scene(ParseContext *ctx) {
+    /* Scene-level B1-4 paints; shape nodes resolve with the tree below. */
+    if (!sr_xml_resolve_shapes(ctx)) return false;
     SrCompositePlan *plan = NULL;
     if (ctx->scene->compositing_required) {
         SrStatus status = sr_composite_plan_build(ctx->scene, &plan, ctx->diag);

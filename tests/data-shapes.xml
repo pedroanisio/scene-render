@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- B1-4 fixture: every shape kind, stroke-style value, trim option, vector
+     asset constructor, gradient kind, spread, unit, interpolation space and
+     paint host, plus an animation of every new animatable property. -->
+<scene version="1.1">
+  <project width="160" height="96" fps="8" duration="2" seed="11"
+           background="url(#sky)"/>
+  <styles>
+    <token name="accent" value="#E86A3A"/>
+  </styles>
+  <assets>
+    <vector id="pill" shape="rounded-rect" width="24" height="12" radius="6"
+            fill="url(#warm)" stroke="#FFFFFF" strokeWidth="1"
+            strokeJoin="round" strokePosition="inside"/>
+    <vector id="gem" shape="polygon" points="6" width="16" height="16"
+            fill="#40A0E0" stroke="url(#cool)" strokeWidth="2"
+            strokeJoin="bevel" paintOrder="stroke-fill" miterLimit="2"/>
+    <vector id="spark" shape="star" points="4" innerRadius="3" width="16"
+            height="16" fill="#FFE070" stroke="#000000" strokeWidth="1"
+            strokePosition="outside"/>
+    <vector id="rule" shape="line" width="30" height="4" stroke="#FFFFFF"
+            strokeWidth="2" strokeCap="round" dash="4 2" dashOffset="1"/>
+  </assets>
+  <paints>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1" spread="pad"
+                    units="object" interpolationSpace="linear" dither="true">
+      <stop offset="0" color="#0C1630"/>
+      <stop offset="1" color="#28304C"/>
+    </linearGradient>
+    <linearGradient id="warm" x1="0" y1="0" x2="1" y2="0" spread="reflect"
+                    interpolationSpace="oklab" rotation="15" dither="false">
+      <stop offset="0" color="var(--accent)" midpoint="0.3"/>
+      <stop offset="1" color="#FFD050" opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="cool" x1="4" y1="0" x2="12" y2="0" units="user"
+                    spread="repeat" interpolationSpace="srgb">
+      <stop offset="0" color="#FFFFFF"/>
+      <stop offset="1" color="#3050A0"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5" fx="0.35" fy="0.4"
+                    fr="0.05" aspect="1.5" interpolationSpace="oklch">
+      <animate property="fx">
+        <key time="0" value="0.3"/>
+        <key time="2" value="0.6"/>
+      </animate>
+      <animate property="r"><key time="0" value="0.5"/><key time="2" value="0.6"/></animate>
+      <animate property="cx"><key time="0" value="0.5"/><key time="2" value="0.45"/></animate>
+      <animate property="cy"><key time="0" value="0.5"/><key time="2" value="0.55"/></animate>
+      <animate property="fy"><key time="0" value="0.4"/><key time="2" value="0.35"/></animate>
+      <animate property="fr"><key time="0" value="0.05"/><key time="2" value="0"/></animate>
+      <animate property="aspect"><key time="0" value="1.5"/><key time="2" value="1"/></animate>
+      <stop offset="0" color="#FFFFFF"/>
+      <stop offset="0.6" color="#E04080">
+        <animate property="offset"><key time="0" value="0.6"/><key time="2" value="0.8"/></animate>
+        <animate property="color"><key time="0" value="#E04080"/><key time="2" value="#40E080"/></animate>
+        <animate property="opacity"><key time="0" value="1"/><key time="2" value="0.5"/></animate>
+        <animate property="midpoint"><key time="0" value="0.5"/><key time="2" value="0.7"/></animate>
+      </stop>
+      <stop offset="1" color="#101030"/>
+    </radialGradient>
+    <conicGradient id="wheel" cx="0.5" cy="0.5" angle="0" interpolationSpace="oklch">
+      <animate property="angle"><key time="0" value="0"/><key time="2" value="90"/></animate>
+      <animate property="rotation"><key time="0" value="0"/><key time="2" value="45"/></animate>
+      <stop offset="0" color="#FF3030"/>
+      <stop offset="0.5" color="#30FF30"/>
+      <stop offset="1" color="#FF3030"/>
+    </conicGradient>
+    <linearGradient id="slide" x1="0" y1="0" x2="1" y2="0">
+      <animate property="x1"><key time="0" value="0"/><key time="2" value="0.5"/></animate>
+      <animate property="y1"><key time="0" value="0"/><key time="2" value="0.2"/></animate>
+      <animate property="x2"><key time="0" value="1"/><key time="2" value="0.8"/></animate>
+      <animate property="y2"><key time="0" value="0"/><key time="2" value="0.1"/></animate>
+      <stop offset="0" color="#20C0A0"/>
+      <stop offset="1" color="#2040C0"/>
+    </linearGradient>
+  </paints>
+  <composition>
+    <shape id="box" shape="rect" x="2" y="2" width="24" height="16" radius="3"
+           fill="url(#glow)" stroke="#FFFFFF" strokeWidth="1.5"
+           strokeJoin="miter" miterLimit="4">
+      <animate property="radius"><key time="0" value="3"/><key time="2" value="6"/></animate>
+    </shape>
+    <shape id="corners" shape="rounded-rect" x="30" y="2" width="24" height="16"
+           cornerRadii="2 6 2 6" fill="url(#slide)" stroke="url(#cool)"
+           strokeWidth="2" strokePosition="outside" dash="3 1.5">
+      <animate property="dashOffset"><key time="0" value="0"/><key time="2" value="9"/></animate>
+    </shape>
+    <shape id="hex" shape="polygon" points="6" outerRadius="9" outerRoundness="0.2"
+           x="58" y="1" width="18" height="18" fill="url(#wheel)"
+           stroke="#000000" strokeWidth="1" strokeJoin="bevel">
+      <animate property="outerRadius"><key time="0" value="9"/><key time="2" value="8"/></animate>
+      <animate property="outerRoundness"><key time="0" value="0.2"/><key time="2" value="0.6"/></animate>
+    </shape>
+    <shape id="star" shape="star" points="5" innerRadius="4" outerRadius="9"
+           innerRoundness="0.3" x="80" y="1" width="18" height="18"
+           fill="#F05060" stroke="#FFFFFF" strokeWidth="1.5" strokeJoin="round"
+           strokePosition="inside" paintOrder="stroke-fill">
+      <animate property="innerRadius"><key time="0" value="4"/><key time="2" value="6"/></animate>
+      <animate property="innerRoundness"><key time="0" value="0.3"/><key time="2" value="0"/></animate>
+    </shape>
+    <shape id="rule-line" shape="line" x="102" y="4" width="50" height="10"
+           stroke="#E0E0E0" strokeWidth="3" strokeCap="square" dash="5 3 1"
+           dashOffset="2"/>
+    <shape id="draw" shape="path" x="2" y="24" width="60" height="30"
+           path="M 2 26 C 12 0 28 0 36 20 Q 44 34 58 6 M 4 4 L 20 4"
+           fill="#00000000" stroke="#80FF90" strokeWidth="2" strokeCap="round"
+           strokeJoin="round" trimMode="sequential" trimOffset="0.1">
+      <animate property="trimStart"><key time="0" value="0"/><key time="2" value="0.2"/></animate>
+      <animate property="trimEnd"><key time="0" value="0.2"/><key time="2" value="1"/></animate>
+      <animate property="trimOffset"><key time="0" value="0.1"/><key time="2" value="0.3"/></animate>
+    </shape>
+    <shape id="loops" shape="path" x="66" y="24" width="30" height="30"
+           path="M 15 2 L 26 28 L 2 11 L 28 11 L 4 28 Z" fillRule="evenodd"
+           fill="#60C0FF" stroke="#FFFFFF" strokeWidth="1" trimMode="simultaneous"
+           trimStart="0.1" trimEnd="0.9"/>
+    <shape id="solid" shape="path" x="100" y="24" width="30" height="30"
+           path="M 15 2 L 26 28 L 2 11 L 28 11 L 4 28 Z" fillRule="nonzero"
+           fill="#60FFC0" strokePosition="center" strokeCap="butt"/>
+    <layer id="pill-layer" asset="pill" x="4" y="60"/>
+    <layer id="gem-layer" asset="gem" x="34" y="58"/>
+    <layer id="spark-layer" asset="spark" x="56" y="58"/>
+    <layer id="rule-layer" asset="rule" x="80" y="64"/>
+  </composition>
+</scene>

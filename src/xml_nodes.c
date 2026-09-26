@@ -162,7 +162,7 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
         "end", "depth", "rotationX", "rotationY", "threeD", "zDepth",
         "skewX", "skewY", "name", "tags", "startMarker", "endMarker"};
     bool sequence = !strcmp(name, "sequence");
-    const char *allowed[56];
+    const char *allowed[64];
     memcpy(allowed, common, sizeof(common));
     size_t count = sizeof(common) / sizeof(common[0]);
     if (type == SR_NODE_GROUP) {
@@ -194,6 +194,8 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
         allowed[count++] = "stroke";
         allowed[count++] = "strokeWidth";
         allowed[count++] = "blend";
+        for (size_t i = 0; i < sr_xml_shape_attribute_count; ++i)
+            allowed[count++] = sr_xml_shape_attribute_names[i];
     } else if (type == SR_NODE_PARTICLES) {
         allowed[count++] = "preset";
         allowed[count++] = "rate";
@@ -291,35 +293,9 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
             SR_XML_FAIL_RETURN(ctx, name, "reverse", "expected true or false");
         }
     } else if (type == SR_NODE_SHAPE) {
-        const char *shape = sr_xml_required(ctx, name, attrs, "shape");
-        if (!shape) { sr_node_free(node); return; }
-        if (strcmp(shape, "rect") == 0) node->shape = SR_SHAPE_RECT;
-        else if (strcmp(shape, "ellipse") == 0) node->shape = SR_SHAPE_ELLIPSE;
-        else { sr_node_free(node); SR_XML_FAIL_RETURN(ctx, name, "shape",
-            "expected rect or ellipse"); }
-        if (!sr_xml_length_attr(ctx, name, attrs, "width", &node->shape_width,
-                                  &node->shape_width_unit, true) ||
-            !sr_xml_length_attr(ctx, name, attrs, "height", &node->shape_height,
-                                  &node->shape_height_unit, true) ||
-            !sr_xml_parse_double_attr(ctx, name, attrs, "strokeWidth", &node->stroke_width)) {
-            sr_node_free(node); return;
-        }
-        const char *value = sr_xml_attr(attrs, "fill");
-        if (value && !sr_xml_parse_color(ctx, name, "fill", value, &node->fill.base)) {
-            sr_node_free(node); SR_XML_FAIL_RETURN(ctx, name, "fill", "invalid color");
-        }
-        value = sr_xml_attr(attrs, "stroke");
-        if (value && !sr_xml_parse_color(ctx, name, "stroke", value, &node->stroke.base)) {
-            sr_node_free(node); SR_XML_FAIL_RETURN(ctx, name, "stroke", "invalid color");
-        }
-        value = sr_xml_attr(attrs, "blend");
-        if (value && !sr_blend_parse(value, &node->blend)) {
-            sr_node_free(node); SR_XML_FAIL_RETURN(ctx, name, "blend", "unsupported blend mode");
-        }
-        if (node->shape_width <= 0.0 || node->shape_height <= 0.0 ||
-            node->stroke_width < 0.0) {
-            sr_node_free(node); SR_XML_FAIL_RETURN(ctx, name, "width/height",
-                "shape dimensions must be positive");
+        if (!sr_xml_parse_shape(ctx, name, attrs, node)) {
+            sr_node_free(node);
+            return;
         }
     } else if (type == SR_NODE_PARTICLES) {
         if (!parse_particles(ctx, name, attrs, node)) {

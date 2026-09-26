@@ -634,6 +634,159 @@ SrStatus sr_prepared_path_coverage(const SrPreparedPath *path, SrFillRule rule,
     return SR_OK;
 }
 
+/* ---- B1-4 geometry prerequisites ----------------------------------------
+ * Arc length, sub-path extraction, coverage clipping and rasterization of
+ * mapped contours for the shape renderer (docs/design/b1-4-shapes-paints.md).
+ * The legacy entry points above do not use them. */
+
+static Point contour_point(const Contour *contour, size_t index) {
+    return contour->points[index < contour->count ? index : index % contour->count];
+}
+
+size_t sr_path_contour_segments(const SrPathContour *contour) {
+    if (!contour || !contour->count) return 0;
+    return contour->count - 1 + (contour->closed ? 1u : 0u);
+}
+
+double sr_path_contour_measure(const SrPathContour *contour, double *cumulative) {
+    size_t segments = sr_path_contour_segments(contour);
+    double total = 0.0;
+    cumulative[0] = 0.0;
+    for (size_t i = 0; i < segments; ++i) {
+        Point a = contour_point(contour, i), b = contour_point(contour, i + 1);
+        total += hypot(b.x - a.x, b.y - a.y);
+        cumulative[i + 1] = total;
+    }
+    return total;
+}
+
+/* Largest segment index i < segments with cumulative[i] <= s. */
+static size_t segment_at(const double *cumulative, size_t segments, double s) {
+    size_t lo = 0, hi = segments;
+    while (hi - lo > 1) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (cumulative[mid] <= s) lo = mid;
+        else hi = mid;
+    }
+    return lo;
+}
+
+static Point point_on(const Contour *contour, const double *cumulative,
+                      size_t segment, double s) {
+    Point a = contour_point(contour, segment);
+    Point b = contour_point(contour, segment + 1);
+    double length = cumulative[segment + 1] - cumulative[segment];
+    double t = length > 0.0 ? (s - cumulative[segment]) / length : 0.0;
+    t = fmin(fmax(t, 0.0), 1.0);
+    if (t == 0.0) return a;
+    if (t == 1.0) return b;
+    return (Point){a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t};
+}
+
+static Point segment_direction(const Contour *contour, size_t segment) {
+    Point a = contour_point(contour, segment);
+    Point b = contour_point(contour, segment + 1);
+    double length = hypot(b.x - a.x, b.y - a.y);
+    if (!(length > 0.0)) return (Point){0.0, 0.0};
+    return (Point){(b.x - a.x) / length, (b.y - a.y) / length};
+}
+
+void sr_path_contour_extract(const SrPathContour *contour,
+                             const double *cumulative, double s0, double s1,
+                             SrPathPoint *out, size_t *count,
+                             SrPathPoint *tangent) {
+    size_t segments = sr_path_contour_segments(contour);
+    *tangent = (Point){0.0, 0.0};
+    if (!segments) {
+        out[0] = contour->points[0];
+        *count = 1;
+        return;
+    }
+    double total = cumulative[segments];
+    s0 = fmin(fmax(s0, 0.0), total);
+    s1 = fmin(fmax(s1, s0), total);
+    size_t first = segment_at(cumulative, segments, s0);
+    /* The tangent of a zero-length segment is that of the nearest
+     * following (then preceding) segment with length. */
+    for (size_t i = first; i < segments && !(tangent->x || tangent->y); ++i)
+        *tangent = segment_direction(contour, i);
+    for (size_t i = first; i-- > 0 && !(tangent->x || tangent->y);)
+        *tangent = segment_direction(contour, i);
+    size_t last = first;
+    while (last + 1 < segments && cumulative[last + 1] < s1) ++last;
+    size_t n = 0;
+    out[n++] = point_on(contour, cumulative, first, s0);
+    for (size_t i = first; i < last; ++i) out[n++] = contour_point(contour, i + 1);
+    out[n++] = point_on(contour, cumulative, last, s1);
+    *count = n;
+}
+
+void sr_coverage_clip(float *stroke, const float *fill, size_t samples,
+                      bool inside) {
+    for (size_t i = 0; i < samples; ++i) {
+        float f = fill[i] < 0.0f ? 0.0f : (fill[i] > 1.0f ? 1.0f : fill[i]);
+        float c = stroke[i] * (inside ? f : 1.0f - f);
+        stroke[i] = c < 0.0f ? 0.0f : (c > 1.0f ? 1.0f : c);
+    }
+}
+
+static Point map_point(const SrPathMap *map, Point p) {
+    return (Point){map->m[0] * p.x + map->m[1] * p.y + map->m[2],
+                   map->m[3] * p.x + map->m[4] * p.y + map->m[5]};
+}
+
+static uint64_t saturating_add(uint64_t a, uint64_t b) {
+    return a > UINT64_MAX - b ? UINT64_MAX : a + b;
+}
+
+uint64_t sr_path_raster_work(const SrPathContour *contours, size_t count,
+                             const SrPathMap *map, uint32_t width,
+                             uint32_t height) {
+    uint64_t work = 0;
+    for (size_t c = 0; c < count; ++c) {
+        const Contour *contour = &contours[c];
+        for (size_t i = 0; i < contour->count; ++i) {
+            Point a = map_point(map, contour->points[i]);
+            Point b = map_point(map, contour->points[(i + 1) % contour->count]);
+            double y0 = fmin(a.y, b.y), y1 = fmax(a.y, b.y);
+            double x0 = fmin(a.x, b.x), x1 = fmax(a.x, b.x);
+            uint64_t rows = (uint64_t)sr_clamp_int(ceil(y1), 0, (int)height) -
+                            (uint64_t)sr_clamp_int(floor(y0), 0, (int)height);
+            uint64_t columns = (uint64_t)sr_clamp_int(ceil(x1), 0, (int)width) -
+                               (uint64_t)sr_clamp_int(floor(x0), 0, (int)width);
+            if (rows > height) rows = 0;
+            if (columns > width) columns = 0;
+            work = saturating_add(work, 8 + 4 * (rows + 1) + columns + 2);
+        }
+    }
+    return work;
+}
+
+SrStatus sr_path_rasterize(const SrPathContour *contours, size_t count,
+                           const SrPathMap *map, SrFillRule rule,
+                           uint32_t width, uint32_t height, float *cells,
+                           float *coverage) {
+    if ((!contours && count) || !map || !cells || !coverage || !width ||
+        !height || width > INT32_MAX - 2 || height > INT32_MAX ||
+        (size_t)height > SIZE_MAX / sizeof(float) / ((size_t)width + 2))
+        return SR_ERR_ARGUMENT;
+    for (size_t c = 0; c < count; ++c)
+        for (size_t i = 0; i < contours[c].count; ++i) {
+            Point p = map_point(map, contours[c].points[i]);
+            if (!isfinite(p.x) || !isfinite(p.y)) return SR_ERR_ARGUMENT;
+        }
+    memset(cells, 0, ((size_t)width + 2) * height * sizeof(float));
+    Accumulator acc = {cells, (int)width + 2, (int)height};
+    for (size_t c = 0; c < count; ++c) {
+        const Contour *contour = &contours[c];
+        for (size_t i = 0; i < contour->count; ++i)
+            clipped_edge(&acc, map_point(map, contour->points[i]),
+                         map_point(map, contour->points[(i + 1) % contour->count]));
+    }
+    resolve(&acc, rule, coverage);
+    return SR_OK;
+}
+
 void sr_vector_compose(const float *fill, const float *stroke,
                        const float fill_px[4], const float stroke_px[4],
                        size_t pixels, float *px) {

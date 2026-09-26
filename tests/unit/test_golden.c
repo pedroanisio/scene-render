@@ -225,6 +225,8 @@ GOLDEN(particle_emitters, "particles.xml", 0, 12, 23)
 GOLDEN(physics_rigid_soft, "physics.xml", 0, 12, 23)
 GOLDEN(deformers_mesh_warp, "deform.xml", 0, 12, 23)
 GOLDEN(output_codecs, "outputs.xml", 0, 12, 23)
+GOLDEN(shapes_and_strokes, "shapes-strokes.xml", 0, 12, 23)
+GOLDEN(gradient_paints, "gradients.xml", 0, 12, 23)
 
 /* The font file Fontconfig's "sans" resolved to when the text-scripts
  * reference was made (Freedesktop SDK 25.08). */
@@ -291,5 +293,7 @@ const sr_test_case sr_tests_golden[] = {
     {"physics_rigid_soft", physics_rigid_soft},
     {"deformers_mesh_warp", deformers_mesh_warp},
     {"output_codecs", output_codecs},
+    {"shapes_and_strokes", shapes_and_strokes},
+    {"gradient_paints", gradient_paints},
     {NULL, NULL},
 };

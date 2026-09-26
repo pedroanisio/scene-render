@@ -68,6 +68,9 @@ set(SCENE_RENDER_SOURCES
     src/color.c
     src/raster.c
     src/vector_path.c
+    src/vector_shape.c
+    src/vector_stroke.c
+    src/paint.c
     src/mesh.c
     src/gpu.c
     src/spatial.c
@@ -87,6 +90,7 @@ set(SCENE_RENDER_SOURCES
     src/compositor_resources.c
     src/compositor_evaluation.c
     src/compositor_geometry.c
+    src/compositor_shape.c
     src/camera.c
     src/lighting.c
     src/effects.c
@@ -111,6 +115,7 @@ set(SCENE_RENDER_SOURCES
     src/xml_audio.c
     src/xml_camera.c
     src/xml_visual.c
+    src/xml_shapes.c
     src/xml_physics.c
     src/xml_styles.c
     src/xml_metadata.c
@@ -145,7 +150,7 @@ if(BUILD_TESTING)
     add_test(NAME schema.compatibility
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/schema-compatibility.py)
-    set(SR_UNIT_SUITES timeline length length_frame length_physics
+    set(SR_UNIT_SUITES timeline shapes paint xml_shapes length length_frame length_physics
                        curves geometry compositor color vector random
                        mesh scene property xml xml_lengths profile styles markers fuzz_markers metadata outputs
                        camera physics blend blend_color skew compositing composite_resources

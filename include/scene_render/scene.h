@@ -77,7 +77,9 @@ typedef enum {
     SR_NODE_PARTICLES
 } SrNodeType;
 
-typedef enum { SR_SHAPE_RECT, SR_SHAPE_ELLIPSE, SR_SHAPE_PATH } SrShapeType;
+typedef enum { SR_SHAPE_RECT, SR_SHAPE_ELLIPSE, SR_SHAPE_PATH,
+               SR_SHAPE_ROUNDED_RECT, SR_SHAPE_POLYGON, SR_SHAPE_STAR,
+               SR_SHAPE_LINE } SrShapeType;
 /* Vector fill rule; evenodd is the default to preserve pre-1.2 output. */
 typedef enum { SR_FILL_EVENODD, SR_FILL_NONZERO } SrFillRule;
 typedef enum { SR_MASK_RECT, SR_MASK_ELLIPSE, SR_MASK_ROUNDED_RECT } SrMaskType;
@@ -173,6 +175,7 @@ typedef struct {
     SrFillRule vector_fill_rule;
     SrColor vector_stroke;
     double vector_stroke_width;
+    struct SrVectorExtension *vector_ext; /* owned B1-4 extensions, or NULL */
     SrMesh *mesh;
     float *audio_pcm;       /* decoded soundtrack: interleaved float at the
                                audioMix rate and channel count */
@@ -256,6 +259,79 @@ typedef struct {
     SrAnimValue rotation;
 } SrPhysicsSample;
 
+/* ---- B1-4 shapes and stroke styles (docs/design/b1-4-shapes-paints.md) */
+
+#define SR_MAX_DASH_ENTRIES 64u
+#define SR_MAX_SHAPE_POINTS 4096u
+#define SR_MAX_SHAPE_VERTICES 4194304u
+#define SR_MAX_DASH_PIECES 1048576u
+#define SR_MAX_SHAPE_COORDINATE 1e9
+#define SR_MAX_CURVE_PIECES 1024u
+#define SR_MAX_MITER_LIMIT 1e6
+#define SR_MAX_TRIM_OFFSET 1e6
+
+typedef enum { SR_LINE_CAP_BUTT, SR_LINE_CAP_ROUND, SR_LINE_CAP_SQUARE } SrLineCap;
+typedef enum { SR_LINE_JOIN_MITER, SR_LINE_JOIN_ROUND, SR_LINE_JOIN_BEVEL } SrLineJoin;
+typedef enum { SR_STROKE_CENTER, SR_STROKE_INSIDE, SR_STROKE_OUTSIDE } SrStrokePosition;
+typedef enum { SR_PAINT_FILL_STROKE, SR_PAINT_STROKE_FILL } SrPaintOrder;
+typedef enum { SR_TRIM_SIMULTANEOUS, SR_TRIM_SEQUENTIAL } SrTrimMode;
+
+struct SrPaint;
+struct SrPreparedPath;
+
+/* Stroke style shared by shape nodes and vector assets. `dash` is owned,
+ * validated and expanded to an even count (lengths in local units). */
+typedef struct {
+    bool set;                   /* any stroke-style attribute was authored */
+    SrLineCap cap;
+    SrLineJoin join;
+    double miter_limit;         /* >= 1, SVG miter ratio */
+    double *dash;
+    size_t dash_count;
+    SrAnimValue dash_offset;    /* local units along the outline */
+    SrStrokePosition position;
+    SrPaintOrder order;
+} SrStrokeStyle;
+
+/* A url(#id) paint reference; `paint` is borrowed from scene->paints and
+ * resolved at load. */
+typedef struct {
+    char *id;
+    struct SrPaint *paint;
+    size_t source_line;
+} SrPaintRef;
+
+/* B1-4 shape node state. `extended` selects the path renderer; a shape
+ * without it keeps the 1.0 analytic rect/ellipse renderer. */
+typedef struct {
+    bool extended;
+    SrFillRule fill_rule;
+    SrAnimValue radius;         /* rect/rounded-rect corner radius */
+    double corner_radii[4];     /* TL TR BR BL, overrides radius when set */
+    bool corner_radii_set;
+    uint32_t points;            /* polygon/star vertices, 3..4096 */
+    SrAnimValue inner_radius, outer_radius;
+    bool inner_radius_set, outer_radius_set;  /* attribute or track */
+    SrAnimValue inner_roundness, outer_roundness;
+    struct SrPreparedPath *path;  /* owned, immutable after loading */
+    double path_bounds[4];      /* x0 y0 x1 y1 of the prepared path */
+    SrStrokeStyle stroke;
+    SrAnimValue trim_start, trim_end, trim_offset;
+    SrTrimMode trim_mode;
+    SrPaintRef fill_paint, stroke_paint;
+} SrShapeStyle;
+
+/* B1-4 vector asset geometry and style (rasterized once at asset load). */
+typedef struct SrVectorExtension {
+    bool extended;              /* uses the B1-4 path renderer */
+    double radius;              /* rounded-rect corner radius */
+    uint32_t points;
+    double inner_radius;
+    bool inner_radius_set;
+    SrStrokeStyle stroke;
+    SrPaintRef fill_paint, stroke_paint;
+} SrVectorExtension;
+
 typedef struct SrNode {
     SrNodeType type;
     char *id;
@@ -293,6 +369,7 @@ typedef struct SrNode {
     SrAnimColor fill;
     SrAnimColor stroke;
     double stroke_width;
+    SrShapeStyle shape_style;   /* B1-4 shape extensions */
     /* Particle emitter (see src/particles.c). `particle_preset` may be NULL. */
     char *particle_preset;
     SrAnimValue particle_rate;
@@ -654,6 +731,9 @@ typedef struct {
     bool has_relative_lengths;  /* authored geometry needs per-frame resolution */
     bool compositing_required;  /* opted in; no evaluation after invalidation */
     struct SrCompositePlan *compositing; /* owned immutable authored plan */
+    struct SrPaint *paints;     /* B1-4 gradients, document order */
+    size_t paint_count, paint_capacity;
+    SrPaintRef background_paint; /* project/@background="url(#id)" */
     struct SrTimeline *timeline; /* owned markers and beat grid; may be NULL */
     struct SrFontCache *font_cache; /* text fonts opened while loading assets */
 } SrScene;

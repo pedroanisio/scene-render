@@ -187,10 +187,8 @@ void sr_xml_start_project(ParseContext *ctx, const XML_Char **attrs) {
         SR_XML_FAIL_RETURN(ctx, "project", "workingColorSpace",
                            "expected srgb, rec709, display-p3, or rec2020");
     if ((value = sr_xml_attr(attrs, "background")) &&
-        !sr_xml_parse_color(ctx, "project", "background", value,
-                            &ctx->scene->project.background))
-        SR_XML_FAIL_RETURN(ctx, "project", "background",
-                           "expected #RRGGBB, #RRGGBBAA, or r,g,b,a");
+        !sr_xml_parse_background(ctx, value))
+        return;
     if ((value = sr_xml_attr(attrs, "mode"))) {
         if (strcmp(value, "standard") == 0)
             ctx->scene->project.mode = SR_MODE_STANDARD;
@@ -352,6 +350,13 @@ static const SrProperty *animate_target(ParseFrame *frame, const char *name,
     case E_OBJECT3D: host = SR_PROPERTY_OBJECT3D; *object = frame->object3d; break;
     case E_MATERIAL: host = SR_PROPERTY_MATERIAL; *object = frame->material; break;
     case E_AUDIO_TRACK: host = SR_PROPERTY_AUDIO_TRACK; *object = frame->audio_track; break;
+    case E_PAINT:
+        host = frame->paint->type == SR_PAINT_LINEAR ? SR_PROPERTY_LINEAR_GRADIENT
+             : frame->paint->type == SR_PAINT_RADIAL ? SR_PROPERTY_RADIAL_GRADIENT
+             : SR_PROPERTY_CONIC_GRADIENT;
+        *object = frame->paint;
+        break;
+    case E_STOP: host = SR_PROPERTY_GRADIENT_STOP; *object = frame->stop; break;
     default: return NULL;
     }
     const SrProperty *property = sr_property_find(host, name);
@@ -385,6 +390,10 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
                             anim == &p->node->transform.skew_y))
         ctx->scene->compositing_required = true;
     sr_property_activate(entry, object);
+    if (p->node && entry && (entry->flags & SR_PROPERTY_SHAPE_STYLE)) {
+        p->node->shape_style.extended = true;
+        ctx->scene->compositing_required = true;
+    }
     if ((p->kind == E_GROUP || p->kind == E_LAYER || p->kind == E_PARTICLES) &&
         p->node && anim && (entry->flags & SR_PROPERTY_DEPTH_CARD)) {
         if (ctx->scene->format_version < 11) p->node->card = true;

@@ -76,18 +76,18 @@ P7_UNIT_SUITES := golden oom
 
 CORE_SOURCES := src/common.c src/card.c src/parallel.c src/random.c \
 	src/color.c src/raster.c \
-	src/vector_path.c src/mesh.c src/gpu.c src/spatial.c src/diagnostics.c \
+	src/vector_path.c src/vector_shape.c src/vector_stroke.c src/paint.c src/mesh.c src/gpu.c src/spatial.c src/diagnostics.c \
 	src/timeline.c src/length.c src/length_frame.c src/curves.c src/property.c src/scene.c \
 	src/assets.c src/text.c src/procedural.c src/audio.c src/compositor.c \
 	src/compositing.c src/compositor_resources.c src/compositor_evaluation.c \
-	src/compositor_geometry.c src/camera.c \
+	src/compositor_geometry.c src/compositor_shape.c src/camera.c \
 	src/lighting.c src/effects.c src/particles.c src/deform.c src/physics.c \
 	src/encoder.c src/outputs.c src/outputs_resolve.c src/gif_palette.c src/output_plan.c src/output_media.c src/video.c src/renderer.c \
 	src/resume.c src/xml.c \
 	src/xml_elements.c src/xml_lengths.c src/xml_animation.c src/xml_nodes.c \
 	src/xml_resolve.c src/xml_audio.c \
 	src/xml_camera.c \
-	src/xml_visual.c \
+	src/xml_visual.c src/xml_shapes.c \
 	src/xml_physics.c src/xml_styles.c src/xml_metadata.c src/xml_outputs.c src/metadata.c \
 	src/xml_timeline.c src/markers.c \
 	src/xml_schema.c src/xml_capabilities.c src/cli_args.c
@@ -96,7 +96,7 @@ CORE_OBJECTS := $(CORE_SOURCES:src/%.c=$(BUILD)/%.o) $(BUILD)/schema_data.o
 APP_OBJECT := $(BUILD)/main.o
 TEST_SOURCES := $(sort $(wildcard tests/unit/*.c))
 TEST_OBJECTS := $(TEST_SOURCES:tests/unit/%.c=$(BUILD)/unit/%.o)
-UNIT_SUITES := timeline length length_frame length_physics curves geometry \
+UNIT_SUITES := timeline shapes paint xml_shapes length length_frame length_physics curves geometry \
 	compositor color vector mesh random \
 	scene property xml xml_lengths profile styles markers fuzz_markers metadata outputs \
 	camera physics blend blend_color skew compositing composite_resources \

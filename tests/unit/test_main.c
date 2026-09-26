@@ -45,6 +45,8 @@ int main(int argc, char **argv)
     setenv("SVT_LOG", "1", 0);  /* SVT-AV1 banners, as scene-render does */
     const suite suites[] = {
         {"random", sr_tests_random},
+        {"shapes", sr_tests_shapes}, {"paint", sr_tests_paint},
+        {"xml_shapes", sr_tests_xml_shapes},
         {"blend_color", sr_tests_blend_color},
         {"skew", sr_tests_skew},
         {"compositing", sr_tests_compositing},
