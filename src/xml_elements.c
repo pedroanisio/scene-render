@@ -379,12 +379,35 @@ void sr_xml_start_mask(ParseContext *ctx, const XML_Char **attrs) {
                                   .curve = SR_CURVE_LINEAR}, "mask");
 }
 
-static SrAnimColor *animate_color_target(ParseFrame *p, const char *property) {
-    if ((p->kind == E_LAYER || p->kind == E_PARTICLES) && p->node)
-        return sr_node_color_property(p->node, property);
-    if (p->light && strcmp(property, "color") == 0) return &p->light->color;
-    if (p->effect && strcmp(property, "color") == 0) return &p->effect->color;
-    return NULL;
+static const SrProperty *animate_target(ParseFrame *frame, const char *name,
+                                         void **object) {
+    SrPropertyHost host;
+    switch (frame->kind) {
+    case E_GROUP:
+    case E_LAYER:
+    case E_PARTICLES:
+        host = sr_property_node_host(frame->node);
+        *object = frame->node;
+        break;
+    case E_MASK: host = SR_PROPERTY_MASK; *object = frame->mask; break;
+    case E_POINT: host = SR_PROPERTY_POINT; *object = frame->point; break;
+    case E_CAMERA: host = SR_PROPERTY_CAMERA; *object = frame->camera; break;
+    case E_LIGHT: host = SR_PROPERTY_LIGHT; *object = frame->light; break;
+    case E_EFFECT: host = SR_PROPERTY_EFFECT; *object = frame->effect; break;
+    case E_FORCE_FIELD: host = SR_PROPERTY_FIELD; *object = frame->field; break;
+    case E_MODIFIER: host = SR_PROPERTY_MODIFIER; *object = frame->modifier; break;
+    case E_OBJECT3D: host = SR_PROPERTY_OBJECT3D; *object = frame->object3d; break;
+    default: return NULL;
+    }
+    const SrProperty *property = sr_property_find(host, name);
+    /* Legacy modifier animations may address their owning node's scalar
+     * properties. Keep that accepted vocabulary in this structural change. */
+    if (!property && frame->kind == E_MODIFIER && frame->node) {
+        property = sr_property_find(sr_property_node_host(frame->node), name);
+        if (property && property->type != SR_PROPERTY_NUMBER) return NULL;
+        *object = frame->node;
+    }
+    return property;
 }
 
 void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
@@ -393,89 +416,19 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
     ParseFrame *p = sr_xml_parent(ctx);
     const char *property = sr_xml_required(ctx, "animate", attrs, "property");
     if (!p || !property) return;
-    SrAnimValue *anim = p->node && p->kind != E_MASK && p->kind != E_POINT
-        ? sr_node_property(p->node, property) : NULL;
-    SrAnimColor *color = animate_color_target(p, property);
+    void *object = NULL;
+    const SrProperty *entry = animate_target(p, property, &object);
+    void *target = sr_property_target(entry, object);
+    SrAnimValue *anim = entry && entry->type == SR_PROPERTY_NUMBER ? target : NULL;
+    SrAnimColor *color = entry && entry->type == SR_PROPERTY_COLOR ? target : NULL;
+    sr_property_activate(entry, object);
     if ((p->kind == E_GROUP || p->kind == E_LAYER || p->kind == E_PARTICLES) &&
-        p->node && anim &&
-        (strcmp(property, "depth") == 0 || strcmp(property, "rotation.x") == 0 ||
-         strcmp(property, "rotation.y") == 0)) {
+        p->node && anim && (entry->flags & SR_PROPERTY_DEPTH_CARD)) {
         if (ctx->scene->format_version < 11) p->node->card = true;
         else if (!p->node->card)
             sr_diag_warning(ctx->diag, sr_xml_line(ctx), "animate", "property",
                             "depth animation requires threeD=\"true\" in 1.1");
     }
-    if (p->kind == E_MASK && p->mask) {
-        if (strcmp(property, "x") == 0) anim = &p->mask->x;
-        else if (strcmp(property, "y") == 0) anim = &p->mask->y;
-        else if (strcmp(property, "width") == 0) anim = &p->mask->width;
-        else if (strcmp(property, "height") == 0) anim = &p->mask->height;
-        else if (strcmp(property, "radius") == 0) anim = &p->mask->radius;
-    }
-    if (p->kind == E_POINT && p->point) {
-        anim = NULL;
-        if (strcmp(property, "x") == 0) anim = &p->point[0];
-        else if (strcmp(property, "y") == 0) anim = &p->point[1];
-    }
-    if (p->camera) {
-        if (strcmp(property, "position.x") == 0) anim = &p->camera->x;
-        else if (strcmp(property, "position.y") == 0) anim = &p->camera->y;
-        else if (strcmp(property, "position.z") == 0) anim = &p->camera->z;
-        else if (strcmp(property, "yaw") == 0) anim = &p->camera->yaw;
-        else if (strcmp(property, "pitch") == 0) anim = &p->camera->pitch;
-        else if (strcmp(property, "roll") == 0) anim = &p->camera->roll;
-        else if (strcmp(property, "fov") == 0) anim = &p->camera->fov;
-        else if (strcmp(property, "zoom") == 0 && p->camera->zoom_set)
-            anim = &p->camera->zoom;
-        else if (strcmp(property, "focusDistance") == 0)
-            anim = &p->camera->focus_distance;
-        else if (strcmp(property, "aperture") == 0) anim = &p->camera->aperture;
-    }
-    if (p->light) {
-        if (strcmp(property, "intensity") == 0) anim = &p->light->intensity;
-        else if (strcmp(property, "position.x") == 0) anim = &p->light->x;
-        else if (strcmp(property, "position.y") == 0) anim = &p->light->y;
-        else if (strcmp(property, "position.z") == 0) anim = &p->light->z;
-        else if (strcmp(property, "yaw") == 0) anim = &p->light->yaw;
-        else if (strcmp(property, "pitch") == 0) anim = &p->light->pitch;
-    }
-    if (p->effect) {
-        SrEffect *e = p->effect;
-        if (strcmp(property, "intensity") == 0) anim = &e->intensity;
-        else if (strcmp(property, "radius") == 0) anim = &e->radius;
-        else if (strcmp(property, "threshold") == 0) anim = &e->threshold;
-        else if (strcmp(property, "saturation") == 0) anim = &e->saturation;
-        else if (strcmp(property, "contrast") == 0) anim = &e->contrast;
-        else if (strcmp(property, "brightness") == 0) anim = &e->brightness;
-        else if (strcmp(property, "offsetX") == 0) anim = &e->offset_x;
-        else if (strcmp(property, "offsetY") == 0) anim = &e->offset_y;
-        else if (strcmp(property, "relief") == 0) anim = &e->relief;
-    }
-    if (p->field) {
-        SrForceField *f = p->field;
-        if (strcmp(property, "strength") == 0) anim = &f->strength;
-        else if (strcmp(property, "forceX") == 0) anim = &f->force_x;
-        else if (strcmp(property, "forceY") == 0) anim = &f->force_y;
-        else if (strcmp(property, "x") == 0) anim = &f->x;
-        else if (strcmp(property, "y") == 0) anim = &f->y;
-    }
-    if (p->modifier && p->kind == E_MODIFIER) {
-        if (strcmp(property, "amount") == 0) anim = &p->modifier->amount;
-        else if (strcmp(property, "frequency") == 0) anim = &p->modifier->frequency;
-        else if (strcmp(property, "phase") == 0) anim = &p->modifier->phase;
-    }
-    if (p->object3d) {
-        if (strcmp(property, "position.x") == 0) anim = &p->object3d->transform.x;
-        else if (strcmp(property, "position.y") == 0) anim = &p->object3d->transform.y;
-        else if (strcmp(property, "position.z") == 0) anim = &p->object3d->transform.z;
-        else if (strcmp(property, "rotation") == 0) anim = &p->object3d->transform.rotation;
-        else if (strcmp(property, "rotation.x") == 0) anim = &p->object3d->transform.rotation_x;
-        else if (strcmp(property, "rotation.y") == 0) anim = &p->object3d->transform.rotation_y;
-        else if (strcmp(property, "scale.x") == 0) anim = &p->object3d->transform.scale_x;
-        else if (strcmp(property, "scale.y") == 0) anim = &p->object3d->transform.scale_y;
-        else if (strcmp(property, "scale.z") == 0) anim = &p->object3d->transform.scale_z;
-    }
-    if (color) anim = NULL;
     if (!anim && !color)
         SR_XML_FAIL_RETURN(ctx, "animate", "property",
                            "property is not animatable for this element");
@@ -489,7 +442,7 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
         SR_XML_FAIL_RETURN(ctx, "animate", "defaultInterpolation",
                            "unsupported interpolation curve");
     sr_xml_push(ctx, (ParseFrame){.kind = E_ANIMATE, .node = p->node,
-        .anim = anim, .color_anim = color, .camera = p->camera,
+        .anim = anim, .color_anim = color, .property = entry, .camera = p->camera,
         .light = p->light, .effect = p->effect, .modifier = p->modifier,
         .object3d = p->object3d, .mask = p->mask, .field = p->field,
         .curve = curve}, "animate");
@@ -514,19 +467,8 @@ void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs) {
                                "expected a color (#RRGGBB, #RRGGBBAA, or r,g,b[,a])");
     } else if (!sr_parse_double(value_text, &key.value))
         SR_XML_FAIL_RETURN(ctx, "key", "value", "expected a finite decimal number");
-    if (p->light && p->anim == &p->light->intensity &&
-        key.value > SR_MAX_LIGHT_INTENSITY)
-        SR_XML_FAIL_RETURN(ctx, "key", "value",
-                           "light intensity must be at most 1e6");
-    if (p->effect && (p->anim == &p->effect->offset_x ||
-                      p->anim == &p->effect->offset_y) &&
-        fabs(key.value) > SR_MAX_EFFECT_OFFSET)
-        SR_XML_FAIL_RETURN(ctx, "key", "value",
-                           "effect offsets must be within +-1e5 px");
-    if (p->effect && p->anim == &p->effect->radius &&
-        key.value > SR_MAX_EFFECT_RADIUS)
-        SR_XML_FAIL_RETURN(ctx, "key", "value",
-                           "effect radius must be at most 4096 px");
+    if (p->anim && !sr_property_key_valid(p->property, key.value))
+        SR_XML_FAIL_RETURN(ctx, "key", "value", p->property->bounds_error);
     const char *curve = sr_xml_attr(attrs, "interpolation");
     if (curve && !sr_curve_parse(curve, &key.curve))
         SR_XML_FAIL_RETURN(ctx, "key", "interpolation",

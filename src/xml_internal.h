@@ -3,6 +3,7 @@
 
 #include "scene_render/diagnostics.h"
 #include "scene_render/scene.h"
+#include "scene_render/property.h"
 
 #include <expat.h>
 
@@ -27,6 +28,7 @@ typedef struct {
     SrMask *mask;
     SrForceField *field;
     SrAnimValue *point;         /* mesh-warp point: [0] = x, [1] = y */
+    const SrProperty *property; /* animate/key: immutable registry entry */
     SrAnimColor *color_anim;    /* animate/key: target color track */
     SrCurve curve;
 } ParseFrame;

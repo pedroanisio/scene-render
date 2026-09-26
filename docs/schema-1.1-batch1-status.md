@@ -4,7 +4,8 @@ The complete objective remains B1-0 through B1-6 in the accepted proposal.
 This file records evidence and outstanding work; partial infrastructure is
 not batch completion.
 
-Worktree: `/tmp/scene-render-b1`, branch `b1-0-loader`.
+Loader worktree: `/tmp/scene-render-b1`, branch `b1-0-loader`.
+Active animation worktree: `/tmp/scene-render-b1-anim`, branch `b1-1-animation`.
 Authoritative pre-batch base: `5b7dca1` (main advanced during initial setup).
 Preserved reference executable: `/tmp/scene-render-b1-reference`.
 Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
@@ -28,7 +29,7 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | B1-0 table dispatcher, E_PARTICLES | Implemented and reviewed | Batch merge |
 | B1-0 embedded 1.1, capability and version checks, report CLI | Implemented and reviewed | Performance check and batch merge |
 | B1-0 root sections and multiple outputs | Still gated | Implement and enable alongside dependent items below |
-| B1-1 property registry | Design reviewed; implementation pending | Host/type/offset/bounds table replaces all duplicated mappings; refactor oracle |
+| B1-1 property registry | Implemented and reviewed; verification running | Full registry-refactor oracle and verification results |
 | B1-1 curves, handles, extrapolation, additive, timeBase, new animation hosts | Pending | Closed-form unit references, curve golden, OOM and frame-order evidence |
 | B1-2 relative lengths and parent-box evaluation | Pending | All required hosts, per-frame evaluation, scoped percentages, docs and goldens |
 | B1-2 tokens and metadata/container tags | Pending | Load-time resolution, unknown-token errors, tags and embedMetadata tests |
@@ -50,7 +51,15 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 - Additional short H.265 container exactly matches the pre-batch binary.
 - Loader review: three findings reproduced as failures, fixed and re-reviewed;
   no remaining findings. See `docs/reviews/b1-loader-profile.md`.
-- Performance measurement pending; no golden or integration hash was refreshed.
+- The fixed-baseline 2% performance check failed with noisy stage deltas and
+  total +19.5%. Nine alternating reference/current measurements found that
+  the reference also slowed (12.755 CPU seconds versus baseline 10.437).
+  Median paired total difference was +0.65%; composite +0.06%, lighting
+  +0.81%, viewport +0.24%, effects -0.29%. Clear +3.63% and convert +2.28%
+  remain outside the per-stage budget, so the gate stays open. The machine
+  was running a desktop media process at about one CPU core. The original
+  checked-in baseline is unchanged.
+- No golden or integration hash was refreshed.
 
 Independent verification fixes: `985de3f` keeps pixel kernels shared in
 unoptimized builds, restoring meaningful branch coverage; `f26a8cf` corrects

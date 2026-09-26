@@ -1,4 +1,5 @@
 #include "scene_render/scene.h"
+#include "scene_render/property.h"
 #include "scene_render/text.h"
 #include "scene_render/video.h"
 #include "scene_render/color.h"
@@ -363,43 +364,16 @@ bool sr_scene_id_exists(const SrScene *scene, const char *id) {
 }
 
 SrAnimValue *sr_node_property(SrNode *node, const char *name) {
-    if (!node || !name) return NULL;
-    if (strcmp(name, "opacity") == 0) return &node->opacity;
-    if (strcmp(name, "position.x") == 0) return &node->transform.x;
-    if (strcmp(name, "position.y") == 0) return &node->transform.y;
-    if (strcmp(name, "rotation") == 0) return &node->transform.rotation;
-    if (strcmp(name, "scale.x") == 0) return &node->transform.scale_x;
-    if (strcmp(name, "scale.y") == 0) return &node->transform.scale_y;
-    if (strcmp(name, "anchor.x") == 0) return &node->transform.anchor_x;
-    if (strcmp(name, "anchor.y") == 0) return &node->transform.anchor_y;
-    if (strcmp(name, "source.time") == 0) return &node->source_time;
-    if (strcmp(name, "depth") == 0) return &node->transform.z;
-    if (strcmp(name, "rotation.x") == 0) return &node->transform.rotation_x;
-    if (strcmp(name, "rotation.y") == 0) return &node->transform.rotation_y;
-    if (node->type == SR_NODE_PARTICLES) {
-        if (strcmp(name, "rate") == 0) return &node->particle_rate;
-        if (strcmp(name, "lifetime") == 0) return &node->particle_lifetime;
-        if (strcmp(name, "speed") == 0) return &node->particle_speed;
-        if (strcmp(name, "spread") == 0) return &node->particle_spread;
-        if (strcmp(name, "size") == 0) return &node->particle_size;
-        if (strcmp(name, "direction") == 0) return &node->particle_direction;
-    }
-    return NULL;
+    const SrProperty *property = sr_property_find(sr_property_node_host(node), name);
+    return property && property->type == SR_PROPERTY_NUMBER
+        ? sr_property_target(property, node) : NULL;
 }
 
 SrAnimColor *sr_node_color_property(SrNode *node, const char *name) {
-    if (!node || !name) return NULL;
-    if (node->type == SR_NODE_SHAPE) {
-        if (strcmp(name, "fill") == 0) return &node->fill;
-        if (strcmp(name, "stroke") == 0) return &node->stroke;
-    } else if (node->type == SR_NODE_PARTICLES) {
-        if (strcmp(name, "color") == 0) return &node->particle_color;
-        if (strcmp(name, "colorEnd") == 0) {
-            node->particle_color_end_set = true;
-            return &node->particle_color_end;
-        }
-    }
-    return NULL;
+    const SrProperty *property = sr_property_find(sr_property_node_host(node), name);
+    if (!property || property->type != SR_PROPERTY_COLOR) return NULL;
+    sr_property_activate(property, node);
+    return sr_property_target(property, node);
 }
 
 bool sr_blend_parse(const char *text, SrBlendMode *mode) {
