@@ -203,5 +203,38 @@ class ValidatorStyles(unittest.TestCase):
         self.assertEqual(report.items, [])
 
 
+class ValidatorBeatIds(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tool = module('validate-scene')
+        cls.schema = cls.tool.Schema(cls.tool.DEFAULT_SCHEMA)
+
+    def report(self, reference, duration='4.1'):
+        scene = ET.Element('scene', version='1.1')
+        ET.SubElement(scene, 'project', width='64', height='32', fps='12',
+                      duration=duration)
+        markers = ET.SubElement(scene, 'markers')
+        ET.SubElement(markers, 'beatGrid', bpm='120', offset='0.1')
+        composition = ET.SubElement(scene, 'composition')
+        ET.SubElement(composition, 'shape', id='s', shape='rect', width='1',
+                      height='1', startMarker=reference)
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / 'scene.xml'
+            ET.ElementTree(scene).write(path)
+            report = self.tool.Report(str(path))
+            doc = self.tool.parse_document(str(path), report)
+            self.tool.Checker(doc, self.schema, report, str(path), False).run(None)
+            return [i for i in report.items if i['rule'] == 'REF-RESOLVE']
+
+    def test_generated_ids_are_one_based_through_the_project_end(self):
+        # beat.9 is at 0.1 + 8 * 0.5 = 4.1, exactly the project end.
+        for reference in ('beat.1', 'beat.9', 'bar.1', 'bar.3'):
+            with self.subTest(reference=reference):
+                self.assertEqual(self.report(reference), [])
+        for reference in ('beat.0', 'beat.10', 'bar.0', 'bar.4'):
+            with self.subTest(reference=reference):
+                self.assertTrue(self.report(reference))
+
+
 if __name__ == '__main__':
     unittest.main()

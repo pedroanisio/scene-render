@@ -615,6 +615,8 @@ static void xml_load_survives_allocation_failures(sr_test_ctx *t) {
     check_load(t, "tests/data-metadata.xml", 50);
     check_load(t, "tests/data-outputs.xml", 40);
     check_load(t, "tests/data-lengths.xml", 50);
+    check_load(t, "tests/data-timeline.xml", 60);
+    check_load(t, "tests/golden/sequence-markers.xml", 40);
     check_load(t, "tests/golden/skew.xml", 40);
     check_load(t, "examples/feature-parity.xml", 50);
 }

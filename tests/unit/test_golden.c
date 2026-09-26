@@ -208,6 +208,7 @@ GOLDEN(animation_track_options, "tracks.xml", 0, 12, 20)
 GOLDEN(animation_materials, "material-animation.xml", 0, 12, 20)
 GOLDEN(relative_lengths, "lengths.xml", 0, 12, 23)
 GOLDEN(style_tokens, "styles.xml", 0, 12, 20)
+GOLDEN(sequence_markers, "sequence-markers.xml", 0, 12, 18)
 GOLDEN(composite_blend_modes, "composite.xml", 0, 12, 23)
 GOLDEN(extended_color_blends, "blend-modes.xml", 0, 12, 23)
 GOLDEN(skew_transforms, "skew.xml", 0, 12, 23)
@@ -272,6 +273,7 @@ const sr_test_case sr_tests_golden[] = {
     {"animation_track_options", animation_track_options},
     {"animation_materials", animation_materials},
     {"style_tokens", style_tokens},
+    {"sequence_markers", sequence_markers},
     {"composite_blend_modes", composite_blend_modes},
     {"extended_color_blends", extended_color_blends},
     {"skew_transforms", skew_transforms},

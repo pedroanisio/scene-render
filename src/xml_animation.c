@@ -32,17 +32,16 @@ bool sr_xml_animation_options(ParseContext *ctx, const XML_Char **attrs,
         else if (!strcmp(text, "normalized")) config.time_base = SR_TIME_NORMALIZED;
         else return fail(ctx, "animate", "timeBase", "unknown time base");
     }
-    double parent_offset = 0.0;
-    for (size_t i = 0; host->node && i < ctx->depth; ++i) {
-        const ParseFrame *ancestor = &ctx->stack[i];
-        if (ancestor->kind == E_GROUP && ancestor->node != host->node)
-            parent_offset += ancestor->node->start_time;
-    }
-    config.domain_start = host->node ? parent_offset + host->node->start_time : 0.0;
-    if (host->audio_track) config.domain_start = host->audio_track->start;
-    config.domain_end = host->node && isfinite(host->node->end_time)
-        ? parent_offset + host->node->end_time : ctx->scene->project.duration;
     config.seconds_per_unit = 1.0;
+    /* Node-hosted clocks (nodes, masks, modifiers, points) depend on group
+     * clocks, sequences and markers; sr_xml_resolve_timeline assigns them. */
+    if (host->node) {
+        if (value) value->track = config;
+        else color->r = color->g = color->b = color->a = config;
+        return true;
+    }
+    if (host->audio_track) config.domain_start = host->audio_track->start;
+    config.domain_end = ctx->scene->project.duration;
     if (config.time_base != SR_TIME_COMPOSITION) {
         config.clock_set = true;
         config.clock_scale = 1.0;
@@ -139,60 +138,78 @@ bool sr_xml_key_options(ParseContext *ctx, const XML_Char **attrs, SrKeyframe *k
     return true;
 }
 
-bool sr_xml_finish_animation(ParseContext *ctx, ParseFrame *frame) {
-    SrTrack *track = frame->anim ? &frame->anim->track : &frame->color_anim->r;
-    if (!track->count)
-        return fail(ctx, "animate", NULL, "animation track requires at least one key");
-    SrStatus status = frame->anim ? sr_track_finalize(track)
-                                  : sr_anim_color_finalize(frame->color_anim);
+const char *sr_xml_track_problem(SrAnimValue *value, SrAnimColor *color,
+                                 size_t *line, const char **attribute) {
+    SrTrack *track = value ? &value->track : &color->r;
+    *line = 0;
+    *attribute = NULL;
+    SrStatus status = value ? sr_track_finalize(track) : sr_anim_color_finalize(color);
     for (size_t i = 0; i < track->count; ++i) {
         const SrKeyframe *key = &track->keys[i];
         const SrKeyframe *next = i + 1 < track->count ? key + 1 : NULL;
-        const char *attribute = NULL, *message = NULL;
+        const char *message = NULL;
         if (!i && key->ease_in_set) {
-            attribute = "easeIn";
+            *attribute = "easeIn";
             message = "easeIn requires a preceding segment";
         } else if (!next && key->ease_out_set) {
-            attribute = "easeOut";
+            *attribute = "easeOut";
             message = "easeOut requires a following segment";
         } else if (i && key->time - track->keys[i - 1].time < SR_MIN_KEY_SPACING) {
-            attribute = "time";
+            *attribute = "time";
             message = "keyframe times must be unique (minimum spacing 1e-12)";
         } else if (sr_track_extended(track) && fabs(key->value) > SR_MAX_ANIMATION_VALUE) {
-            attribute = "value";
+            *attribute = "value";
             message = "extended animation value exceeds 1e12 limit";
         } else if (sr_track_extended(track) && fabs(key->time) > SR_MAX_ANIMATION_TIME) {
-            attribute = "time";
+            *attribute = "time";
             message = "extended animation time exceeds 1e6 limit";
         } else if (sr_track_extended(track) && key->curve == SR_CURVE_BEZIER &&
                    (!isfinite(key->y1) || !isfinite(key->y2) ||
                     fabs(key->y1) > SR_MAX_BEZIER_HANDLE ||
                     fabs(key->y2) > SR_MAX_BEZIER_HANDLE)) {
-            attribute = "bezier";
+            *attribute = "bezier";
             message = "extended Bezier ordinates must be finite and at most 1e6";
         } else if (next && (key->ease_out_set || next->ease_in_set) &&
                    (key->curve != SR_CURVE_BEZIER || key->bezier_set)) {
-            attribute = "easeOut/easeIn";
+            *attribute = "easeOut/easeIn";
             message = "temporal handles require cubic-bezier without explicit bezier";
         } else if (key->tcb_set && key->curve != SR_CURVE_TCB &&
                    !(i && track->keys[i - 1].curve == SR_CURVE_TCB)) {
-            attribute = "tension/continuity/bias";
+            *attribute = "tension/continuity/bias";
             message = "TCB parameters require an adjacent tcb segment";
         } else if (key->curve == SR_CURVE_BEZIER && !key->bezier_set &&
                    !key->ease_out_set && !(next && next->ease_in_set) &&
                    !(!next && sr_track_extended(track))) {
-            attribute = "bezier";
+            *attribute = "bezier";
             message = "expected bezier controls or temporal handles";
         }
         if (message) {
-            sr_xml_fail_at(ctx, key->source_line, "key", attribute, message);
-            return false;
+            *line = key->source_line;
+            return message;
         }
     }
-    if (status != SR_OK)
-        return fail(ctx, "animate", "interpolation", "invalid or unbounded curve parameters");
-    if (frame->anim && sr_track_extended(track) &&
-        fabs(frame->anim->base) > SR_MAX_ANIMATION_VALUE)
-        return fail(ctx, "animate", "property", "extended animation base exceeds 1e12 limit");
-    return true;
+    if (status != SR_OK) {
+        *attribute = "interpolation";
+        return "invalid or unbounded curve parameters";
+    }
+    if (value && sr_track_extended(track) && fabs(value->base) > SR_MAX_ANIMATION_VALUE) {
+        *attribute = "property";
+        return "extended animation base exceeds 1e12 limit";
+    }
+    return NULL;
+}
+
+bool sr_xml_finish_animation(ParseContext *ctx, ParseFrame *frame) {
+    SrTrack *track = frame->anim ? &frame->anim->track : &frame->color_anim->r;
+    if (!track->count)
+        return fail(ctx, "animate", NULL, "animation track requires at least one key");
+    if (sr_xml_track_deferred(ctx, track)) return true;
+    size_t line;
+    const char *attribute;
+    const char *message = sr_xml_track_problem(frame->anim, frame->color_anim,
+                                               &line, &attribute);
+    if (!message) return true;
+    if (line) sr_xml_fail_at(ctx, line, "key", attribute, message);
+    else fail(ctx, "animate", attribute, message);
+    return false;
 }

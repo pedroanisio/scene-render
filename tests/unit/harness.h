@@ -91,6 +91,8 @@ extern const sr_test_case sr_tests_property[];
 extern const sr_test_case sr_tests_xml[];
 extern const sr_test_case sr_tests_profile[];
 extern const sr_test_case sr_tests_styles[];
+extern const sr_test_case sr_tests_markers[];
+extern const sr_test_case sr_tests_fuzz_markers[];
 extern const sr_test_case sr_tests_metadata[];
 extern const sr_test_case sr_tests_outputs[];
 extern const sr_test_case sr_tests_camera[];

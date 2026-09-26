@@ -212,7 +212,9 @@ bool sr_xml_resolve_scene(ParseContext *ctx) {
             return false;
         }
     }
-    bool ready = sr_xml_resolve_lengths(ctx) &&
+    /* Timing follows the bounded preflights and precedes every consumer of
+     * node intervals and track clocks. */
+    bool ready = sr_xml_resolve_lengths(ctx) && sr_xml_resolve_timeline(ctx) &&
         resolve_nodes(ctx, ctx->scene->root, false) && resolve_audio(ctx) &&
         resolve_camera(ctx) && resolve_visual(ctx) && resolve_effects(ctx) &&
         resolve_physics(ctx) && resolve_outputs(ctx);

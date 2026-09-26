@@ -4,6 +4,7 @@
 #include "scene_render/video.h"
 #include "scene_render/color.h"
 #include "scene_render/compositing.h"
+#include "scene_render/markers.h"
 #include "scene_render/outputs.h"
 #include "particles_internal.h"
 
@@ -114,6 +115,7 @@ void sr_scene_free(SrScene *scene) {
     if (!scene) return;
     sr_scene_invalidate_compositing(scene);
     sr_node_free(scene->root);
+    sr_timeline_free(scene->timeline);
     for (size_t i = 0; i < scene->token_count; ++i) {
         free(scene->tokens[i].name);
         free(scene->tokens[i].value);
@@ -223,6 +225,7 @@ SrNode *sr_node_create(SrScene *scene, SrNodeType type) {
     node->order = scene ? scene->next_order++ : 0;
     node->visible = true;
     node->end_time = INFINITY;
+    node->clock_scale = 1.0;
     node->opacity.base = 1.0;
     node->transform.scale_x.base = 1.0;
     node->transform.scale_y.base = 1.0;
@@ -332,6 +335,7 @@ void sr_node_free(SrNode *node) {
     anim_free(&node->particle_speed); anim_free(&node->particle_spread);
     anim_free(&node->particle_size);
     transform_free(&node->transform);
+    sr_node_timeline_free(node->timeline);
     free(node);
 }
 
