@@ -29,7 +29,7 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | B1-0 table dispatcher, E_PARTICLES | Implemented and reviewed | Batch merge |
 | B1-0 embedded 1.1, capability and version checks, report CLI | Implemented and reviewed | Performance check and batch merge |
 | B1-0 root sections and multiple outputs | Still gated | Implement and enable alongside dependent items below |
-| B1-1 property registry | Implemented and reviewed; verification running | Full registry-refactor oracle and verification results |
+| B1-1 property registry | Committed `0dd2068`, reviewed and verified | Batch merge; Release/ASan/coverage 65/65, oracle 309 previews + 3 encodes |
 | B1-1 curves, handles, extrapolation, additive, timeBase, new animation hosts | Pending | Closed-form unit references, curve golden, OOM and frame-order evidence |
 | B1-2 relative lengths and parent-box evaluation | Pending | All required hosts, per-frame evaluation, scoped percentages, docs and goldens |
 | B1-2 tokens and metadata/container tags | Pending | Load-time resolution, unknown-token errors, tags and embedMetadata tests |
