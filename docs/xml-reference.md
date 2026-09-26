@@ -203,6 +203,103 @@ lookup or mutable token state. A token scene renders identically to the
 corresponding literal-color scene. The original XML bytes, including token
 declarations, remain part of the resume fingerprint.
 
+## Relative lengths
+
+Lengths accept unitless pixel values and five relative units: `%`, `vw`, `vh`,
+`vmin` and `vmax`. A value of `25vw` is 25% of the output frame width; `vh` uses
+its height, `vmin` the smaller dimension and `vmax` the larger. These units use
+`project.width` and `project.height`, including in viewport scenes and depth
+cards with their own intermediate raster buffers. There is no `px` suffix.
+
+The following attributes accept these units:
+
+| Host | Attributes | Reference for `%` |
+| --- | --- | --- |
+| `group`, `layer`, `shape`, `particleEmitter` | `x`, `y`, `anchorX`, `anchorY` | Containing group's box |
+| `shape` | `width`, `height` | Containing group's box |
+| `group` | `width`, `height` | Containing group's box |
+| `mask` | `x`, `y`, `width`, `height` | Host's local box |
+
+Horizontal values use the reference width and vertical values use its height.
+A group's explicit dimensions establish the percentage reference for its
+children. Each missing dimension uses the output frame dimension, independently:
+an unsized group nested inside a sized group therefore restores the frame
+reference. Group dimensions do not clip, scale or measure child contents.
+The composition's box is the output frame.
+
+A mask's local box is its shape's resolved size, a layer's intrinsic asset size,
+or a group's box. An emitter's mask uses the output frame; masks on emitters require version 1.1. Scale and rotation
+do not change these references. Node anchors use the **containing group's** box;
+they do not use the node's own width or height.
+
+Existing `position.x`, `position.y`, `anchor.x`, `anchor.y` and mask
+`x`, `y`, `width`, `height` animations accept mixed-unit keys. Conversion to
+pixels precedes interpolation, including neighboring spline keys, additive
+bases and extrapolation. The time-base and curve rules remain the same.
+Shape and group dimensions are static attributes; this feature adds no
+animation properties for them. Other numeric properties keep their numeric
+syntax. Layout attributes and layer `boxWidth`/`boxHeight` remain unsupported.
+
+Relative forms on existing attributes and animation keys require
+`version="1.1"`. Group `width` and `height` are new attributes and are permitted
+in both scene versions, including relative values, under the new-attribute
+compatibility rule. Unitless values retain their existing parsing and ranges.
+Relative values allow decimal notation with an optional minus sign, including
+`.5` and `1.`, but no plus sign, exponent, whitespace or uppercase unit.
+Dimensions must be positive; signed positions and anchors may be zero.
+Relative spellings are limited to 128 bytes and coefficients to an absolute
+value of 1,000,000. Evaluated relative values must be finite and at most
+1,000,000,000,000 pixels in magnitude. A positive relative dimension that
+underflows to zero fails. Animated mask dimensions retain their existing
+zero clamp after interpolation.
+
+Scenes containing relative lengths are limited to 65,536 nodes (including the
+composition), 262,144 masks in total, depth 256 (including the composition),
+and 65,536 physics constraints. The XML nesting limit also applies. Count and
+spelling errors fail loading; evaluation errors fail rendering with the source
+line, element and attribute. Unused values do not become render dependencies:
+for example, physics poses continue to override node position animation.
+
+Physics resolves initial positions, dimensions and soft-body anchors from the
+base values at preparation time. Default constraint distances use those resolved
+positions. Animation does not change the simulation's initial pose. Authored
+values stay unchanged, and the physics cache fingerprints units, geometry,
+frame dimensions and derived constraint distances. The XML source participates
+in the render resume fingerprint.
+
+Each frame performs a bounded pass over nodes and masks, plus logarithmic key
+lookup and at most six conversions per animated length. Buffers are reused;
+there is no additional per-pixel work. Scenes with only unitless lengths keep
+the existing rendering path. Independent and shuffled frame rendering produce
+the same result for the same scene, time and output size.
+
+`python3 tools/length-benchmark.py` measures the feature against an independent
+pixel reference. On the SDK verification machine, its 5,125-node, 5,120-mask
+stress scene added 10.1% median compositor CPU over 24 frames (0.1907 versus
+0.1732 seconds, five alternating runs). All frame hashes matched at 1/4 threads.
+This is a geometry-heavy sample, not a fixed overhead for every scene; see
+`docs/reviews/b1-length-xml.md` for ranges and verification details.
+
+```xml
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="2"/>
+  <composition>
+    <group id="panel" width="200" height="100">
+      <shape id="badge" shape="rect" x="50%" y="25%"
+             width="10vw" height="20vh" fill="#48C9BC">
+        <mask type="rect" width="50%" height="100%"/>
+        <animate property="position.x">
+          <key time="0" value="50%"/><key time="2" value="50vw"/>
+        </animate>
+      </shape>
+    </group>
+  </composition>
+</scene>
+```
+
+Here the shape begins at `(100, 25)`, is `32 × 36` pixels, and its mask is
+`16 × 36` pixels. Its horizontal position animates from 100 to 160 pixels.
+
 ## Project and output
 
 `project` requires positive `width`, `height`, `duration` (at most 1e6 s),

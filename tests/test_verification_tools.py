@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Regression tests for failures the render verification tools must not hide."""
 import importlib.util
+import json
 import pathlib
 import signal
 import subprocess
@@ -21,6 +22,29 @@ def module(name):
 
 
 class VerificationFailures(unittest.TestCase):
+    def test_length_benchmark_requires_complete_successful_frames(self):
+        tool = module('length-benchmark')
+        hashes = ''.join(f'{i} {i:016x}\n' for i in range(24))
+        valid = {'summary': True, 'frames': 24, 'status': 0, 'cpu': {'composite': 1.0}}
+        cases = [(hashes, valid, ''), ('', valid, ''), (hashes.splitlines()[0], valid, ''),
+                 (hashes + hashes.splitlines()[0], valid, ''),
+                 (hashes.replace('23 ', '24 '), valid, ''),
+                 (hashes, dict(valid, frames=1), ''),
+                 (hashes, dict(valid, status=5), ''),
+                 (hashes, valid, 'runtime error: overflow')]
+        with tempfile.TemporaryDirectory() as directory:
+            trace = pathlib.Path(directory) / 'trace.jsonl'
+            for index, (stdout, summary, stderr) in enumerate(cases):
+                with self.subTest(case=index):
+                    trace.write_text(json.dumps(summary) + '\n')
+                    result = subprocess.CompletedProcess(['renderer'], 0, stdout, stderr)
+                    with patch.object(tool.subprocess, 'run', return_value=result):
+                        if index == 0:
+                            tool.render('renderer', 'scene', 4, trace)
+                        else:
+                            with self.assertRaises(RuntimeError):
+                                tool.render('renderer', 'scene', 4, trace)
+
     def test_frame_order_preserves_root_sequence(self):
         tool = module('frame-order-check')
         for prelude in ('', '<styles/>', '<metadata/><styles/>',

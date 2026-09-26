@@ -37,6 +37,7 @@ difference, and keeps the rendered frame in `BUILD/test_tmp/golden/`.
 | `curves.xml` | hold/steps, all ten Penner families, Catmull-Rom, TCB, spring and temporal Bezier handles | 0, 8, 20 |
 | `tracks.xml` | all extrapolation modes, additive positions/colours, normalized/local clocks, looping particle emission and spring lifetimes | 0, 12, 20 |
 | `material-animation.xml` | shared base color/alpha, emissive, metallic and roughness animation with shadows | 0, 12, 20 |
+| `lengths.xml` | relative lengths, group scopes, mixed-unit motion, host-local masks and physics | 0, 12, 23 |
 | `styles.xml` | load-time color aliases in project and animated material colors, equivalent to `material-animation.xml` | 0, 12, 20 |
 
 The scenes are at most 320x180 and 24 frames. Assets come from
@@ -103,3 +104,7 @@ its references.
 
 `tests/golden.sha256` is separate: it holds SHA-256 hashes of the PPM
 previews checked by `tests/run-integration.sh`.
+
+`lengths.xml` adds references for scoped relative lengths: mixed-unit motion,
+mask dimensions, partial/unsized groups, media, particles and prepared physics.
+The three new PNGs cover frames 0, 12 and 23; existing references are unchanged.

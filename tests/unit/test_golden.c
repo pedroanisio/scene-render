@@ -206,6 +206,7 @@ static void run_case(sr_test_ctx *t, const GoldenCase *c) {
 GOLDEN(animation_curve_families, "curves.xml", 0, 8, 20)
 GOLDEN(animation_track_options, "tracks.xml", 0, 12, 20)
 GOLDEN(animation_materials, "material-animation.xml", 0, 12, 20)
+GOLDEN(relative_lengths, "lengths.xml", 0, 12, 23)
 GOLDEN(style_tokens, "styles.xml", 0, 12, 20)
 GOLDEN(composite_blend_modes, "composite.xml", 0, 12, 23)
 GOLDEN(groups_and_masks, "groups-masks.xml", 0, 12, 23)
@@ -263,6 +264,7 @@ static void text_scripts_fontconfig(sr_test_ctx *t) {
 }
 
 const sr_test_case sr_tests_golden[] = {
+    {"relative_lengths", relative_lengths},
     {"animation_curve_families", animation_curve_families},
     {"animation_track_options", animation_track_options},
     {"animation_materials", animation_materials},

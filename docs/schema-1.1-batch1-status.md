@@ -31,11 +31,11 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | B1-0 embedded 1.1, capability and version checks, report CLI | Implemented and reviewed | Batch merge; latest cumulative baseline check passes |
 | B1-0 root sections and multiple outputs | Still gated | Implement and enable alongside dependent items below |
 | B1-1 property registry | Committed `0dd2068`, reviewed and verified | Batch merge; Release/ASan/coverage 65/65, oracle 309 previews + 3 encodes |
-| B1-1 curves, handles, extrapolation, additive and timeBase | Implemented, reviewed and verified in animation worktree | Performance gate and batch merge |
-| B1-1 new animation hosts | Material/audio implemented, reviewed and verified | Performance and merge; new-node hosts alongside B1-4/B1-5 |
-| B1-2 relative lengths and parent-box evaluation | Geometry/compositor/physics integration reviewed; full tests, oracle and baseline performance pass | XML fixture/semantic coverage, public docs, golden, feature benchmark and capability enablement |
+| B1-1 curves, handles, extrapolation, additive and timeBase | Implemented, reviewed and verified in animation worktree | Batch merge |
+| B1-1 new animation hosts | Material/audio implemented, reviewed and verified | Batch merge; new-node hosts alongside B1-4/B1-5 |
+| B1-2 relative lengths and parent-box evaluation | Implemented, enabled, reviewed and verified | Batch merge |
 | B1-2 style tokens | Implemented, reviewed and verified | Batch merge |
-| B1-2 metadata/container tags | Implemented, reviewed and verified | Performance gate and batch merge |
+| B1-2 metadata/container tags | Implemented, reviewed and verified | Batch merge |
 | B1-3 blend modes, skew, mattes, masks, adjustment nodes | Pending | Every listed mode/parameter, cycle checks, numerical tests, three new goldens |
 | B1-4 shapes, stroke styles, trims, vector constructors | Pending | Geometry/arc lengths/coverage, all listed styles and shapes, golden |
 | B1-4 gradients and paints | Pending | Coordinates, focal/aspect/spread/rotation/stops, interpolation, dither, every paint host, golden |
@@ -236,12 +236,12 @@ hidden card pivots still sort, and zero-opacity projective-card descendants
 still contribute bounds. Their literal-reference and frame-order cases are
 required by the updated relative-length design.
 
-## Relative geometry integration
+## Relative geometry integration checkpoint
 
-The current slice adds bounded per-frame node/mask geometry, typed XML fields,
+The geometry integration slice added bounded per-frame node/mask geometry, typed XML fields,
 and compositor consumers for drawing, sorting, masks and projective bounds.
-Inner card contexts borrow the outer geometry table. All relative XML forms
-remain gated, including animation keys; existing-attribute relative forms
+Inner card contexts borrow the outer geometry table. At that checkpoint relative XML forms
+remained gated, including animation keys; existing-attribute relative forms
 require 1.1, while new group dimension forms retain the 1.0 minimum.
 
 The first SDK Release build exposed an unused local after the compositor
@@ -271,6 +271,35 @@ across 42 fixtures, three encodes and two expected rejections. Existing hashes
 and the baseline are unchanged. Strict 2% baseline performance passes: clear
 -6.7%, total -22.7%, all material stages below baseline. Measurements remain
 noisy and do not establish a stable speedup; no baseline update was made.
-See `docs/reviews/b1-length-geometry.md`. Public XML fixtures, semantic/fuzz
-coverage, reference documentation and the relative-length golden remain
-before capability enablement; this is not completion of B1-2 or Batch 1.
+See `docs/reviews/b1-length-geometry.md`. At that checkpoint public XML fixtures, semantic/fuzz coverage, reference
+documentation and the relative-length golden remained before capability
+enablement. The subsequent milestone below completes those requirements.
+
+
+## Relative-length XML completion
+
+B1-2 is implemented, enabled, reviewed and verified. Static lengths and mixed
+animation keys work on all completed hosts; new group dimensions follow the
+1.0 new-attribute exception. Emitter masks require 1.1. Load-time count checks,
+source diagnostics, XML/pixel fixtures, 288 seeded valid/mutated/truncated
+inputs and 58-allocation loader OOM replay cover the public surface. Three new
+golden frames were visually reviewed; old references remain unchanged.
+
+Two review findings were reproduced before fixing: missing composition source
+lines on count failures and incomplete benchmark-output verification. Follow-up
+review has no remaining findings. Final SDK Release, ASan/UBSan and coverage
+pass 72/72 each, including all 19 golden frame-order cases. Coverage is 91.90%
+lines / 75.76% branches, with raised floors 89.85% / 73.75%. The final oracle
+against `f100ec1` matches 309 previews, three encodes and two expected rejections.
+
+The cumulative strict 2% performance check passes on the final tree: clear
+-1.1%, stage total -18.2%, every material stage below baseline. Measurements
+remain noisy; this is not a stable speedup claim. The original baseline is
+unchanged. A new 5,125-node mixed-unit stress benchmark matches every frame
+against its literal reference at 1/4 threads and measures +10.1% compositor
+CPU (+8.9% per-frame stage total), documented with ranges in
+`docs/reviews/b1-length-xml.md`. This final cumulative check also closes the
+historical open baseline checks for the preceding animation/metadata slices.
+
+B1-3 through B1-6, dependent loader/animation hosts, batch merges and the final
+completion audit remain. No merge or push is included in this milestone.

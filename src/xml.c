@@ -237,7 +237,10 @@ static void XMLCALL on_start(void *user, const XML_Char *name,
         if (seen) *seen = true;
         if (entry->push) {
             ParseFrame frame = {.kind = entry->kind};
-            if (entry->kind == E_COMPOSITION) frame.node = ctx->scene->root;
+            if (entry->kind == E_COMPOSITION) {
+                frame.node = ctx->scene->root;
+                frame.node->source_line = sr_xml_line(ctx);
+            }
             sr_xml_push(ctx, frame, name);
         }
         return;

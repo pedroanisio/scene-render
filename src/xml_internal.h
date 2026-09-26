@@ -77,6 +77,7 @@ const char *sr_xml_required(ParseContext *ctx, const char *element,
 ParseFrame *sr_xml_parent(ParseContext *ctx);
 void sr_xml_push(ParseContext *ctx, ParseFrame frame, const char *element);
 bool sr_xml_resolve_scene(ParseContext *ctx);
+bool sr_xml_resolve_lengths(ParseContext *ctx);
 bool sr_xml_parse_double_attr(ParseContext *ctx, const char *element,
                               const XML_Char **attrs, const char *name,
                               double *target);

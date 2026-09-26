@@ -94,7 +94,7 @@ TEST_SOURCES := $(sort $(wildcard tests/unit/*.c))
 TEST_OBJECTS := $(TEST_SOURCES:tests/unit/%.c=$(BUILD)/unit/%.o)
 UNIT_SUITES := timeline length length_frame length_physics curves geometry \
 	compositor color vector mesh \
-	scene property xml profile styles metadata \
+	scene property xml xml_lengths profile styles metadata \
 	camera physics blend group raster mask path image encode encode_faults \
 	audio video fx anim_color particles deform shadow text args resume depth \
 	$(P7_UNIT_SUITES)

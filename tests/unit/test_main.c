@@ -44,6 +44,7 @@ int main(int argc, char **argv)
 {
     const suite suites[] = {
         {"length", sr_tests_length},
+        {"xml_lengths", sr_tests_xml_lengths},
         {"length_frame", sr_tests_length_frame},
         {"length_physics", sr_tests_length_physics},
         {"timeline", sr_tests_timeline}, {"curves", sr_tests_curves}, {"geometry", sr_tests_geometry},

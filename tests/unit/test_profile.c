@@ -100,8 +100,6 @@ static void relative_length_gates(sr_test_ctx *t) {
     static const char *const lengths[] = {"25%", "25vw", "25vh", "25vmin", "25vmax"};
     static const char *const properties[] = {"position.x", "opacity", "fill"};
     for (unsigned version = 10; version <= 11; ++version) {
-        const char *expected = version == 10 ? "requires version=\"1.1\""
-                                             : "unsupported in this build";
         for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
             char xml[1024], message[2048];
             SrScene scene;
@@ -109,9 +107,11 @@ static void relative_length_gates(sr_test_ctx *t) {
                      "<composition>" SHAPE "x=\"%s\"/></composition></scene>",
                      version - 10, lengths[i]);
             SrStatus status = report_load(t, xml, false, &scene, message, sizeof(message));
-            CHECK_INT(t, status, SR_ERR_XML);
-            CHECK_CONTAINS(t, message, expected);
-            CHECK_CONTAINS(t, message, "<shape> @x:");
+            CHECK_INT(t, status, version == 10 ? SR_ERR_XML : SR_OK);
+            if (version == 10) {
+                CHECK_CONTAINS(t, message, "requires version=\"1.1\"");
+                CHECK_CONTAINS(t, message, "<shape> @x:");
+            }
             if (status == SR_OK) sr_scene_free(&scene);
             for (size_t j = 0; j < sizeof(properties) / sizeof(properties[0]); ++j) {
                 snprintf(xml, sizeof(xml), "<scene version=\"1.%u\">" PROJECT
@@ -119,9 +119,10 @@ static void relative_length_gates(sr_test_ctx *t) {
                          "<key time=\"0\" value=\"%s\"/></animate></shape>"
                          "</composition></scene>", version - 10, properties[j], lengths[i]);
                 status = report_load(t, xml, false, &scene, message, sizeof(message));
-                CHECK_INT(t, status, SR_ERR_XML);
-                CHECK_CONTAINS(t, message, expected);
-                CHECK_CONTAINS(t, message, "<key> @value:");
+                CHECK_INT(t, status, version == 11 && j == 0 ? SR_OK : SR_ERR_XML);
+                if (version == 10)
+                    CHECK_CONTAINS(t, message, "requires version=\"1.1\"");
+                if (version == 10 || j != 0) CHECK_CONTAINS(t, message, "<key> @value:");
                 if (status == SR_OK) sr_scene_free(&scene);
             }
         }

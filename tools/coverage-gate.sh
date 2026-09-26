@@ -11,8 +11,8 @@
 # Raise them when coverage improves; lowering them needs a reason in the
 # commit message.
 set -eu
-LINE_FLOOR=89.75
-BRANCH_FLOOR=73.50
+LINE_FLOOR=89.85
+BRANCH_FLOOR=73.75
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 build=${1:-$root/build/coverage}

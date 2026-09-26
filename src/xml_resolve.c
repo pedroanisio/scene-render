@@ -197,6 +197,7 @@ static bool resolve_physics(ParseContext *ctx) {
 
 
 bool sr_xml_resolve_scene(ParseContext *ctx) {
+    if (!sr_xml_resolve_lengths(ctx)) return false;
     if (!resolve_nodes(ctx, ctx->scene->root, false)) return false;
     if (!resolve_audio(ctx)) return false;
     if (!resolve_camera(ctx)) return false;

@@ -260,3 +260,17 @@ A subsequent pre-implementation consumer audit and read-only follow-up also
 identified the inactive-card sorting and zero-opacity projective-bounds
 exceptions above. Their evaluation requirements and literal-reference tests
 are part of the geometry integration, not changes to the current draw path.
+
+## Completed XML enablement
+
+The public XML slice enables the reviewed forms and existing emitter-mask
+implementation (the new emitter child requires version 1.1). A bounded
+load-time walk validates document-wide relative-scene counts before reference
+resolution; composition dispatch records its source line for root count errors.
+The prepared geometry and typed parser retain their runtime checks.
+
+Final fixture, grammar/version, source diagnostic, OOM, fixed-seed mutation,
+golden, frame-order, legacy-oracle, coverage and performance evidence is in
+`docs/reviews/b1-length-xml.md`. The independently authored dense geometry
+benchmark matches every frame at 1/4 threads and measures +10.1% compositor
+CPU for relative lengths; unchanged scenes pass the strict 2% baseline budget.

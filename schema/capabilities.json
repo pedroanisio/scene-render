@@ -6,7 +6,8 @@
     "scene/styles",
     "stylesType/token",
     "scene/metadata",
-    "metadataType/meta"
+    "metadataType/meta",
+    "particleEmitterType/mask"
   ],
   "attributes": [
     "groupType/@threeD",
@@ -45,7 +46,9 @@
     "metadataType/@language",
     "metaType/@name",
     "metaType/@value",
-    "outputType/@embedMetadata"
+    "outputType/@embedMetadata",
+    "groupType/@width",
+    "groupType/@height"
   ],
   "values": {
     "animateType/@extrapolateBefore": [
@@ -162,11 +165,54 @@
     "effectType/@color": [
       "token"
     ],
+    "groupType/@anchorX": [
+      "relative-length"
+    ],
+    "groupType/@anchorY": [
+      "relative-length"
+    ],
+    "groupType/@height": [
+      "relative-length"
+    ],
+    "groupType/@width": [
+      "relative-length"
+    ],
+    "groupType/@x": [
+      "relative-length"
+    ],
+    "groupType/@y": [
+      "relative-length"
+    ],
     "keyType/@value": [
-      "token"
+      "token",
+      "relative-length"
+    ],
+    "layerType/@anchorX": [
+      "relative-length"
+    ],
+    "layerType/@anchorY": [
+      "relative-length"
+    ],
+    "layerType/@x": [
+      "relative-length"
+    ],
+    "layerType/@y": [
+      "relative-length"
     ],
     "lightType/@color": [
       "token"
+    ],
+    "maskType/@height": [
+      "relative-length"
+    ],
+    "maskType/@width": [
+      "relative-length"
+    ],
+    "maskType/@x": [
+      "relative-length"
+    ],
+    "maskType/@y": [
+      "relative-length"
     ],
     "materialType/@baseColor": [
       "token"
@@ -174,20 +220,50 @@
     "materialType/@emissive": [
       "token"
     ],
+    "particleEmitterType/@anchorX": [
+      "relative-length"
+    ],
+    "particleEmitterType/@anchorY": [
+      "relative-length"
+    ],
     "particleEmitterType/@color": [
       "token"
     ],
     "particleEmitterType/@colorEnd": [
       "token"
     ],
+    "particleEmitterType/@x": [
+      "relative-length"
+    ],
+    "particleEmitterType/@y": [
+      "relative-length"
+    ],
     "projectType/@background": [
       "token"
+    ],
+    "shapeType/@anchorX": [
+      "relative-length"
+    ],
+    "shapeType/@anchorY": [
+      "relative-length"
     ],
     "shapeType/@fill": [
       "token"
     ],
+    "shapeType/@height": [
+      "relative-length"
+    ],
     "shapeType/@stroke": [
       "token"
+    ],
+    "shapeType/@width": [
+      "relative-length"
+    ],
+    "shapeType/@x": [
+      "relative-length"
+    ],
+    "shapeType/@y": [
+      "relative-length"
     ],
     "textAssetType/@color": [
       "token"

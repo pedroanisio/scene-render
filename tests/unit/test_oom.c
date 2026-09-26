@@ -345,6 +345,7 @@ static void xml_load_survives_allocation_failures(sr_test_ctx *t) {
     check_load(t, "tests/data-animation-hosts.xml", 20);
     check_load(t, "tests/data-styles.xml", 60);
     check_load(t, "tests/data-metadata.xml", 50);
+    check_load(t, "tests/data-lengths.xml", 50);
     check_load(t, "examples/feature-parity.xml", 50);
 }
 
