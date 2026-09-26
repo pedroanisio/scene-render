@@ -14,7 +14,7 @@ typedef enum {
     E_MATERIAL, E_LIGHTS, E_LIGHT, E_EFFECTS, E_EFFECT, E_PHYSICS,
     E_FORCE_FIELD, E_CONSTRAINT, E_PARTICLES, E_RIGID_BODY, E_SOFT_BODY,
     E_DEFORM, E_MODIFIER, E_OBJECT3D, E_POINT, E_STYLES, E_TOKEN,
-    E_METADATA, E_META
+    E_METADATA, E_META, E_STILL
 } ElementKind;
 
 typedef struct {
@@ -33,6 +33,7 @@ typedef struct {
     SrAnimValue *point;         /* mesh-warp point: [0] = x, [1] = y */
     const SrProperty *property; /* animate/key: immutable registry entry */
     SrAnimColor *color_anim;    /* animate/key: target color track */
+    SrOutput *output;           /* output: the element's scene output */
     SrCurve curve;
 } ParseFrame;
 
@@ -90,6 +91,8 @@ void sr_xml_start_token(ParseContext *ctx, const XML_Char **attrs);
 
 void sr_xml_start_project(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_output(ParseContext *ctx, const XML_Char **attrs);
+void sr_xml_start_still(ParseContext *ctx, const XML_Char **attrs,
+                        SrStillKind kind);
 void sr_xml_start_image(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_video(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_audio(ParseContext *ctx, const XML_Char **attrs);

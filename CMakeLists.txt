@@ -94,6 +94,8 @@ set(SCENE_RENDER_SOURCES
     src/deform.c
     src/physics.c
     src/encoder.c
+    src/outputs.c
+    src/outputs_resolve.c
     src/video.c
     src/renderer.c
     src/resume.c
@@ -109,6 +111,7 @@ set(SCENE_RENDER_SOURCES
     src/xml_physics.c
     src/xml_styles.c
     src/xml_metadata.c
+    src/xml_outputs.c
     src/metadata.c
     src/xml_schema.c
     src/xml_capabilities.c

@@ -133,6 +133,14 @@ static void start_particles(ParseContext *ctx, const XML_Char **attrs) {
     sr_xml_start_node(ctx, "particleEmitter", attrs, SR_NODE_PARTICLES);
 }
 
+static void start_poster(ParseContext *ctx, const XML_Char **attrs) {
+    sr_xml_start_still(ctx, attrs, SR_STILL_POSTER);
+}
+
+static void start_thumbnail(ParseContext *ctx, const XML_Char **attrs) {
+    sr_xml_start_still(ctx, attrs, SR_STILL_THUMBNAIL);
+}
+
 /* Handlers that construct an animation host push their own frame. Plain
  * sections and asset declarations are pushed here after their handler. */
 static const ElementDispatch dispatch[] = {
@@ -143,7 +151,10 @@ static const ElementDispatch dispatch[] = {
     {"styles", P(E_SCENE), NULL, E_STYLES, offsetof(ParseContext, seen_styles),
      11, true, true},
     {"token", P(E_STYLES), sr_xml_start_token, E_TOKEN, 0, 11, true, true},
-    SECTION("output", sr_xml_start_output, E_OUTPUT, seen_output),
+    /* Outputs push their own frame; the handler counts and bounds them. */
+    {"output", P(E_SCENE), sr_xml_start_output, E_OUTPUT, 0, 10, true, false},
+    {"poster", P(E_OUTPUT), start_poster, E_STILL, 0, 11, true, true},
+    {"thumbnail", P(E_OUTPUT), start_thumbnail, E_STILL, 0, 11, true, true},
     SECTION("assets", NULL, E_ASSETS, seen_assets),
     ENTRY("image", P(E_ASSETS), sr_xml_start_image, E_IMAGE, true),
     ENTRY("video", P(E_ASSETS), sr_xml_start_video, E_VIDEO, true),
