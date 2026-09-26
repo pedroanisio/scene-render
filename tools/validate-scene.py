@@ -66,6 +66,7 @@ RULES = {
     "DISPLAY": "the display transform matches the colour space of the outputs",
     "SYMBOL-CLIP": "layers of a sized symbol stay inside its box (sized symbols clip)",
     "SEED-SHARED": "no fixed seed inside content that is instantiated or repeated more than once",
+    "DEPRECATED": "no constructs that the accepted 1.1 errata remove (E5: GLSL shader types)",
 }
 
 # --------------------------------------------------------------------- report
@@ -748,9 +749,79 @@ class Checker:
                         self.r.error("PAINT-REF", n, a, "url(#%s) is a <%s>, not a paint" % (m.group(1), t.tag))
         for n in list(self.doc.iter("text")) + list(self.doc.iter("span")):
             src = (n.get("text") or "") + (n.text if n.tag == "span" else "")
+            asset = n if n.tag == "text" else n.parent
             for name in TEMPLATE_RE.findall(src):
-                if name not in params:
-                    self.r.error("TEMPLATE-REF", n, "text", "{{%s}} names no parameter" % name)
+                if name in params:
+                    continue
+                base, _, field = name.partition(".")
+                self.check_repeat_template(n, asset, name, base, field)
+
+    # {{var}} / {{var.field}} from a repeat (errata E13): the text asset must be
+    # placed only inside repeats that define var, through any symbol instances.
+    def placements(self, node, seen=()):
+        """Every way node is reached from the composition: (repeat vars in
+        scope, path, instances passed through). Symbols are followed through
+        each of their instances."""
+        repeats, path = {}, [self.describe(node)]
+        for a in node.ancestors():
+            if a.tag == "repeat" and a.get("over"):
+                repeats.setdefault(a.get("var", "item"), a)
+            if a.tag == "symbol":
+                out = []
+                if a.get("id") in seen:
+                    return out
+                for inst in self.doc.iter("instance"):
+                    if inst.get("symbol") == a.get("id"):
+                        for vars2, path2, insts in self.placements(inst, seen + (a.get("id"),)):
+                            out.append(({**vars2, **repeats}, path2 + path, insts + [inst]))
+                return out
+        return [(repeats, path, [])]
+
+    @staticmethod
+    def text_overridden(layer, insts):
+        """A layer override of text on any instance on the path gives this
+        placement its own copy of the text (B2 S8), so templates do not apply."""
+        lid = layer.get("id")
+        return any(o.tag == "override" and o.get("property") == "text" and
+                   (o.get("target") == lid or o.get("target", "").endswith("/" + lid))
+                   for inst in insts for o in inst.children)
+
+    @staticmethod
+    def describe(n):
+        return "<%s%s>" % (n.tag, ' id="%s"' % n.get("id") if n.get("id") else "")
+
+    def row_fields(self, repeat):
+        src = self.ids.get(repeat.get("over", ""))
+        if src is None or src.tag != "data" or src.get("src") or src.get("format", "json") != "json":
+            return None                                  # external or CSV rows: fields unknown here
+        try:
+            rows = json.loads(src.text or "")
+        except ValueError:
+            return None
+        if not isinstance(rows, list):
+            return None
+        return {k for r in rows if isinstance(r, dict) for k in r}
+
+    def check_repeat_template(self, n, asset, name, base, field):
+        uses = [l for l in self.doc.iter("layer") if l.get("asset") == asset.get("id")]
+        if not uses:
+            self.r.error("TEMPLATE-REF", n, "text", "{{%s}} names no parameter" % name)
+            return
+        for layer in uses:
+            for vars_, path, insts in self.placements(layer):
+                if self.text_overridden(layer, insts):
+                    continue
+                rep_ = vars_.get(base)
+                where = " > ".join(path)
+                if rep_ is None:
+                    self.r.error("TEMPLATE-REF", n, "text",
+                                 "{{%s}}: placed via %s, which is not inside a repeat with var=%r and %r is not a "
+                                 "parameter, so it has no value there" % (name, where, base, base))
+                    continue
+                fields = self.row_fields(rep_)
+                if field and fields is not None and field not in fields:
+                    self.r.error("TEMPLATE-REF", n, "text", "{{%s}}: the rows of %r have no field %r (fields: %s)"
+                                 % (name, rep_.get("over"), field, ", ".join(sorted(fields))))
 
     # -------------------------------------------------------- properties
     def host_props(self, host):
@@ -1605,7 +1676,8 @@ class Checker:
                             "has no effect; put the effects on the children" % why)
 
     DISPLAY_OF = {("rec709", "bt1886"): "rec709", ("rec709", "auto"): "rec709",
-                  ("srgb", "srgb"): "srgb", ("srgb", "auto"): "srgb"}
+                  ("srgb", "srgb"): "srgb", ("srgb", "auto"): "srgb",
+                  ("rec2020", "pq"): "rec2020-pq", ("rec2020", "hlg"): "rec2020-hlg"}
 
     def check_display(self):
         cm = next(iter(self.doc.iter("colorManagement")), None)
@@ -1613,7 +1685,22 @@ class Checker:
             return
         display = cm.get("display", "srgb").lower()
         names = {display, {"bt1886": "rec709", "bt709": "rec709", "rec.709": "rec709"}.get(display, display)}
-        for o in (c for c in self.doc.children if c.tag == "output"):
+        outs = [c for c in self.doc.children if c.tag == "output" and c.get("codec") != "audio-only"]
+        targets = {}
+        for o in outs:
+            cs, tr = o.get("colorSpace", "srgb"), o.get("transfer", "auto")
+            want = self.DISPLAY_OF.get((cs, tr), cs if tr in ("auto",) else "%s-%s" % (cs, tr))
+            targets.setdefault(want, []).append(o.get("id") or o.get("path"))
+        if len(targets) > 1:
+            wrong = [w for w in targets if not names & {w}]
+            self.r.warn("DISPLAY", cm, "display",
+                        "outputs target %d different displays (%s) but colorManagement has one display %r; "
+                        "%s get a view transform for the wrong display. The schema has no per-output "
+                        "display/view (errata E14)"
+                        % (len(targets), "; ".join("%s: %s" % (w, ", ".join(ids)) for w, ids in sorted(targets.items())),
+                           cm.get("display", "srgb"), " and ".join(", ".join(targets[w]) for w in wrong) or "none"))
+            return
+        for o in outs:
             cs, tr = o.get("colorSpace", "srgb"), o.get("transfer", "auto")
             want = self.DISPLAY_OF.get((cs, tr), cs if tr in ("auto",) else "%s-%s" % (cs, tr))
             if not names & {want, cs}:
@@ -1660,7 +1747,15 @@ class Checker:
                             "lockstep; omit @seed so it follows the scoped id"
                             % ("repeat" if owner.tag == "repeat" else "symbol", owner.get("id")))
 
+    def check_deprecated(self):
+        for n in self.doc.iter():
+            if n.tag in ("effect", "transition") and n.get("type") == "shader":
+                self.r.warn("DEPRECATED", n, "type",
+                            "type=\"shader\" is removed from 1.1 by errata E5 (a CPU renderer cannot run arbitrary "
+                            "GLSL deterministically); use a built-in %s type" % n.tag)
+
     def check_design(self):
+        self.check_deprecated()
         self.check_camera_cuts()
         self.check_isolation()
         self.check_display()
