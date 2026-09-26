@@ -34,9 +34,15 @@ difference, and keeps the rendered frame in `BUILD/test_tmp/golden/`.
 | `particles.xml` | parametric emitter with animated rate/direction, square particles with color keys, the four presets | 0, 12, 23 |
 | `physics.xml` | static floor and rotated platform, bouncing circles, spinning box, pin and spring constraints, vortex and wind fields, pinned and free soft bodies | 0, 12, 23 |
 | `deform.xml` | mesh-warp with animated points, bend, twist, wave, squash, stretch | 0, 12, 23 |
+| `curves.xml` | hold/steps, all ten Penner families, Catmull-Rom, TCB, spring and temporal Bezier handles | 0, 8, 20 |
+| `tracks.xml` | all extrapolation modes, additive positions/colours, normalized/local clocks, looping particle emission and spring lifetimes | 0, 12, 20 |
 
 The scenes are at most 320x180 and 24 frames. Assets come from
 `examples/assets/` and `assets/third-party/`.
+
+The new `curves` and `tracks` references capture the schema 1.1 interpolation
+families and track options, including cached particle-rate evaluation. Their
+six frames were visually reviewed; existing references are unchanged.
 
 ## Determinism scope
 

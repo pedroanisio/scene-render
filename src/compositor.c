@@ -1244,6 +1244,10 @@ static SrStatus sr_draw_particles(SrDrawContext *context, const SrNode *node,
     size_t count = 0;
     SrStatus status = sr_particles_eval(context->scene, node, context->time,
                                         &particles, &count);
+    if (status == SR_ERR_RENDER)
+        sr_diag_error(context->diag, node->source_line, "particleEmitter", "rate/lifetime",
+                      "animation exceeds the particle sampling budget or "
+                      "9e15 emission-index limit");
     if (status != SR_OK) return status;
     SrDrawOp op = {.kind = SR_OP_DISC, .target = *target,
                    .blend = sr_node_blend(context, node),

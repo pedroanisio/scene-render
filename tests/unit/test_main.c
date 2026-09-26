@@ -43,7 +43,7 @@ typedef struct suite {
 int main(int argc, char **argv)
 {
     const suite suites[] = {
-        {"timeline", sr_tests_timeline}, {"geometry", sr_tests_geometry},
+        {"timeline", sr_tests_timeline}, {"curves", sr_tests_curves}, {"geometry", sr_tests_geometry},
         {"compositor", sr_tests_compositor}, {"color", sr_tests_color},
         {"vector", sr_tests_vector},     {"mesh", sr_tests_mesh},
         {"scene", sr_tests_scene}, {"property", sr_tests_property},       {"xml", sr_tests_xml},

@@ -42,8 +42,9 @@ typedef struct {
 
 /* Bump whenever the integrator changes so caches written by an older
  * simulation are re-simulated instead of replayed (2: exponential damping;
- * 3: soft-body grids, OBB contacts, pins, vortex and animated fields). */
-#define PHYSICS_CACHE_VERSION 3u
+ * 3: soft-body grids, OBB contacts, pins, vortex and animated fields;
+ * 4: extended animation curves, extrapolation and resolved clocks). */
+#define PHYSICS_CACHE_VERSION 4u
 
 typedef struct {
     char magic[8];
@@ -132,6 +133,15 @@ static uint64_t hash_anim(uint64_t hash, const SrAnimValue *value) {
     hash = hash_double(hash, value->base);
     uint64_t count = value->track.count;
     hash = hash_bytes(hash, &count, sizeof(count));
+    const SrTrack *track = &value->track;
+    const int32_t modes[] = {track->extrapolate_before, track->extrapolate_after,
+                             track->time_base, track->additive, track->clock_set};
+    hash = hash_bytes(hash, modes, sizeof(modes));
+    hash = hash_double(hash, track->clock_scale);
+    hash = hash_double(hash, track->clock_offset);
+    hash = hash_double(hash, track->seconds_per_unit);
+    hash = hash_double(hash, track->domain_start);
+    hash = hash_double(hash, track->domain_end);
     for (size_t i = 0; i < value->track.count; ++i) {
         const SrKeyframe *key = &value->track.keys[i];
         int32_t curve = (int32_t)key->curve;
@@ -140,6 +150,22 @@ static uint64_t hash_anim(uint64_t hash, const SrAnimValue *value) {
         hash = hash_bytes(hash, &curve, sizeof(curve));
         hash = hash_double(hash, key->x1); hash = hash_double(hash, key->y1);
         hash = hash_double(hash, key->x2); hash = hash_double(hash, key->y2);
+        uint32_t steps = key->steps;
+        hash = hash_bytes(hash, &steps, sizeof(steps));
+        const uint8_t flags[] = {key->step_start, key->ease_in_set,
+                                  key->ease_out_set, key->bezier_set,
+                                  key->tcb_set, key->spring_set};
+        hash = hash_bytes(hash, flags, sizeof(flags));
+        hash = hash_double(hash, key->tension);
+        hash = hash_double(hash, key->continuity);
+        hash = hash_double(hash, key->bias);
+        hash = hash_double(hash, key->stiffness);
+        hash = hash_double(hash, key->damping);
+        hash = hash_double(hash, key->mass);
+        hash = hash_double(hash, key->ease_in.x);
+        hash = hash_double(hash, key->ease_in.y);
+        hash = hash_double(hash, key->ease_out.x);
+        hash = hash_double(hash, key->ease_out.y);
     }
     return hash;
 }

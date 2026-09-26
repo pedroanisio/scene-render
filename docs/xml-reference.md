@@ -701,3 +701,94 @@ frame is converted to 8-bit (16-bit for pixel formats deeper than 8 bits) in
 the output space with matching primaries/transfer/matrix/range tags. Times and durations are decimal
 seconds. Frames are selected on a half-open interval; frame N occurs exactly
 at `N × fps_den / fps_num`.
+
+## Extended animation curves and tracks (1.1)
+
+`animate` uses the shared property registry for its host, value type and
+numeric key bounds. The existing scalar and linear-light colour properties
+keep their names and ranges. A second animation of the same property is an
+error. New curves require `version="1.1"`; new attributes on existing
+animation elements are also legal in 1.0 documents.
+
+`hold` aliases `step`. `steps` requires `key/@steps` in [1,1000000];
+`stepPosition="end"` is the default. `start` jumps at the first instant of
+each subinterval, including the first or an interior key. The final key
+holds its exact value. Each key describes its outgoing segment.
+
+The Penner families are `sine`, `quad`, `cubic`, `quart`, `quint`, `expo`,
+`circ`, `back`, `elastic` and `bounce`, each with `-in`, `-out` and
+`-in-out` suffixes. Back uses overshoot 1.70158, multiplied by 1.525 for
+in-out. Elastic uses period 0.3, or 0.45 for in-out, in normalized segment
+time. The existing `ease-in`, `ease-out` and `ease-in-out` retain their exact
+original arithmetic.
+
+`catmull-rom` is cubic Hermite interpolation with the average of adjacent
+per-second secant slopes. At a missing neighbour use the available secant.
+`tcb` weights these incoming and outgoing slopes by `tension`, `continuity`
+and `bias`, each in [-1,1], defaulting to zero. The left outgoing and right
+incoming tangent use their respective keys' parameters. TCB parameters on
+a key without an adjacent TCB segment are errors.
+
+`spring` solves `mass*x'' + damping*x' + stiffness*(x-1)=0` analytically,
+with initial position and velocity zero. Defaults are stiffness 100,
+damping 10 and mass 1. Mass and stiffness must be in [1e-6,1e6]; damping
+must be in [0,1e6]. Time is elapsed local seconds, including for normalized
+tracks. The right key is exact even when the spring has not settled.
+Underdamped, critical and overdamped solutions have no integration state;
+evaluating a frame never depends on earlier frames. Spring-only parameters
+on another interpolation type are errors.
+
+For `cubic-bezier`, `easeOut="influence,speed"` on the left key and
+`easeIn="influence,speed"` on the right key are normalized pairs in [0,1].
+Outgoing controls are `(influence,influence*speed)`; incoming controls are
+`(1-influence,1-influence*speed)`. A missing side uses the original default
+Bezier control for that side. Handles and an explicit `bezier` on the same
+segment conflict. An incoming handle on the first key or an outgoing handle
+on the last key is an error because it has no adjacent segment. Spatial
+handles and roving keys remain unsupported.
+
+`extrapolateBefore` and `extrapolateAfter` default to `hold`. `linear`
+continues the boundary secant; `loop` repeats the key interval; `ping-pong`
+alternates direction; `offset` repeats while adding the endpoint value
+difference per cycle. Negative cycles use floor, not truncation. The
+original closed key interval wins over extrapolation. Outside it, exact
+loop/offset boundaries map to the first key, and ping-pong boundaries map
+alternately to the last/first key. One-key tracks always hold.
+
+`additive="true"` adds the static property value after interpolation and
+extrapolation. For colour this addition occurs in linear light, including
+alpha; the normal output clamps still apply. `timeBase="composition"`
+uses project seconds. `local` uses elapsed host seconds and its ancestor
+group clocks. Masks and modifiers inherit their owning node's clock.
+`normalized` divides those local seconds by the host duration; a missing
+end uses the project end. A zero or nonfinite normalized span is an error.
+Shared scene hosts use the project interval. Clocks resolve at load time
+and render-time evaluation reads them without mutation.
+
+Tracks have at most 65536 keys and scenes at most 1048576 logical keys.
+Adjacent key times must differ by at least 1e-12. Tracks using new curve or
+track behavior require key/base magnitude at most 1e12, key time magnitude
+at most 1e6, and Bezier ordinate magnitude at most 1e6. Resolved clock
+coefficients are bounded by 1e12. Legacy tracks retain their previous
+numeric range. Existing property clamps, such as opacity in [0,1] and
+nonnegative radii, continue to apply after evaluation.
+
+```xml
+<animate property="position.x" timeBase="local"
+         extrapolateAfter="ping-pong" additive="true">
+  <key time="0" value="0" interpolation="back-out"/>
+  <key time="1" value="100"/>
+</animate>
+```
+
+Extended particle emission tracks use the existing 1/240-second fixed grid
+over the active interval, with synchronized deterministic checkpoints.
+Lifetime bounds include curve overshoot and extrapolation, so culling never
+discards a still-live particle. Physics cache signatures include every curve
+parameter, track option and resolved clock; older cache versions recompute.
+Curve lookup is O(log keys) and each segment evaluation is constant cost.
+Animated particle-rate integration is bounded by the existing rate-cell
+budget and its cost grows with the evaluated emitter time span. Extended
+emission tracks fail rendering if their cumulative index exceeds
+`SR_MAX_PARTICLE_INDEX` (9e15); this keeps integer conversion and one-particle
+steps exact, even when interpolation overshoots its key values.

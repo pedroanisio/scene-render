@@ -189,13 +189,20 @@ static uint64_t cell_at_or_before(const SrNode *node, double t) {
 static struct SrParticleRateCache *rate_cache_build(const SrNode *node) {
     const SrTrack *track = &node->particle_rate.track;
     size_t keys = track->count;
+    bool extended = sr_track_extended(track);
     if (keys > (SIZE_MAX - sizeof(struct SrParticleRateCache)) /
                    (sizeof(uint64_t) + sizeof(double)) - 2)
         return NULL;
-    size_t slots = keys + 2;
+    size_t slots = extended ? 2 : keys + 2;
     double first = track->keys[0].time;
     uint64_t first_cell = first > node->start_time ? cell_at_or_before(node, first) : 0;
     uint64_t last_cell = cell_at_or_after(node, track->keys[keys - 1].time);
+    if (extended) {
+        first_cell = 0;
+        double end = track->domain_end > node->start_time
+            ? track->domain_end : node->start_time + SR_MAX_DURATION;
+        last_cell = cell_at_or_after(node, end);
+    }
     if (last_cell < first_cell) last_cell = first_cell;
     /* Each middle segment of length L keeps ceil(L / WALK_BLOCK) marks; the
      * segments tile [first_cell, last_cell), so this bounds their sum. */
@@ -218,11 +225,15 @@ static struct SrParticleRateCache *rate_cache_build(const SrNode *node) {
     cache->mark_capacity = mark_capacity;
     cache->first_rate = fmax(0.0, track->keys[0].value);
     cache->last_rate = fmax(0.0, track->keys[keys - 1].value);
+    if (extended) {
+        cache->first_rate = rate_at(node, first_cell);
+        cache->last_rate = rate_at(node, last_cell);
+    }
     cache->first_cell = first_cell;
     cache->last_cell = last_cell;
     cache->count = 0;
     cache->cell[cache->count++] = cache->first_cell;
-    for (size_t i = 1; i + 1 < keys; ++i) {
+    for (size_t i = 1; !extended && i + 1 < keys; ++i) {
         uint64_t k = cell_at_or_after(node, track->keys[i].time);
         if (k > cache->cell[cache->count - 1] && k < cache->last_cell)
             cache->cell[cache->count++] = k;
@@ -369,6 +380,7 @@ static SrStatus walk_segment(Walk *walk, size_t segment, uint64_t from,
     if (!marks || !buffer) { free(marks); free(buffer); return SR_ERR_MEMORY; }
     if (!segment_marks(walk->node, segment, to, marks))
         integrate(walk->node, from, to, value, marks);
+    SrStatus status = SR_OK;
     for (size_t b = blocks; b-- > 0 && !walk->done;) {
         uint64_t begin = from + (uint64_t)b * WALK_BLOCK;
         if (begin >= to) continue;
@@ -384,14 +396,20 @@ static SrStatus walk_segment(Walk *walk, size_t segment, uint64_t from,
             double t0 = (double)k * RATE_STEP;
             if (t0 + RATE_STEP < walk->oldest) { walk->done = true; break; }
             double n0 = buffer[k - begin], n1 = buffer[k - begin + 1];
+            if (!isfinite(n0) || !isfinite(n1) || n0 < 0.0 ||
+                n1 > SR_MAX_PARTICLE_INDEX) {
+                status = SR_ERR_RENDER;
+                goto done;
+            }
             if (!(n1 > n0)) continue;
             for (double i = ceil(n1) - 1.0, low = ceil(n0); i >= low; i -= 1.0)
                 if (!offer(walk, i, t0 + (i - n0) / (n1 - n0) * RATE_STEP)) break;
         }
     }
+done:
     free(marks);
     free(buffer);
-    return SR_OK;
+    return status;
 }
 
 static SrStatus walk_keyed(Walk *walk) {
@@ -416,7 +434,9 @@ static SrStatus walk_keyed(Walk *walk) {
         double u0 = (double)info.last_cell * RATE_STEP, rate = info.last_rate;
         if (rate > 0.0) {
             double high = floor(base + rate * (now - u0)) + 1.0;
-            if (!isfinite(high) || high > 9e15) return SR_OK;
+            if (!isfinite(high) || high > SR_MAX_PARTICLE_INDEX)
+                return sr_track_extended(&node->particle_rate.track)
+                    ? SR_ERR_RENDER : SR_OK;
             double low = fmax(ceil(base),
                               floor(base + rate * fmax(0.0, walk->oldest - u0)) - 1.0);
             walk_constant(walk, low, high, base, u0, rate);
@@ -448,7 +468,8 @@ static SrStatus walk_keyed(Walk *walk) {
         double high = fmin(ceil(info.total[0]) - 1.0,
                            floor(rate * fmin(now, limit)) + 1.0);
         double low = fmax(0.0, floor(rate * fmax(0.0, walk->oldest)) - 1.0);
-        if (isfinite(high) && high <= 9e15) walk_constant(walk, low, high, 0.0, u0, rate);
+        if (isfinite(high) && high <= SR_MAX_PARTICLE_INDEX)
+            walk_constant(walk, low, high, 0.0, u0, rate);
     }
     return SR_OK;
 }
@@ -460,7 +481,11 @@ SrStatus sr_particles_eval(const SrScene *scene, const SrNode *node,
     double now = time - node->start_time;
     if (!(now >= 0.0) || !isfinite(now)) return SR_OK;
     uint64_t seed = sr_particles_seed(scene, node);
-    double longest = fmax(1e-6, anim_upper_bound(&node->particle_lifetime) +
+    double lifetime = sr_track_extended(&node->particle_lifetime.track)
+        ? sr_anim_upper_bound(&node->particle_lifetime, node->start_time, time)
+        : anim_upper_bound(&node->particle_lifetime);
+    if (!isfinite(lifetime)) return SR_ERR_RENDER;
+    double longest = fmax(1e-6, lifetime +
                                 node->particle_lifetime_variance);
     Collector collector = {NULL, 0, 0, node->particle_max ? node->particle_max : 1};
     uint64_t examined = 0;
@@ -470,7 +495,7 @@ SrStatus sr_particles_eval(const SrScene *scene, const SrNode *node,
         if (!(rate > 0.0)) return SR_OK;
         double last = floor(now * rate);
         double first = fmax(0.0, floor((now - longest) * rate) - 1.0);
-        if (!isfinite(last) || last > 9e15) return SR_OK;
+        if (!isfinite(last) || last > SR_MAX_PARTICLE_INDEX) return SR_OK;
         for (double k = last; k >= first && ok; k -= 1.0) {
             if (collector.count >= collector.limit || ++examined > MAX_CANDIDATES) break;
             uint64_t index = (uint64_t)k;

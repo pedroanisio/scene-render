@@ -411,8 +411,10 @@ static const SrProperty *animate_target(ParseFrame *frame, const char *name,
 }
 
 void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
-    const char *const allowed[] = {"property", "defaultInterpolation"};
-    if (!sr_xml_attrs_allowed(ctx, "animate", attrs, allowed, 2)) return;
+    const char *const allowed[] = {"property", "defaultInterpolation",
+        "extrapolateBefore", "extrapolateAfter", "additive", "timeBase"};
+    if (!sr_xml_attrs_allowed(ctx, "animate", attrs, allowed,
+                              sizeof(allowed) / sizeof(allowed[0]))) return;
     ParseFrame *p = sr_xml_parent(ctx);
     const char *property = sr_xml_required(ctx, "animate", attrs, "property");
     if (!p || !property) return;
@@ -435,6 +437,7 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
     if ((anim && anim->track.count) || (color && color->r.count))
         SR_XML_FAIL_RETURN(ctx, "animate", "property",
                            "property already has an animation track");
+    if (!sr_xml_animation_options(ctx, attrs, p, anim, color)) return;
     if (color) color->space = ctx->scene->project.working_color_space;
     SrCurve curve = SR_CURVE_LINEAR;
     const char *interpolation = sr_xml_attr(attrs, "defaultInterpolation");
@@ -449,8 +452,11 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
 }
 
 void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs) {
-    const char *const allowed[] = {"time", "value", "interpolation", "bezier"};
-    if (!sr_xml_attrs_allowed(ctx, "key", attrs, allowed, 4)) return;
+    const char *const allowed[] = {"time", "value", "interpolation", "bezier",
+        "easeIn", "easeOut", "steps", "stepPosition", "tension", "continuity",
+        "bias", "stiffness", "damping", "mass"};
+    if (!sr_xml_attrs_allowed(ctx, "key", attrs, allowed,
+                              sizeof(allowed) / sizeof(allowed[0]))) return;
     ParseFrame *p = sr_xml_parent(ctx);
     const char *time_text = sr_xml_required(ctx, "key", attrs, "time");
     const char *value_text = sr_xml_required(ctx, "key", attrs, "value");
@@ -473,15 +479,23 @@ void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs) {
     if (curve && !sr_curve_parse(curve, &key.curve))
         SR_XML_FAIL_RETURN(ctx, "key", "interpolation",
                            "unsupported interpolation curve");
+    if (!sr_xml_key_options(ctx, attrs, &key)) return;
     const char *bezier = sr_xml_attr(attrs, "bezier");
+    key.bezier_set = bezier != NULL;
     if (key.curve == SR_CURVE_BEZIER) {
-        if (!bezier || !parse_bezier(bezier, &key))
+        if (bezier && !parse_bezier(bezier, &key))
             SR_XML_FAIL_RETURN(ctx, "key", "bezier",
                                "expected x1,y1,x2,y2 with x values in [0,1]");
     } else if (bezier) {
         SR_XML_FAIL_RETURN(ctx, "key", "bezier",
                            "bezier is valid only with cubic-bezier");
     }
+    SrTrack *track = p->color_anim ? &p->color_anim->r : &p->anim->track;
+    if (track->count >= SR_MAX_TRACK_KEYS)
+        SR_XML_FAIL_RETURN(ctx, "key", NULL, "track key limit is 65536");
+    if (ctx->key_count >= SR_MAX_SCENE_KEYS)
+        SR_XML_FAIL_RETURN(ctx, "key", NULL, "scene key limit is 1048576");
+    ++ctx->key_count;
     SrStatus added = p->color_anim
         ? sr_anim_color_add_key(p->color_anim, key, color_value)
         : sr_track_add(&p->anim->track, key);

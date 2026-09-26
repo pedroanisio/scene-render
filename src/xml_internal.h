@@ -41,6 +41,7 @@ typedef struct {
     size_t depth;
     size_t stack_capacity;
     size_t element_depth;       /* open elements, bounded by SR_XML_MAX_DEPTH */
+    size_t key_count;
     bool failed;
     bool out_of_memory;         /* the failure was an allocation (exit 8) */
     bool seen_project;
@@ -58,6 +59,8 @@ typedef struct {
 size_t sr_xml_line(ParseContext *ctx);
 void sr_xml_fail(ParseContext *ctx, const char *element, const char *attribute,
                  const char *message);
+void sr_xml_fail_at(ParseContext *ctx, size_t line, const char *element,
+                    const char *attribute, const char *message);
 const char *sr_xml_attr(const XML_Char **attrs, const char *name);
 bool sr_xml_attrs_allowed(ParseContext *ctx, const char *element,
                           const XML_Char **attrs, const char *const *allowed,
@@ -102,6 +105,11 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
 void sr_xml_start_mask(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs);
+bool sr_xml_animation_options(ParseContext *ctx, const XML_Char **attrs,
+                               ParseFrame *host, SrAnimValue *value,
+                               SrAnimColor *color);
+bool sr_xml_key_options(ParseContext *ctx, const XML_Char **attrs, SrKeyframe *key);
+bool sr_xml_finish_animation(ParseContext *ctx, ParseFrame *frame);
 
 #define SR_XML_FAIL_RETURN(context, element, attribute, message)               \
     do {                                                                       \

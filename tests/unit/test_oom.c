@@ -306,6 +306,7 @@ static void check_load(sr_test_ctx *t, const char *relative, long minimum) {
 static void xml_load_survives_allocation_failures(sr_test_ctx *t) {
     check_load(t, "tests/data-oom.xml", 50);
     check_load(t, "tests/data-profile.xml", 25);
+    check_load(t, "tests/data-animation.xml", 23);
     check_load(t, "examples/feature-parity.xml", 50);
 }
 
@@ -349,6 +350,7 @@ typedef struct {
     SrScene scene;
     bool loaded;
     unsigned threads;
+    const char *fixture;
     char path[1024];
     uint8_t *reference;     /* PPM bytes of the uninjected render */
     size_t reference_size;
@@ -403,7 +405,7 @@ static void render_release(void *opaque) {
 static void render_prepare(void *opaque) {
     RenderContext *c = opaque;
     SrDiagnostics diag = quiet_diag("oom");
-    c->loaded = sr_scene_load_xml(sr_test_data_path("tests/data-oom.xml"),
+    c->loaded = sr_scene_load_xml(sr_test_data_path(c->fixture),
                                   &c->scene, &diag) == SR_OK;
 }
 
@@ -419,25 +421,27 @@ static bool render_same_result(void *opaque) {
 
 static void frame_render_survives_allocation_failures(sr_test_ctx *t) {
     static const unsigned threads[] = {1, 3};
-    for (size_t i = 0; i < 2; ++i) {
-        RenderContext c = {.threads = threads[i], .loaded = true};
+    for (size_t i = 0; i < 3; ++i) {
+        RenderContext c = {.threads = threads[i % 2],
+            .fixture = i == 2 ? "tests/data-animation.xml" : "tests/data-oom.xml"};
         snprintf(c.path, sizeof(c.path), "%s", sr_test_tmp_path("oom-frame.ppm"));
-        if (!load_oom_scene(t, &c.scene)) return;
+        render_prepare(&c);
+        if (!c.loaded) { SR_FAIL(t, "could not load render fixture"); return; }
         /* The uninjected frame every surviving replay must reproduce. */
         if (render_op(&c) != SR_OK || !read_all(c.path, &c.reference, &c.reference_size)) {
-            SR_FAIL(t, "reference render of tests/data-oom.xml failed");
+            SR_FAIL(t, "reference render of %s failed", c.fixture);
             sr_scene_free(&c.scene);
             return;
         }
         render_release(&c);
         render_prepare(&c);
         char what[64];
-        snprintf(what, sizeof(what), "one-frame render (threads=%u)", threads[i]);
+        snprintf(what, sizeof(what), "%s render (threads=%u)", c.fixture, c.threads);
         const OomSpec spec = {what, render_op, render_release, render_prepare,
                               render_same_result,
                               {SR_ERR_MEMORY}};
         long n = replay_until_success(t, &spec, &c);
-        CHECK(t, n > 20);
+        CHECK(t, n >= (i == 2 ? 12 : 21));
         free(c.reference);
         if (c.loaded) sr_scene_free(&c.scene);
     }
@@ -493,7 +497,7 @@ static void encoder_survives_allocation_failures(sr_test_ctx *t) {
  * prepares physics on every call. */
 static void repeated_render_leaks_nothing(sr_test_ctx *t) {
     live_start();
-    RenderContext c = {.threads = 2, .loaded = true};
+    RenderContext c = {.threads = 2, .loaded = true, .fixture = "tests/data-oom.xml"};
     snprintf(c.path, sizeof(c.path), "%s", sr_test_tmp_path("oom-twice.ppm"));
     if (load_oom_scene(t, &c.scene)) {
         CHECK_INT(t, render_op(&c), SR_OK);

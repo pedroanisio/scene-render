@@ -16,8 +16,13 @@ size_t sr_xml_line(ParseContext *ctx) {
 
 void sr_xml_fail(ParseContext *ctx, const char *element, const char *attribute,
                  const char *message) {
+    sr_xml_fail_at(ctx, sr_xml_line(ctx), element, attribute, message);
+}
+
+void sr_xml_fail_at(ParseContext *ctx, size_t line, const char *element,
+                    const char *attribute, const char *message) {
     if (!ctx->failed) {
-        sr_diag_error(ctx->diag, sr_xml_line(ctx), element, attribute, "%s", message);
+        sr_diag_error(ctx->diag, line, element, attribute, "%s", message);
         ctx->failed = true;
         XML_StopParser(ctx->parser, XML_FALSE);
     }
@@ -243,21 +248,7 @@ static void XMLCALL on_end(void *user, const XML_Char *name) {
     if (ctx->element_depth) --ctx->element_depth;
     if (ctx->failed || ctx->depth == 0) return;
     ParseFrame *frame = &ctx->stack[ctx->depth - 1];
-    if (frame->kind == E_ANIMATE && frame->color_anim) {
-        if (frame->color_anim->r.count == 0)
-            SR_XML_FAIL_RETURN(ctx, "animate", NULL,
-                               "animation track requires at least one key");
-        if (sr_anim_color_finalize(frame->color_anim) != SR_OK)
-            SR_XML_FAIL_RETURN(ctx, "animate", NULL,
-                               "keyframe times must be unique");
-    } else if (frame->kind == E_ANIMATE) {
-        if (frame->anim->track.count == 0)
-            SR_XML_FAIL_RETURN(ctx, "animate", NULL,
-                               "animation track requires at least one key");
-        if (sr_track_finalize(&frame->anim->track) != SR_OK)
-            SR_XML_FAIL_RETURN(ctx, "animate", NULL,
-                               "keyframe times must be unique");
-    }
+    if (frame->kind == E_ANIMATE && !sr_xml_finish_animation(ctx, frame)) return;
     --ctx->depth;
 }
 

@@ -30,7 +30,8 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | B1-0 embedded 1.1, capability and version checks, report CLI | Implemented and reviewed | Performance check and batch merge |
 | B1-0 root sections and multiple outputs | Still gated | Implement and enable alongside dependent items below |
 | B1-1 property registry | Committed `0dd2068`, reviewed and verified | Batch merge; Release/ASan/coverage 65/65, oracle 309 previews + 3 encodes |
-| B1-1 curves, handles, extrapolation, additive, timeBase, new animation hosts | Pending | Closed-form unit references, curve golden, OOM and frame-order evidence |
+| B1-1 curves, handles, extrapolation, additive and timeBase | Implemented, reviewed and verified in animation worktree | Performance gate and batch merge |
+| B1-1 new animation hosts | Pending | Material/audio properties; new-node hosts alongside B1-4/B1-5 |
 | B1-2 relative lengths and parent-box evaluation | Pending | All required hosts, per-frame evaluation, scoped percentages, docs and goldens |
 | B1-2 tokens and metadata/container tags | Pending | Load-time resolution, unknown-token errors, tags and embedMetadata tests |
 | B1-3 blend modes, skew, mattes, masks, adjustment nodes | Pending | Every listed mode/parameter, cycle checks, numerical tests, three new goldens |
@@ -69,3 +70,27 @@ review and regression evidence. Release kernel arithmetic is unchanged.
 All final batch gates remain open: every item merged, full new-feature test
 matrix, all goldens/frame-order checks, coverage, performance budgets, and
 requirement-by-requirement completion audit.
+
+## Animation curves and track options
+
+The worktree adds all proposed interpolation families, temporal handles,
+extrapolation modes, additive values and affine track clocks. The original
+curve arithmetic remains intact. A new 320x180, 24-frame curve sheet has
+three visually reviewed references; original references remain unchanged.
+
+Full Release, ASan/UBSan and coverage runs passed 66/66 CTests each. After
+the final review corrections, all eight affected suites and both new golden
+frame-order checks passed again in every configuration. Curves have 16
+unit cases, including numerical references, parser mutations, cache inputs,
+large-cycle precision and input bounds. Final coverage is 91.06% lines /
+73.11% branches; floors rise to 89.00% / 70.90%. The byte oracle matches all
+309 previews, three encodes and two rejection cases against the registry
+reference. See `docs/reviews/b1-animation-curves.md` for review findings and
+exact verification scope. Performance remains open; this is not completion
+of B1-1 or the batch.
+
+The curves fixed-baseline performance run failed at total +103.7% during
+concurrent rendering. Five alternating reference/current pairs measured
+total +6.73% and several stages above the 2% budget, with strongly varying
+absolute times. This does not clear the gate; retain the original baseline
+and remeasure/profile under stable conditions before merging.
