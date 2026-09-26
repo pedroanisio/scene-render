@@ -17,6 +17,7 @@ Design: `docs/design/b1-5-timeline.md` (Codex-reviewed before code).
 | `transition`/`transitionDuration` unsupported | capability rows stay unsupported; loader also rejects | `ba5c278` |
 | Node `name` and `tags` | `SrNodeTimeline`; bounded; used in every B1-5 diagnostic | `ba5c278` |
 | New animatable properties | none: the schema does not make `timeScale`/`timeOffset` animatable (documented) | — |
+| Still `marker` (poster/thumbnail, left by B1-6) | `SrStill.marker`; resolved in the timeline pass with the same kind checks, then B1-6's output-range check; exclusive with `time` | `b99c296`, `d781f81` |
 | Golden `sequence-markers` | `tests/golden/sequence-markers.xml`, frames 0, 12, 18 | `ba5c278` |
 
 Documentation: `docs/xml-reference.md` "Timeline structure (1.1)", the B1-1
@@ -31,7 +32,7 @@ composition-time-base refinement, golden README row, regenerated
 `particleEmitterType`; `groupType/@timeOffset`, `groupType/@timeScale`,
 `sequenceType/@timeGap`, `keyType/@marker`; `markerType` `@id`, `@time`,
 `@duration`, `@kind` (values `cue`, `section`, `beat`), `@label`, `@color`
-(form `token`); `beatGridType` `@bpm`, `@offset`, `@beatsPerBar`.
+(form `token`); `beatGridType` `@bpm`, `@offset`, `@beatsPerBar`; `stillType/@marker` (after the B1-6 merge).
 
 `sequenceType` inherits every implemented `groupType` row through the new
 `inherits` key in `schema/capabilities.json` (implemented in
@@ -186,3 +187,37 @@ and flip its capability rows; new animatable hosts must be registered in
 the property registry (the resolver enumerates tracks through it) or a key
 marker on them fails with "unsupported in this build: key marker on this
 animation host".
+
+## Merge with B1-6 (main e059102)
+
+`20af891` merges main (B1-6 outputs and the owner docs commit e93a478) as a
+merge commit. Conflicts in `CMakeLists.txt`, `Makefile`, `src/scene.c`,
+`src/xml_internal.h`, `tests/unit/test_main.c`, `schema/capabilities.json`
+and `tools/coverage-gate.sh` were resolved keeping both sides: both source
+sets and suites, both element kinds, a three-way union of capability flips
+(B1-6's removal of the `scene/output` occurrence limit kept), the regenerated
+capability table and feature matrix, and B1-6's higher floors. The other
+listed files merged cleanly.
+
+`b99c296` implements `stillType/@marker`. It is resolved in
+`sr_xml_resolve_timeline`, which runs before `sr_outputs_resolve`, so B1-6's
+range check applies to the resolved time. It is exclusive with `time`.
+Unknown ids, ids naming other elements and ids outside the grid use the
+B1-5 diagnostics. Tests: `markers.still_markers` and the extended
+`every_construct_fixture`; `tests/data-timeline.xml` now has an output with
+a marker poster and a marker thumbnail, which the OOM load replay covers.
+B1-6's `outputs.loader_rejections` had pinned the marker as "unsupported";
+`d781f81` updates it to the new "unknown marker id" diagnostic.
+
+Evidence on the merged tree (`d781f81`):
+
+- Release CTest: 91/91, including `frame_order` (all goldens, including
+  `sequence-markers` and `outputs`) and `integration`: B1-6 outputs at 1 vs
+  4 threads, and `tests/golden.sha256` unchanged since `4106b84` apart from
+  B1-6's additions.
+- ASan/UBSan CTest (`ASAN_OPTIONS=detect_leaks=0`): 91/91.
+- Byte oracle against `/tmp/scene-render-b1-reference`: 309/309 previews,
+  3/3 encodes, 2 expected rejections.
+- Coverage: 92.79% lines / 78.51% branches. The gate's steps were run with
+  `-j 6` build / `ctest -j4`, as in the B1-6 evidence. The line floor stays
+  at 90.80; the branch floor rises from 76.30 to 76.50.
