@@ -86,9 +86,9 @@ Commits:
    in captures are near/far clipped only (no shared depth read or write).
 4. A card ancestor on a capture path keeps its camera depth-of-field blur
    (it is placement) but not its effects, masks or matte.
-5. Effect scratch keeps the existing thread-local caches; bounded renders
-   reserve a conservative scratch bundle and pass work on the calling thread
-   for each effect call and release it afterwards.
+5. Legacy effect calls keep the existing thread-local scratch caches.
+   Bounded renders run each effect in a private scratch scope (review
+   finding 3) with a conservative reservation of its scratch and pass work.
 
 ## Tests
 
@@ -163,3 +163,35 @@ parser), `xml_resolve.c`, `xml_lengths.c`, `length_frame.c`, `property.c`,
 `color.c`, `random.c`, `raster.c`; `schema/capabilities.json` and generated
 files; `CMakeLists.txt`, `Makefile`; `tests/unit/harness.h`, `test_main.c`,
 `test_golden.c`, `test_oom.c`, `test_blend_color.c`; `tools/coverage-gate.sh`.
+
+## Diff review (Codex, 4106b84..53de26e)
+
+The read-only Codex review reported 9 major and 1 minor findings. Each was
+reproduced as a failing case in `tests/unit/test_b13_review.c` (suite
+`b13_review`): built against `53de26e`, all ten cases fail; on this branch
+all pass. All findings were accepted; none was rejected.
+
+| # | Finding | Test | Fix |
+|---|---|---|---|
+| 1 | Effect/DOF memory reservation leaked when the following work check failed | `work_rejection_releases_reservation`: seven work limits in the effect's window; ledger balance after scope end must be zero, failure owned by `adjustment@effects` (pre-fix: 3,244,288 bytes / 548,864 pixels outstanding) | `b6b0ae6` `sr_effect_bounded` admits memory and work together and releases on rejection |
+| 2 | Path-mask work ignored horizontal edge spans | `path_edges_charge_columns`: 400 shallow edges across 4096 columns must charge at least edges x columns x 4 | `6b6695e` per-edge clipped row span and column charge |
+| 3 | Bounded effects borrowed warmed thread-local scratch larger than their reservation | `effects_use_private_scratch`: after a 1024x1024 legacy blur warms the cache, a bounded 32x32 adjustment reports identical peaks and output cold and warm, the legacy cache is intact and legacy output is unchanged (pre-fix: no private scope exists) | `b6b0ae6` private scratch scope (`sr_effects_private_begin/end`): bounded calls allocate their own scratch for the call's lifetime, retained bytes are checked against the reservation; legacy calls keep the cache and identical arithmetic (oracle below) |
+| 4 | Inactive/invisible/zero-opacity adjustment matte source exposed its prefix | `absent_adjustment_source_is_empty` (three states) | `b6b0ae6` activity check before prefix replay |
+| 5 | Masked adjustment chains processed incomplete intermediate images | `masked_chain_uses_complete_inputs`: grey then blur inside a small mask over red must stay grey | `b6b0ae6` effect i processes the region grown by the reach of later effects |
+| 6 | Ancestor opacity folded into the source before its own rendering | `ancestor_opacity_after_capture`: opaque dissolve source in a 0.5 group gives uniform 0.5 coverage | `b6b0ae6` capture scaled once by the ancestor product after rendering |
+| 7 | Flattened operator cards lost their depth writes | `flattened_card_writes_depth`: opaque dissolve card vs normal card over an intersecting card, same occlusion away from edges | `b6b0ae6` card depth test/write deferred to the operator op on the final source |
+| 8 | Adjustment prefix replay ignored card-run sorting | `adjustment_prefix_sorts_cards`: near white over far black gives full luma coverage | `b6b0ae6` prefix replay through `sr_draw_children_limit` |
+| 9 | Parent masks clipped an adjustment's input pixels | `parent_mask_keeps_adjustment_input` | `b6b0ae6` isolated parent fill grown by adjustment reach before its masks |
+| 10 | Additive star innerRadius used base 0 | `additive_inner_radius_base`: radius 20 plus additive 2 equals innerRadius 12 | `6b6695e` omitted innerRadius base is half the static outer radius |
+
+Codex's open question (object3D matte sources and adjustment cards) is
+answered by the deviations listed above; those are declared limitations
+awaiting owner acceptance, not fixed here.
+
+Post-review verification (tree at `5294c88` plus this doc): SDK Release
+88/88 CTests (including `frame_order` over all 24 goldens), ASan/UBSan
+88/88, coverage gate 92.47% lines / 78.20% branches (floors 90.35/76.10),
+oracle against `/tmp/scene-render-b1-reference` 309/309 previews, 3/3
+encodes, 2 expected rejections. Golden references and
+`tests/golden.sha256` are unchanged by the fixes. The strict performance
+gate still needs a quiet-machine run.

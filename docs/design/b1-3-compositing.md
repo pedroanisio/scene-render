@@ -505,9 +505,10 @@ matte source (explicit wrong-kind load diagnostic); adjustment layers do not
 accept `threeD` (capability unsupported, direct-C preparation error);
 matte captures and adjustment-source prefix replays contain 2D content and
 the project background but not 3D objects, and card sources are
-depth-clipped without the shared depth buffer; effect and depth-of-field
-scratch is covered by conservative calling-thread reservations while the
-existing thread-local effect caches keep their legacy lifetime.
+depth-clipped without the shared depth buffer. Bounded effect and
+depth-of-field calls use private per-call scratch (`sr_effects_private_*`)
+covered by calling-thread reservations; legacy calls keep the thread-local
+effect caches.
 
 | Constant | Bound |
 |---|---:|

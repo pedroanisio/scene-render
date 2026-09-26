@@ -1348,8 +1348,11 @@ to [0,1] and floor negative color at zero. Later siblings are unaffected.
 
 An adjustment costs one flush of queued draws, one target-sized copy of the
 receiving clip grown by the effects' reach, the effects themselves, and one
-replacement pass. Effect scratch is reserved from the compositing budget for
-the duration of each effect.
+replacement pass. Effect scratch is private to each effect call and reserved
+from the compositing budget for its duration. Effect i of a masked chain
+processes the region grown by the reach of the later effects, and an
+isolated parent keeps the backdrop within the adjustment reach of its
+children before its own masks cut it.
 
 ## Compositing resource limits
 

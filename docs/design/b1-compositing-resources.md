@@ -297,8 +297,9 @@ vertices and path scanline cells (allocations plus reserved pass work);
 operator buffers (depth pool) and operator/replacement pixel work; matte
 capture scratch, retained two-channel coverage and the per-frame capture
 table; adjustment backdrop copies; and calling-thread reservations for
-group, card and adjustment effects and card depth-of-field blur, released
-when the call returns. Lighting/shadow scratch, renderer outer targets,
+group, card and adjustment effects and card depth-of-field blur, which run
+in a private scratch scope (no borrowed thread-local capacity) and are
+released when the call returns. Lighting/shadow scratch, renderer outer targets,
 viewport extraction and whole-frame global effects remain unconnected, so
 the ledger is documented to users as covering B1-3 feature work, not as a
 complete per-frame bound.
