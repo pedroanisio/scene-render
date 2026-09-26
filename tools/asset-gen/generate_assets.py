@@ -20,8 +20,13 @@ technical requirements of every asset. For each asset the tool:
 
 OpenAI has no seed parameter, so results are not reproducible. The generation
 log and the pinned hashes are what make renders deterministic
-(docs/schema-1.1-batch3-proposal.md D7). Outputs that already exist are kept
-unless --force.
+(docs/schema-1.1-batch3-proposal.md D7).
+
+Reruns never pay twice. A file this tool generated for the same request is
+reused; a file it generated for an older request is regenerated; a file it did
+not produce is kept unless --force. Sequences are staged and committed as a
+whole, and their frames are reused across runs, so an interrupted or failed
+run resumes where it stopped. Assets whose references failed are skipped.
 
 API facts this tool relies on (OpenAI docs, checked 2026-09-25):
   * GPT image models return base64 PNG/WebP/JPEG. Custom sizes need both edges
@@ -29,13 +34,16 @@ API facts this tool relies on (OpenAI docs, checked 2026-09-25):
     655,360..8,294,400 pixels; above 2560x1440 is experimental.
   * background="transparent" works only with gpt-image-2.5-sunburst and
     gpt-image-2.5-flare, with png or webp output.
-  * images.edit takes up to 16 reference images and has no moderation option.
+  * images.edit takes up to 16 reference images and has no moderation option;
+    gpt-image-2.5-sunburst rejects input_fidelity (400 invalid_input_fidelity_model),
+    so it is only sent when the spec asks for it and dropped on that error.
   * Speech: audio.speech.create; response_format="pcm" is 24 kHz 16-bit mono.
   * There is no music or sound-effect endpoint: those assets are "external".
 
 Usage:
   uv run tools/asset-gen/generate_assets.py SPEC.json --dry-run
-  OPENAI_API_KEY=... uv run tools/asset-gen/generate_assets.py SPEC.json [--only a,b] [--force]
+  uv run tools/asset-gen/generate_assets.py SPEC.json [--only a,b] [--force] [--regenerate]
+      (OPENAI_API_KEY comes from the environment or ./.env)
   uv run tools/asset-gen/generate_assets.py SPEC.json --provider mock --out-root /tmp/x
 
 Exit status: 0 complete and verified, 1 failures, 2 spec or usage error,
@@ -66,7 +74,7 @@ TTS_RATE = 24_000
 MAX_REFS = 16
 DEFAULTS = {
     "image": {"model": "gpt-image-2.5-sunburst", "quality": "high", "moderation": "auto",
-              "inputFidelity": "high", "maxPixels": MAX_PIXELS},
+              "maxPixels": MAX_PIXELS},
     "speech": {"model": "gpt-4o-mini-tts", "voice": "cedar", "speed": 1.0},
 }
 DEFAULT_AVOID = ["text", "letters", "watermark", "signature", "border", "frame", "UI elements"]
@@ -406,6 +414,7 @@ def load_env_file(path):
 
 class OpenAIProvider:
     name = "openai"
+    no_fidelity = set()                                 # models that rejected input_fidelity
 
     def __init__(self, timeout, max_retries):
         from openai import OpenAI
@@ -418,14 +427,9 @@ class OpenAIProvider:
         kw = dict(model=params["model"], prompt=prompt, size="%dx%d" % size, n=1,
                   quality=params["quality"], background=background, output_format="png")
         if refs:
-            files = [open(p, "rb") for p in refs]
-            try:
-                if params.get("inputFidelity"):
-                    kw["input_fidelity"] = params["inputFidelity"]
-                r = self.client.images.edit(image=files, **kw)
-            finally:
-                for f in files:
-                    f.close()
+            if params.get("inputFidelity") and params["model"] not in self.no_fidelity:
+                kw["input_fidelity"] = params["inputFidelity"]
+            r = self.edit(refs, kw)
         else:
             r = self.client.images.generate(moderation=params["moderation"], **kw)
         d = r.data[0]
@@ -435,6 +439,25 @@ class OpenAIProvider:
                 "usage": r.usage.model_dump() if getattr(r, "usage", None) else None,
                 "returned_size": list(img.size)}
         return img, meta
+
+    def edit(self, refs, kw):
+        import openai
+        files = [open(p, "rb") for p in refs]
+        try:
+            try:
+                return self.client.images.edit(image=files, **kw)
+            except openai.BadRequestError as ex:
+                if "input_fidelity" not in kw or getattr(ex, "code", None) != "invalid_input_fidelity_model":
+                    raise
+                self.no_fidelity.add(kw["model"])       # the 400 is rejected before generation
+                log("note: %s does not accept input_fidelity; retrying without it" % kw["model"])
+                del kw["input_fidelity"]
+                for f in files:
+                    f.seek(0)
+                return self.client.images.edit(image=files, **kw)
+        finally:
+            for f in files:
+                f.close()
 
     def speech(self, text, params):
         import numpy as np
@@ -454,6 +477,8 @@ class MockProvider:
 
     def image(self, prompt, size, params, background, refs):
         from PIL import Image, ImageDraw
+        if refs and os.environ.get("ASSETGEN_MOCK_FAIL_EDITS"):  # test hook: behave like a rejected edit
+            raise RuntimeError("mock: edit rejected")
         seed = int(hashlib.sha256(prompt.encode()).hexdigest()[:8], 16)
         col = ((seed >> 16) & 255, (seed >> 8) & 255, seed & 255)
         W, H = size
@@ -632,7 +657,17 @@ class Log:
     def record(self, rel, info):
         with self.lock:
             self.data["files"][rel] = info
-            atomic_write(self.path, json.dumps(self.data, indent=2, sort_keys=True).encode() + b"\n")
+            self.save()
+
+    def move(self, old, new, info):
+        with self.lock:
+            self.data["files"].pop(old, None)
+            if info is not None:
+                self.data["files"][new] = info
+            self.save()
+
+    def save(self):
+        atomic_write(self.path, json.dumps(self.data, indent=2, sort_keys=True).encode() + b"\n")
 
 
 class Runner:
@@ -672,12 +707,19 @@ class Runner:
         return (os.path.exists(path) and e is not None and e.get("request") == req
                 and e.get("sha256") == sha256_file(path))
 
-    def keep_existing(self, path, req):
-        """True when an existing file must be kept (not ours or spec changed, no --force)."""
-        if not os.path.exists(path) or self.args.force:
+    def reusable(self, path, req):
+        """The file was produced by this tool for exactly this request and is
+        unchanged: reuse it and spend nothing (unless --regenerate)."""
+        return not self.args.regenerate and self.up_to_date(path, req)
+
+    def foreign(self, path):
+        """The file exists but this tool did not write it (or it was edited
+        since): keep it unless --force. Files this tool wrote for an older
+        request are simply regenerated."""
+        if not os.path.exists(path) or self.args.force or self.args.regenerate:
             return False
         e = self.log.entry(self.rel(path))
-        return e is None or e.get("request") != req
+        return e is None or e.get("sha256") != sha256_file(path)
 
     def run_asset(self, a):
         status = {"id": a.id, "warnings": [], "state": "pending", "files": []}
@@ -704,19 +746,26 @@ class Runner:
         log("%-24s %-9s %s" % (a.id, status["state"], status.get("error", "") or "; ".join(status["warnings"])))
         return status
 
-    def one_image(self, a, out_path, raw_path, prompt, size, refs, status, extra):
+    def image_request(self, a, prompt, size, refs, extra):
         p = a.params
         background = "transparent" if a.get("alpha") == "straight" else "opaque"
-        req = self.request_hash(model=p["model"], prompt=prompt, size=size, quality=p["quality"],
-                                background=background, fidelity=p.get("inputFidelity") if refs else None,
-                                refs=[sha256_file(r) for r in refs if os.path.exists(r)],
-                                post=[a.get("width"), a.get("height"), a.get("alpha"), a.get("fit", "cover"),
-                                      a.get("focus"), a.get("grid")], provider=self.provider.name, **extra)
-        if not self.args.force and self.up_to_date(out_path, req):
+        return self.request_hash(model=p["model"], prompt=prompt, size=size, quality=p["quality"],
+                                 background=background, fidelity=p.get("inputFidelity") if refs else None,
+                                 refs=[sha256_file(r) for r in refs if os.path.exists(r)],
+                                 post=[a.get("width"), a.get("height"), a.get("alpha"), a.get("fit", "cover"),
+                                       a.get("focus"), a.get("grid")], provider=self.provider.name, **extra)
+
+    def one_image(self, a, out_path, raw_path, prompt, size, refs, status, extra):
+        """Generate one image into out_path unless it is reusable or foreign.
+        Returns True when an API call produced it."""
+        p = a.params
+        background = "transparent" if a.get("alpha") == "straight" else "opaque"
+        req = self.image_request(a, prompt, size, refs, extra)
+        if self.reusable(out_path, req):
             return False
-        if self.keep_existing(out_path, req):
+        if self.foreign(out_path):
             status["state"] = "kept"
-            status["warnings"].append("%s exists and was not produced by this spec version (use --force)" % self.rel(out_path))
+            status["warnings"].append("%s was not produced by this tool; kept (use --force to replace)" % self.rel(out_path))
             return False
         self.take_call()
         img, meta = self.provider.image(prompt, size, p, background, refs)
@@ -739,19 +788,88 @@ class Runner:
         refs = self.ref_files(a)[:MAX_REFS]
         self.one_image(a, a.outputs()[0], self.raw_path(a), prompt, (W, H), refs, status, {})
 
+    def stage_path(self, a, out):
+        return os.path.join(self.root, ".asset-gen", "staging", a.id, os.path.basename(out))
+
     def gen_sequence(self, a, status):
+        """Frames are generated into a staging folder and replace the final
+        files only when every frame exists, so a failure never leaves a
+        sequence that mixes new and old frames. Any frame already produced for
+        the same request, staged or final, is reused on the next run."""
         W, H, _ = plan_size(a.get("width"), a.get("height"), a.params["maxPixels"])
         n, mode = a.frame_count, a.get("consistency", "chain")
+        outs = a.outputs()
+        foreign = [o for o in outs if self.foreign(o)]
+        if foreign:
+            status["state"] = "kept"
+            status["warnings"].append("%d of %d frames were not produced by this tool; sequence kept "
+                                      "(use --force to replace it as a whole)" % (len(foreign), n))
+            return
         base_refs = self.ref_files(a)
-        for i, out in enumerate(a.outputs()):
-            refs = list(base_refs)
-            if i > 0 and mode in ("chain", "key"):
-                refs.append(self.raw_path(a, 0))
-            if i > 1 and mode == "chain":
-                refs.append(self.raw_path(a, i - 1))
-            refs = [r for r in refs if os.path.exists(r)][:MAX_REFS]
+        staged, reused = [], 0
+        for i, out in enumerate(outs):
+            refs = self.frame_refs(a, base_refs, i, mode)
             prompt = build_prompt(self.spec, a, W, H, frame=(i, n))
-            self.one_image(a, out, self.raw_path(a, i), prompt, (W, H), refs, status, {"frame": i})
+            if self.reusable(out, self.frame_request(a, prompt, (W, H), refs, i)):
+                reused += 1
+                continue
+            stage = self.stage_path(a, out)
+            if self.one_image(a, stage, self.raw_path(a, i), prompt, (W, H), refs, status, {"frame": i}) or \
+                    self.up_to_date(stage, self.frame_request(a, prompt, (W, H), refs, i)):
+                staged.append((stage, out))
+        if reused + len(staged) != n:
+            raise RuntimeError("only %d of %d frames available; nothing committed, staged frames are kept "
+                               "for the next run" % (reused + len(staged), n))
+        for stage, out in staged:                       # every frame exists: commit them together
+            e = self.log.entry(self.rel(stage))
+            os.replace(stage, out)
+            self.log.move(self.rel(stage), self.rel(out), e)
+        status["files"] = [self.rel(o) for _, o in staged]
+        status["state"] = "done" if staged else "current"
+        if reused and staged:
+            status["warnings"].append("reused %d frame(s) generated earlier" % reused)
+
+    def frame_refs(self, a, base_refs, i, mode):
+        refs = list(base_refs)
+        if i > 0 and mode in ("chain", "key"):
+            refs.append(self.raw_path(a, 0))
+        if i > 1 and mode == "chain":
+            refs.append(self.raw_path(a, i - 1))
+        return [r for r in refs if os.path.exists(r)][:MAX_REFS]
+
+    def estimate(self, a):
+        """(calls this run would make, state) without calling anything."""
+        if a.kind in ("music", "ambience", "soundEffect"):
+            return 0, "external" if all(os.path.exists(p) for p in a.outputs()) else "missing"
+        if a.kind == "speech":
+            out, p = a.outputs()[0], a.params
+            req = self.request_hash(model=p["model"], voice=p["voice"], text=a.get("text"),
+                                    instructions=p.get("instructions"), speed=p.get("speed"),
+                                    post=[a.get("sampleRate"), a.get("channels"), a.get("bitDepth", 24),
+                                          a.get("duration"), a.get("fitDuration")], provider=self.provider.name)
+            return (0, "reuse") if self.reusable(out, req) else ((0, "kept") if self.foreign(out) else (1, "generate"))
+        W, H, _ = plan_size(a.get("width"), a.get("height"), a.params["maxPixels"])
+        if a.kind == "image":
+            refs = self.ref_files(a)[:MAX_REFS]
+            req = self.image_request(a, build_prompt(self.spec, a, W, H), (W, H), refs, {})
+            out = a.outputs()[0]
+            return (0, "reuse") if self.reusable(out, req) else ((0, "kept") if self.foreign(out) else (1, "generate"))
+        outs, n = a.outputs(), a.frame_count
+        if any(self.foreign(o) for o in outs):
+            return 0, "kept"
+        base, mode, calls = self.ref_files(a), a.get("consistency", "chain"), 0
+        for i, out in enumerate(outs):
+            if calls:                                   # later frames depend on frames not made yet
+                calls += 1
+                continue
+            refs = self.frame_refs(a, base, i, mode)
+            req = self.frame_request(a, build_prompt(self.spec, a, W, H, frame=(i, n)), (W, H), refs, i)
+            if not (self.reusable(out, req) or self.up_to_date(self.stage_path(a, out), req)):
+                calls += 1
+        return calls, ("reuse" if calls == 0 else "generate %d of %d frames" % (calls, n))
+
+    def frame_request(self, a, prompt, size, refs, i):
+        return self.image_request(a, prompt, size, refs, {"frame": i})
 
     def gen_speech(self, a, status):
         out = a.outputs()[0]
@@ -760,11 +878,11 @@ class Runner:
                                 instructions=p.get("instructions"), speed=p.get("speed"),
                                 post=[a.get("sampleRate"), a.get("channels"), a.get("bitDepth", 24),
                                       a.get("duration"), a.get("fitDuration")], provider=self.provider.name)
-        if not self.args.force and self.up_to_date(out, req):
+        if self.reusable(out, req):
             return
-        if self.keep_existing(out, req):
+        if self.foreign(out):
             status["state"] = "kept"
-            status["warnings"].append("%s exists and was not produced by this spec version (use --force)" % self.rel(out))
+            status["warnings"].append("%s was not produced by this tool; kept (use --force to replace)" % self.rel(out))
             return
         self.take_call()
         x, rate, meta = self.provider.speech(a.get("text"), p)
@@ -788,6 +906,14 @@ class Runner:
                                                    for r in a.get("references", []))]
                 for a in ready:
                     pending.remove(a)
+                    bad = [r for r in a.get("references", [])
+                           if self.results.get(r, {}).get("state") in ("failed", "skipped", "stopped")]
+                    if bad:                             # never build on a reference that did not come out
+                        self.results[a.id] = {"id": a.id, "state": "skipped", "warnings": [], "files": [],
+                                              "error": "reference %s did not complete" % ", ".join(bad)}
+                        log("%-24s %-9s %s" % (a.id, "skipped", self.results[a.id]["error"]))
+                        done_ids.add(a.id)
+                        continue
                     futures[pool.submit(self.run_asset, a)] = a
                 if not futures:
                     break
@@ -883,7 +1009,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Generate scene assets with the OpenAI API from an asset spec.")
     ap.add_argument("spec", help="asset spec JSON (asset-spec.schema.json)")
     ap.add_argument("--only", help="comma-separated asset ids")
-    ap.add_argument("--force", action="store_true", help="regenerate even if files exist")
+    ap.add_argument("--force", action="store_true",
+                    help="replace files this tool did not produce (e.g. hand-made or older assets); "
+                         "files it already generated for the same request are still reused")
+    ap.add_argument("--regenerate", action="store_true",
+                    help="generate new takes even of up-to-date files (spends calls on everything selected)")
     ap.add_argument("--dry-run", action="store_true", help="validate and print the plan; no API calls")
     ap.add_argument("--provider", choices=["openai", "mock"], default="openai")
     ap.add_argument("--out-root", help="override project.outputRoot")
@@ -923,6 +1053,17 @@ def main(argv=None):
         return 2
 
     total = describe_plan(spec, assets, only)
+    selected = [a for a in assets if not only or a.id in only]
+    probe = Runner(spec, selected, root, type("P", (), {"name": args.provider})(), args)
+    probe.by_id = {a.id: a for a in assets}
+    need, states = 0, {}
+    for a in selected:
+        c, st = probe.estimate(a)
+        need += c
+        states.setdefault(st.split(" ")[0], []).append(a.id if c == 0 else "%s(%d)" % (a.id, c))
+    print("API calls needed now, reusing what is already generated: %d" % need)
+    for st in sorted(states):
+        print("  %-9s %s" % (st, ", ".join(states[st])))
     if args.dry_run:
         return 0
     try:
@@ -930,7 +1071,6 @@ def main(argv=None):
     except SpecError as ex:
         log("error: %s" % ex)
         return 2
-    selected = [a for a in assets if not only or a.id in only]
     by_id = {a.id: a for a in assets}
     missing_refs = [(a.id, r) for a in selected for r in a.get("references", [])
                     if only and r not in only and not os.path.exists(by_id[r].outputs()[0])]
@@ -943,16 +1083,21 @@ def main(argv=None):
     results = runner.run(args.jobs)
     manifest = write_manifest(root, assets, scene if scene and os.path.exists(scene) else None)
     log("manifest: %s (%d API calls made)" % (manifest, runner.calls))
-    if args.pin_scene and scene:
-        n = pin_scene(scene, os.path.abspath(args.pin_scene), assets)
-        log("pinned sha256 on %d assets -> %s" % (n, args.pin_scene))
     states = [r["state"] for r in results.values()]
+    incomplete = [r["id"] for r in results.values() if r["state"] in ("failed", "skipped", "stopped", "missing")]
+    if args.pin_scene and scene:
+        if incomplete:
+            log("not pinning: %d asset(s) incomplete (%s); rerun to finish, then pin"
+                % (len(incomplete), ", ".join(sorted(incomplete))))
+        else:
+            n = pin_scene(scene, os.path.abspath(args.pin_scene), assets)
+            log("pinned sha256 on %d assets -> %s" % (n, args.pin_scene))
     for r in results.values():
         for p in r.get("problems", []):
             log("problem: %s: %s" % (r["id"], p))
     if "failed" in states:
         return 1
-    if "missing" in states or "stopped" in states:
+    if "missing" in states or "stopped" in states or "skipped" in states:
         return 3
     return 0
 
