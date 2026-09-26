@@ -331,6 +331,20 @@ static void dash_seams_winding_and_progress(sr_test_ctx *t) {
     CHECK(t, !sr_stroke_build(&far, &p, &out));
     CHECK_INT(t, out.status, SR_ERR_RENDER);
     sr_polyset_free(&out);
+    /* A huge dash offset keeps its exact remainder: the visible sliver of a
+     * 1.6e-7 dash is drawn. */
+    const double sliver[2] = {1.6e-7, 2e-8};
+    p = params(4.0);
+    p.cap = SR_LINE_CAP_ROUND;
+    p.dash = sliver;
+    p.dash_count = 2;
+    p.dash_offset = 1e9;
+    p.trimmed = true;
+    p.trim_start = 0.0;
+    p.trim_end = 2e-10;
+    double a = 0.0;
+    CHECK_INT(t, build_stroke(&line, &p, &a), 1);
+    CHECK(t, a > 10.0);                  /* a round-capped dot of radius 2 */
     sr_polyset_free(&far);
     sr_polyset_free(&line);
     /* One dash longer than a closed square is the closed stroke. */
@@ -344,7 +358,6 @@ static void dash_seams_winding_and_progress(sr_test_ctx *t) {
     p = params(4.0);
     p.dash = long_dash;
     p.dash_count = 2;
-    double a = 0.0;
     CHECK_INT(t, build_stroke(&square, &p, &a), 2);
     CHECK_NEAR(t, a, 1936.0 - 1296.0, 1e-2);
     /* A dash crossing the seam equals the same dash on a contour that starts

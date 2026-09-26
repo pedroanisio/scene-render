@@ -9,6 +9,7 @@
 #include "scene_render/random.h"
 #include "vector_path_internal.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -277,15 +278,24 @@ SrStatus sr_paint_eval(const SrPaint *paint, const SrProject *project,
                              "gradient coordinates must be finite and within 1e9");
         out->x1 = x1;
         out->y1 = y1;
-        /* Unit direction and reciprocal length (hypot avoids underflow of
-         * the squared length); a vector whose reciprocal overflows counts
+        /* t = (q - P1).D / |D|^2 when the squared length is a normal
+         * number; tinier vectors use the unit direction and 1/|D| (hypot
+         * avoids the underflow). A vector whose reciprocal overflows counts
          * as coincident points. */
-        double length = hypot(x2 - x1, y2 - y1);
-        double inverse = length > 0.0 ? 1.0 / length : 0.0;
-        out->degenerate = !(length > 0.0) || !isfinite(inverse);
-        out->dx = out->degenerate ? 0.0 : (x2 - x1) / length;
-        out->dy = out->degenerate ? 0.0 : (y2 - y1) / length;
-        out->inv_length = out->degenerate ? 0.0 : inverse;
+        double dx = x2 - x1, dy = y2 - y1, length2 = dx * dx + dy * dy;
+        out->scaled = !(length2 >= DBL_MIN);
+        if (!out->scaled) {
+            out->dx = dx;
+            out->dy = dy;
+            out->inv_length = 1.0 / length2;
+        } else {
+            double length = hypot(dx, dy);
+            double inverse = length > 0.0 ? 1.0 / length : 0.0;
+            out->degenerate = !(length > 0.0) || !isfinite(inverse);
+            out->dx = out->degenerate ? 0.0 : dx / length;
+            out->dy = out->degenerate ? 0.0 : dy / length;
+            out->inv_length = out->degenerate ? 0.0 : inverse;
+        }
     } else {
         double cx = value_at(&paint->cx, time), cy = value_at(&paint->cy, time);
         if (!finite_bounded(cx) || !finite_bounded(cy))
@@ -357,7 +367,7 @@ bool sr_paint_parameter(const SrPaintEval *eval, double x, double y, double *t) 
             *t = 1.0;
             return true;
         }
-        /* dx, dy are the unit direction. */
+        /* dx, dy and inv_length: D and 1/|D|^2, or unit D and 1/|D|. */
         *t = ((gx - eval->x1) * eval->dx + (gy - eval->y1) * eval->dy) *
              eval->inv_length;
         if (isinf(*t)) *t = copysign(1e18, *t);

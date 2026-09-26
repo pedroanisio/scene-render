@@ -376,6 +376,18 @@ static void translucent_oklab_and_tiny_vectors(sr_test_ctx *t) {
     CHECK_NEAR(t, out[3], 1.0, 0.0);
     CHECK_NEAR(t, out[0], 1.0, 0.0);
     sr_paint_free(&paint);
+    /* Repeat boundary: t is exactly 1 at (0.5, 1.5) on (0,0) -> (1,1). */
+    SrPaint ramp = gray_ramp(SR_PAINT_LINEAR);
+    ramp.units = SR_PAINT_UNITS_USER;
+    ramp.x2.base = 1.0;
+    ramp.y2.base = 1.0;
+    ramp.spread = SR_SPREAD_REPEAT;
+    CHECK_INT(t, sr_paint_eval(&ramp, &p, 0.0, 10, 10, &eval, NULL), SR_OK);
+    double v;
+    CHECK(t, sr_paint_parameter(&eval, 0.5, 1.5, &v));
+    CHECK(t, v == 1.0);
+    CHECK_NEAR(t, gray(&eval, 0.5, 1.5), 0.0, 0.0);
+    sr_paint_free(&ramp);
 }
 
 static void background_fill(sr_test_ctx *t) {

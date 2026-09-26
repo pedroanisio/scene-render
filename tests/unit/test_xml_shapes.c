@@ -476,6 +476,23 @@ static void runtime_limits(sr_test_ctx *t) {
         if (sink) fclose(sink);
         sr_scene_free(&scene);
     }
+    /* The same check applies on the deformation (local grid) path. */
+    xml = "<scene version=\"1.1\"><project width=\"32\" height=\"24\" "
+        "fps=\"4\" duration=\"1\"/><composition><shape id=\"a\" shape=\"star\" "
+        "width=\"8\" height=\"8\" scaleX=\"1e200\"><deform><modifier "
+        "type=\"wave\" amount=\"0\" frequency=\"1\"/></deform></shape>"
+        "</composition></scene>";
+    CHECK_INT(t, st_load(t, "scale-deform.xml", xml, &scene, NULL), SR_OK);
+    if (scene.root) {
+        sink = tmpfile();
+        sr_diag_init(&diag, "scale", sink);
+        sr_compositor_init(&compositor, 1);
+        CHECK_INT(t, sr_compositor_render(&compositor, &scene, 0.0, &frame, &diag),
+                  SR_ERR_RENDER);
+        sr_compositor_free(&compositor);
+        if (sink) fclose(sink);
+        sr_scene_free(&scene);
+    }
     /* Direct-C preparation rejects malformed extended storage. */
     SrScene direct;
     sr_scene_init(&direct);

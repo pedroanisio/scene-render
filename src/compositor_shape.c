@@ -234,12 +234,15 @@ SrStatus sr_shape_raster_build(const SrShapeInput *in, SrShapeRaster *out) {
     if (!(in->width > 0.0) || !(in->height > 0.0) || !isfinite(in->width) ||
         !isfinite(in->height))
         return SR_OK;                     /* nothing to draw, as legacy shapes */
-    double scale = in->local_grid ? 1.0 : max_scale(in->world);
-    if (!isfinite(scale) || !isfinite(in->world.m02) || !isfinite(in->world.m12) ||
-        scale > SR_MAX_SHAPE_COORDINATE)
+    /* The world transform is validated even when a deformation grid
+     * flattens at scale 1. */
+    double world_scale = max_scale(in->world);
+    if (!isfinite(world_scale) || !isfinite(in->world.m02) ||
+        !isfinite(in->world.m12) || world_scale > SR_MAX_SHAPE_COORDINATE)
         return fail(in, "shape", "node transform must be finite with scale "
                                  "within 1e9");
-    if (!(scale > 0.0)) return SR_OK;     /* zero scale: nothing visible */
+    if (!(world_scale > 0.0)) return SR_OK;   /* zero scale: nothing visible */
+    double scale = in->local_grid ? 1.0 : world_scale;
     /* Colours and paints. */
     if (fill_paint || stroke_paint) {
         out->evals = sr_composite_alloc(resources, 2, sizeof(SrPaintEval), 0);

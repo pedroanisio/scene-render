@@ -286,8 +286,11 @@ static bool dash_range(SrPolySet *out, const ContourScratch *s, double from,
         *emitted + (size_t)estimate > SR_MAX_DASH_PIECES)
         return sr_polyset_fail(out, SR_ERR_RENDER,
                                "dash pattern exceeds 1048576 pieces");
-    double phase = from + params->dash_offset;
-    phase -= floor(phase / period) * period;
+    /* Exact remainders of each term, then one positive reduction. */
+    double phase = fmod(from, period) + fmod(params->dash_offset, period);
+    phase = fmod(phase, period);
+    if (phase < 0.0) phase += period;
+    if (!(phase >= 0.0 && phase < period)) phase = 0.0;
     size_t index = 0;
     while (index + 1 < n && phase >= params->dash[index]) {
         /* A zero-length dash exactly at the start is still drawn. */
