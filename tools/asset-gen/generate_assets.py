@@ -925,7 +925,14 @@ class Runner:
 # ------------------------------------------------------------- manifests
 
 
-def write_manifest(root, assets, scene_path):
+def manifest_path(root, spec_path):
+    """One manifest per spec: specs may share an output root."""
+    stem = os.path.splitext(os.path.basename(spec_path))[0]
+    stem = stem[:-5] if stem.endswith(".spec") else stem
+    return os.path.join(root, stem + ".manifest.json")
+
+
+def write_manifest(root, assets, scene_path, spec_path):
     files = []
     for a in assets:
         for p in a.outputs():
@@ -937,7 +944,7 @@ def write_manifest(root, assets, scene_path):
         files.append({"path": scene_rel, "bytes": os.path.getsize(scene_path), "sha256": sha256_file(scene_path)})
     files.sort(key=lambda f: f["path"])
     manifest = {"scene": scene_rel, "file_count": len(files), "files": files}
-    path = os.path.join(root, "asset_manifest.json")
+    path = manifest_path(root, spec_path)
     atomic_write(path, json.dumps(manifest, indent=2).encode() + b"\n")
     return path
 
@@ -954,14 +961,15 @@ def pin_scene(scene_path, out_path, assets):
         if not os.path.exists(p):
             continue
         digest = sha256_file(p)
-        m = re.search(r'<(image|audio|video)\b[^>]*?\bid="%s"[^>]*?/?>' % re.escape(a.id), text, re.S)
+        m = re.search(r'<(image|audio|video|generated)\b[^>]*?\bid="%s"[^>]*?/?>' % re.escape(a.id), text, re.S)
         if not m:
             continue
         tag = m.group(0)
-        if re.search(r'\bsha256="', tag):
-            new = re.sub(r'\bsha256="[0-9a-f]*"', 'sha256="%s"' % digest, tag)
+        attr = "cacheSha256" if m.group(1) == "generated" else "sha256"   # generated assets pin their cache
+        if re.search(r'\b%s="' % attr, tag):
+            new = re.sub(r'\b%s="[0-9a-f]*"' % attr, '%s="%s"' % (attr, digest), tag)
         else:
-            new = re.sub(r'(\bid="%s")' % re.escape(a.id), r'\1 sha256="%s"' % digest, tag, count=1)
+            new = re.sub(r'(\bid="%s")' % re.escape(a.id), r'\1 %s="%s"' % (attr, digest), tag, count=1)
         text = text[:m.start()] + new + text[m.end():]
         pinned += 1
     atomic_write(out_path, text.encode("utf-8"))
@@ -1024,6 +1032,8 @@ def main(argv=None):
     ap.add_argument("--timeout", type=float, default=300.0, help="seconds per API request")
     ap.add_argument("--retries", type=int, default=6, help="SDK retries on 429/5xx/connection errors")
     ap.add_argument("--pin-scene", metavar="OUT", help="write a copy of the scene with sha256 on each asset")
+    ap.add_argument("--pin-available", action="store_true",
+                    help="with --pin-scene: pin the assets that exist even while external ones are missing")
     ap.add_argument("--env-file", default=".env",
                     help="dotenv file for OPENAI_API_KEY and related variables (default ./.env when present)")
     args = ap.parse_args(argv)
@@ -1081,10 +1091,11 @@ def main(argv=None):
     runner = Runner(spec, selected, root, provider, args)
     runner.by_id = by_id                                # references may point outside --only
     results = runner.run(args.jobs)
-    manifest = write_manifest(root, assets, scene if scene and os.path.exists(scene) else None)
+    manifest = write_manifest(root, assets, scene if scene and os.path.exists(scene) else None, args.spec)
     log("manifest: %s (%d API calls made)" % (manifest, runner.calls))
     states = [r["state"] for r in results.values()]
-    incomplete = [r["id"] for r in results.values() if r["state"] in ("failed", "skipped", "stopped", "missing")]
+    blocking = ("failed", "skipped", "stopped") if args.pin_available else ("failed", "skipped", "stopped", "missing")
+    incomplete = [r["id"] for r in results.values() if r["state"] in blocking]
     if args.pin_scene and scene:
         if incomplete:
             log("not pinning: %d asset(s) incomplete (%s); rerun to finish, then pin"
