@@ -30,6 +30,11 @@ typedef struct {
 SrStatus sr_xml_schema_check(const char *data, size_t size, const char *name,
                              SrDiagnostics *diag, SrSchemaDeferral *deferral);
 
+/* Same checks, optionally listing every unsupported construct. */
+SrStatus sr_xml_schema_check_profile(const char *data, size_t size,
+                                    const char *name, SrDiagnostics *diag,
+                                    SrSchemaDeferral *deferral, bool report_all);
+
 /* Loads the refusing loader has turned away since the process started
  * (tests: proof that nothing was fetched is that nothing was attempted, or
  * that every attempt ended here). */

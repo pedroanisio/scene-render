@@ -1,4 +1,4 @@
-/* Generated from schema/scene-v1.xsd at configure time. Do not edit. */
+/* Generated from schema/scene-render-1.1.xsd at configure time. Do not edit. */
 #include "schema_data.h"
 
 const unsigned char sr_schema_xsd[] = {@SR_XSD_BYTES@ 0x00};

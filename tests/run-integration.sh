@@ -77,7 +77,7 @@ if command -v xmllint >/dev/null 2>&1; then
     IFS='
 '
     # shellcheck disable=SC2086
-    xmllint --noout --schema "$root/schema/scene-v1.xsd" $xsd_files
+    xmllint --noout --schema "$root/schema/scene-render-1.1.xsd" $xsd_files
     IFS=$old_ifs
     echo "XSD validation passed"
 else

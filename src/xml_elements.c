@@ -110,9 +110,24 @@ bool sr_xml_parse_node_common(ParseContext *ctx, const char *element,
                            &node->transform.rotation_x.base) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "rotationY",
                            &node->transform.rotation_y.base)) return false;
-    if (sr_xml_attr(attrs, "depth") || sr_xml_attr(attrs, "rotationX") ||
-        sr_xml_attr(attrs, "rotationY"))
-        node->card = true;
+    const char *three_d = sr_xml_attr(attrs, "threeD");
+    if (three_d && !sr_parse_bool(three_d, &node->card)) {
+        sr_xml_fail(ctx, element, "threeD", "expected true or false");
+        return false;
+    }
+    if (sr_xml_attr(attrs, "depth") && sr_xml_attr(attrs, "zDepth")) {
+        sr_xml_fail(ctx, element, "zDepth", "depth and zDepth are mutually exclusive");
+        return false;
+    }
+    if (!sr_xml_parse_double_attr(ctx, element, attrs, "zDepth",
+                                  &node->transform.z.base)) return false;
+    bool depth_attributes = sr_xml_attr(attrs, "depth") ||
+        sr_xml_attr(attrs, "zDepth") || sr_xml_attr(attrs, "rotationX") ||
+        sr_xml_attr(attrs, "rotationY");
+    if (depth_attributes && ctx->scene->format_version < 11) node->card = true;
+    if (depth_attributes && !node->card)
+        sr_diag_warning(ctx->diag, node->source_line, element, "threeD",
+                        "depth rotations and zDepth require threeD=\"true\" in 1.1");
     if (node->opacity.base < 0.0 || node->opacity.base > 1.0) {
         sr_xml_fail(ctx, element, "opacity", "expected a number in [0,1]");
         return false;
@@ -384,8 +399,12 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
     if ((p->kind == E_GROUP || p->kind == E_LAYER || p->kind == E_PARTICLES) &&
         p->node && anim &&
         (strcmp(property, "depth") == 0 || strcmp(property, "rotation.x") == 0 ||
-         strcmp(property, "rotation.y") == 0))
-        p->node->card = true;
+         strcmp(property, "rotation.y") == 0)) {
+        if (ctx->scene->format_version < 11) p->node->card = true;
+        else if (!p->node->card)
+            sr_diag_warning(ctx->diag, sr_xml_line(ctx), "animate", "property",
+                            "depth animation requires threeD=\"true\" in 1.1");
+    }
     if (p->kind == E_MASK && p->mask) {
         if (strcmp(property, "x") == 0) anim = &p->mask->x;
         else if (strcmp(property, "y") == 0) anim = &p->mask->y;

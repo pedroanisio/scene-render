@@ -53,7 +53,7 @@ pkg_check_modules(TEXT REQUIRED IMPORTED_TARGET
 pkg_check_modules(LIBXML2 REQUIRED IMPORTED_TARGET libxml-2.0>=2.9.14)
 
 # Embed the XSD so the schema the loader enforces is the schema we ship.
-set(SR_XSD ${CMAKE_CURRENT_SOURCE_DIR}/schema/scene-v1.xsd)
+set(SR_XSD ${CMAKE_CURRENT_SOURCE_DIR}/schema/scene-render-1.1.xsd)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SR_XSD})
 file(READ ${SR_XSD} SR_XSD_HEX HEX)
 string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," SR_XSD_BYTES "${SR_XSD_HEX}")
@@ -97,6 +97,7 @@ set(SCENE_RENDER_SOURCES
     src/xml_visual.c
     src/xml_physics.c
     src/xml_schema.c
+    src/xml_capabilities.c
     src/cli_args.c
     ${CMAKE_CURRENT_BINARY_DIR}/generated/schema_data.c)
 
@@ -116,10 +117,13 @@ sr_configure_target(scene-render)
 include(CTest)
 if(BUILD_TESTING)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME schema.capabilities
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/feature-matrix.py --check)
     add_test(NAME schema.compatibility
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/schema-compatibility.py)
-    set(SR_UNIT_SUITES timeline geometry compositor color vector mesh scene xml
+    set(SR_UNIT_SUITES timeline geometry compositor color vector mesh scene xml profile
                        camera physics blend group raster mask path image
                        encode encode_faults audio video
                        fx anim_color particles deform shadow text args resume
@@ -213,9 +217,26 @@ if(BUILD_TESTING)
     add_test(NAME cli.version COMMAND scene-render --version)
     set_tests_properties(cli.version PROPERTIES PASS_REGULAR_EXPRESSION
         "^scene-render ${PROJECT_VERSION}\n$")
+    add_test(NAME cli.schema_matches
+        COMMAND ${CMAKE_COMMAND} -DCMD=${SR_CLI}
+                -DSCHEMA=${CMAKE_CURRENT_SOURCE_DIR}/schema/scene-render-1.1.xsd
+                -P ${SR_CLI_DIR}/schema_matches.cmake)
     add_test(NAME cli.print_schema COMMAND scene-render --print-schema)
     set_tests_properties(cli.print_schema PROPERTIES PASS_REGULAR_EXPRESSION
         "<xs:schema .*</xs:schema>")
+    sr_cli_exit(report_unsupported_requires_validate 2
+        "--report-unsupported requires --validate"
+        --scene ${SR_MEDIA} --report-unsupported)
+    sr_cli_exit(report_unsupported_duplicate 2
+        "--report-unsupported given more than once"
+        --scene ${SR_MEDIA} --validate --report-unsupported --report-unsupported)
+    sr_cli_exit(report_unsupported 3
+        "unsupported in this build: <shape condition=.*unsupported in this build: <effect type="
+        --scene ${SR_CLI_DIR}/unsupported.xml --validate --report-unsupported)
+    sr_cli_exit(validate_positional_profile 0 "valid:"
+        --validate ${CMAKE_CURRENT_SOURCE_DIR}/tests/data-profile.xml)
+    sr_cli_exit(validate_profile 0 "valid:"
+        --scene ${CMAKE_CURRENT_SOURCE_DIR}/tests/data-profile.xml --validate)
     sr_cli_exit(unknown_option 2 "unknown option '--frobnicate'" --frobnicate)
     sr_cli_exit(validate_ok 0 "valid: [^\n]*data-media.xml \\(2 assets, 2 top-level layers\\)"
                 --validate --scene ${SR_MEDIA})

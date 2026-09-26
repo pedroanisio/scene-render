@@ -499,6 +499,7 @@ typedef struct {
 } SrPhysicsWorld;
 
 typedef struct {
+    unsigned format_version;   /* 10 or 11; zero for in-memory scenes means 1.0 */
     char *source_path;
     char *base_dir;
     uint64_t source_hash;       /* FNV-1a 64 of the exact bytes the XML loader

@@ -1,0 +1,17 @@
+<scene version="1.1">
+  <project width="64" height="32" fps="4" duration="1"/>
+  <composition>
+    <camera id="cam" z="-100" zoom="100" aperture="0"/>
+    <group id="g">
+      <shape id="a" shape="rect" width="10" height="10" threeD="true" zDepth="10"/>
+      <shape id="b" shape="ellipse" width="10" height="10" threeD="true" depth="20"/>
+      <shape id="c" shape="rect" width="10" height="10" threeD="false" x="30"/>
+      <shape id="d" shape="rect" width="10" height="10" threeD="true" x="40">
+        <animate property="rotation.y"><key time="0" value="0"/><key time="1" value="40"/></animate>
+      </shape>
+      <particleEmitter id="p" rate="5" x="50">
+        <animate property="color"><key time="0" value="#FFFFFF"/><key time="1" value="#FF0000"/></animate>
+      </particleEmitter>
+    </group>
+  </composition>
+</scene>

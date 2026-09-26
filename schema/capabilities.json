@@ -1,0 +1,57 @@
+{
+  "description": "Implemented additions to the complete 1.0 profile. Missing additions are unsupported, including explicitly authored default values. New enumerations on existing attributes require 1.1; new attributes remain legal in both versions.",
+  "elements": [],
+  "attributes": [
+    "groupType/@threeD",
+    "groupType/@zDepth",
+    "layerType/@threeD",
+    "layerType/@zDepth",
+    "shapeType/@threeD",
+    "shapeType/@zDepth",
+    "particleEmitterType/@threeD",
+    "particleEmitterType/@zDepth"
+  ],
+  "values": {},
+  "forms": {},
+  "occurrence_limits": {
+    "scene/output": 1
+  },
+  "vocabularies": {
+    "rigidBodyType/@shape": {
+      "box": {
+        "version": 10,
+        "implemented": true
+      },
+      "circle": {
+        "version": 10,
+        "implemented": true
+      },
+      "capsule": {
+        "version": 11,
+        "implemented": false
+      },
+      "polygon": {
+        "version": 11,
+        "implemented": false
+      },
+      "convex-hull": {
+        "version": 11,
+        "implemented": false
+      },
+      "path": {
+        "version": 11,
+        "implemented": false
+      }
+    },
+    "modifierType/@axis": {
+      "x": {
+        "version": 10,
+        "implemented": true
+      },
+      "y": {
+        "version": 10,
+        "implemented": true
+      }
+    }
+  }
+}

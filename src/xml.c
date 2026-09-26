@@ -199,9 +199,9 @@ static void XMLCALL on_start(void *user, const XML_Char *name,
             SR_XML_FAIL_RETURN(ctx, name, NULL, "document root must be <scene>");
         if (!sr_xml_attrs_allowed(ctx, name, attrs, allowed, 1)) return;
         const char *version = sr_xml_required(ctx, name, attrs, "version");
-        if (!version || strcmp(version, "1.0") != 0)
-            SR_XML_FAIL_RETURN(ctx, name, "version",
-                               "this build accepts scene version 1.0");
+        if (!version || (strcmp(version, "1.0") && strcmp(version, "1.1")))
+            SR_XML_FAIL_RETURN(ctx, name, "version", "expected version 1.0 or 1.1");
+        ctx->scene->format_version = !strcmp(version, "1.1") ? 11 : 10;
         sr_xml_push(ctx, (ParseFrame){.kind = E_SCENE,
                     .node = ctx->scene->root, .curve = SR_CURVE_LINEAR}, name);
         return;
@@ -210,6 +210,10 @@ static void XMLCALL on_start(void *user, const XML_Char *name,
         const ElementDispatch *entry = &dispatch[i];
         if (!(entry->parents & P(parent->kind)) || strcmp(name, entry->name))
             continue;
+        if (!entry->implemented)
+            SR_XML_FAIL_RETURN(ctx, name, NULL, "unsupported in this build");
+        if (entry->minimum_version > ctx->scene->format_version)
+            SR_XML_FAIL_RETURN(ctx, name, NULL, "requires version=\"1.1\"");
         bool *seen = entry->seen_offset
             ? (bool *)((char *)ctx + entry->seen_offset) : NULL;
         if (seen && *seen) break;
@@ -370,6 +374,11 @@ static size_t find_declaration(const char *data, size_t size) {
 
 SrStatus sr_scene_load_xml(const char *path, SrScene *scene,
                            SrDiagnostics *diag) {
+    return sr_scene_load_xml_report(path, scene, diag, false);
+}
+
+SrStatus sr_scene_load_xml_report(const char *path, SrScene *scene,
+                                 SrDiagnostics *diag, bool report_unsupported) {
     if (!path || !scene || !diag) return SR_ERR_ARGUMENT;
     sr_scene_init(scene);
     scene->source_path = sr_strdup(path);
@@ -398,7 +407,8 @@ SrStatus sr_scene_load_xml(const char *path, SrScene *scene,
         return SR_ERR_XML;
     }
     SrSchemaDeferral deferral;
-    status = sr_xml_schema_check(data, size, path, diag, &deferral);
+    status = sr_xml_schema_check_profile(data, size, path, diag, &deferral,
+                                         report_unsupported);
     if (status != SR_OK) {
         free(data);
         sr_scene_free(scene);

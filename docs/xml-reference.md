@@ -1,6 +1,6 @@
 # XML scene reference
 
-The normative grammar is `schema/scene-v1.xsd`. It is embedded in the binary
+The normative grammar is `schema/scene-render-1.1.xsd`. It is embedded in the binary
 at build time (`scene-render --print-schema` prints it) and every scene is
 validated against it with libxml2 before loading: no network access, no
 external entities or DTD loading, no entity substitution. Each schema error
@@ -13,9 +13,62 @@ reference types, 2:1 panorama checks, clip bounds, and supported-codec
 behavior. Its diagnostics use the XML source line plus element and attribute
 whenever Expat exposes them.
 
+## Versions and implemented profile
+
+Both `version="1.0"` and `version="1.1"` are accepted. The complete 1.1
+contract is embedded once; `schema/scene-v1.xsd` is retained as a compatibility
+fixture. The loader checks schema validity first, then the capability table,
+then constructs and resolves the scene. No Schematron engine is used.
+
+The [generated feature matrix](feature-matrix.md) lists every element context,
+attribute, enumeration and extended value form. An entry is enabled only when
+its implementation is available. Explicit unsupported attributes are rejected
+even when their values equal the schema default. For example:
+
+```text
+scene.xml:12: error: <effect> @type: unsupported in this build: <effect type="vhs">
+```
+
+`scene-render --scene scene.xml --validate --report-unsupported` lists all
+unsupported uses, including children of unsupported elements, and exits 3.
+Without the reporting flag, the capability check stops at the first use.
+Invalid XML or XSD violations also exit 3 but retain their distinct diagnostics.
+The reporting flag requires `--validate`; duplicate flags are usage errors.
+The scene path may be positional or supplied with `--scene`, exactly once.
+Checks use document order and do not load assets or evaluate expressions.
+
+Version 1.0 cannot use new elements or new values of an existing enumeration.
+Those uses report `requires version="1.1"`. New attributes on existing elements
+are permitted in both versions, including their own enumerated vocabularies;
+they still must be implemented. The schema itself describes both versions, so
+this cross-field rule is enforced by the C capability pass.
+
+Depth-card semantics are versioned. In 1.0, `depth`, `zDepth`, `rotationX`, or
+`rotationY`, including animated depth rotations, implicitly enables a card.
+In 1.1, a node must explicitly set `threeD="true"`; depth attributes or animations
+without it produce a warning and leave the node in the 2D draw path. `threeD`
+is a boolean, default false. `zDepth` is a finite pixel length along the camera's
+z axis, default zero. `depth` remains its deprecated alias; specifying both
+is an error. Camera `zoom` and `aperture` retain their pixel units and old
+arithmetic. Physical `fStop` remains unsupported until the camera batch.
+
+```xml
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="1"/>
+  <composition>
+    <camera id="cam" z="-300" zoom="300"/>
+    <shape id="card" shape="rect" width="80" height="60"
+           threeD="true" zDepth="40" rotationY="15"/>
+  </composition>
+</scene>
+```
+
+These rules add no mutable render state or random choices. Loader input remains
+bounded by 64 MiB and 256 element levels; all diagnostics retain source lines.
+
 ## Document order
 
-The XSD sequence is:
+The 1.0 subset of the root sequence is:
 
 ```xml
 <scene version="1.0">

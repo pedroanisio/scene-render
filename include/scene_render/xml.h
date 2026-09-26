@@ -11,7 +11,12 @@
 SrStatus sr_scene_load_xml(const char *path, SrScene *scene,
                            SrDiagnostics *diag);
 
-/* The XSD embedded at build time (schema/scene-v1.xsd), `*length` bytes. */
+/* Reports all unsupported constructs when report_unsupported is true.
+ * Failed loads free their partial scene exactly as sr_scene_load_xml does. */
+SrStatus sr_scene_load_xml_report(const char *path, SrScene *scene,
+                                 SrDiagnostics *diag, bool report_unsupported);
+
+/* The XSD embedded at build time (schema/scene-render-1.1.xsd), `*length` bytes. */
 const char *sr_scene_schema_text(size_t *length);
 
 #endif

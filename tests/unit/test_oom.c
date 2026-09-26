@@ -292,7 +292,7 @@ static void load_reset(void *opaque) {
     c->loaded = false;
 }
 
-static void check_load(sr_test_ctx *t, const char *relative) {
+static void check_load(sr_test_ctx *t, const char *relative, long minimum) {
     LoadContext c = {.path = sr_test_data_path(relative)};
     char path[1024];
     snprintf(path, sizeof(path), "%s", c.path);
@@ -300,12 +300,13 @@ static void check_load(sr_test_ctx *t, const char *relative) {
     const OomSpec spec = {relative, load_op, load_reset, NULL, NULL,
                           {SR_ERR_MEMORY, SR_ERR_XML}};
     long n = replay_until_success(t, &spec, &c);
-    CHECK(t, n > 50);
+    CHECK(t, n > minimum);
 }
 
 static void xml_load_survives_allocation_failures(sr_test_ctx *t) {
-    check_load(t, "tests/data-oom.xml");
-    check_load(t, "examples/feature-parity.xml");
+    check_load(t, "tests/data-oom.xml", 50);
+    check_load(t, "tests/data-profile.xml", 25);
+    check_load(t, "examples/feature-parity.xml", 50);
 }
 
 /* ----------------------------------------------------------------- assets */

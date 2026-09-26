@@ -110,7 +110,7 @@ pthreads are the platform layer.
 
 # Validate against the embedded XSD, or print it.
 ./build/scene-render --scene examples/keyframe-curves.xml --validate
-./build/scene-render --print-schema > scene-v1.xsd
+./build/scene-render --print-schema > scene-render-1.1.xsd
 ```
 
 Run `scene-render --help` for the complete CLI. Argument parsing lives in
@@ -122,7 +122,8 @@ orchestrates.
 | `--scene FILE` | Scene XML; required except with `--help`, `--version`, `--print-schema` |
 | `--output FILE` | Override `output/@path`; the container follows the extension (`.mp4`, `.mov`, `.mkv`) |
 | `--validate` | XSD + semantic validation only; prints `valid: FILE (N assets, M top-level layers)` |
-| `--print-schema` | Print the XSD embedded in the binary (`schema/scene-v1.xsd` at build time) |
+| `--report-unsupported` | With `--validate`, list every unsupported construct |
+| `--print-schema` | Print the XSD embedded in the binary (`schema/scene-render-1.1.xsd` at build time) |
 | `--frame-range A:B` | Render the half-open range `[A,B)` (`A < B`; `B` is clamped to the scene) |
 | `--preview-frame N`, `--frame N` | Write one 8-bit preview frame and print `<path> <16-hex FNV-1a 64>` over its RGBA bytes |
 | `--preview-out FILE` | Preview path; default `frame-NNNNNN.png` in the working directory; `.png` writes PNG, anything else PPM |
@@ -261,7 +262,7 @@ contains 300 3840×2160 H.264 frames and 10.000000 seconds of stereo AAC.
 
 See [`docs/architecture.md`](docs/architecture.md),
 [`docs/xml-reference.md`](docs/xml-reference.md), and the normative
-[`schema/scene-v1.xsd`](schema/scene-v1.xsd).
+[`schema/scene-render-1.1.xsd`](schema/scene-render-1.1.xsd).
 
 ## Architecture
 
