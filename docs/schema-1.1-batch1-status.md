@@ -37,7 +37,7 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | B1-2 relative lengths and parent-box evaluation | Implemented, enabled, reviewed and verified | Batch merge |
 | B1-2 style tokens | Implemented, reviewed and verified | Batch merge |
 | B1-2 metadata/container tags | Implemented, reviewed and verified | Batch merge |
-| B1-3 blend modes, skew, mattes, masks, adjustment nodes | 22 new color modes, skew, structural preparation and bounded path parsing verified | Dependency graphs and surface/work accounting, dissolve/parent operators, advanced masks, mattes, adjustment nodes and remaining goldens |
+| B1-3 blend modes, skew, mattes, masks, adjustment nodes | 22 new color modes, skew, structural preparation, bounded paths and shared types verified | Dependency graphs and surface/work accounting, dissolve/parent operators, advanced masks, mattes, adjustment nodes and remaining goldens |
 | B1-4 shapes, stroke styles, trims, vector constructors | Pending | Geometry/arc lengths/coverage, all listed styles and shapes, golden |
 | B1-4 gradients and paints | Pending | Coordinates, focal/aspect/spread/rotation/stops, interpolation, dither, every paint host, golden |
 | B1-5 markers/beatGrid/snapping, group timing, sequence, names/tags | Pending | Generated ID resolution, timing tests and sequence-markers golden |
@@ -468,7 +468,29 @@ The strict 2% performance gate passes: clear +1.9%, compositor +0.0% and total
 image hashes and the owner baseline remain unchanged. See
 `docs/reviews/b1-compositing-mask-path.md`.
 
-Remaining B1-3 work includes shared compositor interfaces, live surface/work
-accounting, mask integration and rendering, remaining blend operators,
+Remaining B1-3 work includes live surface/work accounting, mask integration
+and rendering, remaining blend operators,
 dependency capture graphs, mattes and adjustments. B1-4 through B1-6 and the
 batch completion audit also remain required.
+
+
+## Shared compositor types
+
+Six existing frame-local types now live in `src/compositor_internal.h`, with
+unchanged fields, order and qualifiers. The shared header supplies its own
+dependencies and documents borrowed storage, queue lifetime and root lighting
+handoff. No function or arithmetic changed, and the rebuilt Release executable
+is byte-for-byte identical to `a41f3c3`.
+
+Read-only review found no issues. SDK Release, ASan/UBSan and coverage each
+pass 78/78 CTests; coverage is 92.22% / 76.86%, with floors 90.20% / 74.80%
+unchanged. The oracle matches 309 previews, three encodes and two rejections.
+The strict 2% baseline gate passes: clear -4.1%, compositor -13.8%, total
+-12.2%; the noisy measurements do not establish a speedup for an identical
+executable. No golden, integration hash or baseline changed. See
+`docs/reviews/b1-compositor-types.md`.
+
+The follow-on resource audit in `docs/reviews/b1-compositing-resources.md`
+identifies actual allocation/work sites and cache-history, thread-count and
+queue-borrowing traps. It is an implementation checklist; the shared live
+budget and advanced masks remain incomplete, along with the other B1 work.

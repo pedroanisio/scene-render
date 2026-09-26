@@ -10,6 +10,7 @@
 #include "scene_render/physics.h"
 #include "length_frame.h"
 #include "compositing_internal.h"
+#include "compositor_internal.h"
 
 #include <float.h>
 #include <limits.h>
@@ -22,51 +23,10 @@
  * never changes results. */
 #define SR_PARALLEL_MIN_PIXELS 16384
 
-typedef struct {
-    int x0, y0, x1, y1;
-} SrClip;
-
-/* Mask geometry evaluated at the current time. */
-typedef struct {
-    SrMaskType type;
-    bool invert;
-    double x, y, width, height, radius;
-} SrMaskEval;
-
-/* The masks of one node, evaluated in that node's inverse world transform.
- * Links chain outward so coverage is the product over the whole chain. */
-typedef struct SrMaskLink {
-    const SrMaskEval *masks;
-    size_t count;
-    SrMat3 inverse;
-    double aa;
-    const struct SrMaskLink *parent;
-} SrMaskLink;
-
-typedef struct {
-    float *px;
-    uint32_t width, height;
-    SrGroupBuffer *buffer;  /* non-NULL when drawing into an isolated group */
-} SrTarget;
-
 /* SR_OP_CLEAR zeroes its bounds (a pooled buffer's previous dirty rect). */
 typedef enum {
     SR_OP_IMAGE, SR_OP_SHAPE, SR_OP_BUFFER, SR_OP_DISC, SR_OP_CLEAR
 } SrOpKind;
-
-/* Per-sample depth test of a card composite (SR_OP_BUFFER): a sample is
- * visible where the card plane lies inside [near, far] and not behind the
- * shared depth buffer; `write` stores the card depth where the composited
- * alpha reaches 0.5 (only for composites straight into the frame). The
- * pose is held by value so a queued composite does not point into its
- * caller's stack frame (the view outlives every queued op: the queue is
- * flushed before a render returns). */
-typedef struct {
-    SrDepthBuffer *depth;       /* NULL: near/far clipping only */
-    const SrCardView *view;
-    SrCardPose pose;
-    bool write;
-} SrCardTest;
 
 /* Grid deformations evaluated once per draw: the offsets of every
  * mesh-warp modifier (NULL entries for the other modifier types) and of
@@ -115,19 +75,6 @@ struct SrOpQueue {
     uint32_t *order;          /* band dealing order, see sr_queue_flush */
     size_t order_capacity;
 };
-
-typedef struct {
-    SrCompositor *compositor;
-    SrScene *scene;
-    SrDiagnostics *diag;
-    double time;
-    const SrCardView *view;     /* camera state for depth cards */
-    const SrNode *card_node;    /* card being drawn as content: normal blend */
-    double particle_scale;      /* particle radius factor inside cards */
-    SrLightingPass *lighting;   /* 3D objects still to interleave, or NULL */
-    const SrLengthFrame *lengths; /* borrowed, including inside card buffers */
-    bool skewed;                /* this transform chain uses nonzero skew */
-} SrDrawContext;
 
 /* A card's own blend applies when its buffer is composited, not inside. */
 static SrBlendMode sr_node_blend(const SrDrawContext *context,

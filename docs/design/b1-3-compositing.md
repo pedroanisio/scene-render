@@ -36,6 +36,12 @@ types and callbacks live in `compositor_internal.h`. Loader parsing and
 reference resolution use a separate `xml_compositing.c` module. Prepared
 paths belong to `vector_path.c`; no second SVG parser is introduced.
 
+The neutral shared header now contains the existing clip, evaluated mask,
+mask link, target, card depth-test and draw-context values with unchanged
+layouts. Its comments state borrowed storage and copied-context lifetimes.
+Queue records and deformation implementation remain local to `compositor.c`;
+new module callbacks will be introduced with their actual consumers.
+
 The scene owns authored strings, tracks, prepared paths and a resolved
 compositing plan. Render contexts own evaluated parameters, surfaces, private
 depth and per-frame caches. Queued operations borrow immutable surfaces whose
