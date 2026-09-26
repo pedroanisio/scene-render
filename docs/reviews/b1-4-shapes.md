@@ -153,3 +153,39 @@ orders of magnitude.
   untouched.
 - The background gradient's per-pixel cost could be reduced (transfer LUTs)
   if it matters; not required by the contract.
+
+## Merges with main (B1-6 `e059102`, B1-5 `d29c3d2`)
+
+`a228f17` merges B1-6 outputs (and owner docs `e93a478`); `0ed16ae` merges
+B1-5 timeline. Both are merge commits; conflicts were resolved keeping both
+sides:
+
+- `Makefile` (both source sets), `src/scene.c` (includes; B1-6 output frees
+  then B1-4 paint frees), `include/scene_render/scene.h` (paints and the
+  timeline pointer), `src/xml_internal.h` (still, marker, beat-grid, paint and
+  stop element kinds), `src/xml_nodes.c` (B1-5 name/tags/startMarker/
+  endMarker common attributes with the larger allowed array B1-4 needs),
+  `tests/unit/test_golden.c` (all goldens), `docs/xml-reference.md` (both
+  sections), `tools/coverage-gate.sh` (main's higher floors, 90.80 / 76.50).
+- `schema/capabilities.json`: union of all profiles (B1-6's removed output
+  occurrence limit and B1-5's `inherits` key kept); capability data and the
+  feature matrix regenerated (`tools/feature-matrix.py --check` passes).
+- B1-5 integration notes: gradient and stop hosts are now enumerated by the
+  shared-host track resolver in `src/xml_timeline.c`, so `key/@marker` works
+  on them (project clock), and paint ids are checked against beat-grid
+  generated ids. New test `xml_shapes.key_markers_on_paint_hosts` (keys on a
+  gradient and a stop snap to a marker; a painted shape with name/tags).
+  B1-4 adds no node types; shapes get B1-5's common attributes through
+  `sr_xml_start_node`.
+
+Evidence on the merged tree `0ed16ae`:
+
+- Release CTest: 94/94, including `frame_order` (all goldens, including
+  `outputs`, `sequence-markers`, `shapes-strokes`, `gradients`), unit.golden
+  and `integration` (B1-6 outputs at 1 vs 4 threads, `tests/golden.sha256`).
+- ASan/UBSan CTest (`ASAN_OPTIONS=detect_leaks=0`): 94/94.
+- Coverage gate: 92.89% lines / 78.50% branches, above floors 90.80 / 76.50.
+- Byte oracle vs `/tmp/scene-render-b1-reference`: 309/309 previews across 42
+  scenes, 3/3 encodes, 2 expected rejections.
+- `tests/golden.sha256` and all golden references other than the two new
+  B1-4 goldens are identical to main.
