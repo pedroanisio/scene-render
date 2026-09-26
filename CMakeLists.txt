@@ -145,7 +145,7 @@ if(BUILD_TESTING)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/schema-compatibility.py)
     set(SR_UNIT_SUITES timeline length length_frame length_physics
                        curves geometry compositor color vector random
-                       mesh scene property xml xml_lengths profile styles metadata
+                       mesh scene property xml xml_lengths profile styles metadata outputs
                        camera physics blend blend_color skew compositing composite_resources
                        composite_evaluation composite_geometry composite_particles group
                        raster mask path mask_path fuzz_mask_path image
@@ -310,6 +310,20 @@ if(BUILD_TESTING)
                 --scene ${SR_MEDIA} --scene ${SR_MEDIA} --validate)
     sr_cli_exit(signed_range 2 "--frame-range expects"
                 --scene ${SR_MEDIA} --hash --frame-range "0:-1")
+    set(SR_OUTPUTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/data-outputs.xml)
+    sr_cli_exit(output_id_validate 0 "valid:"
+                --scene ${SR_OUTPUTS} --validate --output-id main,loop)
+    sr_cli_exit(output_id_unknown 2 "--output-id: no output has id 'nope'"
+                --scene ${SR_OUTPUTS} --validate --output-id main,nope)
+    sr_cli_exit(output_id_bad_list 2 "--output-id expects ID or ID,ID"
+                --scene ${SR_OUTPUTS} --validate --output-id "main,,loop")
+    sr_cli_exit(output_override_many 2 "--output needs exactly one selected output"
+                --scene ${SR_OUTPUTS} --output ${SR_CLI_TMP}/x.mp4)
+    sr_cli_exit(output_preview_many 2 "--preview-frame renders one output"
+                --scene ${SR_OUTPUTS} --output-id main,web --frame 1
+                --preview-out ${SR_CLI_TMP}/x.png)
+    sr_cli_exit(output_resume_gif 2 "--resume cannot resume the gif output 'loop'"
+                --scene ${SR_OUTPUTS} --output-id loop --resume)
     add_test(NAME cli.physics_cache COMMAND ${CMAKE_COMMAND} -DCMD=${SR_CLI}
              -DSCENE=${CMAKE_CURRENT_SOURCE_DIR}/tests/data-advanced.xml
              -DWORK=${SR_CLI_TMP}/physics -P ${SR_CLI_DIR}/physics_cache.cmake)

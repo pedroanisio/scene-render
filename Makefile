@@ -97,7 +97,7 @@ TEST_SOURCES := $(sort $(wildcard tests/unit/*.c))
 TEST_OBJECTS := $(TEST_SOURCES:tests/unit/%.c=$(BUILD)/unit/%.o)
 UNIT_SUITES := timeline length length_frame length_physics curves geometry \
 	compositor color vector mesh random \
-	scene property xml xml_lengths profile styles metadata \
+	scene property xml xml_lengths profile styles metadata outputs \
 	camera physics blend blend_color skew compositing composite_resources \
 	composite_evaluation composite_geometry composite_particles group raster mask path \
 	mask_path fuzz_mask_path image \

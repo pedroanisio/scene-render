@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<!-- Every B1-6 construct: several outputs sharing one pass (96x54 at 12 fps)
+     plus outputs in their own passes (another size, another rate), per-output
+     ranges, every added codec and container, GOP/B-frame/faststart/loop
+     options, and PNG/JPEG stills. The scene audio reaches the video
+     containers only. -->
+<scene version="1.1">
+  <project width="96" height="54" fps="12" duration="2" seed="11"
+           linearLight="false" background="#18202CFF"/>
+  <output id="main" path="../build/test-artifacts/outputs/main.mp4" codec="h264"
+          preset="ultrafast" crf="30" keyframeInterval="1" bFrames="0"
+          faststart="false">
+    <poster path="../build/test-artifacts/outputs/poster.png" format="png"
+            time="0.5"/>
+    <thumbnail path="../build/test-artifacts/outputs/thumb.jpg" width="48"
+               time="1" quality="0.8"/>
+  </output>
+  <output id="master" path="../build/test-artifacts/outputs/master.mov"
+          codec="prores" proresProfile="hq"/>
+  <output id="web" path="../build/test-artifacts/outputs/web.webm" codec="vp9"
+          preset="veryfast" crf="40" start="0.5" end="1.5"/>
+  <output id="av1" path="../build/test-artifacts/outputs/av1.mkv" codec="av1"
+          container="mkv" preset="ultrafast" crf="45" keyframeInterval="0.5"/>
+  <output id="loop" path="../build/test-artifacts/outputs/loop.gif" codec="gif"
+          width="48" height="27" fps="6" loopCount="0"/>
+  <output id="anim" path="../build/test-artifacts/outputs/anim.png" codec="apng"
+          loopCount="2" end="1"/>
+  <output id="png" path="../build/test-artifacts/outputs/png/f-%03d.png"
+          codec="png-sequence"/>
+  <output id="tiff" path="../build/test-artifacts/outputs/tiff/f-%03d.tif"
+          codec="tiff-sequence" start="1"/>
+  <output id="exr" path="../build/test-artifacts/outputs/exr/f-%03d.exr"
+          codec="exr-sequence" fps="4"/>
+  <assets>
+    <audio id="tone" src="../examples/assets/tone.wav"/>
+  </assets>
+  <composition>
+    <shape id="sky" shape="rect" x="0" y="0" width="96" height="54"
+           fill="#23405A"/>
+    <shape id="ball" shape="ellipse" x="10" y="14" width="24" height="24"
+           fill="#F2B84B">
+      <animate property="position.x">
+        <key time="0" value="4"/>
+        <key time="2" value="68"/>
+      </animate>
+    </shape>
+    <shape id="bar" shape="rect" x="0" y="44" width="96" height="10"
+           fill="#E0584A" opacity="0.8"/>
+  </composition>
+  <audioMix sampleRate="48000" channels="2">
+    <audioTrack id="toneTrack" asset="tone" clipIn="0" clipOut="2" loop="1"
+                volume="0.25" pan="0"/>
+  </audioMix>
+</scene>

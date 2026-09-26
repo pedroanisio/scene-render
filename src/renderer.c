@@ -741,8 +741,20 @@ static SrStatus sr_run_encode(SrRun *run, uint64_t first, uint64_t end) {
                              sink->plan->path);
         }
     }
-    if (status == SR_OK)
-        status = sr_run_frames(run, first, end, end - first, any_audio);
+    if (status != SR_OK) {
+        /* An output that could not be opened: the files opened before it
+         * hold no frame yet, so none is left behind. */
+        for (size_t k = 0; k < count; ++k) {
+            SrRunSink *sink = &run->sinks[k];
+            if (!sink->encoder) continue;
+            sr_encoder_destroy(sink->encoder);
+            sink->encoder = NULL;
+            if (!sr_codec_info(sink->plan->output->codec)->sequence)
+                unlink(sink->plan->path);
+        }
+        return status;
+    }
+    status = sr_run_frames(run, first, end, end - first, any_audio);
     for (size_t k = 0; k < count; ++k) {
         SrRunSink *sink = &run->sinks[k];
         if (!sink->encoder) continue;
