@@ -109,6 +109,8 @@ typedef struct {
     const SrNode *capture_source; /* source drawn as its own image, or NULL */
     size_t capture_level;       /* path index of the node being drawn */
     double capture_opacity;     /* ancestor opacity product for the source */
+    double *capture_scale;      /* receives that product at the source */
+    SrCardTest *card_defer;     /* flattened card: receives its depth test */
 } SrDrawContext;
 
 #endif

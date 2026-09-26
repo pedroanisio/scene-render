@@ -26,11 +26,12 @@ SrStatus sr_matte_frame_create(SrCompositeResources *resources, size_t count,
 void sr_matte_frame_free(SrCompositeResources *resources, SrMatteFrame *frame);
 
 /* Reduces a rendered premultiplied RGBA capture (rows of `width` pixels,
- * nonzero only inside `dirty`) into `capture`. */
+ * nonzero only inside `dirty`) into `capture`, multiplying coverage once by
+ * `scale` (the source's ancestor opacity product). */
 SrStatus sr_matte_capture_store(SrCompositeResources *resources,
                                 const SrLumaConfig *luma, const float *rgba,
                                 uint32_t width, uint32_t height, SrClip dirty,
-                                SrMatteCapture *capture);
+                                float scale, SrMatteCapture *capture);
 
 /* Matte coverage in [0,1] at receiving pixel centre (cx, cy): the capture
  * is sampled bilinearly at the composition point of that centre (through

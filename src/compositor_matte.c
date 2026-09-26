@@ -37,10 +37,10 @@ void sr_matte_frame_free(SrCompositeResources *resources, SrMatteFrame *frame) {
 SrStatus sr_matte_capture_store(SrCompositeResources *resources,
                                 const SrLumaConfig *luma, const float *rgba,
                                 uint32_t width, uint32_t height, SrClip dirty,
-                                SrMatteCapture *capture) {
+                                float scale, SrMatteCapture *capture) {
     *capture = (SrMatteCapture){.width = width, .height = height,
                                 .dirty = dirty, .rendered = true};
-    if (dirty.x1 <= dirty.x0 || dirty.y1 <= dirty.y0) return SR_OK;
+    if (dirty.x1 <= dirty.x0 || dirty.y1 <= dirty.y0 || !(scale > 0.0f)) return SR_OK;
     uint64_t pixels = (uint64_t)width * height;
     /* Allocation zeroing plus reduction of the dirty rectangle. */
     uint64_t area = (uint64_t)(dirty.x1 - dirty.x0) * (uint64_t)(dirty.y1 - dirty.y0);
@@ -53,9 +53,9 @@ SrStatus sr_matte_capture_store(SrCompositeResources *resources,
             size_t index = (size_t)y * width + (size_t)x;
             const float *px = rgba + index * 4;
             float alpha = px[3] < 0.0f ? 0.0f : px[3] > 1.0f ? 1.0f : px[3];
-            capture->coverage[index * 2] = alpha;
+            capture->coverage[index * 2] = alpha * scale;
             capture->coverage[index * 2 + 1] =
-                (float)(alpha * sr_luma_px(luma, px));
+                (float)(alpha * sr_luma_px(luma, px)) * scale;
         }
     }
     return SR_OK;
