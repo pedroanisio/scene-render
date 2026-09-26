@@ -378,7 +378,7 @@ static void loader_rejections(sr_test_ctx *t) {
         {"<output path=\"a.mp4\" codec=\"h264\"><poster path=\"p.png\" "
          "format=\"webp\"/></output>", "unsupported in this build"},
         {"<output path=\"a.mp4\" codec=\"h264\"><poster path=\"p.png\" "
-         "marker=\"m\"/></output>", "unsupported in this build"},
+         "marker=\"m\"/></output>", "unknown marker id 'm'"},
         {"<output path=\"a.mp4\" codec=\"h264\" container=\"mxf\"/>",
          "unsupported in this build"},
         {"<output path=\"a.mp4\" codec=\"dnxhr\"/>", "unsupported in this build"},
