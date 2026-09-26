@@ -139,7 +139,7 @@ subpaths.
   is not used to rescale path coordinates.
 
 Generated curves are flattened in raster space with tolerance
-τ = 0.05 px. For an arc of radius ρ and angle θ,
+τ = 0.01 px. For an arc of radius ρ and angle θ,
 `n = ceil(θ / (2 acos(1 - τ/(sρ))))`; for a cubic with control points P,
 Wang's bound `n = ceil(sqrt(0.75 M s / τ))`,
 `M = max|P_i - 2P_{i+1} + P_{i+2}|` (Sederberg, *CAGD notes* §10.6). s is the

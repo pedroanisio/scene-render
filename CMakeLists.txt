@@ -68,6 +68,9 @@ set(SCENE_RENDER_SOURCES
     src/color.c
     src/raster.c
     src/vector_path.c
+    src/vector_shape.c
+    src/vector_stroke.c
+    src/paint.c
     src/mesh.c
     src/gpu.c
     src/spatial.c
@@ -137,7 +140,7 @@ if(BUILD_TESTING)
     add_test(NAME schema.compatibility
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/schema-compatibility.py)
-    set(SR_UNIT_SUITES timeline length length_frame length_physics
+    set(SR_UNIT_SUITES timeline shapes paint length length_frame length_physics
                        curves geometry compositor color vector random
                        mesh scene property xml xml_lengths profile styles metadata
                        camera physics blend blend_color skew compositing composite_resources

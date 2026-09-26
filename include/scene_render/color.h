@@ -12,6 +12,11 @@ const char *sr_color_space_name(SrColorSpace space);
 double sr_color_decode(double value, SrColorSpace space);
 double sr_color_encode(double value, SrColorSpace space);
 
+/* Linear-light RGB matrix from `source` primaries to `target` primaries
+ * (via XYZ D65; identity rows for equal gamuts up to rounding). */
+void sr_color_gamut_matrix(SrColorSpace source, SrColorSpace target,
+                           double out[3][3]);
+
 /* Blend space: the project working gamut, linear-light when
  * project.linear_light, otherwise the working space's transfer-encoded
  * values. Pixels are float premultiplied RGBA. */

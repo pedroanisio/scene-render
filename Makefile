@@ -76,7 +76,7 @@ P7_UNIT_SUITES := golden oom
 
 CORE_SOURCES := src/common.c src/card.c src/parallel.c src/random.c \
 	src/color.c src/raster.c \
-	src/vector_path.c src/mesh.c src/gpu.c src/spatial.c src/diagnostics.c \
+	src/vector_path.c src/vector_shape.c src/vector_stroke.c src/paint.c src/mesh.c src/gpu.c src/spatial.c src/diagnostics.c \
 	src/timeline.c src/length.c src/length_frame.c src/curves.c src/property.c src/scene.c \
 	src/assets.c src/text.c src/procedural.c src/audio.c src/compositor.c \
 	src/compositing.c src/compositor_resources.c src/compositor_evaluation.c \
@@ -95,7 +95,7 @@ CORE_OBJECTS := $(CORE_SOURCES:src/%.c=$(BUILD)/%.o) $(BUILD)/schema_data.o
 APP_OBJECT := $(BUILD)/main.o
 TEST_SOURCES := $(sort $(wildcard tests/unit/*.c))
 TEST_OBJECTS := $(TEST_SOURCES:tests/unit/%.c=$(BUILD)/unit/%.o)
-UNIT_SUITES := timeline length length_frame length_physics curves geometry \
+UNIT_SUITES := timeline shapes paint length length_frame length_physics curves geometry \
 	compositor color vector mesh random \
 	scene property xml xml_lengths profile styles metadata \
 	camera physics blend blend_color skew compositing composite_resources \

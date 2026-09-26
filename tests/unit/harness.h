@@ -68,6 +68,8 @@ const char *sr_test_data_path(const char *relative);
 const char *sr_test_tmp_path(const char *name);
 
 extern const sr_test_case sr_tests_timeline[];
+extern const sr_test_case sr_tests_shapes[];
+extern const sr_test_case sr_tests_paint[];
 extern const sr_test_case sr_tests_random[];
 extern const sr_test_case sr_tests_blend_color[];
 extern const sr_test_case sr_tests_skew[];
