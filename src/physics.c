@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "scene_render/physics.h"
+#include "length_frame.h"
 
 #include <errno.h>
 #include <math.h>
@@ -13,6 +14,8 @@ typedef struct {
     SrNode *node;
     double x, y, angle, vx, vy, angular_velocity;
     double inverse_mass;
+    bool has_geometry;
+    double width, height;
 } BodyState;
 
 typedef struct {
@@ -28,6 +31,7 @@ typedef struct {
     uint32_t rows, cols;
     size_t count;
     double width, height;       /* local box spanned by the grid */
+    double x, y, anchor_x, anchor_y; /* resolved base pose */
     double *rest;               /* 2 * count local rest coordinates */
     double *px, *py, *vx, *vy;  /* physics-space state */
     bool *pinned;
@@ -43,8 +47,9 @@ typedef struct {
 /* Bump whenever the integrator changes so caches written by an older
  * simulation are re-simulated instead of replayed (2: exponential damping;
  * 3: soft-body grids, OBB contacts, pins, vortex and animated fields;
- * 4: extended animation curves, extrapolation and resolved clocks). */
-#define PHYSICS_CACHE_VERSION 4u
+ * 4: extended animation curves, extrapolation and resolved clocks;
+ * 5: relative base geometry and prepared constraint rest lengths). */
+#define PHYSICS_CACHE_VERSION 5u
 
 typedef struct {
     char magic[8];
@@ -67,10 +72,12 @@ static bool collect(SrNode *node, BodyState **states, size_t *count,
             *states = grown; *capacity = next;
         }
         SrRigidBody *body = &node->body;
-        (*states)[*count] = (BodyState){node, node->transform.x.base,
-            node->transform.y.base, node->transform.rotation.base,
-            body->velocity_x, body->velocity_y, body->angular_velocity,
-            body->type == SR_BODY_DYNAMIC && body->mass > 0.0 ?
+        (*states)[*count] = (BodyState){.node = node,
+            .x = node->transform.x.base, .y = node->transform.y.base,
+            .angle = node->transform.rotation.base,
+            .vx = body->velocity_x, .vy = body->velocity_y,
+            .angular_velocity = body->angular_velocity,
+            .inverse_mass = body->type == SR_BODY_DYNAMIC && body->mass > 0.0 ?
                 1.0 / body->mass : 0.0};
         ++*count;
     }
@@ -180,8 +187,36 @@ static uint64_t hash_transform(uint64_t hash, const SrNode *node) {
     return hash_double(hash, node->transform.anchor_y.base);
 }
 
+/* Include authored units as well as resolved boxes: changing a scope or a
+ * unit invalidates the policy signature even when pixels happen to agree. */
+static uint64_t hash_geometry(uint64_t hash, const SrLengthFrame *frame) {
+    if (!frame) return hash;
+    for (size_t i = 0; i < frame->node_count; ++i) {
+        const SrNodeGeometry *g = &frame->nodes[i];
+        const SrNode *node = g->node;
+        if (!node) continue;
+        uint64_t order = i;
+        hash = hash_bytes(hash, &order, sizeof(order));
+        const int32_t units[] = {node->type, node->transform.x.unit, node->transform.y.unit,
+            node->transform.anchor_x.unit, node->transform.anchor_y.unit,
+            node->shape_width_unit, node->shape_height_unit,
+            node->group_width.unit, node->group_height.unit};
+        hash = hash_bytes(hash, units, sizeof(units));
+        const uint8_t flags[] = {node->group_width_set, node->group_height_set};
+        hash = hash_bytes(hash, flags, sizeof(flags));
+        const double values[] = {node->transform.x.base, node->transform.y.base,
+            node->transform.anchor_x.base, node->transform.anchor_y.base,
+            node->shape_width, node->shape_height,
+            node->group_width.value, node->group_height.value,
+            g->x, g->y, g->anchor_x, g->anchor_y, g->box.width, g->box.height};
+        hash = hash_bytes(hash, values, sizeof(values));
+    }
+    return hash;
+}
+
 static uint64_t signature(const SrScene *scene, const BodyState *states,
-                          size_t count, SrNode *const *softs, size_t soft_count) {
+                          size_t count, SrNode *const *softs, size_t soft_count,
+                          const SrLengthFrame *geometry, const double *rest_lengths) {
     uint64_t hash = UINT64_C(1469598103934665603);
     uint32_t version = PHYSICS_CACHE_VERSION;
     hash = hash_bytes(hash, SR_VERSION, strlen(SR_VERSION));
@@ -194,6 +229,7 @@ static uint64_t signature(const SrScene *scene, const BodyState *states,
     hash = hash_double(hash, scene->physics.gravity_x);
     hash = hash_double(hash, scene->physics.gravity_y);
     hash = hash_bytes(hash, &scene->physics.enabled, sizeof(bool));
+    hash = hash_geometry(hash, geometry);
     for (size_t i = 0; i < count; ++i) {
         const SrNode *node = states[i].node;
         const SrRigidBody *body = &node->body;
@@ -238,6 +274,11 @@ static uint64_t signature(const SrScene *scene, const BodyState *states,
                                  constraint->damping, constraint->x, constraint->y,
                                  constraint->rigid ? 1.0 : 0.0};
         hash = hash_bytes(hash, values, sizeof(values));
+        if (rest_lengths) {
+            uint8_t explicit_rest = constraint->rest_length_set;
+            hash = hash_bytes(hash, &explicit_rest, sizeof(explicit_rest));
+            hash = hash_double(hash, rest_lengths[i]);
+        }
     }
     uint64_t softs_count = soft_count;
     hash = hash_bytes(hash, &softs_count, sizeof(softs_count));
@@ -406,8 +447,12 @@ static void save_cache(const SrScene *scene, BodyState *states, size_t count,
 
 /* ---- rigid bodies ---------------------------------------------------------- */
 
-static void dimensions(const SrNode *node, double *width, double *height) {
-    if (node->type == SR_NODE_MEDIA && node->asset) {
+static void dimensions(const BodyState *state, double *width, double *height) {
+    const SrNode *node = state->node;
+    if (state->has_geometry) {
+        *width = state->width;
+        *height = state->height;
+    } else if (node->type == SR_NODE_MEDIA && node->asset) {
         *width = node->asset->width * fabs(node->transform.scale_x.base);
         *height = node->asset->height * fabs(node->transform.scale_y.base);
     } else {
@@ -423,7 +468,8 @@ static BodyState *state_for(BodyState *states, size_t count, const SrNode *node)
     return NULL;
 }
 
-static void apply_constraints(SrScene *scene, BodyState *states, size_t count) {
+static void apply_constraints(SrScene *scene, BodyState *states, size_t count,
+                               const double *rest_lengths) {
     double dt = scene->physics.fixed_step;
     for (size_t i = 0; i < scene->physics.constraint_count; ++i) {
         SrConstraint *constraint = &scene->physics.constraints[i];
@@ -443,7 +489,8 @@ static void apply_constraints(SrScene *scene, BodyState *states, size_t count) {
         double length = hypot(dx, dy); if (length < 1e-9) continue;
         double nx = dx / length, ny = dy / length;
         double relative = (bvx-a->vx)*nx + (bvy-a->vy)*ny;
-        double force = (length-constraint->rest_length)*constraint->stiffness +
+        double rest = rest_lengths ? rest_lengths[i] : constraint->rest_length;
+        double force = (length-rest)*constraint->stiffness +
                        relative*constraint->damping;
         if (a->inverse_mass) { a->vx += force*nx*a->inverse_mass*dt;
                                a->vy += force*ny*a->inverse_mass*dt; }
@@ -455,7 +502,8 @@ static void apply_constraints(SrScene *scene, BodyState *states, size_t count) {
 /* Rigid pins: the body is projected onto the circle of radius restLength
  * around the anchor (onto the anchor when it is 0) and loses its velocity
  * along the pin. */
-static void project_pins(SrScene *scene, BodyState *states, size_t count) {
+static void project_pins(SrScene *scene, BodyState *states, size_t count,
+                          const double *rest_lengths) {
     for (size_t i = 0; i < scene->physics.constraint_count; ++i) {
         SrConstraint *constraint = &scene->physics.constraints[i];
         if (constraint->type != SR_CONSTRAINT_PIN || !constraint->rigid) continue;
@@ -463,14 +511,15 @@ static void project_pins(SrScene *scene, BodyState *states, size_t count) {
         if (!a || !a->inverse_mass) continue;
         double dx = a->x - constraint->x, dy = a->y - constraint->y;
         double length = hypot(dx, dy);
-        if (constraint->rest_length <= 0.0 || length < 1e-12) {
+        double rest = rest_lengths ? rest_lengths[i] : constraint->rest_length;
+        if (rest <= 0.0 || length < 1e-12) {
             a->x = constraint->x; a->y = constraint->y;
             a->vx = a->vy = 0.0;
             continue;
         }
         double nx = dx / length, ny = dy / length;
-        a->x = constraint->x + nx * constraint->rest_length;
-        a->y = constraint->y + ny * constraint->rest_length;
+        a->x = constraint->x + nx * rest;
+        a->y = constraint->y + ny * rest;
         double radial = a->vx * nx + a->vy * ny;
         a->vx -= radial * nx;
         a->vy -= radial * ny;
@@ -541,7 +590,7 @@ static bool box_box(const BodyState *a, double aw, double ah,
 
 static void collide(BodyState *a, BodyState *b) {
     if (!a->inverse_mass && !b->inverse_mass) return;
-    double aw, ah, bw, bh; dimensions(a->node,&aw,&ah); dimensions(b->node,&bw,&bh);
+    double aw, ah, bw, bh; dimensions(a,&aw,&ah); dimensions(b,&bw,&bh);
     double nx = 0, ny = 0, penetration = 0;
     bool a_circle = a->node->body.collider == SR_COLLIDER_CIRCLE;
     bool b_circle = b->node->body.collider == SR_COLLIDER_CIRCLE;
@@ -605,9 +654,9 @@ static void acceleration(const SrScene *scene, double x, double y, double t,
 }
 
 static void simulate_step(SrScene *scene, BodyState *states, size_t count,
-                          double t) {
+                          double t, const double *rest_lengths) {
     double dt=scene->physics.fixed_step;
-    apply_constraints(scene,states,count);
+    apply_constraints(scene,states,count,rest_lengths);
     for(size_t i=0;i<count;++i){BodyState *state=&states[i];
         if (state->node->body.type == SR_BODY_KINEMATIC) {
             state->x += state->vx * dt;
@@ -627,7 +676,7 @@ static void simulate_step(SrScene *scene, BodyState *states, size_t count,
         state->angular_velocity*=exp(-state->node->body.angular_damping*dt);
         state->x+=state->vx*dt;state->y+=state->vy*dt;state->angle+=state->angular_velocity*dt;}
     for(size_t iteration=0;iteration<3;++iteration)for(size_t i=0;i<count;++i)for(size_t j=i+1;j<count;++j)collide(&states[i],&states[j]);
-    for (int pass = 0; pass < 4; ++pass) project_pins(scene, states, count);
+    for (int pass = 0; pass < 4; ++pass) project_pins(scene, states, count, rest_lengths);
 }
 
 /* ---- soft bodies ----------------------------------------------------------- */
@@ -636,15 +685,14 @@ static void simulate_step(SrScene *scene, BodyState *states, size_t count,
  * has one, else the static transform. */
 static SrMat3 soft_pose(const SoftState *soft) {
     const SrNode *node = soft->node;
-    double x = node->transform.x.base, y = node->transform.y.base;
+    double x = soft->x, y = soft->y;
     double angle = node->transform.rotation.base;
     if (soft->rigid) { x = soft->rigid->x; y = soft->rigid->y; angle = soft->rigid->angle; }
     SrMat3 matrix = sr_mat_translate(x, y);
     matrix = sr_mat_multiply(matrix, sr_mat_rotate(angle * SR_PI / 180.0));
     matrix = sr_mat_multiply(matrix, sr_mat_scale(node->transform.scale_x.base,
                                                   node->transform.scale_y.base));
-    return sr_mat_multiply(matrix, sr_mat_translate(-node->transform.anchor_x.base,
-                                                    -node->transform.anchor_y.base));
+    return sr_mat_multiply(matrix, sr_mat_translate(-soft->anchor_x, -soft->anchor_y));
 }
 
 static bool pinned_node(SrPinMode pin, uint32_t r, uint32_t c, uint32_t rows,
@@ -675,10 +723,18 @@ static double ring_area(const SoftState *soft) {
 }
 
 static bool soft_init(const SrScene *scene, SoftState *soft, SrNode *node,
-                      BodyState *rigid) {
+                      BodyState *rigid, const SrNodeGeometry *geometry) {
     *soft = (SoftState){.node = node, .rigid = rigid,
                         .rows = node->soft_body.rows, .cols = node->soft_body.cols};
     local_box(node, &soft->width, &soft->height);
+    soft->x = geometry ? geometry->x : node->transform.x.base;
+    soft->y = geometry ? geometry->y : node->transform.y.base;
+    soft->anchor_x = geometry ? geometry->anchor_x : node->transform.anchor_x.base;
+    soft->anchor_y = geometry ? geometry->anchor_y : node->transform.anchor_y.base;
+    if (geometry) {
+        soft->width = geometry->box.width;
+        soft->height = geometry->box.height;
+    }
     size_t n = soft->count = (size_t)soft->rows * soft->cols;
     soft->rest = sr_alloc(2 * n * sizeof(double));
     soft->px = sr_alloc(n * sizeof(double)); soft->py = sr_alloc(n * sizeof(double));
@@ -886,54 +942,128 @@ static bool states_finite(BodyState *states, size_t count,
     return true;
 }
 
+static void prepare_body_geometry(BodyState *states, size_t count,
+                                   const SrLengthFrame *frame) {
+    for (size_t i = 0; i < count; ++i) {
+        BodyState *state = &states[i];
+        const SrNode *node = state->node;
+        const SrNodeGeometry *g = sr_length_node(frame, node);
+        state->x = g->x;
+        state->y = g->y;
+        if (node->type == SR_NODE_SHAPE || (node->type == SR_NODE_MEDIA && node->asset)) {
+            state->has_geometry = true;
+            state->width = g->box.width * fabs(node->transform.scale_x.base);
+            state->height = g->box.height * fabs(node->transform.scale_y.base);
+        }
+    }
+}
+
+static const SrNodeGeometry *constraint_geometry(const SrLengthFrame *frame,
+                                                  const SrNode *node) {
+    if (!node || node->order >= frame->node_count) return NULL;
+    const SrNodeGeometry *g = &frame->nodes[node->order];
+    return g->node == node ? g : NULL;
+}
+
+static SrStatus prepare_rest_lengths(const SrScene *scene, const SrLengthFrame *frame,
+                                      double **rest_lengths, SrDiagnostics *diag) {
+    size_t count = scene->physics.constraint_count;
+    if (count > SR_MAX_LENGTH_CONSTRAINTS) {
+        if (diag)
+            sr_diag_error(diag, 0, "constraint", NULL,
+                          "relative length constraint limit is 65536");
+        return SR_ERR_RENDER;
+    }
+    if (!count) return SR_OK;
+    double *rest = *rest_lengths = sr_alloc(count * sizeof(*rest));
+    if (!rest) return SR_ERR_MEMORY;
+    for (size_t i = 0; i < count; ++i) {
+        const SrConstraint *c = &scene->physics.constraints[i];
+        rest[i] = c->rest_length;
+        bool automatic = c->type == SR_CONSTRAINT_PIN ? !c->rest_length_set
+                                                       : c->rest_length == 0.0;
+        if (!automatic) continue;
+        const SrNodeGeometry *a = constraint_geometry(frame, c->a);
+        const SrNodeGeometry *b = constraint_geometry(frame, c->b);
+        if (!a || (c->type != SR_CONSTRAINT_PIN && !b)) {
+            if (diag)
+                sr_diag_error(diag, c->source_line, "constraint", "a/b",
+                              "constraint references a node outside the prepared geometry");
+            return SR_ERR_RENDER;
+        }
+        rest[i] = c->type == SR_CONSTRAINT_PIN
+            ? hypot(a->x - c->x, a->y - c->y) : hypot(b->x - a->x, b->y - a->y);
+        if (!isfinite(rest[i])) {
+            if (diag)
+                sr_diag_error(diag, c->source_line, "constraint", "restLength",
+                              "implicit rest length is non-finite");
+            return SR_ERR_RENDER;
+        }
+    }
+    return SR_OK;
+}
+
 SrStatus sr_physics_prepare(SrScene *scene, SrDiagnostics *diag) {
     BodyState *states = NULL;
     size_t count = 0, capacity = 0;
     SrNode **softs = NULL;
     size_t soft_count = 0, soft_capacity = 0;
+    SoftState *soft_states = NULL;
+    SrLengthFrame length_frame = {0};
+    const SrLengthFrame *geometry = scene->has_relative_lengths ? &length_frame : NULL;
+    double *rest_lengths = NULL;
+    SrStatus status = SR_OK;
     scene->physics.steps_simulated = 0;
     scene->physics.cache_hit = false;
+    if (geometry) {
+        status = sr_length_frame_prepare(&length_frame, scene, 0, true, diag);
+        if (status != SR_OK) goto done;
+    }
     if (scene->physics.enabled &&
         !collect(scene->root, &states, &count, &capacity)) {
-        free(states); return SR_ERR_MEMORY;
+        status = SR_ERR_MEMORY;
+        goto done;
     }
     if (!collect_soft(scene->root, &softs, &soft_count, &soft_capacity)) {
-        free(states); free(softs); return SR_ERR_MEMORY;
+        status = SR_ERR_MEMORY;
+        goto done;
     }
-    if (!count && !soft_count) { free(states); free(softs); return SR_OK; }
+    if (!count && !soft_count) goto done;
+    if (geometry) {
+        prepare_body_geometry(states, count, geometry);
+        if (count) status = prepare_rest_lengths(scene, geometry, &rest_lengths, diag);
+        if (status != SR_OK) goto done;
+    }
     double exact_samples = ceil(scene->project.duration / scene->physics.fixed_step) + 1.0;
     if (!isfinite(exact_samples) ||
         exact_samples > (double)(SIZE_MAX / sizeof(SrPhysicsSample) / 512)) {
         sr_diag_error(diag, 0, "physics", "fixedStep", "physics sample cache is too large");
-        free(states); free(softs); return SR_ERR_MEMORY;
+        status = SR_ERR_MEMORY;
+        goto done;
     }
     uint64_t samples = (uint64_t)exact_samples;
-    uint64_t hash = signature(scene, states, count, softs, soft_count);
+    uint64_t hash = signature(scene, states, count, softs, soft_count, geometry, rest_lengths);
     if (load_cache(scene, states, count, softs, soft_count, samples, hash, diag)) {
         scene->physics.cache_hit = true;
         sr_diag_info(diag, "loaded physics cache");
-        free(states); free(softs); return SR_OK;
+        goto done;
     }
-    SoftState *soft_states = soft_count ? sr_alloc(soft_count * sizeof(*soft_states)) : NULL;
+    soft_states = soft_count ? sr_alloc(soft_count * sizeof(*soft_states)) : NULL;
     bool ok = !soft_count || soft_states;
     for (size_t i = 0; ok && i < soft_count; ++i)
         ok = soft_init(scene, &soft_states[i], softs[i],
-                       state_for(states, count, softs[i]));
+                       state_for(states, count, softs[i]), sr_length_node(geometry, softs[i]));
     if (ok) ok = allocate_samples(states, count, softs, soft_count, samples);
     if (!ok) {
-        release_samples(states, count, softs, soft_count);
-        for (size_t i = 0; soft_states && i < soft_count; ++i) soft_free(&soft_states[i]);
-        free(soft_states); free(states); free(softs);
-        return SR_ERR_MEMORY;
+        status = SR_ERR_MEMORY;
+        goto fail_samples;
     }
     double dt = scene->physics.fixed_step;
     for (uint64_t s = 0; s < samples; ++s) {
         if (!states_finite(states, count, soft_states, soft_count,
                            (double)s * dt, diag)) {
-            release_samples(states, count, softs, soft_count);
-            for (size_t i = 0; i < soft_count; ++i) soft_free(&soft_states[i]);
-            free(soft_states); free(states); free(softs);
-            return SR_ERR_RENDER;
+            status = SR_ERR_RENDER;
+            goto fail_samples;
         }
         for (size_t i = 0; i < count; ++i) {
             SrPhysicsSample *sample = &states[i].node->physics_samples[s];
@@ -949,17 +1079,15 @@ SrStatus sr_physics_prepare(SrScene *scene, SrDiagnostics *diag) {
         }
         if (s + 1 < samples) {
             double t = (double)s * dt;
-            if (count) simulate_step(scene, states, count, t);
+            if (count) simulate_step(scene, states, count, t, rest_lengths);
             bool stepped = true;
             for (size_t i = 0; i < soft_count && stepped; ++i)
                 stepped = soft_step(scene, &soft_states[i], t);
             if (!stepped) {
                 sr_diag_error(diag, 0, "softBody", NULL,
                               "out of memory while simulating soft bodies");
-                release_samples(states, count, softs, soft_count);
-                for (size_t i = 0; i < soft_count; ++i) soft_free(&soft_states[i]);
-                free(soft_states); free(states); free(softs);
-                return SR_ERR_MEMORY;
+                status = SR_ERR_MEMORY;
+                goto fail_samples;
             }
         }
     }
@@ -967,9 +1095,18 @@ SrStatus sr_physics_prepare(SrScene *scene, SrDiagnostics *diag) {
     scene->physics.steps_simulated = samples - 1;
     sr_diag_info(diag, "simulated %llu fixed physics steps",
                  (unsigned long long)(samples - 1));
-    for (size_t i = 0; i < soft_count; ++i) soft_free(&soft_states[i]);
-    free(soft_states); free(states); free(softs);
-    return SR_OK;
+    goto done;
+
+fail_samples:
+    release_samples(states, count, softs, soft_count);
+done:
+    for (size_t i = 0; soft_states && i < soft_count; ++i) soft_free(&soft_states[i]);
+    free(soft_states);
+    free(states);
+    free(softs);
+    free(rest_lengths);
+    sr_length_frame_free(&length_frame);
+    return status;
 }
 
 static void sample_span(const SrScene *scene, size_t sample_count, double time,

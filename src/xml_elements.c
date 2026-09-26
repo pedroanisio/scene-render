@@ -90,18 +90,18 @@ bool sr_xml_parse_node_common(ParseContext *ctx, const char *element,
         return false;
     }
     if (!sr_xml_parse_double_attr(ctx, element, attrs, "opacity", &node->opacity.base) ||
-        !sr_xml_parse_double_attr(ctx, element, attrs, "x", &node->transform.x.base) ||
-        !sr_xml_parse_double_attr(ctx, element, attrs, "y", &node->transform.y.base) ||
+        !sr_xml_anim_length_attr(ctx, element, attrs, "x", &node->transform.x, false) ||
+        !sr_xml_anim_length_attr(ctx, element, attrs, "y", &node->transform.y, false) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "rotation",
                            &node->transform.rotation.base) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "scaleX",
                            &node->transform.scale_x.base) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "scaleY",
                            &node->transform.scale_y.base) ||
-        !sr_xml_parse_double_attr(ctx, element, attrs, "anchorX",
-                           &node->transform.anchor_x.base) ||
-        !sr_xml_parse_double_attr(ctx, element, attrs, "anchorY",
-                           &node->transform.anchor_y.base) ||
+        !sr_xml_anim_length_attr(ctx, element, attrs, "anchorX",
+                                  &node->transform.anchor_x, false) ||
+        !sr_xml_anim_length_attr(ctx, element, attrs, "anchorY",
+                                  &node->transform.anchor_y, false) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "start", &node->start_time) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "end", &node->end_time) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "depth",
@@ -355,16 +355,16 @@ void sr_xml_start_mask(ParseContext *ctx, const XML_Char **attrs) {
     ParseFrame *p = sr_xml_parent(ctx);
     const char *type = sr_xml_required(ctx, "mask", attrs, "type");
     if (!p || !p->node || !type) return;
-    SrMask mask = {0};
+    SrMask mask = {.source_line = sr_xml_line(ctx)};
     if (!strcmp(type,"rect")) mask.type=SR_MASK_RECT;
     else if (!strcmp(type,"ellipse")) mask.type=SR_MASK_ELLIPSE;
     else if (!strcmp(type,"rounded-rect")) mask.type=SR_MASK_ROUNDED_RECT;
     else SR_XML_FAIL_RETURN(ctx,"mask","type",
                             "expected rect, ellipse, or rounded-rect");
-    if (!sr_xml_parse_double_attr(ctx, "mask", attrs, "x", &mask.x.base) ||
-        !sr_xml_parse_double_attr(ctx, "mask", attrs, "y", &mask.y.base) ||
-        !sr_xml_parse_double_attr(ctx, "mask", attrs, "width", &mask.width.base) ||
-        !sr_xml_parse_double_attr(ctx, "mask", attrs, "height", &mask.height.base) ||
+    if (!sr_xml_anim_length_attr(ctx, "mask", attrs, "x", &mask.x, false) ||
+        !sr_xml_anim_length_attr(ctx, "mask", attrs, "y", &mask.y, false) ||
+        !sr_xml_anim_length_attr(ctx, "mask", attrs, "width", &mask.width, true) ||
+        !sr_xml_anim_length_attr(ctx, "mask", attrs, "height", &mask.height, true) ||
         !sr_xml_parse_double_attr(ctx, "mask", attrs, "radius", &mask.radius.base)) return;
     if (mask.width.base <= 0.0 || mask.height.base <= 0.0)
         SR_XML_FAIL_RETURN(ctx, "mask", "width/height", "expected positive dimensions");
@@ -478,8 +478,18 @@ void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs) {
         if (!sr_xml_parse_color(ctx, "key", "value", value_text, &color_value))
             SR_XML_FAIL_RETURN(ctx, "key", "value",
                                "expected a color (#RRGGBB, #RRGGBBAA, or r,g,b[,a])");
-    } else if (!sr_parse_double(value_text, &key.value))
+    } else if (p->property->flags & (SR_PROPERTY_LENGTH_X | SR_PROPERTY_LENGTH_Y)) {
+        SrLength length;
+        if (!sr_parse_length(value_text, &length))
+            SR_XML_FAIL_RETURN(ctx, "key", "value",
+                               "expected a finite length; relative spelling limit "
+                               "128 bytes, coefficient limit 1e6");
+        key.value = length.value;
+        key.unit = length.unit;
+        if (key.unit != SR_LENGTH_PIXELS) ctx->scene->has_relative_lengths = true;
+    } else if (!sr_parse_double(value_text, &key.value)) {
         SR_XML_FAIL_RETURN(ctx, "key", "value", "expected a finite decimal number");
+    }
     if (p->anim && !sr_property_key_valid(p->property, key.value))
         SR_XML_FAIL_RETURN(ctx, "key", "value", p->property->bounds_error);
     const char *curve = sr_xml_attr(attrs, "interpolation");

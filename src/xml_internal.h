@@ -120,6 +120,12 @@ bool sr_xml_animation_options(ParseContext *ctx, const XML_Char **attrs,
                                ParseFrame *host, SrAnimValue *value,
                                SrAnimColor *color);
 bool sr_xml_key_options(ParseContext *ctx, const XML_Char **attrs, SrKeyframe *key);
+bool sr_xml_length_attr(ParseContext *ctx, const char *element,
+                         const XML_Char **attrs, const char *attribute,
+                         double *value, SrLengthUnit *unit, bool positive);
+bool sr_xml_anim_length_attr(ParseContext *ctx, const char *element,
+                              const XML_Char **attrs, const char *attribute,
+                              SrAnimValue *value, bool positive);
 bool sr_xml_finish_animation(ParseContext *ctx, ParseFrame *frame);
 
 #define SR_XML_FAIL_RETURN(context, element, attribute, message)               \

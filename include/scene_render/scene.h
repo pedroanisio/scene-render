@@ -178,6 +178,7 @@ typedef struct {
     SrAnimValue width;
     SrAnimValue height;
     SrAnimValue radius;
+    size_t source_line;
 } SrMask;
 
 typedef struct {
@@ -260,6 +261,9 @@ typedef struct SrNode {
     SrShapeType shape;
     double shape_width;
     double shape_height;
+    SrLengthUnit shape_width_unit, shape_height_unit;
+    SrLength group_width, group_height;
+    bool group_width_set, group_height_set;
     SrAnimColor fill;
     SrAnimColor stroke;
     double stroke_width;
@@ -558,6 +562,7 @@ typedef struct {
     size_t effect_capacity;
     SrPhysicsWorld physics;
     bool has_cards;             /* some node is a depth card (see card.h) */
+    bool has_relative_lengths;  /* authored geometry needs per-frame resolution */
     struct SrFontCache *font_cache; /* text fonts opened while loading assets */
 } SrScene;
 

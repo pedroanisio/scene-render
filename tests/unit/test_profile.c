@@ -96,6 +96,38 @@ static void version_and_capability_diagnostics(sr_test_ctx *t) {
     }
 }
 
+static void relative_length_gates(sr_test_ctx *t) {
+    static const char *const lengths[] = {"25%", "25vw", "25vh", "25vmin", "25vmax"};
+    static const char *const properties[] = {"position.x", "opacity", "fill"};
+    for (unsigned version = 10; version <= 11; ++version) {
+        const char *expected = version == 10 ? "requires version=\"1.1\""
+                                             : "unsupported in this build";
+        for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); ++i) {
+            char xml[1024], message[2048];
+            SrScene scene;
+            snprintf(xml, sizeof(xml), "<scene version=\"1.%u\">" PROJECT
+                     "<composition>" SHAPE "x=\"%s\"/></composition></scene>",
+                     version - 10, lengths[i]);
+            SrStatus status = report_load(t, xml, false, &scene, message, sizeof(message));
+            CHECK_INT(t, status, SR_ERR_XML);
+            CHECK_CONTAINS(t, message, expected);
+            CHECK_CONTAINS(t, message, "<shape> @x:");
+            if (status == SR_OK) sr_scene_free(&scene);
+            for (size_t j = 0; j < sizeof(properties) / sizeof(properties[0]); ++j) {
+                snprintf(xml, sizeof(xml), "<scene version=\"1.%u\">" PROJECT
+                         "<composition>" SHAPE "><animate property=\"%s\">"
+                         "<key time=\"0\" value=\"%s\"/></animate></shape>"
+                         "</composition></scene>", version - 10, properties[j], lengths[i]);
+                status = report_load(t, xml, false, &scene, message, sizeof(message));
+                CHECK_INT(t, status, SR_ERR_XML);
+                CHECK_CONTAINS(t, message, expected);
+                CHECK_CONTAINS(t, message, "<key> @value:");
+                if (status == SR_OK) sr_scene_free(&scene);
+            }
+        }
+    }
+}
+
 static void report_every_use(sr_test_ctx *t) {
     const char *xml = "<scene version=\"1.1\">\n" PROJECT
         "\n<composition>" SHAPE "condition=\"true\">\n"
@@ -196,6 +228,7 @@ const sr_test_case sr_tests_profile[] = {
     {"versioned_depth_cards", versioned_depth_cards},
     {"depth_animation_gate", depth_animation_gate},
     {"version_and_capability_diagnostics", version_and_capability_diagnostics},
+    {"relative_length_gates", relative_length_gates},
     {"report_every_use", report_every_use},
     {"unsupported_defaults_and_root_sections", unsupported_defaults_and_root_sections},
     {"fixed_and_semantic_vocabularies", fixed_and_semantic_vocabularies},

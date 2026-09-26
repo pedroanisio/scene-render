@@ -7,12 +7,12 @@
 # usage: tools/coverage-gate.sh [BUILD_DIR]     (default: build/coverage)
 #
 # Floors retain about 2 percentage points of headroom below the B1-2
-# typed length core (91.64% lines / 74.84% branches, GCC 15.2, SDK 25.08).
+# relative geometry (91.78% lines / 75.50% branches, GCC 15.2, SDK 25.08).
 # Raise them when coverage improves; lowering them needs a reason in the
 # commit message.
 set -eu
-LINE_FLOOR=89.60
-BRANCH_FLOOR=72.80
+LINE_FLOOR=89.75
+BRANCH_FLOOR=73.50
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 build=${1:-$root/build/coverage}

@@ -88,14 +88,16 @@ def inventory(old, new, profile):
                 rows.append(('value', host, name, value, state['version'],
                              state['implemented']))
             forms = []
-            if attr.get('type') in ('lengthType', 'positiveLengthType'):
+            if (attr.get('type') in ('lengthType', 'positiveLengthType') or
+                    key == 'keyType/@value'):
                 forms += ['relative-length']
             if attr.get('type') in ('colorType', 'paintType') or key == 'keyType/@value':
                 forms += ['token']
             if attr.get('type') == 'paintType' or key == 'keyType/@value':
                 forms += ['paint-reference']
             for form in forms:
-                rows.append(('form', host, name, form, 10,
+                minimum = 11 if form == 'relative-length' and previous is not None else 10
+                rows.append(('form', host, name, form, minimum,
                              form in profile['forms'].get(key, [])))
     keys = {kind: set() for kind in ('element', 'attribute', 'value', 'form')}
     for kind, host, name, value, _, _ in rows:

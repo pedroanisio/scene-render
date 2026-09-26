@@ -177,6 +177,14 @@ uses the precomputed physics pose where it already overrides node position;
 length tracks do not override that pose. Soft grids retain their initial rest
 geometry if a later evaluation box changes, matching their prepare-time role.
 
+Base preparation first indexes the bounded tree and marks the rigid/soft
+consumers and their ancestor box scopes. It evaluates positions only for
+those consumers, anchors only for soft bodies, and dimensions only when a
+body or descendant needs the box. Unrelated nodes and ignored nonadditive
+bases must not cause preparation failures. Drawing likewise skips position
+track evaluation when an existing physics pose supplies x/y, while still
+evaluating anchors. Full-render regressions cover both ignored-value paths.
+
 Implicit constraint rest lengths must also use resolved base positions.
 The loader currently derives them from authored x/y coefficients; for scenes
 using relative values, defer that derivation to preparation-owned constraint

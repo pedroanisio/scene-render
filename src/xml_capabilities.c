@@ -86,14 +86,17 @@ static bool check_row(const Capability *row, unsigned version,
 static const char *value_form(const Capability *attribute, const char *value) {
     if (!attribute) return NULL;
     const char *type = attribute->value;
-    if (!strcmp(type, "lengthType") || !strcmp(type, "positiveLengthType")) {
+    bool key = !strcmp(attribute->host, "keyType") && !strcmp(attribute->name, "value");
+    if (!strcmp(type, "lengthType") || !strcmp(type, "positiveLengthType") || key) {
         size_t size = strlen(value);
-        if (size && (value[size - 1] == '%' ||
-                     (size >= 2 && strchr("whnx", value[size - 1]))))
-            return "relative-length";
+        static const char *const suffixes[] = {"%", "vw", "vh", "vmin", "vmax"};
+        for (size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); ++i) {
+            size_t suffix_size = strlen(suffixes[i]);
+            if (size >= suffix_size && !strcmp(value + size - suffix_size, suffixes[i]))
+                return "relative-length";
+        }
     }
-    if (!strcmp(type, "colorType") || !strcmp(type, "paintType") ||
-        (!strcmp(attribute->host, "keyType") && !strcmp(attribute->name, "value"))) {
+    if (!strcmp(type, "colorType") || !strcmp(type, "paintType") || key) {
         if (!strncmp(value, "var(", 4)) return "token";
         if (!strncmp(value, "url(", 4)) return "paint-reference";
     }

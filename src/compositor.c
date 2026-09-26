@@ -8,6 +8,7 @@
 #include "scene_render/parallel.h"
 #include "scene_render/particles.h"
 #include "scene_render/physics.h"
+#include "length_frame.h"
 
 #include <float.h>
 #include <limits.h>
@@ -123,6 +124,7 @@ typedef struct {
     const SrNode *card_node;    /* card being drawn as content: normal blend */
     double particle_scale;      /* particle radius factor inside cards */
     SrLightingPass *lighting;   /* 3D objects still to interleave, or NULL */
+    const SrLengthFrame *lengths; /* borrowed, including inside card buffers */
 } SrDrawContext;
 
 /* A card's own blend applies when its buffer is composited, not inside. */
@@ -193,6 +195,10 @@ void sr_compositor_free(SrCompositor *compositor) {
         free(compositor->plane);
     }
     free(compositor->depth_store.z);
+    if (compositor->lengths) {
+        sr_length_frame_free(compositor->lengths);
+        free(compositor->lengths);
+    }
     for (size_t i = 0; i < compositor->pool_count; ++i) {
         if (compositor->pool[i]) sr_frame_free(&compositor->pool[i]->frame);
         free(compositor->pool[i]);
@@ -285,17 +291,20 @@ static SrStatus sr_pool_get(SrCompositor *compositor, size_t depth,
 
 /* ---- geometry ----------------------------------------------------------- */
 
-static SrMat3 sr_node_matrix(const SrScene *scene, const SrNode *node, double time) {
-    double x = sr_anim_eval(&node->transform.x, time);
-    double y = sr_anim_eval(&node->transform.y, time);
+static SrMat3 sr_node_matrix(const SrDrawContext *context, const SrNode *node) {
+    const SrScene *scene = context->scene;
+    double time = context->time;
+    const SrNodeGeometry *geometry = sr_length_node(context->lengths, node);
+    double x = geometry ? geometry->x : sr_anim_eval(&node->transform.x, time);
+    double y = geometry ? geometry->y : sr_anim_eval(&node->transform.y, time);
     double rotation = sr_anim_eval(&node->transform.rotation, time) * SR_PI / 180.0;
     double physics_rotation;
     if (sr_physics_pose(scene, node, time, &x, &y, &physics_rotation))
         rotation = physics_rotation * SR_PI / 180.0;
     double sx = sr_anim_eval(&node->transform.scale_x, time);
     double sy = sr_anim_eval(&node->transform.scale_y, time);
-    double ax = sr_anim_eval(&node->transform.anchor_x, time);
-    double ay = sr_anim_eval(&node->transform.anchor_y, time);
+    double ax = geometry ? geometry->anchor_x : sr_anim_eval(&node->transform.anchor_x, time);
+    double ay = geometry ? geometry->anchor_y : sr_anim_eval(&node->transform.anchor_y, time);
     SrMat3 matrix = sr_mat_translate(x, y);
     matrix = sr_mat_multiply(matrix, sr_mat_rotate(rotation));
     matrix = sr_mat_multiply(matrix, sr_mat_scale(sx, sy));
@@ -523,16 +532,20 @@ static double sr_pixel_footprint(SrMat3 inverse) {
 
 /* ---- masks -------------------------------------------------------------- */
 
-static void sr_masks_eval(const SrNode *node, double time, SrMaskEval *out) {
+static void sr_masks_eval(const SrDrawContext *context, const SrNode *node, SrMaskEval *out) {
+    double time = context->time;
+    const SrNodeGeometry *geometry = sr_length_node(context->lengths, node);
     for (size_t i = 0; i < node->mask_count; ++i) {
         const SrMask *mask = &node->masks[i];
+        const SrMaskGeometry *evaluated = geometry
+            ? &context->lengths->masks[geometry->mask_offset + i] : NULL;
         out[i] = (SrMaskEval){
             .type = mask->type,
             .invert = mask->invert,
-            .x = sr_anim_eval(&mask->x, time),
-            .y = sr_anim_eval(&mask->y, time),
-            .width = fmax(0.0, sr_anim_eval(&mask->width, time)),
-            .height = fmax(0.0, sr_anim_eval(&mask->height, time)),
+            .x = evaluated ? evaluated->x : sr_anim_eval(&mask->x, time),
+            .y = evaluated ? evaluated->y : sr_anim_eval(&mask->y, time),
+            .width = evaluated ? evaluated->width : fmax(0.0, sr_anim_eval(&mask->width, time)),
+            .height = evaluated ? evaluated->height : fmax(0.0, sr_anim_eval(&mask->height, time)),
             .radius = fmax(0.0, sr_anim_eval(&mask->radius, time))};
     }
 }
@@ -1212,10 +1225,11 @@ static SrStatus sr_draw_shape(SrDrawContext *context, const SrNode *node,
                              context->time, masks);
     op.kind = SR_OP_SHAPE;
     op.shape = node->shape == SR_SHAPE_ELLIPSE ? SR_MASK_ELLIPSE : SR_MASK_RECT;
-    op.width = node->shape_width;
-    op.height = node->shape_height;
-    op.deform_width = node->shape_width;
-    op.deform_height = node->shape_height;
+    const SrNodeGeometry *geometry = sr_length_node(context->lengths, node);
+    op.width = geometry ? geometry->box.width : node->shape_width;
+    op.height = geometry ? geometry->box.height : node->shape_height;
+    op.deform_width = op.width;
+    op.deform_height = op.height;
     op.deform = &deform;
     op.half_stroke = node->stroke_width * 0.5;
     sr_color_to_blend(&context->scene->project,
@@ -1223,7 +1237,7 @@ static SrStatus sr_draw_shape(SrDrawContext *context, const SrNode *node,
     sr_color_to_blend(&context->scene->project,
                       sr_anim_color_eval(&node->stroke, context->time), op.stroke);
     op.bounds = sr_clip_intersect(
-        sr_deformed_bounds(node, world, node->shape_width, node->shape_height,
+        sr_deformed_bounds(node, world, op.width, op.height,
                             op.half_stroke + (sr_node_deforms(node) ? op.aa : 0.0),
                             context->time, &deform, target), clip);
     bool immediate = sr_node_deforms(node);  /* the state is freed below */
@@ -1297,11 +1311,11 @@ static int sr_item_compare(const void *a, const void *b) {
 static double sr_card_key(const SrDrawContext *context, const SrNode *node,
                           SrMat3 parent) {
     double time = context->time;
-    SrMat3 plane = sr_mat_multiply(parent, sr_node_matrix(context->scene, node,
-                                                          time));
+    SrMat3 plane = sr_mat_multiply(parent, sr_node_matrix(context, node));
+    const SrNodeGeometry *geometry = sr_length_node(context->lengths, node);
     SrVec2 pivot = sr_mat_point(plane, (SrVec2){
-        sr_anim_eval(&node->transform.anchor_x, time),
-        sr_anim_eval(&node->transform.anchor_y, time)});
+        geometry ? geometry->anchor_x : sr_anim_eval(&node->transform.anchor_x, time),
+        geometry ? geometry->anchor_y : sr_anim_eval(&node->transform.anchor_y, time)});
     double world[3] = {pivot.x - context->view->width * .5,
                        context->view->height * .5 - pivot.y,
                        sr_anim_eval(&node->transform.z, time)};
@@ -1407,7 +1421,7 @@ static SrStatus sr_draw_group(SrDrawContext *context, const SrNode *node,
     SrMaskEval *masks = node->mask_count <= 8 ? local_masks
         : sr_alloc(node->mask_count * sizeof(*masks));
     if (!masks) return SR_ERR_MEMORY;
-    sr_masks_eval(node, context->time, masks);
+    sr_masks_eval(context, node, masks);
     SrMaskLink link = {masks, node->mask_count, inverse,
                        sr_pixel_footprint(inverse), outer};
     const SrMaskLink *chain = node->mask_count ? &link : outer;
@@ -1487,8 +1501,7 @@ static SrStatus sr_draw_node(SrDrawContext *context, const SrNode *node,
     if (node->card && context->view)
         return sr_draw_card(context, node, parent, opacity, clip, target, depth,
                             outer);
-    SrMat3 world = sr_mat_multiply(parent, sr_node_matrix(context->scene, node,
-                                                          time));
+    SrMat3 world = sr_mat_multiply(parent, sr_node_matrix(context, node));
     if (node->type == SR_NODE_GROUP)
         return sr_draw_group(context, node, world, opacity, clip, target, depth,
                              outer);
@@ -1499,14 +1512,13 @@ static SrStatus sr_draw_leaf(SrDrawContext *context, const SrNode *node,
                              SrMat3 world, double opacity, SrClip clip,
                              const SrTarget *target,
                              const SrMaskLink *outer) {
-    double time = context->time;
     SrMat3 inverse;
     if (!sr_mat_inverse(world, &inverse)) return SR_OK;
     SrMaskEval local_masks[8];
     SrMaskEval *masks = node->mask_count <= 8 ? local_masks
         : sr_alloc(node->mask_count * sizeof(*masks));
     if (!masks) return SR_ERR_MEMORY;
-    sr_masks_eval(node, time, masks);
+    sr_masks_eval(context, node, masks);
     SrMaskLink link = {masks, node->mask_count, inverse,
                        sr_pixel_footprint(inverse), outer};
     const SrMaskLink *chain = node->mask_count ? &link : outer;
@@ -1540,7 +1552,7 @@ static SrStatus sr_draw_content(SrDrawContext *context, const SrNode *node,
     SrMaskEval *masks = node->mask_count <= 8 ? local_masks
         : sr_alloc(node->mask_count * sizeof(*masks));
     if (!masks) return SR_ERR_MEMORY;
-    sr_masks_eval(node, context->time, masks);
+    sr_masks_eval(context, node, masks);
     SrMaskLink link = {masks, node->mask_count, inverse,
                        sr_pixel_footprint(inverse), NULL};
     SrClip inner = sr_mask_clip(clip, masks, node->mask_count, world, target);
@@ -1552,17 +1564,17 @@ static SrStatus sr_draw_content(SrDrawContext *context, const SrNode *node,
 
 /* Conservative bounds, in the coordinates `matrix` maps to, of what `node`
  * can draw at `time`; false when unknown (particles, deformers). */
-static bool sr_content_bounds(const SrScene *scene, const SrNode *node,
-                              SrMat3 matrix, double time, bool own,
-                              double box[4], bool *any) {
+static bool sr_content_bounds(const SrDrawContext *context, const SrNode *node,
+                              SrMat3 matrix, bool own, double box[4], bool *any) {
+    double time = context->time;
     if (!node->visible || time < node->start_time || time >= node->end_time)
         return true;
     SrMat3 m = own ? matrix
-                   : sr_mat_multiply(matrix, sr_node_matrix(scene, node, time));
+                   : sr_mat_multiply(matrix, sr_node_matrix(context, node));
     if (node->type == SR_NODE_GROUP) {
         if (node->effect_ref_count && !own) return false;  /* effect reach */
         for (size_t i = 0; i < node->child_count; ++i)
-            if (!sr_content_bounds(scene, node->children[i], m, time, false,
+            if (!sr_content_bounds(context, node->children[i], m, false,
                                    box, any))
                 return false;
         return true;
@@ -1574,8 +1586,9 @@ static bool sr_content_bounds(const SrScene *scene, const SrNode *node,
         w = node->asset->width;
         h = node->asset->height;
     } else {
-        w = node->shape_width;
-        h = node->shape_height;
+        const SrNodeGeometry *geometry = sr_length_node(context->lengths, node);
+        w = geometry ? geometry->box.width : node->shape_width;
+        h = geometry ? geometry->box.height : node->shape_height;
         pad += node->stroke_width * 0.5;
     }
     SrVec2 corners[4] = {{-pad, -pad}, {w + pad, -pad}, {w + pad, h + pad},
@@ -1702,8 +1715,7 @@ static SrStatus sr_card_projective(SrDrawContext *context, const SrNode *node,
      * the screen edges and the near/far planes, all half-planes in (u, v). */
     double box[4];
     bool any = false;
-    bool bounded = sr_content_bounds(context->scene, node, plane, context->time,
-                                     true, box, &any);
+    bool bounded = sr_content_bounds(context, node, plane, true, box, &any);
     if (bounded && !any) return SR_OK;
     if (!bounded) { box[0] = box[1] = -1e9; box[2] = box[3] = 1e9; }
     double a[24], b[24];
@@ -1813,11 +1825,11 @@ static SrStatus sr_draw_card(SrDrawContext *context, const SrNode *node,
                              const SrMaskLink *outer) {
     const SrCardView *view = context->view;
     double time = context->time;
-    SrMat3 plane = sr_mat_multiply(parent, sr_node_matrix(context->scene, node,
-                                                          time));
+    SrMat3 plane = sr_mat_multiply(parent, sr_node_matrix(context, node));
+    const SrNodeGeometry *geometry = sr_length_node(context->lengths, node);
     SrVec2 pivot = sr_mat_point(plane, (SrVec2){
-        sr_anim_eval(&node->transform.anchor_x, time),
-        sr_anim_eval(&node->transform.anchor_y, time)});
+        geometry ? geometry->anchor_x : sr_anim_eval(&node->transform.anchor_x, time),
+        geometry ? geometry->anchor_y : sr_anim_eval(&node->transform.anchor_y, time)});
     SrCardPose pose = sr_card_pose(view, pivot.x, pivot.y,
                                    sr_anim_eval(&node->transform.z, time),
                                    sr_anim_eval(&node->transform.rotation_x, time),
@@ -1875,18 +1887,29 @@ static SrStatus sr_draw_card(SrDrawContext *context, const SrNode *node,
     return sr_op_submit(context->compositor, &op, false);
 }
 
-SrStatus sr_compositor_render(SrCompositor *compositor, SrScene *scene,
-                              double time, SrFrame *frame,
-                              SrDiagnostics *diag) {
-    if (!compositor || !scene || !scene->root || !frame || !frame->px) {
-        return SR_ERR_ARGUMENT;
+static SrStatus sr_prepare_lengths(SrCompositor *compositor, const SrScene *scene,
+                                    double time, SrDiagnostics *diag) {
+    if (!scene->has_relative_lengths) return SR_OK;
+    if (!compositor->lengths) {
+        compositor->lengths = sr_alloc(sizeof(*compositor->lengths));
+        if (!compositor->lengths) {
+            if (diag)
+                sr_diag_error(diag, 0, "composition", NULL,
+                              "out of memory allocating evaluated lengths");
+            return SR_ERR_MEMORY;
+        }
     }
+    return sr_length_frame_prepare(compositor->lengths, scene, time, false, diag);
+}
+
+static SrStatus sr_compositor_draw(SrCompositor *compositor, SrScene *scene,
+                                    double time, SrFrame *frame, SrDiagnostics *diag) {
     SrTarget target = {frame->px, frame->width, frame->height, NULL};
     SrClip clip = {0, 0, (int)frame->width, (int)frame->height};
     size_t errors = diag ? diag->errors : 0;
     SrCardView view = sr_card_view(scene, time);
     SrDrawContext context = {compositor, scene, diag, time, &view, NULL, 1.0,
-                             NULL};
+                             NULL, scene->has_relative_lengths ? compositor->lengths : NULL};
     SrStatus status = sr_draw_node(&context, scene->root, sr_mat_identity(),
                                    clip, &target, 0, NULL);
     /* Run whatever is still queued; on failure it is discarded unrun. */
@@ -1896,6 +1919,15 @@ SrStatus sr_compositor_render(SrCompositor *compositor, SrScene *scene,
         return status;
     }
     return diag && diag->errors > errors ? SR_ERR_ASSET : SR_OK;
+}
+
+SrStatus sr_compositor_render(SrCompositor *compositor, SrScene *scene,
+                              double time, SrFrame *frame, SrDiagnostics *diag) {
+    if (!compositor || !scene || !scene->root || !frame || !frame->px)
+        return SR_ERR_ARGUMENT;
+    SrStatus status = sr_prepare_lengths(compositor, scene, time, diag);
+    return status == SR_OK ? sr_compositor_draw(compositor, scene, time, frame, diag)
+                          : status;
 }
 
 static bool sr_root_has_cards(const SrScene *scene) {
@@ -1909,11 +1941,13 @@ SrStatus sr_compositor_render_scene(SrCompositor *compositor, SrScene *scene,
                                     SrDiagnostics *diag) {
     if (!compositor || !scene || !scene->root || !frame || !frame->px)
         return SR_ERR_ARGUMENT;
+    SrStatus prepared = sr_prepare_lengths(compositor, scene, time, diag);
+    if (prepared != SR_OK) return prepared;
     if (!scene->has_cards) {
         SrStatus status = sr_lighting_render_threads(scene, time, frame,
                                                      compositor->threads, diag);
         return status == SR_OK
-            ? sr_compositor_render(compositor, scene, time, frame, diag) : status;
+            ? sr_compositor_draw(compositor, scene, time, frame, diag) : status;
     }
     int n = sr_lighting_samples(scene);
     SrDepthBuffer *depth = &compositor->depth_store;
@@ -1949,7 +1983,7 @@ SrStatus sr_compositor_render_scene(SrCompositor *compositor, SrScene *scene,
     size_t errors = diag ? diag->errors : 0;
     SrCardView view = sr_card_view(scene, time);
     SrDrawContext context = {compositor, scene, diag, time, &view, NULL, 1.0,
-                             pass};
+                             pass, scene->has_relative_lengths ? compositor->lengths : NULL};
     status = sr_draw_node(&context, scene->root, sr_mat_identity(), clip,
                           &target, 0, NULL);
     /* Queued card composites test against the depth buffer: they run

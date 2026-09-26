@@ -44,6 +44,8 @@ int main(int argc, char **argv)
 {
     const suite suites[] = {
         {"length", sr_tests_length},
+        {"length_frame", sr_tests_length_frame},
+        {"length_physics", sr_tests_length_physics},
         {"timeline", sr_tests_timeline}, {"curves", sr_tests_curves}, {"geometry", sr_tests_geometry},
         {"compositor", sr_tests_compositor}, {"color", sr_tests_color},
         {"vector", sr_tests_vector},     {"mesh", sr_tests_mesh},

@@ -169,7 +169,7 @@ static bool resolve_physics(ParseContext *ctx) {
                               constraint->id);
                 return false;
             }
-            if (!constraint->rest_length_set)
+            if (!ctx->scene->has_relative_lengths && !constraint->rest_length_set)
                 constraint->rest_length = hypot(
                     constraint->a->transform.x.base - constraint->x,
                     constraint->a->transform.y.base - constraint->y);
@@ -184,7 +184,7 @@ static bool resolve_physics(ParseContext *ctx) {
                           constraint->id);
             return false;
         }
-        if (constraint->rest_length == 0.0) {
+        if (!ctx->scene->has_relative_lengths && constraint->rest_length == 0.0) {
             double dx = constraint->b->transform.x.base -
                         constraint->a->transform.x.base;
             double dy = constraint->b->transform.y.base -

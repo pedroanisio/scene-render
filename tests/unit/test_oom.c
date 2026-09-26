@@ -27,6 +27,9 @@
 #include <string.h>
 
 #include "harness.h"
+#include "fixture.h"
+#include "length_frame.h"
+#include "scene_render/physics.h"
 #include "scene_render/assets.h"
 #include "scene_render/audio.h"
 #include "scene_render/encoder.h"
@@ -483,6 +486,112 @@ static void frame_render_survives_allocation_failures(sr_test_ctx *t) {
     }
 }
 
+typedef struct {
+    SrScene scene;
+    SrFrame raster;
+    SrCompositor compositor;
+    SrLengthFrame lengths;
+    unsigned mode;
+    bool ready;
+} LengthOomContext;
+
+static void length_prepare(void *opaque) {
+    LengthOomContext *c = opaque;
+    fx_scene(&c->scene, 64, 48);
+    c->ready = false;
+    c->scene.has_relative_lengths = c->scene.has_cards = true;
+    c->scene.project.duration = .02;
+    c->scene.physics.enabled = true;
+    c->scene.physics.fixed_step = .01;
+    c->scene.physics.gravity_y = 0;
+    SrNode *group = fx_add(&c->scene, NULL, SR_NODE_GROUP);
+    if (!group) return;
+    group->card = true;
+    group->transform.rotation_y.base = 25;
+    SrCamera *camera = c->scene.cameras = sr_alloc(sizeof(*camera));
+    if (!camera) return;
+    c->scene.camera_count = c->scene.camera_capacity = 1;
+    camera->active = camera->zoom_set = true;
+    camera->zoom.base = 100;
+    camera->z.base = -100;
+    camera->near_plane = 1;
+    camera->far_plane = 500;
+    for (size_t i = 0; i < 70; ++i) {
+        SrNode *node = fx_rect(&c->scene, group, (double)(i % 10) * 8, (double)(i / 10) * 10,
+                               10, 10, (SrColor){.8, .4, .2, 1}, .9);
+        if (!node) return;
+        node->transform.x.unit = node->transform.y.unit = SR_LENGTH_PERCENT;
+        node->shape_width_unit = node->shape_height_unit = SR_LENGTH_PERCENT;
+        for (size_t k = 0; k < 9; ++k) {
+            SrMask mask = fx_mask(SR_MASK_RECT, 0, 0, 90, 90, false);
+            mask.width.unit = mask.height.unit = SR_LENGTH_PERCENT;
+            if (sr_node_add_mask(node, mask) != SR_OK) return;
+        }
+        if (i < 2) node->body.type = i == 0 ? SR_BODY_DYNAMIC : SR_BODY_STATIC;
+        if (i == 0)
+            node->soft_body = (SrSoftBody){.enabled = true, .rows = 3, .cols = 3,
+                .mass = 1, .stiffness = 2, .damping = .1, .pin = SR_PIN_TOP};
+    }
+    SrConstraint *constraint = c->scene.physics.constraints = sr_alloc(sizeof(*constraint));
+    if (!constraint) return;
+    c->scene.physics.constraint_count = c->scene.physics.constraint_capacity = 1;
+    *constraint = (SrConstraint){.type = SR_CONSTRAINT_SPRING, .a = group->children[0],
+        .b = group->children[1], .stiffness = 2};
+    sr_compositor_init(&c->compositor, 1);
+    c->ready = sr_frame_init(&c->raster, 64, 48) == SR_OK;
+}
+
+static void length_release(void *opaque) {
+    LengthOomContext *c = opaque;
+    sr_length_frame_free(&c->lengths);
+    sr_compositor_free(&c->compositor);
+    sr_frame_free(&c->raster);
+    sr_scene_free(&c->scene);
+    c->ready = false;
+}
+
+static SrStatus length_operation(void *opaque) {
+    LengthOomContext *c = opaque;
+    if (!c->ready) return SR_ERR_ARGUMENT;
+    SrDiagnostics diag = quiet_diag("oom-length");
+    if (c->mode == 2) return sr_physics_prepare(&c->scene, &diag);
+    SrStatus status;
+    if (c->mode == 0) {
+        status = sr_length_frame_prepare(&c->lengths, &c->scene, .01, false, &diag);
+        if (status == SR_ERR_MEMORY &&
+            sr_length_frame_prepare(&c->lengths, &c->scene, 0, false, &diag) != SR_OK)
+            return SR_ERR_RENDER;
+    } else {
+        const float black[4] = {0, 0, 0, 1};
+        sr_frame_clear(&c->raster, black, 1);
+        status = sr_compositor_render_scene(&c->compositor, &c->scene, .01, &c->raster, &diag);
+        if (status == SR_ERR_MEMORY) {
+            sr_frame_clear(&c->raster, black, 1);
+            if (sr_compositor_render_scene(&c->compositor, &c->scene, 0,
+                                            &c->raster, &diag) != SR_OK)
+                return SR_ERR_RENDER;
+        }
+    }
+    return status;
+}
+
+static void relative_lengths_survive_allocation_failures(sr_test_ctx *t) {
+    const char *names[] = {"relative geometry + recovery", "relative card + recovery",
+                           "relative rigid/soft/constraint preparation"};
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        LengthOomContext c = {.mode = mode};
+        length_prepare(&c);
+        CHECK(t, c.ready);
+        if (c.ready) {
+            const OomSpec spec = {names[mode], length_operation, length_release,
+                length_prepare, NULL, {SR_ERR_MEMORY}};
+            long count = replay_until_success(t, &spec, &c);
+            CHECK(t, count >= 6);
+        }
+        length_release(&c);
+    }
+}
+
 /* ---------------------------------------------------------------- encoder */
 
 static SrStatus mixer_op(void *opaque) {
@@ -604,6 +713,8 @@ const sr_test_case sr_tests_oom[] = {
     {"asset_load_survives_allocation_failures", asset_load_survives_allocation_failures},
     {"animated_mixer_survives_allocation_failures", animated_mixer_survives_allocation_failures},
     {"frame_render_survives_allocation_failures", frame_render_survives_allocation_failures},
+    {"relative_lengths_survive_allocation_failures",
+     relative_lengths_survive_allocation_failures},
     {"encoder_survives_allocation_failures", encoder_survives_allocation_failures},
     {NULL, NULL},
 };

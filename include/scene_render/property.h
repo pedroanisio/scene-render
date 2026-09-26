@@ -21,7 +21,9 @@ typedef enum {
 enum {
     SR_PROPERTY_CAMERA_ZOOM = 1u,
     SR_PROPERTY_PARTICLE_END_COLOR = 2u,
-    SR_PROPERTY_DEPTH_CARD = 4u
+    SR_PROPERTY_DEPTH_CARD = 4u,
+    SR_PROPERTY_LENGTH_X = 8u,
+    SR_PROPERTY_LENGTH_Y = 16u
 };
 
 /* Immutable registry entries. Offsets address scene-owned animation storage;

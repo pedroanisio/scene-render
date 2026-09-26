@@ -44,6 +44,7 @@ typedef struct SrCompositor {
     SrDepthBuffer *depth;           /* NULL: cards are not depth tested */
     SrDepthBuffer depth_store;      /* owned by sr_compositor_render_scene */
     struct SrCompositor *plane;     /* lazily allocated plane-buffer pool */
+    struct SrLengthFrame *lengths;  /* owned evaluated geometry, when required */
 } SrCompositor;
 
 SrStatus sr_frame_init(SrFrame *frame, uint32_t width, uint32_t height);

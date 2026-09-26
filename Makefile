@@ -76,12 +76,13 @@ P7_UNIT_SUITES := golden oom
 
 CORE_SOURCES := src/common.c src/card.c src/parallel.c src/color.c src/raster.c \
 	src/vector_path.c src/mesh.c src/gpu.c src/spatial.c src/diagnostics.c \
-	src/timeline.c src/length.c src/curves.c src/property.c src/scene.c \
+	src/timeline.c src/length.c src/length_frame.c src/curves.c src/property.c src/scene.c \
 	src/assets.c src/text.c src/procedural.c src/audio.c src/compositor.c src/camera.c \
 	src/lighting.c src/effects.c src/particles.c src/deform.c src/physics.c \
 	src/encoder.c src/video.c src/renderer.c \
 	src/resume.c src/xml.c \
-	src/xml_elements.c src/xml_animation.c src/xml_nodes.c src/xml_resolve.c src/xml_audio.c \
+	src/xml_elements.c src/xml_lengths.c src/xml_animation.c src/xml_nodes.c \
+	src/xml_resolve.c src/xml_audio.c \
 	src/xml_camera.c \
 	src/xml_visual.c \
 	src/xml_physics.c src/xml_styles.c src/xml_metadata.c src/metadata.c \
@@ -91,7 +92,8 @@ CORE_OBJECTS := $(CORE_SOURCES:src/%.c=$(BUILD)/%.o) $(BUILD)/schema_data.o
 APP_OBJECT := $(BUILD)/main.o
 TEST_SOURCES := $(sort $(wildcard tests/unit/*.c))
 TEST_OBJECTS := $(TEST_SOURCES:tests/unit/%.c=$(BUILD)/unit/%.o)
-UNIT_SUITES := timeline length curves geometry compositor color vector mesh \
+UNIT_SUITES := timeline length length_frame length_physics curves geometry \
+	compositor color vector mesh \
 	scene property xml profile styles metadata \
 	camera physics blend group raster mask path image encode encode_faults \
 	audio video fx anim_color particles deform shadow text args resume depth \

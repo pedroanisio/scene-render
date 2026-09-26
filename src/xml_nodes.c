@@ -165,6 +165,8 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
     if (type == SR_NODE_GROUP) {
         allowed[count++] = "blend";
         allowed[count++] = "effects";
+        allowed[count++] = "width";
+        allowed[count++] = "height";
     } else if (type == SR_NODE_MEDIA) {
         allowed[count++] = "asset";
         allowed[count++] = "blend";
@@ -216,6 +218,15 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
         SR_XML_FAIL_RETURN(ctx, name, "id", "node id must be unique");
     }
     if (type == SR_NODE_GROUP) {
+        if (!sr_xml_length_attr(ctx, name, attrs, "width", &node->group_width.value,
+                                  &node->group_width.unit, true) ||
+            !sr_xml_length_attr(ctx, name, attrs, "height", &node->group_height.value,
+                                  &node->group_height.unit, true)) {
+            sr_node_free(node);
+            return;
+        }
+        node->group_width_set = sr_xml_attr(attrs, "width") != NULL;
+        node->group_height_set = sr_xml_attr(attrs, "height") != NULL;
         const char *blend = sr_xml_attr(attrs, "blend");
         if (blend && !sr_blend_parse(blend, &node->blend)) {
             sr_node_free(node);
@@ -275,8 +286,10 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
         else if (strcmp(shape, "ellipse") == 0) node->shape = SR_SHAPE_ELLIPSE;
         else { sr_node_free(node); SR_XML_FAIL_RETURN(ctx, name, "shape",
             "expected rect or ellipse"); }
-        if (!sr_xml_parse_double_attr(ctx, name, attrs, "width", &node->shape_width) ||
-            !sr_xml_parse_double_attr(ctx, name, attrs, "height", &node->shape_height) ||
+        if (!sr_xml_length_attr(ctx, name, attrs, "width", &node->shape_width,
+                                  &node->shape_width_unit, true) ||
+            !sr_xml_length_attr(ctx, name, attrs, "height", &node->shape_height,
+                                  &node->shape_height_unit, true) ||
             !sr_xml_parse_double_attr(ctx, name, attrs, "strokeWidth", &node->stroke_width)) {
             sr_node_free(node); return;
         }
