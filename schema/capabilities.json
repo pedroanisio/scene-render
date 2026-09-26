@@ -48,7 +48,15 @@
     "metaType/@value",
     "outputType/@embedMetadata",
     "groupType/@width",
-    "groupType/@height"
+    "groupType/@height",
+    "groupType/@skewX",
+    "groupType/@skewY",
+    "layerType/@skewX",
+    "layerType/@skewY",
+    "shapeType/@skewX",
+    "shapeType/@skewY",
+    "particleEmitterType/@skewX",
+    "particleEmitterType/@skewY"
   ],
   "values": {
     "animateType/@extrapolateBefore": [

@@ -210,6 +210,7 @@ GOLDEN(relative_lengths, "lengths.xml", 0, 12, 23)
 GOLDEN(style_tokens, "styles.xml", 0, 12, 20)
 GOLDEN(composite_blend_modes, "composite.xml", 0, 12, 23)
 GOLDEN(extended_color_blends, "blend-modes.xml", 0, 12, 23)
+GOLDEN(skew_transforms, "skew.xml", 0, 12, 23)
 GOLDEN(groups_and_masks, "groups-masks.xml", 0, 12, 23)
 GOLDEN(vector_paths, "paths.xml", 0, 12, 23)
 GOLDEN(image_magnification, "images.xml", 0, 12, 23)
@@ -272,6 +273,7 @@ const sr_test_case sr_tests_golden[] = {
     {"style_tokens", style_tokens},
     {"composite_blend_modes", composite_blend_modes},
     {"extended_color_blends", extended_color_blends},
+    {"skew_transforms", skew_transforms},
     {"groups_and_masks", groups_and_masks},
     {"vector_paths", vector_paths},
     {"image_magnification", image_magnification},

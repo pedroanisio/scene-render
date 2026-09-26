@@ -21,6 +21,8 @@ static void transform_free(SrTransform *transform) {
     anim_free(&transform->rotation_y);
     anim_free(&transform->scale_x);
     anim_free(&transform->scale_y);
+    anim_free(&transform->skew_x);
+    anim_free(&transform->skew_y);
     anim_free(&transform->scale_z);
     anim_free(&transform->anchor_x);
     anim_free(&transform->anchor_y);

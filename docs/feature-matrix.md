@@ -969,8 +969,8 @@ fail at load time; they are never silently ignored.
 | `groupType/@rotationY` | 1.0 | implemented |
 | `groupType/@scaleX` | 1.0 | implemented |
 | `groupType/@scaleY` | 1.0 | implemented |
-| `groupType/@skewX` | 1.0 | unsupported |
-| `groupType/@skewY` | 1.0 | unsupported |
+| `groupType/@skewX` | 1.0 | implemented |
+| `groupType/@skewY` | 1.0 | implemented |
 | `groupType/@start` | 1.0 | implemented |
 | `groupType/@startMarker` | 1.0 | unsupported |
 | `groupType/@tags` | 1.0 | unsupported |
@@ -1474,8 +1474,8 @@ fail at load time; they are never silently ignored.
 | `layerType/@rotationY` | 1.0 | implemented |
 | `layerType/@scaleX` | 1.0 | implemented |
 | `layerType/@scaleY` | 1.0 | implemented |
-| `layerType/@skewX` | 1.0 | unsupported |
-| `layerType/@skewY` | 1.0 | unsupported |
+| `layerType/@skewX` | 1.0 | implemented |
+| `layerType/@skewY` | 1.0 | implemented |
 | `layerType/@speed` | 1.0 | implemented |
 | `layerType/@stabilize` | 1.0 | unsupported |
 | `layerType/@stabilizeSmoothness` | 1.0 | unsupported |
@@ -2196,8 +2196,8 @@ fail at load time; they are never silently ignored.
 | `particleEmitterType/@sizeCurve` | 1.0 | unsupported |
 | `particleEmitterType/@sizeEnd` | 1.0 | implemented |
 | `particleEmitterType/@sizeVariance` | 1.0 | unsupported |
-| `particleEmitterType/@skewX` | 1.0 | unsupported |
-| `particleEmitterType/@skewY` | 1.0 | unsupported |
+| `particleEmitterType/@skewX` | 1.0 | implemented |
+| `particleEmitterType/@skewY` | 1.0 | implemented |
 | `particleEmitterType/@speed` | 1.0 | implemented |
 | `particleEmitterType/@speedVariance` | 1.0 | implemented |
 | `particleEmitterType/@spread` | 1.0 | implemented |
@@ -2973,8 +2973,8 @@ fail at load time; they are never silently ignored.
 | `shapeType/@scaleX` | 1.0 | implemented |
 | `shapeType/@scaleY` | 1.0 | implemented |
 | `shapeType/@shape` | 1.0 | implemented |
-| `shapeType/@skewX` | 1.0 | unsupported |
-| `shapeType/@skewY` | 1.0 | unsupported |
+| `shapeType/@skewX` | 1.0 | implemented |
+| `shapeType/@skewY` | 1.0 | implemented |
 | `shapeType/@start` | 1.0 | implemented |
 | `shapeType/@startMarker` | 1.0 | unsupported |
 | `shapeType/@stroke` | 1.0 | implemented |

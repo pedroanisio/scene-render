@@ -14,9 +14,11 @@
 #define COLOR(hosts, type, field, name, attr, flags) \
     {hosts, name, attr, SR_PROPERTY_COLOR, offsetof(type, field), \
      0.0, 1.0, flags, NULL}
-#define BOUNDED(hosts, type, field, name, attr, low, high, error) \
+#define BOUNDED_FLAGS(hosts, type, field, name, attr, low, high, flags, error) \
     {hosts, name, attr, SR_PROPERTY_NUMBER, offsetof(type, field), \
-     low, high, 0, error}
+     low, high, flags, error}
+#define BOUNDED(hosts, type, field, name, attr, low, high, error) \
+    BOUNDED_FLAGS(hosts, type, field, name, attr, low, high, 0, error)
 
 static const SrProperty properties[] = {
     COLOR(H(MATERIAL), SrMaterial, base_color, "baseColor", "baseColor", 0),
@@ -35,6 +37,12 @@ static const SrProperty properties[] = {
     NUMBER(NODES, SrNode, transform.rotation, "rotation", "rotation", 0),
     NUMBER(NODES, SrNode, transform.scale_x, "scale.x", "scaleX", 0),
     NUMBER(NODES, SrNode, transform.scale_y, "scale.y", "scaleY", 0),
+    BOUNDED_FLAGS(NODES, SrNode, transform.skew_x, "skew.x", "skewX",
+            -SR_MAX_SKEW_DEGREES, SR_MAX_SKEW_DEGREES, SR_PROPERTY_REQUIRE_1_1,
+            "skew keys must be within [-89,89] degrees"),
+    BOUNDED_FLAGS(NODES, SrNode, transform.skew_y, "skew.y", "skewY",
+            -SR_MAX_SKEW_DEGREES, SR_MAX_SKEW_DEGREES, SR_PROPERTY_REQUIRE_1_1,
+            "skew keys must be within [-89,89] degrees"),
     NUMBER(NODES, SrNode, transform.anchor_x, "anchor.x", "anchorX", SR_PROPERTY_LENGTH_X),
     NUMBER(NODES, SrNode, transform.anchor_y, "anchor.y", "anchorY", SR_PROPERTY_LENGTH_Y),
     NUMBER(NODES, SrNode, source_time, "source.time", NULL, 0),

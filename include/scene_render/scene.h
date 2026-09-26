@@ -12,6 +12,7 @@
 #define SR_MAX_EFFECT_RADIUS 4096.0
 #define SR_MAX_MATERIALS 4096u
 #define SR_MAX_AUDIO_TRACKS 4096u
+#define SR_MAX_SKEW_DEGREES 89.0
 
 /* The one double -> int conversion for pixel, texel and loop bounds:
  * clamped to [low, high] in double first (NaN gives `low`), so the cast is
@@ -188,6 +189,8 @@ typedef struct {
     SrAnimValue rotation_y;
     SrAnimValue scale_x;
     SrAnimValue scale_y;
+    SrAnimValue skew_x;
+    SrAnimValue skew_y;
     SrAnimValue scale_z;
     SrAnimValue anchor_x;
     SrAnimValue anchor_y;

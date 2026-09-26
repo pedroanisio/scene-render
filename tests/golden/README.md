@@ -22,6 +22,7 @@ difference, and keeps the rendered frame in `BUILD/test_tmp/golden/`.
 |---|---|---|
 | `composite.xml` | all six blend modes in linear light, opacity/rotation/fill keys, cubic-bezier key, z order | 0, 12, 23 |
 | `blend-modes.xml` | all 28 color modes over matching translucent backdrops, animated source opacity/rotation, including nonseparable color and plus-lighter alpha | 0, 12, 23 |
+| `skew.xml` | ordered two-axis skew, animated shear, nested masks, projected media, particles and soft-body rest poses | 0, 12, 23 |
 | `groups-masks.xml` | nested isolated groups (blend, opacity), pass-through group with an animated rounded-rect mask and an animated inverted mask, masked shape | 0, 12, 23 |
 | `paths.xml` | cubic/quadratic/relative path commands, evenodd vs nonzero, open and closed strokes, stroked rect/ellipse vectors and shapes | 0, 12, 23 |
 | `images.xml` | 8x8 image magnified 6x to 17.3x, rotated, animated scale; a 1904x1120 PNG resampled to its declared size; edges at the canvas border | 0, 12, 23 |
@@ -62,6 +63,11 @@ alongside the six existing modes over matching translucent backdrops. Frames
 0, 12 and 23 were visually reviewed for mode differences, readable labels,
 gamut clipping and animated opacity/rotation. Only these new PNGs were
 generated; all existing references remain unchanged.
+
+The three new `skew` references were visually reviewed at frames 0, 12 and
+23. They record the ordered shear geometry, changing animated shape, inherited
+mask, projected rounded card, particle spread and skewed soft-body rest pose.
+Only these new references were generated for the skew milestone.
 
 ## Determinism scope
 

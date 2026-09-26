@@ -37,7 +37,7 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | B1-2 relative lengths and parent-box evaluation | Implemented, enabled, reviewed and verified | Batch merge |
 | B1-2 style tokens | Implemented, reviewed and verified | Batch merge |
 | B1-2 metadata/container tags | Implemented, reviewed and verified | Batch merge |
-| B1-3 blend modes, skew, mattes, masks, adjustment nodes | Design and randomness verified; 22 new color modes implemented and verified | Dissolve/parent operators, skew, advanced masks, mattes, adjustment nodes and remaining goldens |
+| B1-3 blend modes, skew, mattes, masks, adjustment nodes | Design and randomness verified; 22 new color modes and skew implemented | Shared graph/surface limits, dissolve/parent operators, advanced masks, mattes, adjustment nodes and remaining goldens |
 | B1-4 shapes, stroke styles, trims, vector constructors | Pending | Geometry/arc lengths/coverage, all listed styles and shapes, golden |
 | B1-4 gradients and paints | Pending | Coordinates, focal/aspect/spread/rotation/stops, interpolation, dither, every paint host, golden |
 | B1-5 markers/beatGrid/snapping, group timing, sequence, names/tags | Pending | Generated ID resolution, timing tests and sequence-markers golden |
@@ -354,5 +354,41 @@ speedup. The feature fixture matches every frame at one/four threads and
 across five alternating pairs; its overlapping 22-mode stack costs +65.1%
 compositor CPU versus normal blending (+62.8% stage total). Detailed evidence
 and timing ranges are in `docs/reviews/b1-compositing-colors.md`.
-Skew, masks, dissolve/parent operators, mattes and adjustments remain in
-B1-3; B1-4 through B1-6 and the final batch gates are still outstanding.
+At the color-blend checkpoint skew, masks, dissolve/parent operators, mattes
+and adjustments remained in B1-3. The next milestone below implements skew;
+B1-4 through B1-6 and the final batch gates are still outstanding.
+
+## Skew transforms
+
+Static skew attributes and animated skew properties are implemented on all
+four completed 2D node hosts. Static attributes follow the new-attribute
+exception for 1.0; animation names require 1.1. Ordered Kx/Ky matrices feed
+ordinary drawing, inherited masks, card sorting/bounds/projection and soft
+rest poses. Zero axes preserve old operations; invalid evaluated skew and
+unusable skewed transforms fail explicitly. Physics cache version 6 includes
+both bases; rigid collision samples keep their existing behavior.
+
+Eight cases cover independent matrix/pixel/free-fall references, 96 XML
+mutations, parser/version/runtime errors, cache invalidation, explicit-zero
+identity, immutable scenes and warm/shuffled one/four-thread renders. Three
+new skew goldens were visually reviewed. Review reproduced and closed lost
+root-lighting state, missing projection diagnostics and animation version
+gating. The follow-up review has no remaining actionable findings.
+
+All 75 tests have passing evidence in Release, ASan/UBSan and coverage:
+each full run passed 74/75; a test-fixture camera correction then passed the
+eight-case skew suite in all three configurations without renderer changes.
+All 21 golden frame-order cases, integration and OOM passed in the full runs.
+Coverage is 92.06% lines / 76.32% branches; raised floors 90.05% / 74.25% pass.
+The `7f02ec7` oracle matches 309 previews, three encodes and two rejections.
+The strict 2% baseline gate passes (clear -1.8%, compositor -20.5%, total
+-20.5%); the original baseline remains unchanged and noisy measurements do
+not establish a stable speedup. Feature cost is +24.8% compositor CPU versus
+zero skew (+25.4% stage total), with each variant matching all hashes at
+one/four threads and five alternating timing pairs. Evidence and ranges are
+recorded in `docs/reviews/b1-compositing-skew.md`.
+
+Shared graph/surface limits remain a required B1-3 preparation step for all
+new compositing features, including direct-C scenes. Advanced masks, parent
+operators/dissolve, track mattes and adjustment nodes remain, followed by the
+later batch items and final merge/completion gates.

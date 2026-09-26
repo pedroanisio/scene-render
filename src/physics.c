@@ -49,7 +49,7 @@ typedef struct {
  * 3: soft-body grids, OBB contacts, pins, vortex and animated fields;
  * 4: extended animation curves, extrapolation and resolved clocks;
  * 5: relative base geometry and prepared constraint rest lengths). */
-#define PHYSICS_CACHE_VERSION 5u
+#define PHYSICS_CACHE_VERSION 6u
 
 typedef struct {
     char magic[8];
@@ -183,6 +183,8 @@ static uint64_t hash_transform(uint64_t hash, const SrNode *node) {
     hash = hash_double(hash, node->transform.rotation.base);
     hash = hash_double(hash, node->transform.scale_x.base);
     hash = hash_double(hash, node->transform.scale_y.base);
+    hash = hash_double(hash, node->transform.skew_x.base);
+    hash = hash_double(hash, node->transform.skew_y.base);
     hash = hash_double(hash, node->transform.anchor_x.base);
     return hash_double(hash, node->transform.anchor_y.base);
 }
@@ -690,6 +692,8 @@ static SrMat3 soft_pose(const SoftState *soft) {
     if (soft->rigid) { x = soft->rigid->x; y = soft->rigid->y; angle = soft->rigid->angle; }
     SrMat3 matrix = sr_mat_translate(x, y);
     matrix = sr_mat_multiply(matrix, sr_mat_rotate(angle * SR_PI / 180.0));
+    matrix = sr_mat_apply_skew(matrix, node->transform.skew_x.base,
+                               node->transform.skew_y.base);
     matrix = sr_mat_multiply(matrix, sr_mat_scale(node->transform.scale_x.base,
                                                   node->transform.scale_y.base));
     return sr_mat_multiply(matrix, sr_mat_translate(-soft->anchor_x, -soft->anchor_y));
@@ -931,8 +935,16 @@ static bool states_finite(BodyState *states, size_t count,
         return false;
     }
     for (size_t i = 0; i < soft_count; ++i) {
-        if (soft_finite(&soft_states[i])) continue;
         const SrNode *node = soft_states[i].node;
+        SrMat3 inverse;
+        if ((node->transform.skew_x.base != 0.0 ||
+             node->transform.skew_y.base != 0.0) &&
+            !sr_mat_checked_inverse(soft_pose(&soft_states[i]), &inverse)) {
+            sr_diag_error(diag, node->source_line, "softBody", "skewX/skewY",
+                          "skewed rest pose must be finite and invertible");
+            return false;
+        }
+        if (soft_finite(&soft_states[i])) continue;
         sr_diag_error(diag, node->source_line, "softBody", "stiffness/mass",
                       "soft body '%s' diverged (non-finite state at t=%.6g s); "
                       "lower stiffness or pressure, raise mass, or reduce "
@@ -1029,6 +1041,17 @@ SrStatus sr_physics_prepare(SrScene *scene, SrDiagnostics *diag) {
         goto done;
     }
     if (!count && !soft_count) goto done;
+    for (size_t i = 0; i < soft_count; ++i) {
+        const SrNode *node = softs[i];
+        double x = node->transform.skew_x.base, y = node->transform.skew_y.base;
+        if (!isfinite(x) || fabs(x) > SR_MAX_SKEW_DEGREES ||
+            !isfinite(y) || fabs(y) > SR_MAX_SKEW_DEGREES) {
+            sr_diag_error(diag, node->source_line, "softBody", "skewX/skewY",
+                          "rest skew must be within [-89,89] degrees");
+            status = SR_ERR_RENDER;
+            goto done;
+        }
+    }
     if (geometry) {
         prepare_body_geometry(states, count, geometry);
         if (count) status = prepare_rest_lengths(scene, geometry, &rest_lengths, diag);

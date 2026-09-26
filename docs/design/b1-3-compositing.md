@@ -191,6 +191,15 @@ retains its existing authored box/shape policy, just as existing scale and
 visual deformation do; skew changes its rendered image, not its solver shape.
 Physics position/rotation overrides still take priority. Do not add skew to
 object3D or camera, whose XSD does not include these node transform attributes.
+Particle centers follow the node matrix; the existing screen-space sprite
+radius policy remains, as it does for other emitter transforms.
+
+The static attributes use the proposal's new-attribute exception and are
+accepted in both document versions. The new animation property names
+`skew.x` / `skew.y` require 1.1. Invalid skewed card projections, sort keys
+and transformed content bounds must fail, including geometry consumed for
+sorting/bounds even when opacity prevents drawing. Preserve the mutable
+root lighting-pass handoff when copying contexts for skew propagation.
 
 ## Masks
 
@@ -416,6 +425,13 @@ Compositing limits apply when these features are used, independently of
 the new subsystem. Use overflow-checked arithmetic before allocating or
 converting coordinates to integers. Limits are named in a shared private
 header and enforced for programmatic scenes as well as XML where relevant.
+
+Milestone sequencing: color kernels and skew use constant-size local math
+and the existing renderer's allocations/traversals. Their milestones do not
+claim the shared graph/surface limits below are implemented. The bounded
+compositing preparation phase must install those checks for all new B1-3
+features before B1-3 is complete, including direct-C scenes; it remains an
+explicit requirement alongside advanced-mask and matte preparation.
 
 | Constant | Bound |
 |---|---:|

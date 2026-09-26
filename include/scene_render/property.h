@@ -23,7 +23,8 @@ enum {
     SR_PROPERTY_PARTICLE_END_COLOR = 2u,
     SR_PROPERTY_DEPTH_CARD = 4u,
     SR_PROPERTY_LENGTH_X = 8u,
-    SR_PROPERTY_LENGTH_Y = 16u
+    SR_PROPERTY_LENGTH_Y = 16u,
+    SR_PROPERTY_REQUIRE_1_1 = 32u
 };
 
 /* Immutable registry entries. Offsets address scene-owned animation storage;

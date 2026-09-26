@@ -158,8 +158,9 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
                        const XML_Char **attrs, SrNodeType type) {
     static const char *const common[] = {"id", "z", "visible", "opacity", "x",
         "y", "rotation", "scaleX", "scaleY", "anchorX", "anchorY", "start",
-        "end", "depth", "rotationX", "rotationY", "threeD", "zDepth"};
-    const char *allowed[40];
+        "end", "depth", "rotationX", "rotationY", "threeD", "zDepth",
+        "skewX", "skewY"};
+    const char *allowed[42];
     memcpy(allowed, common, sizeof(common));
     size_t count = sizeof(common) / sizeof(common[0]);
     if (type == SR_NODE_GROUP) {

@@ -963,6 +963,52 @@ the output space with matching primaries/transfer/matrix/range tags. Times and d
 seconds. Frames are selected on a half-open interval; frame N occurs exactly
 at `N × fps_den / fps_num`.
 
+## Skew transforms
+
+`group`, `layer`, `shape` and `particleEmitter` accept `skewX` and `skewY`
+in degrees, defaulting to zero. As new attributes on existing elements,
+they are legal in both document versions. Animation properties `skew.x`
+and `skew.y` require `version="1.1"`. Static values and keys must be finite
+and within [-89,89] degrees (`SR_MAX_SKEW_DEGREES`). Evaluated values must
+stay within the same range; additive values, overshooting curves and
+extrapolation that exceed it fail that frame with a node diagnostic.
+
+The local matrix is `T(position) * R(rotation) * Kx * Ky * S(scale) *
+T(-anchor)`, where Kx adds `tan(skewX)*y` to x and Ky adds `tan(skewY)*x`
+to y. Thus the rightmost operation acts first on a point. Skew is inherited
+by children, masks and particles and acts on a card's plane before camera
+projection. Emitters shear particle positions; their discs/squares retain
+the existing screen-space size policy. Each zero axis omits its multiplication,
+retaining the previous
+matrix arithmetic when both are zero. Nonfinite or noninvertible skewed
+transforms/projections fail the render. Geometry used for card sorting or
+bounds is validated even when opacity prevents drawing; ordinary inactive
+nodes whose geometry is not consumed remain skipped.
+
+Soft-body preparation uses the base skew in the same matrix order, with
+physics position/rotation overrides retaining priority. Physics cache
+version 6 fingerprints both base values. Animated skew changes the rendered
+soft mesh; the fixed simulation uses its base rest pose. Rigid-body solver
+geometry retains its existing shape policy; skew changes its rendered image.
+Object3D and camera do not accept skew properties.
+
+```xml
+<shape id="slant" shape="rect" width="80" height="40" skewX="20">
+  <animate property="skew.y">
+    <key time="0" value="-10"/><key time="1" value="10"/>
+  </animate>
+</shape>
+```
+
+Skew evaluation allocates nothing and retains no frame state. It adds up to
+two tangent evaluations and two affine multiplications per consumed node;
+pixel cost also depends on how much screen area the transformed shape covers.
+The 320x180, 24-frame fixture measured +24.8% compositor CPU versus zero skew
+(0.024844 versus 0.019914 seconds at four threads), including that coverage
+change. `tools/skew-benchmark.py` repeats the comparison; each variant checks
+all hashes at one/four threads and five alternating runs. Measurement ranges
+and verification details are in `docs/reviews/b1-compositing-skew.md`.
+
 ## Color blend modes
 
 `group`, `layer`, `shape` and `particleEmitter` accept `blend`. The default

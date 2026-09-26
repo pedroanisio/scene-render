@@ -125,6 +125,7 @@ typedef struct {
     double particle_scale;      /* particle radius factor inside cards */
     SrLightingPass *lighting;   /* 3D objects still to interleave, or NULL */
     const SrLengthFrame *lengths; /* borrowed, including inside card buffers */
+    bool skewed;                /* this transform chain uses nonzero skew */
 } SrDrawContext;
 
 /* A card's own blend applies when its buffer is composited, not inside. */
@@ -291,7 +292,30 @@ static SrStatus sr_pool_get(SrCompositor *compositor, size_t depth,
 
 /* ---- geometry ----------------------------------------------------------- */
 
-static SrMat3 sr_node_matrix(const SrDrawContext *context, const SrNode *node) {
+static SrStatus sr_skew_error(const SrDrawContext *context, const SrNode *node,
+                              const char *attribute, const char *message) {
+    const char *element = node->type == SR_NODE_GROUP ? "group"
+        : node->type == SR_NODE_MEDIA ? "layer"
+        : node->type == SR_NODE_PARTICLES ? "particleEmitter" : "shape";
+    if (context->diag)
+        sr_diag_error(context->diag, node->source_line, element, attribute,
+                      "%s for node '%s'", message, node->id ? node->id : "");
+    return SR_ERR_RENDER;
+}
+
+static SrStatus sr_skew_matrix_valid(const SrDrawContext *context,
+                                      const SrNode *node, SrMat3 matrix) {
+    if (!context->skewed) return SR_OK;
+    SrMat3 inverse;
+    return sr_mat_checked_inverse(matrix, &inverse) ? SR_OK
+        : sr_skew_error(context, node, "skewX/skewY",
+                        "skewed transform must be finite and invertible");
+}
+
+/* The context is a stack copy for this node. Its skew flag follows the
+ * transform chain, including descendants inside a projected card. */
+static SrStatus sr_node_world(SrDrawContext *context, const SrNode *node,
+                              SrMat3 parent, SrMat3 *out) {
     const SrScene *scene = context->scene;
     double time = context->time;
     const SrNodeGeometry *geometry = sr_length_node(context->lengths, node);
@@ -307,8 +331,23 @@ static SrMat3 sr_node_matrix(const SrDrawContext *context, const SrNode *node) {
     double ay = geometry ? geometry->anchor_y : sr_anim_eval(&node->transform.anchor_y, time);
     SrMat3 matrix = sr_mat_translate(x, y);
     matrix = sr_mat_multiply(matrix, sr_mat_rotate(rotation));
+    const SrAnimValue *kx = &node->transform.skew_x;
+    const SrAnimValue *ky = &node->transform.skew_y;
+    if (kx->base != 0.0 || ky->base != 0.0 || kx->track.count || ky->track.count) {
+        double skew_x = sr_anim_eval(kx, time), skew_y = sr_anim_eval(ky, time);
+        if (!isfinite(skew_x) || fabs(skew_x) > SR_MAX_SKEW_DEGREES)
+            return sr_skew_error(context, node, "skewX",
+                                 "evaluated skew must be within [-89,89] degrees");
+        if (!isfinite(skew_y) || fabs(skew_y) > SR_MAX_SKEW_DEGREES)
+            return sr_skew_error(context, node, "skewY",
+                                 "evaluated skew must be within [-89,89] degrees");
+        matrix = sr_mat_apply_skew(matrix, skew_x, skew_y);
+        context->skewed |= skew_x != 0.0 || skew_y != 0.0;
+    }
     matrix = sr_mat_multiply(matrix, sr_mat_scale(sx, sy));
-    return sr_mat_multiply(matrix, sr_mat_translate(-ax, -ay));
+    matrix = sr_mat_multiply(matrix, sr_mat_translate(-ax, -ay));
+    *out = sr_mat_multiply(parent, matrix);
+    return sr_skew_matrix_valid(context, node, *out);
 }
 
 /* Source point of `point` under the node's deformations; false when a
@@ -1308,10 +1347,13 @@ static int sr_item_compare(const void *a, const void *b) {
 }
 
 /* View depth of a card's pivot (its sort key). */
-static double sr_card_key(const SrDrawContext *context, const SrNode *node,
-                          SrMat3 parent) {
+static SrStatus sr_card_key(const SrDrawContext *context, const SrNode *node,
+                            SrMat3 parent, double *out) {
     double time = context->time;
-    SrMat3 plane = sr_mat_multiply(parent, sr_node_matrix(context, node));
+    SrDrawContext local = *context;
+    SrMat3 plane;
+    SrStatus status = sr_node_world(&local, node, parent, &plane);
+    if (status != SR_OK) return status;
     const SrNodeGeometry *geometry = sr_length_node(context->lengths, node);
     SrVec2 pivot = sr_mat_point(plane, (SrVec2){
         geometry ? geometry->anchor_x : sr_anim_eval(&node->transform.anchor_x, time),
@@ -1320,7 +1362,11 @@ static double sr_card_key(const SrDrawContext *context, const SrNode *node,
                        context->view->height * .5 - pivot.y,
                        sr_anim_eval(&node->transform.z, time)};
     double key = sr_card_view_depth(context->view, world);
-    return isnan(key) ? INFINITY : key;
+    if (local.skewed && (!isfinite(pivot.x) || !isfinite(pivot.y) || !isfinite(key)))
+        return sr_skew_error(context, node, "skewX/skewY",
+                             "skewed card pivot and sort depth must be finite");
+    *out = isnan(key) ? INFINITY : key;
+    return SR_OK;
 }
 
 /* Children draw in (z, XML order). Each maximal run of consecutive card
@@ -1355,10 +1401,15 @@ static SrStatus sr_draw_children(SrDrawContext *context, const SrNode *node,
             continue;
         }
         size_t first = count;
-        for (; i < node->child_count && node->children[i]->card; ++i)
-            items[count++] = (SrDrawItem){
-                node->children[i], 0,
-                sr_card_key(context, node->children[i], world), i};
+        for (; i < node->child_count && node->children[i]->card; ++i) {
+            double key;
+            SrStatus status = sr_card_key(context, node->children[i], world, &key);
+            if (status != SR_OK) {
+                free(items);
+                return status;
+            }
+            items[count++] = (SrDrawItem){node->children[i], 0, key, i};
+        }
         if (merge) {
             for (size_t k = 0; k < scene->object3d_count; ++k) {
                 double key = sr_lighting_object_depth(scene, k, context->time);
@@ -1498,14 +1549,23 @@ static SrStatus sr_draw_node(SrDrawContext *context, const SrNode *node,
         return SR_OK;
     double opacity = sr_clamp(sr_anim_eval(&node->opacity, time), 0.0, 1.0);
     if (opacity <= 0.0) return SR_OK;
+    SrDrawContext *caller = context;
+    SrDrawContext local = *context;
+    context = &local;
+    SrMat3 world;
+    SrStatus status = sr_node_world(context, node, parent, &world);
+    if (status != SR_OK) return status;
     if (node->card && context->view)
-        return sr_draw_card(context, node, parent, opacity, clip, target, depth,
+        status = sr_draw_card(context, node, world, opacity, clip, target, depth,
                             outer);
-    SrMat3 world = sr_mat_multiply(parent, sr_node_matrix(context, node));
-    if (node->type == SR_NODE_GROUP)
-        return sr_draw_group(context, node, world, opacity, clip, target, depth,
+    else if (node->type == SR_NODE_GROUP)
+        status = sr_draw_group(context, node, world, opacity, clip, target, depth,
                              outer);
-    return sr_draw_leaf(context, node, world, opacity, clip, target, outer);
+    else status = sr_draw_leaf(context, node, world, opacity, clip, target, outer);
+    /* Root card runs consume the shared 3D pass. Preserve that handoff
+     * across the stack copy used only to isolate the skew flag. */
+    caller->lighting = local.lighting;
+    return status;
 }
 
 static SrStatus sr_draw_leaf(SrDrawContext *context, const SrNode *node,
@@ -1544,6 +1604,8 @@ static SrStatus sr_draw_leaf(SrDrawContext *context, const SrNode *node,
 static SrStatus sr_draw_content(SrDrawContext *context, const SrNode *node,
                                 SrMat3 world, SrClip clip,
                                 const SrTarget *target, size_t depth) {
+    SrStatus valid = sr_skew_matrix_valid(context, node, world);
+    if (valid != SR_OK) return valid;
     if (node->type != SR_NODE_GROUP)
         return sr_draw_leaf(context, node, world, 1.0, clip, target, NULL);
     SrMat3 inverse;
@@ -1565,17 +1627,22 @@ static SrStatus sr_draw_content(SrDrawContext *context, const SrNode *node,
 /* Conservative bounds, in the coordinates `matrix` maps to, of what `node`
  * can draw at `time`; false when unknown (particles, deformers). */
 static bool sr_content_bounds(const SrDrawContext *context, const SrNode *node,
-                              SrMat3 matrix, bool own, double box[4], bool *any) {
+                              SrMat3 matrix, bool own, double box[4], bool *any,
+                              SrStatus *status) {
     double time = context->time;
     if (!node->visible || time < node->start_time || time >= node->end_time)
         return true;
-    SrMat3 m = own ? matrix
-                   : sr_mat_multiply(matrix, sr_node_matrix(context, node));
+    SrDrawContext local = *context;
+    SrMat3 m = matrix;
+    if (!own) {
+        *status = sr_node_world(&local, node, matrix, &m);
+        if (*status != SR_OK) return false;
+    }
     if (node->type == SR_NODE_GROUP) {
         if (node->effect_ref_count && !own) return false;  /* effect reach */
         for (size_t i = 0; i < node->child_count; ++i)
-            if (!sr_content_bounds(context, node->children[i], m, false,
-                                   box, any))
+            if (!sr_content_bounds(&local, node->children[i], m, false,
+                                   box, any, status))
                 return false;
         return true;
     }
@@ -1595,6 +1662,11 @@ static bool sr_content_bounds(const SrDrawContext *context, const SrNode *node,
                          {-pad, h + pad}};
     for (int i = 0; i < 4; ++i) {
         SrVec2 p = sr_mat_point(m, corners[i]);
+        if (local.skewed && (!isfinite(p.x) || !isfinite(p.y))) {
+            *status = sr_skew_error(context, node, "skewX/skewY",
+                                    "skewed card bounds must be finite");
+            return false;
+        }
         if (!*any) {
             box[0] = box[2] = p.x;
             box[1] = box[3] = p.y;
@@ -1715,7 +1787,10 @@ static SrStatus sr_card_projective(SrDrawContext *context, const SrNode *node,
      * the screen edges and the near/far planes, all half-planes in (u, v). */
     double box[4];
     bool any = false;
-    bool bounded = sr_content_bounds(context, node, plane, true, box, &any);
+    SrStatus bounds_status = SR_OK;
+    bool bounded = sr_content_bounds(context, node, plane, true, box, &any,
+                                     &bounds_status);
+    if (bounds_status != SR_OK) return bounds_status;
     if (bounded && !any) return SR_OK;
     if (!bounded) { box[0] = box[1] = -1e9; box[2] = box[3] = 1e9; }
     double a[24], b[24];
@@ -1820,12 +1895,11 @@ static SrStatus sr_card_projective(SrDrawContext *context, const SrNode *node,
  * composited with its blend, opacity and the pass-through mask chain,
  * depth tested per sample against the shared depth buffer. */
 static SrStatus sr_draw_card(SrDrawContext *context, const SrNode *node,
-                             SrMat3 parent, double opacity, SrClip clip,
+                             SrMat3 plane, double opacity, SrClip clip,
                              const SrTarget *target, size_t depth,
                              const SrMaskLink *outer) {
     const SrCardView *view = context->view;
     double time = context->time;
-    SrMat3 plane = sr_mat_multiply(parent, sr_node_matrix(context, node));
     const SrNodeGeometry *geometry = sr_length_node(context->lengths, node);
     SrVec2 pivot = sr_mat_point(plane, (SrVec2){
         geometry ? geometry->anchor_x : sr_anim_eval(&node->transform.anchor_x, time),
@@ -1834,6 +1908,18 @@ static SrStatus sr_draw_card(SrDrawContext *context, const SrNode *node,
                                    sr_anim_eval(&node->transform.z, time),
                                    sr_anim_eval(&node->transform.rotation_x, time),
                                    sr_anim_eval(&node->transform.rotation_y, time));
+    if (context->skewed) {
+        bool finite = isfinite(pose.pivot_depth) && isfinite(pose.offset);
+        for (size_t r = 0; r < 3; ++r) {
+            finite &= isfinite(pose.normal[r]);
+            for (size_t c = 0; c < 3; ++c)
+                finite &= isfinite(pose.to_screen.m[r][c]) &&
+                          isfinite(pose.to_plane.m[r][c]);
+        }
+        if (!finite || !pose.invertible)
+            return sr_skew_error(context, node, "skewX/skewY",
+                                 "skewed card projection must be finite and invertible");
+    }
     if (!pose.invertible) return SR_OK;
     bool flat = pose.normal[0] == 0.0 && pose.normal[1] == 0.0;
     if (flat && (pose.pivot_depth < view->near_plane ||
@@ -1909,7 +1995,8 @@ static SrStatus sr_compositor_draw(SrCompositor *compositor, SrScene *scene,
     size_t errors = diag ? diag->errors : 0;
     SrCardView view = sr_card_view(scene, time);
     SrDrawContext context = {compositor, scene, diag, time, &view, NULL, 1.0,
-                             NULL, scene->has_relative_lengths ? compositor->lengths : NULL};
+                             NULL, scene->has_relative_lengths ? compositor->lengths : NULL,
+                             false};
     SrStatus status = sr_draw_node(&context, scene->root, sr_mat_identity(),
                                    clip, &target, 0, NULL);
     /* Run whatever is still queued; on failure it is discarded unrun. */
@@ -1983,7 +2070,8 @@ SrStatus sr_compositor_render_scene(SrCompositor *compositor, SrScene *scene,
     size_t errors = diag ? diag->errors : 0;
     SrCardView view = sr_card_view(scene, time);
     SrDrawContext context = {compositor, scene, diag, time, &view, NULL, 1.0,
-                             pass, scene->has_relative_lengths ? compositor->lengths : NULL};
+                             pass, scene->has_relative_lengths ? compositor->lengths : NULL,
+                             false};
     status = sr_draw_node(&context, scene->root, sr_mat_identity(), clip,
                           &target, 0, NULL);
     /* Queued card composites test against the depth buffer: they run

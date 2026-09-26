@@ -267,6 +267,22 @@ SrMat3 sr_mat_rotate(double radians) {
     return (SrMat3){c, -s, 0.0, s, c, 0.0};
 }
 
+SrMat3 sr_mat_apply_skew(SrMat3 matrix, double x, double y) {
+    if (x != 0.0)
+        matrix = sr_mat_multiply(matrix,
+            (SrMat3){1, tan(x * SR_PI / 180.0), 0, 0, 1, 0});
+    if (y != 0.0)
+        matrix = sr_mat_multiply(matrix,
+            (SrMat3){1, 0, 0, tan(y * SR_PI / 180.0), 1, 0});
+    return matrix;
+}
+
+bool sr_mat_finite(SrMat3 matrix) {
+    return isfinite(matrix.m00) && isfinite(matrix.m01) &&
+           isfinite(matrix.m02) && isfinite(matrix.m10) &&
+           isfinite(matrix.m11) && isfinite(matrix.m12);
+}
+
 bool sr_mat_inverse(SrMat3 m, SrMat3 *inverse) {
     double det = m.m00 * m.m11 - m.m01 * m.m10;
     if (!inverse || fabs(det) < 1e-15) {
@@ -278,6 +294,12 @@ bool sr_mat_inverse(SrMat3 m, SrMat3 *inverse) {
                         -m.m10 * inv, m.m00 * inv,
                         (m.m10 * m.m02 - m.m00 * m.m12) * inv};
     return true;
+}
+
+bool sr_mat_checked_inverse(SrMat3 matrix, SrMat3 *inverse) {
+    return sr_mat_finite(matrix) &&
+           isfinite(matrix.m00 * matrix.m11 - matrix.m01 * matrix.m10) &&
+           sr_mat_inverse(matrix, inverse) && sr_mat_finite(*inverse);
 }
 
 SrVec2 sr_mat_point(SrMat3 m, SrVec2 p) {

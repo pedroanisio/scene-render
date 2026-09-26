@@ -45,6 +45,7 @@ int main(int argc, char **argv)
     const suite suites[] = {
         {"random", sr_tests_random},
         {"blend_color", sr_tests_blend_color},
+        {"skew", sr_tests_skew},
         {"length", sr_tests_length},
         {"xml_lengths", sr_tests_xml_lengths},
         {"length_frame", sr_tests_length_frame},

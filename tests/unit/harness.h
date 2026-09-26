@@ -70,6 +70,7 @@ const char *sr_test_tmp_path(const char *name);
 extern const sr_test_case sr_tests_timeline[];
 extern const sr_test_case sr_tests_random[];
 extern const sr_test_case sr_tests_blend_color[];
+extern const sr_test_case sr_tests_skew[];
 extern const sr_test_case sr_tests_length[];
 extern const sr_test_case sr_tests_xml_lengths[];
 extern const sr_test_case sr_tests_length_frame[];

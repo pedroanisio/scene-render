@@ -136,7 +136,7 @@ if(BUILD_TESTING)
     set(SR_UNIT_SUITES timeline length length_frame length_physics
                        curves geometry compositor color vector random
                        mesh scene property xml xml_lengths profile styles metadata
-                       camera physics blend blend_color group raster mask path image
+                       camera physics blend blend_color skew group raster mask path image
                        encode encode_faults audio video
                        fx anim_color particles deform shadow text args resume
                        depth)

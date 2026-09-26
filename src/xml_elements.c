@@ -98,6 +98,10 @@ bool sr_xml_parse_node_common(ParseContext *ctx, const char *element,
                            &node->transform.scale_x.base) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "scaleY",
                            &node->transform.scale_y.base) ||
+        !sr_xml_parse_double_attr(ctx, element, attrs, "skewX",
+                           &node->transform.skew_x.base) ||
+        !sr_xml_parse_double_attr(ctx, element, attrs, "skewY",
+                           &node->transform.skew_y.base) ||
         !sr_xml_anim_length_attr(ctx, element, attrs, "anchorX",
                                   &node->transform.anchor_x, false) ||
         !sr_xml_anim_length_attr(ctx, element, attrs, "anchorY",
@@ -110,6 +114,14 @@ bool sr_xml_parse_node_common(ParseContext *ctx, const char *element,
                            &node->transform.rotation_x.base) ||
         !sr_xml_parse_double_attr(ctx, element, attrs, "rotationY",
                            &node->transform.rotation_y.base)) return false;
+    if (fabs(node->transform.skew_x.base) > SR_MAX_SKEW_DEGREES) {
+        sr_xml_fail(ctx, element, "skewX", "expected [-89,89] degrees");
+        return false;
+    }
+    if (fabs(node->transform.skew_y.base) > SR_MAX_SKEW_DEGREES) {
+        sr_xml_fail(ctx, element, "skewY", "expected [-89,89] degrees");
+        return false;
+    }
     const char *three_d = sr_xml_attr(attrs, "threeD");
     if (three_d && !sr_parse_bool(three_d, &node->card)) {
         sr_xml_fail(ctx, element, "threeD", "expected true or false");
@@ -427,6 +439,9 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
     if (!p || !property) return;
     void *object = NULL;
     const SrProperty *entry = animate_target(p, property, &object);
+    if (entry && (entry->flags & SR_PROPERTY_REQUIRE_1_1) &&
+        ctx->scene->format_version < 11)
+        SR_XML_FAIL_RETURN(ctx, "animate", "property", "requires version=\"1.1\"");
     void *target = sr_property_target(entry, object);
     SrAnimValue *anim = entry && entry->type == SR_PROPERTY_NUMBER ? target : NULL;
     SrAnimColor *color = entry && entry->type == SR_PROPERTY_COLOR ? target : NULL;
