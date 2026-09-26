@@ -494,3 +494,26 @@ The follow-on resource audit in `docs/reviews/b1-compositing-resources.md`
 identifies actual allocation/work sites and cache-history, thread-count and
 queue-borrowing traps. It is an implementation checklist; the shared live
 budget and advanced masks remain incomplete, along with the other B1 work.
+
+## First shared-ledger consumers
+
+The reviewed resource policy is now concrete in
+`docs/design/b1-compositing-resources.md`. The first implementation increment
+adds the ledger, target/prepared-plan/borrowed-depth admission, deterministic
+compositor cache reclamation, paired allocation accounting for pools/planes,
+queues/mask copies/heap masks/card-sort arrays/depth, and ordinary raster,
+mask-copy, clear/depth and band-dispatch work. Seven focused cases and OOM
+replay exercise success, exact/short quotas, partial cleanup, thread invariance,
+larger prior frames and nested projected cards. Both reproduced review findings
+are fixed, with no remaining review findings. Final SDK Release, ASan/UBSan and
+coverage pass 79/79 each; coverage is 92.26% / 76.95%, with floors raised to
+90.25% / 74.90%. The oracle matches 309 previews, three encodes and two
+rejections. The strict 2% baseline performance gate passes (clear +1.0%,
+compositor -8.2%, total -12.2%; noisy). No golden, integration hash or baseline
+changes. Evidence and explicit remaining consumers are in
+`docs/reviews/b1-compositor-ledger.md`.
+
+This is partial accounting: deformation/particles, lengths, geometry/animation
+work, effects/lighting, path raster scratch and the wider renderer scope still
+need integration. Advanced masks and the other remaining B1 requirements are
+unchanged. No complete shared-budget claim or additional capability is enabled.

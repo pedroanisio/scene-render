@@ -21,6 +21,7 @@
  * SR_OOM_BACKTRACE=1 prints a backtrace of every injected failure. */
 #include "vector_path_internal.h"
 #include "compositing_internal.h"
+#include "compositor_resources_internal.h"
 
 #include <execinfo.h>
 #include <inttypes.h>
@@ -31,6 +32,7 @@
 
 #include "harness.h"
 #include "fixture.h"
+#include "resource_fixture.h"
 #include "length_frame.h"
 #include "scene_render/physics.h"
 #include "scene_render/assets.h"
@@ -409,6 +411,94 @@ static void compositing_preparation_survives_allocation_failures(sr_test_ctx *t)
     CHECK(t, replay_until_success(t, &invalid, &scene) >= 4);
     scene.root->children[127] = last;
     sr_scene_free(&scene);
+}
+
+static SrStatus resource_growth_op(void *opaque) {
+    (void)opaque;
+    SrCompositeResources resources;
+    sr_composite_resources_init(&resources, NULL);
+    unsigned char *p = sr_composite_alloc(&resources, 16, 1, 4);
+    SrStatus status = SR_OK;
+    if (!p) status = sr_composite_resource_status(&resources);
+    else {
+        p[0] = 71;
+        uint64_t bytes = resources.bytes;
+        void *replacement = sr_composite_realloc(&resources, p, 64, 1, 16);
+        if (replacement) p = replacement;
+        else {
+            status = sr_composite_resource_status(&resources);
+            if (resources.bytes != bytes || resources.pixels != 4 || p[0] != 71)
+                status = SR_ERR_ARGUMENT;
+        }
+        sr_composite_free(&resources, p);
+    }
+    if (resources.bytes || resources.pixels) return SR_ERR_ARGUMENT;
+    return status;
+}
+
+typedef struct {
+    SrScene scene;
+    SrFrame frame;
+    SrCompositor compositor;
+    bool lighting;
+} ResourceContext;
+
+static SrStatus resource_render_op(void *opaque) {
+    ResourceContext *c = opaque;
+    SrStatus status = c->lighting
+        ? sr_compositor_render_scene(&c->compositor, &c->scene, .5, &c->frame, NULL)
+        : sr_compositor_render(&c->compositor, &c->scene, 0, &c->frame, NULL);
+    if (c->compositor.resources || c->compositor.pool || c->compositor.queue)
+        return SR_ERR_ARGUMENT;
+    return status;
+}
+
+static void resources_survive_allocation_failures(sr_test_ctx *t) {
+    const OomSpec growth = {"compositing resource growth", resource_growth_op,
+        NULL, NULL, NULL, {SR_ERR_MEMORY}};
+    CHECK_INT(t, replay_until_success(t, &growth, NULL), 2);
+    ResourceContext c = {0};
+    fx_scene(&c.scene, 16, 16);
+    sr_compositor_init(&c.compositor, 1);
+    bool built = true;
+    for (size_t g = 0; g < 2 && built; ++g) {
+        SrNode *group = fx_add(&c.scene, NULL, SR_NODE_GROUP);
+        if (!group) { built = false; break; }
+        group->blend = SR_BLEND_COLOR_BURN;
+        group->masks = sr_alloc(9 * sizeof(*group->masks));
+        if (!group->masks) { built = false; break; }
+        group->mask_count = 9;
+        for (size_t i = 0; i < 9; ++i)
+            group->masks[i] = fx_mask(SR_MASK_RECT, 0, 0, 16, 16, false);
+        for (size_t i = 0; i < 70 && built; ++i)
+            built = fx_rect(&c.scene, group, 0, 0, 8, 8,
+                             (SrColor){0.5, 0.8, 0.2, 0.1}, 1) != NULL;
+    }
+    CHECK(t, built);
+    CHECK_INT(t, sr_scene_prepare_compositing(&c.scene, NULL), SR_OK);
+    CHECK_INT(t, sr_frame_init(&c.frame, 16, 16), SR_OK);
+    const OomSpec render = {"bounded compositor queues/pools/masks",
+        resource_render_op, NULL, NULL, NULL, {SR_ERR_MEMORY}};
+    if (built && c.scene.compositing && c.frame.px)
+        CHECK(t, replay_until_success(t, &render, &c) >= 12);
+    sr_compositor_free(&c.compositor);
+    sr_frame_free(&c.frame);
+    sr_scene_free(&c.scene);
+
+    c = (ResourceContext){.lighting = true};
+    built = resource_card_scene(&c.scene);
+    sr_compositor_init(&c.compositor, 1);
+    CHECK(t, built);
+    CHECK_INT(t, sr_scene_prepare_compositing(&c.scene, NULL), SR_OK);
+    CHECK_INT(t, sr_frame_init(&c.frame, 64, 64), SR_OK);
+    const OomSpec cards = {"bounded projective card/depth/shared mask",
+        resource_render_op, NULL, NULL, NULL, {SR_ERR_MEMORY}};
+    if (built && c.scene.compositing && c.frame.px)
+        CHECK(t, replay_until_success(t, &cards, &c) >= 12);
+    CHECK_INT(t, resource_render_op(&c), SR_OK);
+    sr_compositor_free(&c.compositor);
+    sr_frame_free(&c.frame);
+    sr_scene_free(&c.scene);
 }
 
 typedef struct {
@@ -837,6 +927,8 @@ const sr_test_case sr_tests_oom[] = {
      mask_paths_survive_allocation_failures},
     {"compositing_preparation_survives_allocation_failures",
      compositing_preparation_survives_allocation_failures},
+    {"resources_survive_allocation_failures",
+     resources_survive_allocation_failures},
     {"color_parse_survives_allocation_failures",
      color_parse_survives_allocation_failures},
     {"repeated_render_leaks_nothing", repeated_render_leaks_nothing},

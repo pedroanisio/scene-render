@@ -11,6 +11,7 @@
 #include "length_frame.h"
 #include "compositing_internal.h"
 #include "compositor_internal.h"
+#include "compositor_resources_internal.h"
 
 #include <float.h>
 #include <limits.h>
@@ -64,6 +65,7 @@ typedef struct {
     bool has_card;            /* SR_OP_BUFFER: depth test with `card` */
     SrCardTest card;
     SrClip bounds;
+    SrCompositeOwner owner;   /* source of queued resource reservations */
     void *owned;              /* queued copy of the mask chain, or NULL */
 } SrDrawOp;
 
@@ -141,24 +143,25 @@ void sr_compositor_free(SrCompositor *compositor) {
     if (!compositor) return;
     if (compositor->plane) {
         sr_compositor_free(compositor->plane);
-        free(compositor->plane);
+        sr_composite_free(compositor->resources, compositor->plane);
     }
-    free(compositor->depth_store.z);
+    sr_composite_free(compositor->resources, compositor->depth_store.z);
     if (compositor->lengths) {
         sr_length_frame_free(compositor->lengths);
         free(compositor->lengths);
     }
     for (size_t i = 0; i < compositor->pool_count; ++i) {
-        if (compositor->pool[i]) sr_frame_free(&compositor->pool[i]->frame);
-        free(compositor->pool[i]);
+        if (compositor->pool[i])
+            sr_composite_free(compositor->resources, compositor->pool[i]->frame.px);
+        sr_composite_free(compositor->resources, compositor->pool[i]);
     }
-    free(compositor->pool);
+    sr_composite_free(compositor->resources, compositor->pool);
     if (compositor->queue) {
         for (size_t i = 0; i < compositor->queue->count; ++i)
-            free(compositor->queue->ops[i].owned);
-        free(compositor->queue->ops);
-        free(compositor->queue->order);
-        free(compositor->queue);
+            sr_composite_free(compositor->resources, compositor->queue->ops[i].owned);
+        sr_composite_free(compositor->resources, compositor->queue->ops);
+        sr_composite_free(compositor->resources, compositor->queue->order);
+        sr_composite_free(compositor->resources, compositor->queue);
     }
     *compositor = (SrCompositor){0};
 }
@@ -173,7 +176,8 @@ static void sr_queue_discard(SrCompositor *compositor) {
     for (; compositor; compositor = compositor->plane) {
         struct SrOpQueue *queue = compositor->queue;
         if (!queue) continue;
-        for (size_t i = 0; i < queue->count; ++i) free(queue->ops[i].owned);
+        for (size_t i = 0; i < queue->count; ++i)
+            sr_composite_free(compositor->resources, queue->ops[i].owned);
         queue->count = 0;
         queue->pixels = 0;
     }
@@ -200,10 +204,17 @@ static void sr_buffer_mark(SrGroupBuffer *buffer, SrClip clip) {
 static SrStatus sr_pool_get(SrCompositor *compositor, size_t depth,
                             uint32_t width, uint32_t height,
                             SrGroupBuffer **out) {
+    SrCompositeResources *resources = compositor->resources;
+    if (resources && (depth >= SR_MAX_COMPOSITE_DEPTH || !width || !height ||
+        width > SR_MAX_COVERAGE_DIMENSION || height > SR_MAX_COVERAGE_DIMENSION)) {
+        sr_composite_resource_fail(resources, SR_ERR_RENDER,
+                                    "compositing buffer dimensions/depth exceeded");
+        return SR_ERR_RENDER;
+    }
     if (depth >= compositor->pool_count) {
-        SrGroupBuffer **pool = sr_realloc(compositor->pool,
-                                          (depth + 1) * sizeof(*pool));
-        if (!pool) return SR_ERR_MEMORY;
+        SrGroupBuffer **pool = sr_composite_realloc(resources,
+            compositor->pool, depth + 1, sizeof(*pool), 0);
+        if (!pool) return sr_composite_resource_status(resources);
         for (size_t i = compositor->pool_count; i <= depth; ++i) pool[i] = NULL;
         compositor->pool = pool;
         compositor->pool_count = depth + 1;
@@ -213,16 +224,20 @@ static SrStatus sr_pool_get(SrCompositor *compositor, size_t depth,
                    buffer->frame.height != height)) {
         SrStatus flushed = sr_queue_flush(compositor);
         if (flushed != SR_OK) return flushed;
-        sr_frame_free(&buffer->frame);
-        free(buffer);
+        sr_composite_free(resources, buffer->frame.px);
+        sr_composite_free(resources, buffer);
         buffer = compositor->pool[depth] = NULL;
     }
     if (!buffer) {
-        buffer = sr_alloc(sizeof(*buffer));
-        if (!buffer) return SR_ERR_MEMORY;
-        if (sr_frame_init(&buffer->frame, width, height) != SR_OK) {
-            free(buffer);
-            return SR_ERR_MEMORY;
+        buffer = sr_composite_alloc(resources, 1, sizeof(*buffer), 0);
+        if (!buffer) return sr_composite_resource_status(resources);
+        uint64_t pixels = (uint64_t)width * height * 4;
+        buffer->frame = (SrFrame){width, height,
+            sr_composite_alloc(resources, (size_t)width * height,
+                                 4 * sizeof(float), pixels)};
+        if (!buffer->frame.px) {
+            sr_composite_free(resources, buffer);
+            return sr_composite_resource_status(resources);
         }
         compositor->pool[depth] = buffer;
     } else if (buffer->x1 > buffer->x0 && buffer->y1 > buffer->y0) {
@@ -1018,6 +1033,13 @@ static void sr_band_rows(void *opaque, size_t begin, size_t end) {
 static SrStatus sr_queue_flush(SrCompositor *compositor) {
     struct SrOpQueue *queue = compositor->queue;
     if (!queue || queue->count == 0) return SR_OK;
+    SrCompositeResources *resources = compositor->resources;
+    SrCompositeOwner previous = sr_composite_owner(resources,
+                                                     queue->ops[queue->count - 1].owner);
+    if (!sr_composite_work(resources, queue->count, 2)) {
+        sr_composite_owner(resources, previous);
+        return SR_ERR_RENDER;
+    }
     int y0 = queue->ops[0].bounds.y0, y1 = queue->ops[0].bounds.y1;
     for (size_t i = 1; i < queue->count; ++i) {
         if (queue->ops[i].bounds.y0 < y0) y0 = queue->ops[i].bounds.y0;
@@ -1025,6 +1047,10 @@ static SrStatus sr_queue_flush(SrCompositor *compositor) {
     }
     SrBandJob job = {queue->ops, queue->count, y0, y1, NULL};
     size_t bands = ((size_t)(y1 - y0) + SR_BAND_ROWS - 1) / SR_BAND_ROWS;
+    if (!sr_composite_work(resources, bands, queue->count + 1)) {
+        sr_composite_owner(resources, previous);
+        return SR_ERR_RENDER;
+    }
     unsigned threads = queue->pixels < SR_PARALLEL_MIN_PIXELS
                            ? 1U : compositor->threads;
     /* sr_parallel_for hands each worker a contiguous run of work items;
@@ -1032,14 +1058,19 @@ static SrStatus sr_queue_flush(SrCompositor *compositor) {
      * frame over all workers. Which worker runs a band never changes its
      * pixels. */
     unsigned workers = sr_parallel_thread_count(threads, bands);
-    if (workers > 1) {
+    if (workers > 1 || resources) {
         if (queue->order_capacity < bands) {
-            uint32_t *order = sr_realloc(queue->order,
-                                         bands * sizeof(*order));
-            if (!order) return SR_ERR_MEMORY;
+            uint32_t *order = sr_composite_realloc(resources,
+                queue->order, bands, sizeof(*order), 0);
+            if (!order) {
+                sr_composite_owner(resources, previous);
+                return sr_composite_resource_status(resources);
+            }
             queue->order = order;
             queue->order_capacity = bands;
         }
+    }
+    if (workers > 1) {
         size_t item = 0;
         for (size_t first = 0; first < workers; ++first)
             for (size_t band = first; band < bands; band += workers)
@@ -1047,23 +1078,30 @@ static SrStatus sr_queue_flush(SrCompositor *compositor) {
         job.order = queue->order;
     }
     SrStatus status = sr_parallel_for(bands, threads, sr_band_rows, &job);
-    for (size_t i = 0; i < queue->count; ++i) free(queue->ops[i].owned);
+    for (size_t i = 0; i < queue->count; ++i) sr_composite_free(resources, queue->ops[i].owned);
     queue->count = 0;
     queue->pixels = 0;
+    sr_composite_owner(resources, previous);
     return status;
 }
 
 /* Copies a mask chain (links and their evaluated masks) into one block so
  * a queued op does not point into its caller's stack frames. */
-static SrStatus sr_mask_chain_copy(SrDrawOp *op) {
+static SrStatus sr_mask_chain_copy(SrCompositeResources *resources,
+                                    SrDrawOp *op) {
     size_t links = 0, masks = 0;
     for (const SrMaskLink *link = op->masks; link; link = link->parent) {
+        if (!sr_composite_work(resources, 1, 1)) return SR_ERR_RENDER;
         ++links;
         masks += link->count;
     }
-    SrMaskLink *copy = sr_alloc(links * sizeof(*copy) +
-                                masks * sizeof(SrMaskEval));
-    if (!copy) return SR_ERR_MEMORY;
+    /* Prepared ancestry bounds both sums before computing the copy size. */
+    size_t bytes = links * sizeof(SrMaskLink) + masks * sizeof(SrMaskEval);
+    /* Allocation zeroing and payload copying are distinct full passes. */
+    if (!sr_composite_work(resources, bytes / 4 + (bytes % 4 != 0) + links, 1))
+        return SR_ERR_RENDER;
+    SrMaskLink *copy = sr_composite_alloc(resources, 1, bytes, 0);
+    if (!copy) return sr_composite_resource_status(resources);
     SrMaskEval *evals = (SrMaskEval *)(copy + links);
     size_t i = 0;
     for (const SrMaskLink *link = op->masks; link; link = link->parent, ++i) {
@@ -1088,6 +1126,28 @@ static SrStatus sr_op_submit_shared(SrCompositor *compositor,
                                     const SrMaskLink **shared) {
     if (op->bounds.x1 <= op->bounds.x0 || op->bounds.y1 <= op->bounds.y0)
         return SR_OK;
+    SrCompositeResources *resources = compositor->resources;
+    if (resources) {
+        /* One raster/blend step, every inherited mask and link, and every
+         * card depth sample. Deformation evaluation is integrated separately. */
+        uint64_t cost = 1;
+        for (const SrMaskLink *link = op->masks; link; link = link->parent) {
+            if (!sr_composite_work(resources, 1, 1)) return SR_ERR_RENDER;
+            cost += 1 + link->count;
+        }
+        if (op->has_card && op->card.depth) {
+            uint64_t samples = (uint64_t)op->card.depth->samples;
+            cost += samples * samples;
+        }
+        uint64_t area = (uint64_t)(op->bounds.x1 - op->bounds.x0) *
+                        (uint64_t)(op->bounds.y1 - op->bounds.y0);
+        /* A clear charges the whole buffer, independent of dirty history. */
+        if (op->kind == SR_OP_CLEAR) {
+            area = (uint64_t)op->target.width * op->target.height;
+            cost = 4;
+        }
+        if (!sr_composite_work(resources, area, cost)) return SR_ERR_RENDER;
+    }
     if (op->target.buffer) sr_buffer_mark(op->target.buffer, op->bounds);
     if (immediate) {
         SrStatus status = sr_queue_flush(compositor);
@@ -1098,24 +1158,26 @@ static SrStatus sr_op_submit_shared(SrCompositor *compositor,
     }
     struct SrOpQueue *queue = compositor->queue;
     if (!queue) {
-        queue = compositor->queue = sr_alloc(sizeof(*queue));
-        if (!queue) return SR_ERR_MEMORY;
+        queue = compositor->queue = sr_composite_alloc(resources, 1, sizeof(*queue), 0);
+        if (!queue) return sr_composite_resource_status(resources);
         *queue = (struct SrOpQueue){0};
     }
     if (queue->count == queue->capacity) {
         size_t capacity = queue->capacity ? queue->capacity * 2 : 64;
-        SrDrawOp *ops = sr_realloc(queue->ops, capacity * sizeof(*ops));
-        if (!ops) return SR_ERR_MEMORY;
+        SrDrawOp *ops = sr_composite_realloc(resources, queue->ops,
+            capacity, sizeof(*ops), 0);
+        if (!ops) return sr_composite_resource_status(resources);
         queue->ops = ops;
         queue->capacity = capacity;
     }
     SrDrawOp *slot = &queue->ops[queue->count];
     *slot = *op;
     slot->owned = NULL;
+    slot->owner = resources ? resources->owner : (SrCompositeOwner){0};
     if (slot->masks && shared && *shared) {
         slot->masks = *shared;
     } else if (slot->masks) {
-        SrStatus status = sr_mask_chain_copy(slot);
+        SrStatus status = sr_mask_chain_copy(resources, slot);
         if (status != SR_OK) return status;
         if (shared) *shared = slot->masks;
     }
@@ -1339,8 +1401,9 @@ static SrStatus sr_draw_children(SrDrawContext *context, const SrNode *node,
     const SrScene *scene = context->scene;
     bool merge = context->lighting && node == scene->root && !target->buffer;
     size_t capacity = node->child_count + (merge ? scene->object3d_count : 0);
-    SrDrawItem *items = sr_alloc(capacity * sizeof(*items));
-    if (!items) return SR_ERR_MEMORY;
+    SrDrawItem *items = sr_composite_alloc(context->compositor->resources,
+        capacity, sizeof(*items), 0);
+    if (!items) return sr_composite_resource_status(context->compositor->resources);
     size_t count = 0;
     for (size_t i = 0; i < node->child_count;) {
         if (!node->children[i]->card) {
@@ -1353,7 +1416,7 @@ static SrStatus sr_draw_children(SrDrawContext *context, const SrNode *node,
             double key;
             SrStatus status = sr_card_key(context, node->children[i], world, &key);
             if (status != SR_OK) {
-                free(items);
+                sr_composite_free(context->compositor->resources, items);
                 return status;
             }
             items[count++] = (SrDrawItem){node->children[i], 0, key, i};
@@ -1390,7 +1453,7 @@ static SrStatus sr_draw_children(SrDrawContext *context, const SrNode *node,
         for (size_t i = 0; i < count; ++i)
             if (!items[i].node) { context->lighting = NULL; break; }
     }
-    free(items);
+    sr_composite_free(context->compositor->resources, items);
     return status;
 }
 
@@ -1418,8 +1481,9 @@ static SrStatus sr_draw_group(SrDrawContext *context, const SrNode *node,
     if (!sr_mat_inverse(world, &inverse)) return SR_OK;
     SrMaskEval local_masks[8];
     SrMaskEval *masks = node->mask_count <= 8 ? local_masks
-        : sr_alloc(node->mask_count * sizeof(*masks));
-    if (!masks) return SR_ERR_MEMORY;
+        : sr_composite_alloc(context->compositor->resources, node->mask_count,
+                               sizeof(*masks), 0);
+    if (!masks) return sr_composite_resource_status(context->compositor->resources);
     sr_masks_eval(context, node, masks);
     SrMaskLink link = {masks, node->mask_count, inverse,
                        sr_pixel_footprint(inverse), outer};
@@ -1476,7 +1540,8 @@ static SrStatus sr_draw_group(SrDrawContext *context, const SrNode *node,
             status = sr_op_submit(context->compositor, &op, false);
         }
     }
-    if (masks != local_masks) free(masks);
+    if (masks != local_masks)
+        sr_composite_free(context->compositor->resources, masks);
     return status;
 }
 
@@ -1488,10 +1553,10 @@ static SrStatus sr_draw_card(SrDrawContext *context, const SrNode *node,
                              const SrTarget *target, size_t depth,
                              const SrMaskLink *outer);
 
-static SrStatus sr_draw_node(SrDrawContext *context, const SrNode *node,
-                             SrMat3 parent, SrClip clip,
-                             const SrTarget *target, size_t depth,
-                             const SrMaskLink *outer) {
+static SrStatus sr_draw_node_impl(SrDrawContext *context, const SrNode *node,
+                                  SrMat3 parent, SrClip clip,
+                                  const SrTarget *target, size_t depth,
+                                  const SrMaskLink *outer) {
     SrStatus ready = sr_composite_node_ready(context->scene, node, context->diag);
     if (ready != SR_OK) return ready;
     double time = context->time;
@@ -1518,6 +1583,28 @@ static SrStatus sr_draw_node(SrDrawContext *context, const SrNode *node,
     return status;
 }
 
+static SrStatus sr_draw_node(SrDrawContext *context, const SrNode *node,
+                             SrMat3 parent, SrClip clip,
+                             const SrTarget *target, size_t depth,
+                             const SrMaskLink *outer) {
+    SrCompositeResources *resources = context->compositor->resources;
+    if (!resources)
+        return sr_draw_node_impl(context, node, parent, clip, target, depth, outer);
+    const char *element = node == context->scene->root ? "composition"
+        : node->type == SR_NODE_GROUP ? "group"
+        : node->type == SR_NODE_MEDIA ? "layer"
+        : node->type == SR_NODE_PARTICLES ? "particleEmitter" : "shape";
+    const char *attribute = node->blend > SR_BLEND_DIFFERENCE ? "blend"
+        : sr_node_uses_compositing(node) ? "skewX/skewY" : NULL;
+    SrCompositeOwner previous = sr_composite_owner(resources,
+        (SrCompositeOwner){node->source_line, element, attribute});
+    SrStatus status = SR_ERR_RENDER;
+    if (sr_composite_work(resources, 1 + node->mask_count, 1))
+        status = sr_draw_node_impl(context, node, parent, clip, target, depth, outer);
+    sr_composite_owner(resources, previous);
+    return status;
+}
+
 static SrStatus sr_draw_leaf(SrDrawContext *context, const SrNode *node,
                              SrMat3 world, double opacity, SrClip clip,
                              const SrTarget *target,
@@ -1526,8 +1613,9 @@ static SrStatus sr_draw_leaf(SrDrawContext *context, const SrNode *node,
     if (!sr_mat_inverse(world, &inverse)) return SR_OK;
     SrMaskEval local_masks[8];
     SrMaskEval *masks = node->mask_count <= 8 ? local_masks
-        : sr_alloc(node->mask_count * sizeof(*masks));
-    if (!masks) return SR_ERR_MEMORY;
+        : sr_composite_alloc(context->compositor->resources, node->mask_count,
+                               sizeof(*masks), 0);
+    if (!masks) return sr_composite_resource_status(context->compositor->resources);
     sr_masks_eval(context, node, masks);
     SrMaskLink link = {masks, node->mask_count, inverse,
                        sr_pixel_footprint(inverse), outer};
@@ -1543,7 +1631,8 @@ static SrStatus sr_draw_leaf(SrDrawContext *context, const SrNode *node,
     else if (node->type == SR_NODE_PARTICLES)
         status = sr_draw_particles(context, node, world, opacity, clip, target,
                                    chain);
-    if (masks != local_masks) free(masks);
+    if (masks != local_masks)
+        sr_composite_free(context->compositor->resources, masks);
     return status;
 }
 
@@ -1562,15 +1651,17 @@ static SrStatus sr_draw_content(SrDrawContext *context, const SrNode *node,
     if (!sr_mat_inverse(world, &inverse)) return SR_OK;
     SrMaskEval local_masks[8];
     SrMaskEval *masks = node->mask_count <= 8 ? local_masks
-        : sr_alloc(node->mask_count * sizeof(*masks));
-    if (!masks) return SR_ERR_MEMORY;
+        : sr_composite_alloc(context->compositor->resources, node->mask_count,
+                               sizeof(*masks), 0);
+    if (!masks) return sr_composite_resource_status(context->compositor->resources);
     sr_masks_eval(context, node, masks);
     SrMaskLink link = {masks, node->mask_count, inverse,
                        sr_pixel_footprint(inverse), NULL};
     SrClip inner = sr_mask_clip(clip, masks, node->mask_count, world, target);
     SrStatus status = sr_draw_children(context, node, world, inner, target,
                                        depth, node->mask_count ? &link : NULL);
-    if (masks != local_masks) free(masks);
+    if (masks != local_masks)
+        sr_composite_free(context->compositor->resources, masks);
     return status;
 }
 
@@ -1809,9 +1900,12 @@ static SrStatus sr_card_projective(SrDrawContext *context, const SrNode *node,
         return SR_OK;
     SrCompositor *pool = context->compositor->plane;
     if (!pool) {
-        pool = context->compositor->plane = sr_alloc(sizeof(*pool));
-        if (!pool) return SR_ERR_MEMORY;
+        pool = context->compositor->plane = sr_composite_alloc(
+            context->compositor->resources, 1, sizeof(*pool), 0);
+        if (!pool)
+            return sr_composite_resource_status(context->compositor->resources);
         sr_compositor_init(pool, context->compositor->threads);
+        pool->resources = context->compositor->resources;
     }
     SrGroupBuffer *buffer = NULL;
     SrStatus status = sr_pool_get(pool, 0, bw, bh, &buffer);
@@ -1958,7 +2052,7 @@ static SrStatus sr_compositor_draw(SrCompositor *compositor, SrScene *scene,
     return diag && diag->errors > errors ? SR_ERR_ASSET : SR_OK;
 }
 
-SrStatus sr_compositor_render(SrCompositor *compositor, SrScene *scene,
+static SrStatus sr_compositor_render_impl(SrCompositor *compositor, SrScene *scene,
                               double time, SrFrame *frame, SrDiagnostics *diag) {
     if (!compositor || !scene || !scene->root || !frame || !frame->px)
         return SR_ERR_ARGUMENT;
@@ -1975,7 +2069,7 @@ static bool sr_root_has_cards(const SrScene *scene) {
     return false;
 }
 
-SrStatus sr_compositor_render_scene(SrCompositor *compositor, SrScene *scene,
+static SrStatus sr_compositor_render_scene_impl(SrCompositor *compositor, SrScene *scene,
                                     double time, SrFrame *frame,
                                     SrDiagnostics *diag) {
     if (!compositor || !scene || !scene->root || !frame || !frame->px)
@@ -1995,14 +2089,17 @@ SrStatus sr_compositor_render_scene(SrCompositor *compositor, SrScene *scene,
     uint32_t dw = frame->width * (uint32_t)n, dh = frame->height * (uint32_t)n;
     if (!depth->z || depth->width != dw || depth->height != dh ||
         depth->samples != n) {
-        free(depth->z);
-        *depth = (SrDepthBuffer){sr_alloc((size_t)dw * dh * sizeof(double)),
-                                 dw, dh, n};
+        sr_composite_free(compositor->resources, depth->z);
+        *depth = (SrDepthBuffer){sr_composite_alloc(compositor->resources,
+            (size_t)dw * dh, sizeof(double), (uint64_t)dw * dh * 2), dw, dh, n};
         if (!depth->z) {
-            sr_diag_error(diag, 0, NULL, NULL, "cannot allocate the depth buffer");
-            return SR_ERR_MEMORY;
+            if (!compositor->resources)
+                sr_diag_error(diag, 0, NULL, NULL, "cannot allocate the depth buffer");
+            return sr_composite_resource_status(compositor->resources);
         }
     }
+    if (!sr_composite_work(compositor->resources, (uint64_t)dw * dh, 2))
+        return SR_ERR_RENDER;
     for (size_t i = 0, count = (size_t)dw * dh; i < count; ++i)
         depth->z[i] = INFINITY;
     SrLightingPass *pass = NULL;
@@ -2042,6 +2139,33 @@ SrStatus sr_compositor_render_scene(SrCompositor *compositor, SrScene *scene,
     sr_lighting_end(pass);
     if (status != SR_OK) return status;
     return diag && diag->errors > errors ? SR_ERR_ASSET : SR_OK;
+}
+
+static SrStatus sr_render_scoped(SrCompositor *compositor, SrScene *scene,
+                                 double time, SrFrame *frame,
+                                 SrDiagnostics *diag, bool lighting) {
+    if (!compositor || !scene || !scene->root || !frame || !frame->px)
+        return SR_ERR_ARGUMENT;
+    SrStatus status = sr_composite_scene_ready(scene, diag);
+    if (status != SR_OK) return status;
+    SrCompositeScope scope;
+    status = sr_composite_scope_begin(&scope, compositor, scene, frame, NULL);
+    if (status == SR_OK)
+        status = lighting
+            ? sr_compositor_render_scene_impl(compositor, scene, time, frame, diag)
+            : sr_compositor_render_impl(compositor, scene, time, frame, diag);
+    return sr_composite_scope_end(&scope, compositor, status, diag);
+}
+
+SrStatus sr_compositor_render(SrCompositor *compositor, SrScene *scene,
+                              double time, SrFrame *frame, SrDiagnostics *diag) {
+    return sr_render_scoped(compositor, scene, time, frame, diag, false);
+}
+
+SrStatus sr_compositor_render_scene(SrCompositor *compositor, SrScene *scene,
+                                    double time, SrFrame *frame,
+                                    SrDiagnostics *diag) {
+    return sr_render_scoped(compositor, scene, time, frame, diag, true);
 }
 
 SrStatus sr_composite_scene(SrScene *scene, double time, SrFrame *frame,

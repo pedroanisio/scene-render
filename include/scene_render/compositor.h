@@ -30,12 +30,14 @@ typedef struct {
 } SrDepthBuffer;
 
 /* Per-render state kept across frames: the isolated-group buffer pool
- * (allocated lazily once per depth and reused, never per frame), the
+ * (allocated lazily once per depth and reused for legacy rendering), the
  * worker count used for row-parallel draws and, for scenes with depth
  * cards, the shared depth buffer and a second pool for the plane buffers
  * of perspective-warped cards (see sr_compositor_render_scene). Draw ops
  * are recorded in `queue` and executed band by band (every pixel still
- * receives the ops in submission order); it is empty between renders. */
+ * receives the ops in submission order); it is empty between renders.
+ * Prepared B1 compositing reclaims caches at frame boundaries to make resource
+ * admission independent of render history. Borrowed depth is preserved. */
 typedef struct SrCompositor {
     SrGroupBuffer **pool;
     size_t pool_count;
@@ -45,6 +47,7 @@ typedef struct SrCompositor {
     SrDepthBuffer depth_store;      /* owned by sr_compositor_render_scene */
     struct SrCompositor *plane;     /* lazily allocated plane-buffer pool */
     struct SrLengthFrame *lengths;  /* owned evaluated geometry, when required */
+    struct SrCompositeResources *resources; /* borrowed during bounded render */
 } SrCompositor;
 
 SrStatus sr_frame_init(SrFrame *frame, uint32_t width, uint32_t height);

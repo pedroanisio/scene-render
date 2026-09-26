@@ -7,12 +7,12 @@
 # usage: tools/coverage-gate.sh [BUILD_DIR]     (default: build/coverage)
 #
 # Floors retain about 2 percentage points of headroom below the B1-3
-# bounded mask paths (92.22% lines / 76.84% branches, GCC 15.2, SDK 25.08).
+# compositor ledger (92.26% lines / 76.95% branches, GCC 15.2, SDK 25.08).
 # Raise them when coverage improves; lowering them needs a reason in the
 # commit message.
 set -eu
-LINE_FLOOR=90.20
-BRANCH_FLOOR=74.80
+LINE_FLOOR=90.25
+BRANCH_FLOOR=74.90
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 build=${1:-$root/build/coverage}
