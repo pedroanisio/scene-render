@@ -25,9 +25,9 @@ Do these once, in this order.
 1. **Commit the schema errata.**
    - `schema/scene-render-1.1.xsd` is already committed as it was drafted (in
      `8f4dcfc`, whose message is unrelated to the change). It does not yet
-     contain errata E1–E9 (B3 §7).
-   - Apply all nine in **one** commit:
-     `fix(schema): apply 1.1 errata E1-E9`.
+     contain errata E1–E14 (B3 §7).
+   - Apply all fourteen in **one** commit:
+     `fix(schema): apply 1.1 errata E1-E14`.
    - Run xmllint over every scene in the repository. All 42 scenes that pass
      1.0 validation must also pass 1.1 validation (today two fail because of
      E1).
