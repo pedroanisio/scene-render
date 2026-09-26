@@ -201,8 +201,8 @@ void sr_xml_start_output(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"path", "codec", "pixelFormat", "preset",
                                     "crf", "bitrate", "audioCodec",
                                     "audioBitrate", "colorSpace", "colorRange",
-                                    "sphericalMetadata"};
-    if (!sr_xml_attrs_allowed(ctx, "output", attrs, allowed, 11)) return;
+                                    "sphericalMetadata", "embedMetadata"};
+    if (!sr_xml_attrs_allowed(ctx, "output", attrs, allowed, 12)) return;
     ctx->scene->output.source_line = sr_xml_line(ctx);
     const char *path = sr_xml_required(ctx, "output", attrs, "path");
     const char *codec = sr_xml_required(ctx, "output", attrs, "codec");
@@ -253,6 +253,10 @@ void sr_xml_start_output(ParseContext *ctx, const XML_Char **attrs) {
     if ((value = sr_xml_attr(attrs, "sphericalMetadata")) &&
         !sr_parse_bool(value, &ctx->scene->output.spherical_metadata))
         SR_XML_FAIL_RETURN(ctx, "output", "sphericalMetadata",
+                           "expected true or false");
+    if ((value = sr_xml_attr(attrs, "embedMetadata")) &&
+        !sr_parse_bool(value, &ctx->scene->output.embed_metadata))
+        SR_XML_FAIL_RETURN(ctx, "output", "embedMetadata",
                            "expected true or false");
     ctx->seen_output = true;
 }

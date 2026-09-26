@@ -342,6 +342,7 @@ typedef struct {
     SrColorSpace color_space;
     bool full_range;
     bool spherical_metadata;
+    bool embed_metadata;
     size_t source_line;
 } SrOutput;
 
@@ -512,6 +513,15 @@ typedef struct {
     unsigned resolved_hops;
 } SrStyleToken;
 
+#define SR_MAX_METADATA_ENTRIES 256u
+#define SR_MAX_METADATA_NAME 128u
+#define SR_MAX_METADATA_VALUE 4096u
+
+typedef struct {
+    char *name, *value;        /* owned by the scene */
+    size_t source_line;
+} SrMetadataEntry;
+
 typedef struct {
     unsigned format_version;   /* 10 or 11; zero for in-memory scenes means 1.0 */
     char *source_path;
@@ -522,6 +532,8 @@ typedef struct {
     SrOutput output;
     SrStyleToken *tokens;      /* document order; immutable after loading */
     size_t token_count, token_capacity;
+    SrMetadataEntry *metadata; /* document order; immutable after loading */
+    size_t metadata_count, metadata_capacity;
     SrAsset *assets;
     size_t asset_count;
     size_t asset_capacity;

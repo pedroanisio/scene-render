@@ -50,6 +50,7 @@ void sr_scene_init(SrScene *scene) {
     scene->output.audio_bitrate = 192000;
     scene->output.color_space = SR_COLOR_SRGB;
     scene->output.spherical_metadata = true;
+    scene->output.embed_metadata = true;
     scene->audio.sample_rate = 48000;
     scene->audio.channels = 2;
     scene->scene360.width = 3840;
@@ -110,6 +111,11 @@ void sr_scene_free(SrScene *scene) {
         free(scene->tokens[i].value);
     }
     free(scene->tokens);
+    for (size_t i = 0; i < scene->metadata_count; ++i) {
+        free(scene->metadata[i].name);
+        free(scene->metadata[i].value);
+    }
+    free(scene->metadata);
     for (size_t i = 0; i < scene->asset_count; ++i) asset_free(&scene->assets[i]);
     for (size_t i = 0; i < scene->audio.track_count; ++i) {
         free(scene->audio.tracks[i].id);

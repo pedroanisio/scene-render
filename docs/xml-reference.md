@@ -88,6 +88,72 @@ The 1.0 subset of the root sequence is:
 Runtime paths inside XML are relative to the XML file. CLI output/preview paths
 are relative to the current working directory.
 
+## Metadata
+
+Version 1.1 accepts an optional `metadata` section immediately after `project`:
+
+```xml
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="2"/>
+  <metadata title="Demo" author="Example" language="en"
+            created="2026-01-02T03:04:05Z">
+    <meta name="revision-note" value="Approved&#10;Second line"/>
+  </metadata>
+  <output path="demo.mp4" codec="h264" embedMetadata="true"/>
+  <composition/>
+</scene>
+```
+
+Attributes are `title`, `author`, `description`, `keywords`, `copyright`,
+`revision`, `created`, `modified`, `generator` and `language`. Their names
+become tag names without translation. `created` and `modified` use the schema's
+date-time syntax; their literal strings are preserved. `language` uses the
+schema's language-tag syntax. Each `meta` adds a custom `name` and `value`.
+Empty values are valid; names must be nonempty. XML character references can
+preserve newlines in attribute values. Duplicate names are errors using ASCII
+case-insensitive comparison, including collisions with metadata attributes.
+
+The scene retains entries in document order. Limits are 256 entries total
+(attributes and children), 128 UTF-8 bytes per name and 4096 bytes per value.
+Load errors identify the element, attribute and source line. No creation time,
+generator or other environment-derived value is added automatically.
+
+`output/@embedMetadata` defaults to `true`. MP4, MOV and Matroska outputs embed
+authored tags; `false` retains the entries in the scene but omits the tags.
+The selected final path, including a CLI override, determines the container's
+key rules. Preview, hash and validation-only operations do not embed tags or
+apply container-specific restrictions. Embedding errors occur before output
+or resume-segment work starts.
+
+Every container reserves `encoder`, names beginning with `encoder-`, and
+`creation_time`, compared without ASCII case distinctions. These keys invoke
+muxer behavior that cannot preserve an arbitrary authored string. Use `created`
+for a date-time tag. MP4/MOV also reserve `location` and
+`com.apple.quicktime.artwork`; Matroska also reserves `duration`, `encoding_tool`,
+`stereo_mode` and `alpha_mode`. `embedMetadata="false"` allows retained entries
+with these names. MP4/MOV's `timecode` remains a string tag and creates no extra
+stream.
+
+Matroska uppercases ASCII in names, changes spaces to underscores, maps
+`performer` to `LEAD_PERFORMER` and `track` to `PART_NUMBER`, and rejects any
+resulting collisions or reserved names. For example, `custom note` and
+`CUSTOM_NOTE` cannot coexist in a Matroska output. Reading a Matroska file may
+map the two native aliases back to `performer` and `track`. Suffixes such as
+`x-en` and `x-eng` remain distinct literal names rather than becoming language
+variants. Other non-ASCII bytes and all values remain unchanged. MP4/MOV retain
+the original tag spelling.
+
+Full and resumed final outputs receive the scene's tags. Internal resume
+segments omit them, since their container may differ from the final output.
+The exact XML, including metadata and the embedding flag, is already in the
+resume fingerprint; changing it invalidates segment reuse. Metadata is immutable
+during rendering. With a fixed SDK/toolchain, tags and output bytes are invariant
+under render thread count and timezone. Version 1.1 fixes video codec workers
+to one while rendering and color conversion still use the requested threads;
+its resume manifest fingerprints this policy. Version 1.0 retains its legacy
+codec-thread settings and output bytes. Without authored metadata, container
+tag options remain unchanged.
+
 ## Style tokens
 
 In version 1.1, an optional `styles` section after `project` declares tokens:

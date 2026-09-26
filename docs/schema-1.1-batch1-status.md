@@ -35,7 +35,7 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | B1-1 new animation hosts | Material/audio implemented, reviewed and verified | Performance and merge; new-node hosts alongside B1-4/B1-5 |
 | B1-2 relative lengths and parent-box evaluation | Pending | All required hosts, per-frame evaluation, scoped percentages, docs and goldens |
 | B1-2 style tokens | Implemented, reviewed and verified | Batch merge |
-| B1-2 metadata/container tags | Design reviewed; implementation pending | Tags, embedMetadata, reserved keys, resume and container tests |
+| B1-2 metadata/container tags | Implemented, reviewed and verified | Performance gate and batch merge |
 | B1-3 blend modes, skew, mattes, masks, adjustment nodes | Pending | Every listed mode/parameter, cycle checks, numerical tests, three new goldens |
 | B1-4 shapes, stroke styles, trims, vector constructors | Pending | Geometry/arc lengths/coverage, all listed styles and shapes, golden |
 | B1-4 gradients and paints | Pending | Coordinates, focal/aspect/spread/rotation/stops, interpolation, dither, every paint host, golden |
@@ -150,5 +150,40 @@ The byte oracle matched all 309 previews, three encodes and two expected
 rejections against `160b8c1`. Coverage reached 91.50% lines / 74.11% branches;
 floors rise to 89.50% / 72.10%. See `docs/reviews/b1-styles.md`.
 
-Metadata and relative lengths remain required B1-2 work. The batch's strict
-performance gate remains open, with its original baseline unchanged.
+Style tokens are committed as `c0df479`. Relative lengths remain required
+B1-2 work. The batch's strict performance gate remains open, with its original
+baseline unchanged.
+
+## Metadata and codec worker policy
+
+The metadata slice retains the ten schema attributes and custom entries with
+bounded scene ownership. Authored tags round-trip through MP4, MOV and Matroska,
+including empty, Unicode and multiline values. Container-specific reserved keys
+and Matroska canonical collisions fail before output or resume work. Disabled
+embedding retains entries without submitting tags. Internal segments omit tags;
+the final full/resumed output applies them from the scene and checks that the
+muxer retained each value.
+
+Cross-thread tests exposed an existing encoder gap: previous bit-exact tests
+repeated one codec thread count. Version 1.1 now pins video codec workers and
+x265 pools to one while preserving requested render/scaler threads; version 1.0
+retains its original settings. A 1.1-only resume policy marker invalidates old
+segments. Failing regressions for byte identity, stale segment reuse and x265
+option OOM now pass. The read-only reviewer found no remaining production issues.
+
+Focused schema/metadata/encode/fault/OOM/resume CTests passed 6/6. Metadata load
+replay covers 56 allocations without leaks. Tests also cover 216 seeded parser
+mutations, all limits, final-path overrides, full/resumed tags, XML fingerprint
+changes and 256x256/24-frame codec identity at 1/4/automatic thread counts.
+The new integration preview hash independently matches a metadata-free 1.0 scene
+rendered by the preserved style-token binary. Release, ASan/UBSan and coverage
+each passed 68/68 CTests, including integration and frame order for all 18
+goldens. Coverage is 91.56% lines / 74.44% branches, with floors raised to
+89.55% / 72.40%. The oracle matched 309 previews, three encodes and two expected
+rejections against `c0df479`. See `docs/reviews/b1-metadata.md` for scope and
+the outstanding performance gate.
+
+The metadata slice's strict 2% performance run failed at total +24.9%
+(13.034 versus 10.437 CPU seconds), with every material stage marked noisy
+while a separate user render used roughly eight CPU cores. Frame hashes match.
+The result does not clear the gate; the original baseline remains unchanged.

@@ -62,7 +62,8 @@ Do not synthesize timestamps, a generator name or other environment data.
 `SrOutput.embed_metadata` defaults to true and accepts `embedMetadata`.
 The flag is per output, ready for B1-6's output array. False keeps entries in
 the scene while omitting them from the container. A scene without authored
-metadata takes the exact existing container setup path.
+metadata keeps the existing container tag options. The version-1.1 codec
+thread policy described below is independent of whether tags are authored.
 
 Write metadata into the encoder's `AVFormatContext` before its header. Check
 every dictionary and muxer-option allocation result. MP4/MOV need
@@ -172,6 +173,24 @@ extend `sr-probe` for integration inspection. Cover default/true/false
 embedding, every metadata attribute, custom names, values and duplicates,
 full versus resumed output, and 1/4-thread byte identity. Existing golden and
 integration hashes remain unchanged; add only new fixtures/hashes.
+
+The first cross-thread metadata tests exposed a pre-existing encoder-policy
+gap: the old byte-identity test repeated one thread count, while x264 writes
+the requested codec thread count into its bitstream and x265 derives workers
+from it. Version 1.1 now fixes video codec threads and x265 pools to one;
+requested render/scaler threads remain independent. Version 1.0 and in-memory
+version-zero scenes retain their legacy codec settings and bytes. Check the
+x265 option setter so OOM cannot silently restore automatic pools. Add
+256x256, 24-frame tests for H.264, H.265 and FFV1 at 1/4/automatic threads.
+This starts the codec-thread rule required by B1-6 without enabling its codecs.
+
+The version-1.1 resume manifest records `codec_policy=1 threads=1`. Otherwise
+an unchanged XML and requested thread count could reuse segments encoded before
+the fix. A missing policy marker invalidates those segments; version-1.0
+manifests retain their exact format. Regression tests remove the marker from
+a valid cache and require every segment to be rendered again. The read-only
+reviewer approved the version-scoped policy and identified this cache dependency
+before implementation.
 
 Run the full Release/ASan/coverage matrix, frame-order suite, byte oracle and
 strict performance check before the item merge. Parsing adds bounded work at

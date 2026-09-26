@@ -23,15 +23,23 @@ typedef struct {
  * otherwise (also for unknown names, which sr_encoder_open rejects). */
 unsigned sr_encoder_input_bits(const char *pixel_format);
 
+/* Check authored metadata against the selected final container before any
+ * output or resume segments are opened. Disabled/absent metadata is a no-op. */
+SrStatus sr_encoder_validate_metadata(const SrScene *scene, const char *path,
+                                       SrDiagnostics *diag);
+
 /* Opens `path` (.mp4/.mov -> MP4/QuickTime, .mkv -> Matroska) for the scene's
- * project size/rate and SrOutput settings. `threads` 0 means one encoder
- * thread per online CPU. On failure *out is NULL and a diagnostic names the
- * cause; SR_ERR_MEMORY, SR_ERR_IO (output file) or SR_ERR_ENCODER. */
+ * project size/rate and SrOutput settings. `threads` controls conversion;
+ * 0 uses the online CPU count. Version 1.1 fixes video codec workers to 1;
+ * 1.0 also uses `threads` for the codec. On failure *out is NULL and a
+ * diagnostic names the cause; SR_ERR_MEMORY, SR_ERR_IO (output file) or
+ * SR_ERR_ENCODER. */
 SrStatus sr_encoder_open(SrEncoder **out, const SrScene *scene,
                          const char *path, unsigned threads,
                          const SrEncoderAudio *audio, SrDiagnostics *diag);
 /* Video-only encoder for one --resume segment: like sr_encoder_open without
- * an audio stream and without spherical metadata (the final mux adds it). */
+ * an audio stream or scene metadata (the final mux adds both authored tags
+ * and spherical metadata). */
 SrStatus sr_encoder_open_segment(SrEncoder **out, const SrScene *scene,
                                  const char *path, unsigned threads,
                                  SrDiagnostics *diag);
@@ -39,7 +47,7 @@ SrStatus sr_encoder_open_segment(SrEncoder **out, const SrScene *scene,
  * parameters (codec, size, extradata) from the video stream of the finished
  * segment `video_template` and receives packets only through
  * sr_encoder_copy_video; audio (when requested) is encoded as usual and the
- * scene's spherical metadata is attached. sr_encoder_write_video is
+ * scene's authored and spherical metadata is attached. sr_encoder_write_video is
  * refused. */
 SrStatus sr_encoder_open_copy(SrEncoder **out, const SrScene *scene,
                               const char *path, const char *video_template,

@@ -177,6 +177,8 @@ static char *build_manifest(const SrScene *scene, const SrResume *resume,
      * transparency, deformation bounds and media-boundary corrections. */
     fprintf(out, "scene-render-resume 3\nversion=%s\nscene=%016llx\n", SR_VERSION,
             (unsigned long long)scene->source_hash);
+    if (scene->format_version >= 11)
+        fprintf(out, "codec_policy=1 threads=1\n");
     for (size_t i = 0; inputs && i < inputs->count; ++i) {
         const SrResumeFile *f = &inputs->files[i];
         if (!f->present)

@@ -100,6 +100,8 @@ set(SCENE_RENDER_SOURCES
     src/xml_visual.c
     src/xml_physics.c
     src/xml_styles.c
+    src/xml_metadata.c
+    src/metadata.c
     src/xml_schema.c
     src/xml_capabilities.c
     src/cli_args.c
@@ -127,7 +129,7 @@ if(BUILD_TESTING)
     add_test(NAME schema.compatibility
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/schema-compatibility.py)
-    set(SR_UNIT_SUITES timeline curves geometry compositor color vector mesh scene property xml profile styles
+    set(SR_UNIT_SUITES timeline curves geometry compositor color vector mesh scene property xml profile styles metadata
                        camera physics blend group raster mask path image
                        encode encode_faults audio video
                        fx anim_color particles deform shadow text args resume
@@ -174,7 +176,8 @@ if(BUILD_TESTING)
     # be told to fail.
     foreach(fn avformat_alloc_output_context2 avcodec_find_encoder_by_name
                avcodec_alloc_context3 avcodec_open2 avformat_new_stream
-               avcodec_parameters_from_context avio_open avformat_write_header
+               avcodec_parameters_from_context avio_open avformat_write_header av_dict_set
+               av_opt_set
                sws_getContext av_frame_alloc av_packet_alloc av_frame_get_buffer
                av_frame_make_writable avcodec_send_frame avcodec_receive_packet
                av_interleaved_write_frame av_write_trailer avformat_open_input

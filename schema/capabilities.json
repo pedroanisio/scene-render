@@ -4,7 +4,9 @@
     "materialType/animate",
     "audioTrackType/animate",
     "scene/styles",
-    "stylesType/token"
+    "stylesType/token",
+    "scene/metadata",
+    "metadataType/meta"
   ],
   "attributes": [
     "groupType/@threeD",
@@ -30,7 +32,20 @@
     "keyType/@damping",
     "keyType/@mass",
     "tokenType/@name",
-    "tokenType/@value"
+    "tokenType/@value",
+    "metadataType/@title",
+    "metadataType/@author",
+    "metadataType/@description",
+    "metadataType/@keywords",
+    "metadataType/@copyright",
+    "metadataType/@revision",
+    "metadataType/@created",
+    "metadataType/@modified",
+    "metadataType/@generator",
+    "metadataType/@language",
+    "metaType/@name",
+    "metaType/@value",
+    "outputType/@embedMetadata"
   ],
   "values": {
     "animateType/@extrapolateBefore": [

@@ -137,6 +137,9 @@ static void start_particles(ParseContext *ctx, const XML_Char **attrs) {
  * sections and asset declarations are pushed here after their handler. */
 static const ElementDispatch dispatch[] = {
     SECTION("project", sr_xml_start_project, E_PROJECT, seen_project),
+    {"metadata", P(E_SCENE), sr_xml_start_metadata, E_METADATA,
+     offsetof(ParseContext, seen_metadata), 11, true, true},
+    {"meta", P(E_METADATA), sr_xml_start_meta, E_META, 0, 11, true, true},
     {"styles", P(E_SCENE), NULL, E_STYLES, offsetof(ParseContext, seen_styles),
      11, true, true},
     {"token", P(E_STYLES), sr_xml_start_token, E_TOKEN, 0, 11, true, true},

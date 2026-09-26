@@ -857,6 +857,12 @@ SrStatus sr_render(SrScene *scene, const SrRenderOptions *options,
     if (options->validate_only) {
         return SR_OK;
     }
+    if (!options->preview && !options->hash) {
+        const char *path = options->output_override
+                             ? options->output_override : scene->output.path;
+        SrStatus status = sr_encoder_validate_metadata(scene, path, diag);
+        if (status != SR_OK) return status;
+    }
     double wall_start = sr_monotonic_seconds();
     uint64_t video_totals[4] = {0};
     FILE *trace = NULL;

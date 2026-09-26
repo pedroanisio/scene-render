@@ -21,6 +21,7 @@ static const char *g_fault;     /* function to fail, NULL = none */
 static int g_skip;              /* matching calls to let through first */
 static bool g_poison_hevc_dts;
 static int g_rc;                /* avcodec_receive_frame: forced code */
+static int g_metadata_loss;     /* successful header loses/changes a tag */
 
 static bool inject(const char *fn) {
     if (!g_fault || strcmp(g_fault, fn) != 0) return false;
@@ -41,6 +42,7 @@ static void disarm(void) {
     g_fault = NULL;
     g_skip = 0;
     g_rc = 0;
+    g_metadata_loss = 0;
 }
 
 #define WRAP(ret, name, params, args, fail_value)                        \
@@ -58,8 +60,24 @@ WRAP(AVStream *, avformat_new_stream, (AVFormatContext *s, const AVCodec *c), (s
 WRAP(int, avcodec_parameters_from_context,
      (AVCodecParameters *p, const AVCodecContext *c), (p, c), AVERROR(EINVAL))
 WRAP(int, avio_open, (AVIOContext **s, const char *u, int f), (s, u, f), AVERROR(EACCES))
-WRAP(int, avformat_write_header, (AVFormatContext *s, AVDictionary **o), (s, o),
-     AVERROR(EIO))
+WRAP(int, av_dict_set, (AVDictionary **d, const char *k, const char *v, int f),
+     (d, k, v, f), AVERROR(ENOMEM))
+int __real_av_opt_set(void *object, const char *name, const char *value, int flags);
+int __wrap_av_opt_set(void *object, const char *name, const char *value, int flags);
+int __wrap_av_opt_set(void *object, const char *name, const char *value, int flags) {
+    if (!strcmp(name, "x265-params") && inject("av_opt_set")) return AVERROR(ENOMEM);
+    return __real_av_opt_set(object, name, value, flags);
+}
+int __real_avformat_write_header(AVFormatContext *s, AVDictionary **o);
+int __wrap_avformat_write_header(AVFormatContext *s, AVDictionary **o);
+int __wrap_avformat_write_header(AVFormatContext *s, AVDictionary **o) {
+    if (inject("avformat_write_header")) return AVERROR(EIO);
+    int rc = __real_avformat_write_header(s, o);
+    if (rc >= 0 && g_metadata_loss)
+        __real_av_dict_set(&s->metadata, "custom",
+                           g_metadata_loss == 1 ? NULL : "changed", 0);
+    return rc;
+}
 WRAP(struct SwsContext *, sws_getContext,
      (int sw, int sh, enum AVPixelFormat sf, int dw, int dh, enum AVPixelFormat df,
       int fl, SwsFilter *a, SwsFilter *b, const double *p),
@@ -639,7 +657,66 @@ static void short_hevc_timestamps(sr_test_ctx *t) {
     }
 }
 
+static void metadata_faults(sr_test_ctx *t) {
+    static const char *const names[] = {"tags.mp4", "tags.mov", "tags.mkv"};
+    for (size_t container = 0; container < 3; ++container) {
+        SrScene scene;
+        fault_scene(&scene);
+        scene.output.codec = SR_CODEC_H264;
+        SrMetadataEntry entries[] = {{.name = "title", .value = "Title"},
+                                     {.name = "custom", .value = "Value"}};
+        scene.metadata = entries;
+        scene.metadata_count = 2;
+        SrDiagnostics diag = sink_diag();
+        for (int skip = 0; skip < (container == 2 ? 2 : 4); ++skip) {
+            SrEncoder *encoder = NULL;
+            arm("av_dict_set", skip);
+            SrStatus status = sr_encoder_open(&encoder, &scene,
+                sr_test_tmp_path(names[container]), 1, NULL, &diag);
+            CHECK_INT(t, status, SR_ERR_MEMORY);
+            CHECK(t, g_fault == NULL && encoder == NULL);
+            disarm();
+            sr_encoder_destroy(encoder);
+        }
+        for (int mode = 1; mode <= 2; ++mode) {
+            SrEncoder *encoder = NULL;
+            g_metadata_loss = mode;
+            CHECK_INT(t, sr_encoder_open(&encoder, &scene,
+                sr_test_tmp_path(names[container]), 1, NULL, &diag), SR_ERR_ENCODER);
+            CHECK(t, encoder == NULL);
+            disarm();
+            sr_encoder_destroy(encoder);
+        }
+        scene.metadata = NULL;
+        scene.metadata_count = 0;
+        if (container != 2) {
+            SrEncoder *encoder = NULL;
+            arm("av_dict_set", 0);
+            CHECK_INT(t, sr_encoder_open(&encoder, &scene,
+                sr_test_tmp_path(names[container]), 1, NULL, &diag), SR_ERR_MEMORY);
+            CHECK(t, g_fault == NULL && encoder == NULL);
+            disarm();
+            sr_encoder_destroy(encoder);
+        }
+        sr_scene_free(&scene);
+    }
+    SrScene scene;
+    fault_scene(&scene);
+    scene.format_version = 11;
+    scene.output.codec = SR_CODEC_H265;
+    SrDiagnostics diag = sink_diag();
+    SrEncoder *encoder = NULL;
+    arm("av_opt_set", 0);
+    CHECK_INT(t, sr_encoder_open(&encoder, &scene, sr_test_tmp_path("params.mp4"),
+                                 4, NULL, &diag), SR_ERR_MEMORY);
+    CHECK(t, g_fault == NULL && encoder == NULL);
+    disarm();
+    sr_encoder_destroy(encoder);
+    sr_scene_free(&scene);
+}
+
 const sr_test_case sr_tests_encode_faults[] = {
+    {"metadata_faults", metadata_faults},
     {"short_hevc_timestamps", short_hevc_timestamps},
     {"open_faults", open_faults},
     {"write_and_finish_faults", write_and_finish_faults},
