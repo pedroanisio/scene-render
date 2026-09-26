@@ -18,11 +18,16 @@ static double unit(double value) {
     return value > 0.0 ? (value < 1.0 ? value : 1.0) : 0.0;
 }
 
+/* Largest singular value, scaled by the largest entry so squares cannot
+ * overflow; nonfinite entries give a nonfinite result. */
 static double max_scale(SrMat3 m) {
-    double a = m.m00, b = m.m01, c = m.m10, d = m.m11;
+    double k = fmax(fmax(fabs(m.m00), fabs(m.m01)), fmax(fabs(m.m10), fabs(m.m11)));
+    if (!isfinite(k)) return INFINITY;
+    if (!(k > 0.0)) return 0.0;
+    double a = m.m00 / k, b = m.m01 / k, c = m.m10 / k, d = m.m11 / k;
     double s = a * a + b * b + c * c + d * d, det = a * d - b * c;
     double disc = s * s - 4.0 * det * det;
-    return sqrt(0.5 * (s + sqrt(disc > 0.0 ? disc : 0.0)));
+    return k * sqrt(0.5 * (s + sqrt(disc > 0.0 ? disc : 0.0)));
 }
 
 static SrStatus fail(const SrShapeInput *in, const char *attribute,
@@ -230,7 +235,11 @@ SrStatus sr_shape_raster_build(const SrShapeInput *in, SrShapeRaster *out) {
         !isfinite(in->height))
         return SR_OK;                     /* nothing to draw, as legacy shapes */
     double scale = in->local_grid ? 1.0 : max_scale(in->world);
-    if (!(scale > 0.0) || !isfinite(scale)) return SR_OK;
+    if (!isfinite(scale) || !isfinite(in->world.m02) || !isfinite(in->world.m12) ||
+        scale > SR_MAX_SHAPE_COORDINATE)
+        return fail(in, "shape", "node transform must be finite with scale "
+                                 "within 1e9");
+    if (!(scale > 0.0)) return SR_OK;     /* zero scale: nothing visible */
     /* Colours and paints. */
     if (fill_paint || stroke_paint) {
         out->evals = sr_composite_alloc(resources, 2, sizeof(SrPaintEval), 0);
@@ -509,6 +518,26 @@ bool sr_shape_style_prepare(const SrNode *node, uint64_t *bytes,
                style->fill_rule > SR_FILL_NONZERO) {
         *attribute = "strokeCap/strokeJoin/strokePosition/paintOrder/trimMode";
         *message = "unknown stroke style value";
+    }
+    if (!*message && style->path) {
+        const SrPreparedPath *path = style->path;
+        uint64_t points = 0;
+        bool valid = path->count <= SR_MAX_MASK_PATH_CONTOURS &&
+                     path->count <= path->capacity && path->items;
+        for (size_t i = 0; valid && i < path->count; ++i) {
+            const SrPathContour *c = &path->items[i];
+            valid = c->count >= 1 && c->count <= c->capacity && c->points &&
+                    c->count <= SR_MAX_MASK_PATH_POINTS - points;
+            points += valid ? c->count : 0;
+            for (size_t j = 0; valid && j < c->count; ++j)
+                valid = isfinite(c->points[j].x) && isfinite(c->points[j].y) &&
+                        fabs(c->points[j].x) <= SR_MAX_MASK_COORDINATE &&
+                        fabs(c->points[j].y) <= SR_MAX_MASK_COORDINATE;
+        }
+        if (!valid) {
+            *attribute = "path";
+            *message = "prepared path storage is invalid or exceeds the path limits";
+        }
     }
     if (*message) return false;
     if (style->path) {

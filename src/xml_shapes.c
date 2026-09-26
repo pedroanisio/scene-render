@@ -337,10 +337,11 @@ bool sr_xml_parse_shape(ParseContext *ctx, const char *name,
     if (node->shape_width <= 0.0 || node->shape_height <= 0.0 ||
         node->stroke_width < 0.0)
         return fail(ctx, name, "width/height", "shape dimensions must be positive");
-    if (node->stroke_width > SR_MAX_SHAPE_COORDINATE)
-        return fail(ctx, name, "strokeWidth", "expected a stroke width of at most 1e9");
     if (!shape_geometry(ctx, name, attrs, node)) return false;
     if (fill_ref || stroke_ref) node->shape_style.extended = true;
+    /* Only the path renderer has this bound; 1.0 shapes keep their range. */
+    if (node->shape_style.extended && node->stroke_width > SR_MAX_SHAPE_COORDINATE)
+        return fail(ctx, name, "strokeWidth", "expected a stroke width of at most 1e9");
     return true;
 }
 
@@ -395,6 +396,23 @@ bool sr_xml_parse_vector_style(ParseContext *ctx, const XML_Char **attrs,
     SrVectorExtension *ext = vector_ext(ctx, asset);
     if (!ext) return false;
     ext->extended = true;
+    if (asset->width > SR_MAX_COVERAGE_DIMENSION || asset->height > SR_MAX_COVERAGE_DIMENSION)
+        return fail(ctx, "vector", "width/height",
+                    "vector assets using 1.1 shapes, stroke styles or paints are "
+                    "limited to 16384 px per side");
+    if (asset->vector_stroke_width > SR_MAX_SHAPE_COORDINATE)
+        return fail(ctx, "vector", "strokeWidth", "expected a stroke width of at most 1e9");
+    if (asset->vector_shape == SR_SHAPE_PATH) {
+        SrPreparedPath checked = {0};
+        SrPathParseInfo info;
+        SrStatus status = sr_prepared_mask_path_parse(asset->vector_path,
+            SR_MAX_COMPOSITE_BYTES, &checked, &info);
+        sr_prepared_path_free(&checked);
+        if (status == SR_ERR_MEMORY) return oom(ctx, "vector", "path");
+        if (status != SR_OK)
+            return fail(ctx, "vector", "path", "path exceeds the bounded path "
+                        "limits (262144 points, coordinates within 1e9)");
+    }
     SrShapeType type = asset->vector_shape;
     bool polygon = type == SR_SHAPE_POLYGON || type == SR_SHAPE_STAR;
     if (type != SR_SHAPE_ROUNDED_RECT && type != SR_SHAPE_RECT &&

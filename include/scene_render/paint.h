@@ -65,7 +65,7 @@ typedef struct {
     bool unpainted;             /* radial: identical circles paint nothing */
     /* local point -> gradient space: g = A * p + b */
     double a00, a01, a10, a11, b0, b1;
-    double x1, y1, dx, dy, inv_length2;     /* linear */
+    double x1, y1, dx, dy, inv_length;     /* linear: unit dir, 1/length */
     double cx, cy, r, fx, fy, fr, aspect;   /* radial */
     bool concentric;
     double angle;                           /* conic, degrees */

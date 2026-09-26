@@ -277,11 +277,15 @@ SrStatus sr_paint_eval(const SrPaint *paint, const SrProject *project,
                              "gradient coordinates must be finite and within 1e9");
         out->x1 = x1;
         out->y1 = y1;
-        out->dx = x2 - x1;
-        out->dy = y2 - y1;
-        double length2 = out->dx * out->dx + out->dy * out->dy;
-        out->degenerate = !(length2 > 0.0);
-        out->inv_length2 = out->degenerate ? 0.0 : 1.0 / length2;
+        /* Unit direction and reciprocal length (hypot avoids underflow of
+         * the squared length); a vector whose reciprocal overflows counts
+         * as coincident points. */
+        double length = hypot(x2 - x1, y2 - y1);
+        double inverse = length > 0.0 ? 1.0 / length : 0.0;
+        out->degenerate = !(length > 0.0) || !isfinite(inverse);
+        out->dx = out->degenerate ? 0.0 : (x2 - x1) / length;
+        out->dy = out->degenerate ? 0.0 : (y2 - y1) / length;
+        out->inv_length = out->degenerate ? 0.0 : inverse;
     } else {
         double cx = value_at(&paint->cx, time), cy = value_at(&paint->cy, time);
         if (!finite_bounded(cx) || !finite_bounded(cy))
@@ -353,8 +357,10 @@ bool sr_paint_parameter(const SrPaintEval *eval, double x, double y, double *t) 
             *t = 1.0;
             return true;
         }
+        /* dx, dy are the unit direction. */
         *t = ((gx - eval->x1) * eval->dx + (gy - eval->y1) * eval->dy) *
-             eval->inv_length2;
+             eval->inv_length;
+        if (isinf(*t)) *t = copysign(1e18, *t);
         return true;
     }
     if (eval->type == SR_PAINT_CONIC) {
@@ -474,7 +480,9 @@ void sr_paint_sample(const SrPaintEval *eval, double x, double y,
     if (eval->space == SR_INTERP_SRGB || eval->space == SR_INTERP_LINEAR) {
         for (int c = 0; c < 3; ++c) rgb[c] = v[c] / alpha;
     } else {
-        double lab[3] = {v[0] / alpha, v[1] / alpha, v[2]};
+        /* Oklch hue is never premultiplied; Oklab b is. */
+        double lab[3] = {v[0] / alpha, v[1] / alpha,
+                         eval->space == SR_INTERP_OKLCH ? v[2] : v[2] / alpha};
         if (eval->space == SR_INTERP_OKLCH) {
             double chroma = lab[1], hue = lab[2] * (SR_PI / 180.0);
             lab[1] = chroma * cos(hue);

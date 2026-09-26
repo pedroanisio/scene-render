@@ -153,8 +153,10 @@ static bool dot_piece(SrPolySet *out, Point p, Point tangent,
     if (params->cap == SR_LINE_CAP_ROUND) {
         size_t pieces = sr_shape_arc_pieces(h, 2.0 * SR_PI, params->scale);
         if (pieces < 4) pieces = 4;
+        /* Decreasing angles: the winding sign of every other stroke
+         * polygon, so overlapping pieces add instead of cancelling. */
         for (size_t i = 0; i < pieces; ++i) {
-            double a = 2.0 * SR_PI * ((double)i / (double)pieces);
+            double a = -2.0 * SR_PI * ((double)i / (double)pieces);
             if (!add(out, (Point){p.x + h * cos(a), p.y + h * sin(a)})) return false;
         }
     } else {
@@ -247,10 +249,36 @@ static bool stroke_range(SrPolySet *out, const ContourScratch *s, double from,
     return stroke_buffer(out, s->scratch, n, false, tangent, params);
 }
 
+/* A stretch of a closed contour from `start` through its end and start to
+ * `wrap_end`, stroked as one open polyline (a join at the start vertex). */
+static bool stroke_wrapped(SrPolySet *out, const ContourScratch *s, double start,
+                           double wrap_end, const SrStrokeParams *params) {
+    size_t first, second;
+    Point tangent, ignored;
+    size_t segments = sr_path_contour_segments(s->contour);
+    double total = s->cumulative[segments];
+    sr_path_contour_extract(s->contour, s->cumulative, start, total, s->joined,
+                            &first, &tangent);
+    sr_path_contour_extract(s->contour, s->cumulative, 0.0, wrap_end,
+                            s->joined + first, &second, &ignored);
+    /* The second part starts at the contour start, which the first ends at. */
+    memmove(s->joined + first, s->joined + first + 1,
+            (second - 1) * sizeof(*s->joined));
+    return stroke_buffer(out, s->joined, first + second - 1, false, tangent, params);
+}
+
+/* On-intervals of a dashed range that touch a closed contour's seam are
+ * held back so the caller can join them across it. */
+typedef struct {
+    bool hold_first, hold_last;   /* at `from` / at `to` */
+    bool has_first, has_last;
+    double first[2], last[2];
+} DashSeam;
+
 /* Dashes of [from, to] with the phase measured along the contour. */
 static bool dash_range(SrPolySet *out, const ContourScratch *s, double from,
                        double to, const SrStrokeParams *params, double period,
-                       size_t *emitted) {
+                       size_t *emitted, DashSeam *seam) {
     size_t n = params->dash_count;
     double length = to - from;
     double estimate = (floor(length / period) + 2.0) * (double)n;
@@ -269,19 +297,41 @@ static bool dash_range(SrPolySet *out, const ContourScratch *s, double from,
     }
     double position = from - phase;        /* start of the current entry */
     size_t guard = (size_t)estimate + n;
-    for (size_t step = 0; position < to && step <= guard; ++step) {
+    size_t step = 0;
+    for (; position < to && step <= guard; ++step) {
         double end = position + params->dash[index];
+        /* At extreme magnitudes a dash may not advance the position. */
+        if (params->dash[index] > 0.0 && !(end > position))
+            return sr_polyset_fail(out, SR_ERR_RENDER,
+                                   "dash lengths are too small for the outline "
+                                   "length (no progress in double precision)");
         if (index % 2 == 0) {
             double a = position > from ? position : from;
             double b = end < to ? end : to;
             if (b > a || (b == a && params->dash[index] == 0.0 && a >= from)) {
                 ++*emitted;
-                if (!stroke_range(out, s, a, b, params)) return false;
+                bool at_from = seam && seam->hold_first && a == from && b > a;
+                bool at_to = seam && seam->hold_last && b == to && b > a;
+                if (at_from) {
+                    seam->has_first = true;
+                    seam->first[0] = a;
+                    seam->first[1] = b;
+                }
+                if (at_to) {
+                    seam->has_last = true;
+                    seam->last[0] = a;
+                    seam->last[1] = b;
+                }
+                if (!at_from && !at_to && !stroke_range(out, s, a, b, params))
+                    return false;
             }
         }
         position = end;
         index = (index + 1) % n;
     }
+    if (position < to)
+        return sr_polyset_fail(out, SR_ERR_RENDER,
+                               "dash pattern traversal exceeded its bound");
     return true;
 }
 
@@ -289,32 +339,50 @@ static bool stroke_piece(SrPolySet *out, const ContourScratch *s,
                          const SrStrokePiece *piece, const SrStrokeParams *params,
                          double period, size_t *emitted) {
     const SrPathContour *contour = s->contour;
-    if (period > 0.0) {
-        if (!dash_range(out, s, piece->start, piece->end, params, period, emitted))
+    size_t segments = sr_path_contour_segments(contour);
+    double total = s->cumulative[segments];
+    if (period > 0.0 && (piece->whole || piece->wrap)) {
+        /* Closed seams: a dash crossing the start vertex stays one piece. */
+        DashSeam seam = {0};
+        if (piece->whole) {
+            seam.hold_first = seam.hold_last = true;
+            if (!dash_range(out, s, 0.0, total, params, period, emitted, &seam))
+                return false;
+            if (seam.has_first && seam.has_last && seam.first[0] == seam.last[0]) {
+                /* One dash covers the whole closed contour. */
+                memcpy(s->joined, contour->points, contour->count * sizeof(*s->joined));
+                return stroke_buffer(out, s->joined, contour->count, true,
+                                     (Point){0.0, 0.0}, params);
+            }
+        } else {
+            DashSeam tail = {.hold_last = true}, head = {.hold_first = true};
+            if (!dash_range(out, s, piece->start, total, params, period, emitted,
+                            &tail) ||
+                !dash_range(out, s, 0.0, piece->wrap_end, params, period, emitted,
+                            &head))
+                return false;
+            seam = (DashSeam){.has_first = head.has_first, .has_last = tail.has_last,
+                              .first = {head.first[0], head.first[1]},
+                              .last = {tail.last[0], tail.last[1]}};
+        }
+        if (seam.has_first && seam.has_last)
+            return stroke_wrapped(out, s, seam.last[0], seam.first[1], params);
+        if (seam.has_first &&
+            !stroke_range(out, s, seam.first[0], seam.first[1], params))
             return false;
-        return !piece->wrap ||
-               dash_range(out, s, 0.0, piece->wrap_end, params, period, emitted);
+        return !seam.has_last ||
+               stroke_range(out, s, seam.last[0], seam.last[1], params);
     }
+    if (period > 0.0)
+        return dash_range(out, s, piece->start, piece->end, params, period,
+                          emitted, NULL);
     if (piece->whole) {
         memcpy(s->joined, contour->points, contour->count * sizeof(*s->joined));
         return stroke_buffer(out, s->joined, contour->count, true,
                              (Point){0.0, 0.0}, params);
     }
     if (!piece->wrap) return stroke_range(out, s, piece->start, piece->end, params);
-    /* A wrapped piece of a closed contour continues through its start. */
-    size_t first, second;
-    Point tangent, ignored;
-    size_t segments = sr_path_contour_segments(contour);
-    double total = s->cumulative[segments];
-    sr_path_contour_extract(contour, s->cumulative, piece->start, total,
-                            s->joined, &first, &tangent);
-    sr_path_contour_extract(contour, s->cumulative, 0.0, piece->wrap_end,
-                            s->joined + first, &second, &ignored);
-    /* The second part starts at the contour start, which the first ends at. */
-    memmove(s->joined + first, s->joined + first + 1,
-            (second - 1) * sizeof(*s->joined));
-    return stroke_buffer(out, s->joined, first + second - 1, false, tangent,
-                         params);
+    return stroke_wrapped(out, s, piece->start, piece->wrap_end, params);
 }
 
 bool sr_stroke_build(const SrPolySet *source, const SrStrokeParams *params,

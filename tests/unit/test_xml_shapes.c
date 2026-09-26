@@ -151,6 +151,8 @@ static void rejections_name_attributes(sr_test_ctx *t) {
         {"<composition><shape id=\"a\" shape=\"rect\" width=\"8\" height=\"8\">"
          "<animate property=\"trimEnd\"><key time=\"0\" value=\"2\"/></animate>"
          "</shape></composition>", "trimEnd keys must be in [0,1]"},
+        {"<assets><vector id=\"v\" shape=\"polygon\" width=\"16385\" height=\"1\"/>"
+         "</assets><composition/>", "16384 px per side"},
         {"<paints><radialGradient id=\"g\"><stop offset=\"0\" color=\"#FFFFFF\">"
          "<animate property=\"offset\"><key time=\"0\" value=\"3\"/></animate>"
          "</stop></radialGradient></paints><composition/>", "stop offset keys"},
@@ -187,6 +189,12 @@ static void version_gates(sr_test_ctx *t) {
         CHECK(t, child(&scene, "a")->shape_style.extended);
         sr_scene_free(&scene);
     }
+    /* The B1-4 stroke-width bound does not apply to 1.0 shapes. */
+    xml = "<scene version=\"1.0\"><project width=\"32\" height=\"24\" fps=\"4\" "
+          "duration=\"1\"/><composition><shape id=\"a\" shape=\"rect\" "
+          "width=\"8\" height=\"8\" strokeWidth=\"1000000001\"/></composition></scene>";
+    CHECK_INT(t, st_load(t, "shape-wide.xml", xml, &scene, NULL), SR_OK);
+    if (scene.root) sr_scene_free(&scene);
     /* Explicit schema defaults are harmless on any kind. */
     xml = "<scene version=\"1.1\"><project width=\"32\" height=\"24\" fps=\"4\" "
           "duration=\"1\"/><composition><shape id=\"a\" shape=\"ellipse\" "
@@ -451,8 +459,23 @@ static void runtime_limits(sr_test_ctx *t) {
     }
     CHECK_CONTAINS(t, text, "1048576");
     CHECK_CONTAINS(t, text, "<shape>");
-    sr_frame_free(&frame);
     sr_scene_free(&scene);
+    /* An overflowing transform fails instead of disappearing. */
+    xml = "<scene version=\"1.1\"><project width=\"32\" height=\"24\" "
+        "fps=\"4\" duration=\"1\"/><composition><shape id=\"a\" shape=\"star\" "
+        "width=\"8\" height=\"8\" scaleX=\"1e200\"/></composition></scene>";
+    CHECK_INT(t, st_load(t, "scale-limit.xml", xml, &scene, NULL), SR_OK);
+    if (scene.root) {
+        sink = tmpfile();
+        sr_diag_init(&diag, "scale", sink);
+        sr_compositor_init(&compositor, 1);
+        CHECK_INT(t, sr_compositor_render(&compositor, &scene, 0.0, &frame, &diag),
+                  SR_ERR_RENDER);
+        CHECK(t, diag.errors > 0);
+        sr_compositor_free(&compositor);
+        if (sink) fclose(sink);
+        sr_scene_free(&scene);
+    }
     /* Direct-C preparation rejects malformed extended storage. */
     SrScene direct;
     sr_scene_init(&direct);
@@ -468,7 +491,15 @@ static void runtime_limits(sr_test_ctx *t) {
     CHECK_INT(t, sr_scene_prepare_compositing(&direct, &diag), SR_ERR_RENDER);
     node->shape_style.points = 5;
     CHECK_INT(t, sr_scene_prepare_compositing(&direct, &diag), SR_OK);
+    /* A path contour without storage is rejected before geometry reads it. */
+    SrPathContour empty = {NULL, 2, 2, false};
+    SrPreparedPath bad = {&empty, 1, 1};
+    node->shape = SR_SHAPE_PATH;
+    node->shape_style.path = &bad;
+    CHECK_INT(t, sr_scene_prepare_compositing(&direct, &diag), SR_ERR_RENDER);
+    node->shape_style.path = NULL;
     if (sink) fclose(sink);
+    sr_frame_free(&frame);
     sr_scene_free(&direct);
 }
 

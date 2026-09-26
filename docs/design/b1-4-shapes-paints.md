@@ -172,8 +172,12 @@ list is repeated once (SVG 2 §13.5.5). An all-zero list is a solid stroke;
 negative values or a zero-sum list with nonzero entries cannot occur after
 validation. The pattern phase is the arc length along the *original* contour
 plus `dashOffset` (modulo the period, floor based), so dashes stay fixed while
-a trim animates. Dashes intersect each visible trim piece. A zero-length dash
-is a dot with round or square caps and nothing with butt caps.
+a trim animates. Dashes intersect each visible trim piece. A dash crossing a
+closed contour's start is joined across it, and one dash covering a whole
+closed contour is stroked closed. A zero-length dash is a dot with round or
+square caps and nothing with butt caps; dots use the winding of every other
+stroke polygon. A dash that cannot advance the double-precision position
+fails the render.
 
 ## Stroker
 

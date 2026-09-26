@@ -384,7 +384,8 @@ These rules apply to a vector without any of the 1.1 additions. A vector that
 uses `shape="rounded-rect|polygon|star|line"`, a stroke-style attribute or a
 `url(#id)` paint is rasterized once, at asset load, by the path renderer of
 "Shapes, strokes and trims (1.1)" in asset pixels (`shape="svg"` is
-unsupported in this build). Meshes load Wavefront OBJ vertices,
+unsupported in this build); such vectors are limited to 16384 px per side.
+Meshes load Wavefront OBJ vertices,
 normals, and polygonal faces; faces are fan-triangulated and missing normals
 are generated.
 
@@ -1252,8 +1253,11 @@ Stroke style (also on 1.1 `vector` assets):
 - `dash`: up to 64 non-negative lengths in local units; an odd list repeats
   once; an all-zero list is solid. The pattern is measured along each
   contour from its start plus `dashOffset` (animatable, floor-based modulo),
-  so dashes stay in place while a trim animates. A zero-length dash is a dot
-  with round or square caps.
+  so dashes stay in place while a trim animates. A dash that crosses a closed
+  contour's start stays one piece (joined there), and one dash covering a whole
+  closed contour is the closed stroke. A zero-length dash is a dot with round
+  or square caps. Dashes too short to advance at the outline's magnitude in
+  double precision fail the render.
 - `strokePosition`: `center`, or `inside` / `outside`, which stroke twice the
   width and clip it by the fill coverage (`stroke·fill`, `stroke·(1−fill)`);
   open contours are closed implicitly for this clip; a `line` accepts only

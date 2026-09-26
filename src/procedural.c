@@ -4,6 +4,7 @@
 #include "scene_render/vector_path.h"
 #include "scene_render/paint.h"
 #include "vector_shape_internal.h"
+#include "compositing_limits_internal.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -34,6 +35,11 @@ static SrStatus extended_asset(const SrProject *project, const SrAsset *asset,
                                float *px, SrDiagnostics *diag) {
     const SrVectorExtension *ext = asset->vector_ext;
     uint32_t w = asset->width, h = asset->height;
+    if (w > SR_MAX_COVERAGE_DIMENSION || h > SR_MAX_COVERAGE_DIMENSION) {
+        sr_diag_error(diag, asset->source_line, "vector", "width/height",
+                      "extended vector assets are limited to 16384 px per side");
+        return SR_ERR_ASSET;
+    }
     size_t pixels = (size_t)w * h;
     SrPreparedPath path = {0};
     SrShapeParams shape = {.type = asset->vector_shape, .width = w, .height = h,

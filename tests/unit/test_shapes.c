@@ -294,6 +294,81 @@ static void dash_and_trim_strokes(sr_test_ctx *t) {
     sr_polyset_free(&square);
 }
 
+/* Review regressions: dots and dashes share one winding; dashes crossing a
+ * closed seam stay joined; a dash that cannot advance fails explicitly. */
+static void dash_seams_winding_and_progress(sr_test_ctx *t) {
+    SrPolySet line;
+    sr_polyset_init(&line, NULL, 64);
+    CHECK(t, sr_polyset_begin(&line) && sr_polyset_add(&line, (SrPathPoint){10, 40}) &&
+             sr_polyset_add(&line, (SrPathPoint){60, 40}) && sr_polyset_end(&line, false) &&
+             sr_polyset_seal(&line));
+    const double mixed[4] = {0.0, 1.0, 10.0, 1.0};
+    SrStrokeParams p = params(4.0);
+    p.cap = SR_LINE_CAP_ROUND;
+    p.dash = mixed;
+    p.dash_count = 4;
+    SrPolySet out;
+    sr_polyset_init(&out, NULL, SR_MAX_SHAPE_VERTICES);
+    CHECK(t, sr_stroke_build(&line, &p, &out) && sr_polyset_seal(&out));
+    area(&out, SR_FILL_NONZERO);
+    for (int x = 11; x < 58; ++x)   /* the centre row stays fully covered */
+        CHECK_NEAR(t, coverage[39 * GRID + x], 1.0, 1e-5);
+    sr_polyset_free(&out);
+    /* No progress in double precision fails instead of drawing nothing. */
+    SrPolySet far;
+    sr_polyset_init(&far, NULL, 64);
+    CHECK(t, sr_polyset_begin(&far) && sr_polyset_add(&far, (SrPathPoint){0, 0}) &&
+             sr_polyset_add(&far, (SrPathPoint){1e9, 0}) && sr_polyset_end(&far, false) &&
+             sr_polyset_seal(&far));
+    const double tiny[2] = {4e-8, 4e-8};
+    p = params(1.0);
+    p.dash = tiny;
+    p.dash_count = 2;
+    p.trimmed = true;
+    p.trim_start = 0.9999999999999999;
+    p.trim_end = 1.0;
+    sr_polyset_init(&out, NULL, SR_MAX_SHAPE_VERTICES);
+    CHECK(t, !sr_stroke_build(&far, &p, &out));
+    CHECK_INT(t, out.status, SR_ERR_RENDER);
+    sr_polyset_free(&out);
+    sr_polyset_free(&far);
+    sr_polyset_free(&line);
+    /* One dash longer than a closed square is the closed stroke. */
+    const SrPathPoint corners[4] = {{10, 10}, {50, 10}, {50, 50}, {10, 50}};
+    SrPolySet square;
+    sr_polyset_init(&square, NULL, 64);
+    CHECK(t, sr_polyset_begin(&square));
+    for (int i = 0; i < 4; ++i) CHECK(t, sr_polyset_add(&square, corners[i]));
+    CHECK(t, sr_polyset_end(&square, true) && sr_polyset_seal(&square));
+    const double long_dash[2] = {1000.0, 1.0};
+    p = params(4.0);
+    p.dash = long_dash;
+    p.dash_count = 2;
+    double a = 0.0;
+    CHECK_INT(t, build_stroke(&square, &p, &a), 2);
+    CHECK_NEAR(t, a, 1936.0 - 1296.0, 1e-2);
+    /* A dash crossing the seam equals the same dash on a contour that starts
+     * at another corner (pattern shifted by that corner's arc length; the
+     * 32-unit period divides the 160-unit perimeter, so the pattern itself is
+     * continuous across both seams). */
+    const double pattern[2] = {20.0, 12.0};
+    p.dash = pattern;
+    p.dash_offset = 10.0;
+    double seam_area = 0.0, rotated_area = 0.0;
+    size_t seam_pieces = build_stroke(&square, &p, &seam_area);
+    SrPolySet rotated;
+    sr_polyset_init(&rotated, NULL, 64);
+    CHECK(t, sr_polyset_begin(&rotated));
+    for (int i = 0; i < 4; ++i) CHECK(t, sr_polyset_add(&rotated, corners[(i + 1) % 4]));
+    CHECK(t, sr_polyset_end(&rotated, true) && sr_polyset_seal(&rotated));
+    p.dash_offset = 50.0;
+    size_t rotated_pieces = build_stroke(&rotated, &p, &rotated_area);
+    CHECK_INT(t, seam_pieces, rotated_pieces);
+    CHECK_NEAR(t, seam_area, rotated_area, 1e-3);
+    sr_polyset_free(&rotated);
+    sr_polyset_free(&square);
+}
+
 static double polyset_area(const SrShapeParams *shape, SrFillRule rule) {
     SrPolySet set;
     sr_polyset_init(&set, NULL, SR_MAX_SHAPE_VERTICES);
@@ -415,6 +490,7 @@ const sr_test_case sr_tests_shapes[] = {
     {"dash_and_trim_strokes", dash_and_trim_strokes},
     {"constructors_match_closed_forms", constructors_match_closed_forms},
     {"flattening_counts", flattening_counts},
+    {"dash_seams_winding_and_progress", dash_seams_winding_and_progress},
     {"ledger_accounting", ledger_accounting},
     {NULL, NULL},
 };

@@ -349,6 +349,35 @@ static void seeded_ordered_dither(sr_test_ctx *t) {
     sr_paint_free(&paint);
 }
 
+/* Review regressions: translucent Oklab stops keep their colour; a tiny
+ * but nonzero linear vector still paints. */
+static void translucent_oklab_and_tiny_vectors(sr_test_ctx *t) {
+    SrProject p = project();
+    SrPaint paint;
+    sr_paint_init(&paint, SR_PAINT_LINEAR);
+    paint.dither = false;
+    paint.space = SR_INTERP_OKLAB;
+    add_stop(&paint, 0.0, (SrColor){0, 0, 1, 0.5});
+    SrPaintEval eval;
+    CHECK_INT(t, sr_paint_eval(&paint, &p, 0.0, 10, 10, &eval, NULL), SR_OK);
+    float out[4];
+    sr_paint_sample(&eval, 5, 5, 0, 0, out);
+    CHECK_NEAR(t, out[0], 0.0, 1e-4);
+    CHECK_NEAR(t, out[1], 0.0, 1e-4);
+    CHECK_NEAR(t, out[2], 0.5, 1e-4);
+    CHECK_NEAR(t, out[3], 0.5, 1e-6);
+    sr_paint_free(&paint);
+    sr_paint_init(&paint, SR_PAINT_LINEAR);
+    paint.dither = false;
+    paint.x2.base = 1e-160;
+    add_stop(&paint, 0.0, (SrColor){1, 1, 1, 1});
+    CHECK_INT(t, sr_paint_eval(&paint, &p, 0.0, 10, 10, &eval, NULL), SR_OK);
+    sr_paint_sample(&eval, 5, 5, 0, 0, out);
+    CHECK_NEAR(t, out[3], 1.0, 0.0);
+    CHECK_NEAR(t, out[0], 1.0, 0.0);
+    sr_paint_free(&paint);
+}
+
 static void background_fill(sr_test_ctx *t) {
     SrProject p = project();
     SrPaint paint = gray_ramp(SR_PAINT_LINEAR);
@@ -375,6 +404,7 @@ const sr_test_case sr_tests_paint[] = {
     {"oklab_references", oklab_references},
     {"oklch_hue_rules", oklch_hue_rules},
     {"seeded_ordered_dither", seeded_ordered_dither},
+    {"translucent_oklab_and_tiny_vectors", translucent_oklab_and_tiny_vectors},
     {"background_fill", background_fill},
     {NULL, NULL},
 };
