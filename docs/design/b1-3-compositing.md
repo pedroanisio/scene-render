@@ -60,6 +60,12 @@ New color modes avoid division at zero alpha and use the existing normal
 fallback below `SR_BLEND_MIN_ALPHA`. Porter-Duff operators do not use that
 fallback: transparent source is significant for stencil operations.
 
+All color modes, including plus-lighter, leave the backdrop bit-identical
+when source alpha is zero. For plus-lighter this is an explicit exception to
+the sum-and-clamp formula below: it does not clamp an HDR backdrop where no
+source contributes. Any positive source alpha uses the plus-lighter formula,
+including values below the ordinary color-mode tiny-alpha fallback.
+
 The table specifies the modes not already implemented. `sat(x)` clamps to
 [0,1]. In division branches, test exact endpoint conditions before dividing.
 

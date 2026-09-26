@@ -43,13 +43,19 @@ def scene(relative, copies):
 
 
 def render(binary, path, threads, trace):
+    trace.unlink(missing_ok=True)
     result = subprocess.run([str(binary), '--scene', str(path), '--hash',
                              '--threads', str(threads), '--metrics-trace', str(trace)],
                             capture_output=True, text=True, check=True)
     if any(marker in result.stderr + result.stdout for marker in
            ('runtime error:', 'ERROR: AddressSanitizer', '[FAIL]')):
         raise RuntimeError('renderer reported a sanitizer or verification failure')
-    summary = json.loads(trace.read_text().splitlines()[-1])
+    try:
+        summary = json.loads(trace.read_text().splitlines()[-1])
+    except (OSError, IndexError, json.JSONDecodeError) as error:
+        raise RuntimeError('renderer did not write fresh valid metrics') from error
+    if not isinstance(summary, dict):
+        raise RuntimeError('expected a metrics summary object')
     if (summary.get('summary') is not True or summary.get('frames') != 24 or
             summary.get('status') != 0):
         raise RuntimeError('expected a successful 24-frame metrics summary')

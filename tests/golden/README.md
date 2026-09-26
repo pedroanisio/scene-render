@@ -21,6 +21,7 @@ difference, and keeps the rendered frame in `BUILD/test_tmp/golden/`.
 | Scene | Covers | Frames |
 |---|---|---|
 | `composite.xml` | all six blend modes in linear light, opacity/rotation/fill keys, cubic-bezier key, z order | 0, 12, 23 |
+| `blend-modes.xml` | all 28 color modes over matching translucent backdrops, animated source opacity/rotation, including nonseparable color and plus-lighter alpha | 0, 12, 23 |
 | `groups-masks.xml` | nested isolated groups (blend, opacity), pass-through group with an animated rounded-rect mask and an animated inverted mask, masked shape | 0, 12, 23 |
 | `paths.xml` | cubic/quadratic/relative path commands, evenodd vs nonzero, open and closed strokes, stroked rect/ellipse vectors and shapes | 0, 12, 23 |
 | `images.xml` | 8x8 image magnified 6x to 17.3x, rotated, animated scale; a 1904x1120 PNG resampled to its declared size; edges at the canvas border | 0, 12, 23 |
@@ -55,6 +56,12 @@ The three `styles` references are byte-identical copies of the existing
 `material-animation` references. They verify that token aliases produce the
 same pixels as literal colors. Frames 0, 12 and 20 were visually reviewed;
 no existing reference was regenerated.
+
+The three new `blend-modes` references capture the 22 added color modes
+alongside the six existing modes over matching translucent backdrops. Frames
+0, 12 and 23 were visually reviewed for mode differences, readable labels,
+gamut clipping and animated opacity/rotation. Only these new PNGs were
+generated; all existing references remain unchanged.
 
 ## Determinism scope
 

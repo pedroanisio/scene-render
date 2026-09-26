@@ -956,12 +956,89 @@ Colors are `#RRGGBB`, `#RRGGBBAA`, or normalized `r,g,b[,a]`, written as
 transfer-encoded values of the project working space. Named color spaces are
 sRGB, Rec.709, Display-P3, and Rec.2020. Assets are decoded from their source
 space into the blend space (the working gamut, linear light when
-`linearLight="true"`, premultiplied float), blending follows the W3C
-separable formulas there (`add` is not clamped until output), and the final
+`linearLight="true"`, premultiplied float), blending follows the formulas
+below (`add` is not clamped until output), and the final
 frame is converted to 8-bit (16-bit for pixel formats deeper than 8 bits) in
 the output space with matching primaries/transfer/matrix/range tags. Times and durations are decimal
 seconds. Frames are selected on a half-open interval; frame N occurs exactly
 at `N × fps_den / fps_num`.
+
+## Color blend modes
+
+`group`, `layer`, `shape` and `particleEmitter` accept `blend`. The default
+is `normal`; the original `add`, `multiply`, `screen`, `overlay` and
+`difference` keep their previous arithmetic. The additional modes below
+require `version="1.1"`. `blend` is static; opacity and source colors can
+still animate. Groups composite their completed isolated image once;
+emitters apply these color modes to each particle in emission order.
+
+Let `s,b` be straight source/backdrop colors, `S,B` their premultiplied
+values, and `a,d` their alphas. Except for plus-lighter, output is
+`(1-d)*S + (1-a)*B + a*d*f(b,s)`, with alpha `a+d*(1-a)`.
+The new modes clamp only the straight inputs to f to [0,1]; uncovered
+premultiplied contributions retain HDR values. They use double intermediate
+color calculations and float output. Below alpha 1e-6 on either input they
+use normal source-over to avoid unstable unpremultiplication. The old six
+modes retain their historical clamp and precision policies.
+
+In this table, `sat` means clamp to [0,1]. Channelwise formulas apply to
+each RGB component; `Lum(C)=.30*R+.59*G+.11*B`, and `Sat(C)=max(C)-min(C)`.
+
+| Mode | f(b,s), or the specified compositing operation |
+|---|---|
+| `exclusion` | `b+s-2*b*s` |
+| `subtract` | `max(0,b-s)` |
+| `divide` | zero if b=0; otherwise one if s=0, else `min(1,b/s)` |
+| `darken`, `lighten` | channelwise min, max |
+| `darker-color`, `lighter-color` | choose the complete RGB color with smaller/larger Lum; exact ties choose backdrop |
+| `color-dodge` | zero if b=0; otherwise one if s=1, else `min(1,b/(1-s))` |
+| `color-burn` | one if b=1; otherwise zero if s=0, else `1-min(1,(1-b)/s)` |
+| `linear-dodge`, `linear-burn` | `min(1,b+s)`, `max(0,b+s-1)` |
+| `hard-light` | `2*b*s` for s<=.5, otherwise `1-2*(1-b)*(1-s)` |
+| `soft-light` | `b-(1-2*s)*b*(1-b)` for s<=.5, otherwise `b+(2*s-1)*(D(b)-b)` |
+| `linear-light` | `sat(b+2*s-1)` |
+| `vivid-light` | color-burn(b,2*s) for s<=.5, otherwise color-dodge(b,2*s-1) |
+| `pin-light` | `min(b,2*s)` for s<=.5, otherwise `max(b,2*s-1)` |
+| `hard-mix` | zero if vivid-light<.5, otherwise one |
+| `hue` | source hue, backdrop saturation and Lum |
+| `saturation` | source saturation, backdrop hue and Lum |
+| `color` | source hue/saturation, backdrop Lum |
+| `luminosity` | backdrop hue/saturation, source Lum |
+| `plus-lighter` | sum premultiplied RGBA, then clamp each component to [0,1] |
+
+Soft-light uses `D(b)=((16*b-12)*b+4)*b` for b<=.25, otherwise `sqrt(b)`.
+The four nonseparable modes use the W3C SetSat/SetLum/ClipColor operations,
+including compression of out-of-gamut RGB about its target luminosity;
+they do not convert to HSL or HSV. W3C-defined modes follow
+[Compositing Level 1](https://www.w3.org/TR/2024/CRD-compositing-1-20240321/#blending).
+Other formulas and the whole-color comparison rule are renderer definitions.
+
+Zero source alpha is a no-op for every color mode, leaving even an HDR
+backdrop bit-identical. This is an explicit exception to plus-lighter's
+clamping rule. Every positive source alpha uses its sum-and-clamp operation,
+including tiny alpha. Thus plus-lighter can add alpha, while `add` retains
+source-over alpha and unclamped RGB; `linear-dodge` clamps the straight blend
+function and also retains source-over alpha.
+
+```xml
+<group id="wash" blend="color" opacity="0.6">
+  <shape id="tint" shape="rect" width="160" height="90" fill="#C85A90"/>
+</group>
+```
+
+The kernels allocate nothing and use bounded three-channel operations with
+no per-frame or per-thread state. The 320x180 `tests/golden/blend-modes.xml`
+sheet shows all 28 implemented color modes over matching translucent
+backdrops. Dissolve and the stencil/silhouette, alpha-add and behind parent
+operators remain unsupported until their separate compositor implementation.
+
+Cost depends on the selected formulas and pixel overlap. In the 192x128,
+24-frame `tests/data-blend-colors.xml` stack, all 22 new modes together used
+65.1% more median compositor CPU than the same stack with normal blending
+(0.182702 versus 0.110646 seconds at four threads). Both variants matched
+every frame at one/four threads and across five alternating measurements.
+Run `tools/blend-benchmark.py` inside the SDK to repeat the comparison;
+ranges and full verification are in `docs/reviews/b1-compositing-colors.md`.
 
 ## Extended animation curves and tracks (1.1)
 

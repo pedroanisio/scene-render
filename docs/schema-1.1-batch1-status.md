@@ -37,7 +37,7 @@ Builds and tests run only in Flatpak `org.freedesktop.Sdk//25.08`.
 | B1-2 relative lengths and parent-box evaluation | Implemented, enabled, reviewed and verified | Batch merge |
 | B1-2 style tokens | Implemented, reviewed and verified | Batch merge |
 | B1-2 metadata/container tags | Implemented, reviewed and verified | Batch merge |
-| B1-3 blend modes, skew, mattes, masks, adjustment nodes | Design reviewed; shared randomness prerequisite verified | Every listed mode/parameter, cycle checks, numerical tests, three new goldens |
+| B1-3 blend modes, skew, mattes, masks, adjustment nodes | Design and randomness verified; 22 new color modes implemented and verified | Dissolve/parent operators, skew, advanced masks, mattes, adjustment nodes and remaining goldens |
 | B1-4 shapes, stroke styles, trims, vector constructors | Pending | Geometry/arc lengths/coverage, all listed styles and shapes, golden |
 | B1-4 gradients and paints | Pending | Coordinates, focal/aspect/spread/rotation/stops, interpolation, dither, every paint host, golden |
 | B1-5 markers/beatGrid/snapping, group timing, sequence, names/tags | Pending | Generated ID resolution, timing tests and sequence-markers golden |
@@ -325,5 +325,34 @@ three encodes and two expected rejections.
 The strict 2% performance check passes with an unchanged baseline and output
 hashes: clear -1.1%, stage total -18.1%, all material stages below baseline.
 No stable speedup is claimed from these noisy measurements. See
-`docs/reviews/b1-compositing-random.md`. B1-3 visible features remain gated;
-the next implementation milestone is the color blend kernels.
+`docs/reviews/b1-compositing-random.md`. At that checkpoint all B1-3 visible
+features remained gated. The next milestone below enables the color modes.
+
+## Compositing color modes
+
+The 22 new color modes are implemented and enabled for groups, layers,
+shapes and particle emitters in 1.1. The six original modes preserve their
+enum values and arithmetic. Pure kernels allocate nothing and retain no
+frame/thread state. Twelve test cases cover independent numerical vectors,
+nonseparable invariants, all XML hosts, parser mutations, immutable scenes,
+warm/shuffled times and one/four-thread rendering. Three new blend-sheet
+references were visually reviewed; old references remain unchanged.
+
+Independent review closed two reproduced findings: the design now explicitly
+documents plus-lighter's zero-alpha no-op on HDR backdrops, and the shared
+benchmark helper requires fresh metrics for each run. Six verification-tool
+tests pass after the helper fix. Full Release, ASan/UBSan and coverage pass
+74/74 each, including all 20 golden frame-order cases. Coverage is 91.97%
+lines / 76.07% branches, with raised floors 89.95% / 74.05%; the color kernel
+module has full line/branch coverage. The oracle against `66fda60` matches
+309 previews, three encodes and two expected rejections.
+
+The cumulative strict 2% performance gate passes: clear -4.9%, compositor
+-25.4%, stage total -25.0%, all material stages below baseline. The original
+baseline is unchanged and the noisy results do not establish a stable
+speedup. The feature fixture matches every frame at one/four threads and
+across five alternating pairs; its overlapping 22-mode stack costs +65.1%
+compositor CPU versus normal blending (+62.8% stage total). Detailed evidence
+and timing ranges are in `docs/reviews/b1-compositing-colors.md`.
+Skew, masks, dissolve/parent operators, mattes and adjustments remain in
+B1-3; B1-4 through B1-6 and the final batch gates are still outstanding.

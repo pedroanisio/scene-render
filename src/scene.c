@@ -394,12 +394,19 @@ SrAnimColor *sr_node_color_property(SrNode *node, const char *name) {
     return sr_property_target(property, node);
 }
 
+static const char *const blend_names[SR_BLEND_COUNT] = {
+    "normal", "add", "multiply", "screen", "overlay", "difference",
+    "plus-lighter", "exclusion", "subtract", "divide", "darken", "lighten",
+    "darker-color", "lighter-color", "color-dodge", "color-burn",
+    "linear-dodge", "linear-burn", "soft-light", "hard-light", "linear-light",
+    "vivid-light", "pin-light", "hard-mix", "hue", "saturation", "color",
+    "luminosity"
+};
+
 bool sr_blend_parse(const char *text, SrBlendMode *mode) {
     if (!text || !mode) return false;
-    static const char *names[] = {"normal", "add", "multiply", "screen",
-                                  "overlay", "difference"};
-    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
-        if (strcmp(text, names[i]) == 0) {
+    for (size_t i = 0; i < SR_BLEND_COUNT; ++i) {
+        if (strcmp(text, blend_names[i]) == 0) {
             *mode = (SrBlendMode)i;
             return true;
         }
@@ -408,8 +415,6 @@ bool sr_blend_parse(const char *text, SrBlendMode *mode) {
 }
 
 const char *sr_blend_name(SrBlendMode mode) {
-    static const char *names[] = {"normal", "add", "multiply", "screen",
-                                  "overlay", "difference"};
-    return mode >= SR_BLEND_NORMAL && mode <= SR_BLEND_DIFFERENCE ? names[mode]
-                                                                  : "unknown";
+    return mode >= SR_BLEND_NORMAL && mode < SR_BLEND_COUNT
+         ? blend_names[mode] : "unknown";
 }

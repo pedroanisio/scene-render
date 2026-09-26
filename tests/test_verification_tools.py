@@ -22,6 +22,19 @@ def module(name):
 
 
 class VerificationFailures(unittest.TestCase):
+    def test_benchmark_rejects_stale_metrics(self):
+        tool = module('length-benchmark')
+        hashes = ''.join(f'{i} {i:016x}\n' for i in range(24))
+        valid = {'summary': True, 'frames': 24, 'status': 0,
+                 'cpu': {'composite': 1.0}}
+        with tempfile.TemporaryDirectory() as directory:
+            trace = pathlib.Path(directory) / 'trace.jsonl'
+            trace.write_text(json.dumps(valid) + '\n')
+            result = subprocess.CompletedProcess(['renderer'], 0, hashes, '')
+            with patch.object(tool.subprocess, 'run', return_value=result):
+                with self.assertRaises(RuntimeError):
+                    tool.render('renderer', 'scene', 4, trace)
+
     def test_length_benchmark_requires_complete_successful_frames(self):
         tool = module('length-benchmark')
         hashes = ''.join(f'{i} {i:016x}\n' for i in range(24))
@@ -36,11 +49,40 @@ class VerificationFailures(unittest.TestCase):
             trace = pathlib.Path(directory) / 'trace.jsonl'
             for index, (stdout, summary, stderr) in enumerate(cases):
                 with self.subTest(case=index):
-                    trace.write_text(json.dumps(summary) + '\n')
                     result = subprocess.CompletedProcess(['renderer'], 0, stdout, stderr)
-                    with patch.object(tool.subprocess, 'run', return_value=result):
+
+                    def complete(*args, **kwargs):
+                        trace.write_text(json.dumps(summary) + '\n')
+                        return result
+
+                    with patch.object(tool.subprocess, 'run', side_effect=complete):
                         if index == 0:
                             tool.render('renderer', 'scene', 4, trace)
+                        else:
+                            with self.assertRaises(RuntimeError):
+                                tool.render('renderer', 'scene', 4, trace)
+
+    def test_benchmark_requires_fresh_valid_metrics(self):
+        tool = module('length-benchmark')
+        hashes = ''.join(f'{i} {i:016x}\n' for i in range(24))
+        stale = {'summary': True, 'frames': 24, 'status': 0,
+                 'cpu': {'composite': 99.0}}
+        fresh = dict(stale, cpu={'composite': 2.0})
+        with tempfile.TemporaryDirectory() as directory:
+            trace = pathlib.Path(directory) / 'trace.jsonl'
+            for content in ('', '{broken', '[]', json.dumps(fresh)):
+                with self.subTest(content=content):
+                    trace.write_text(json.dumps(stale) + '\n')
+
+                    def complete(*args, **kwargs):
+                        self.assertFalse(trace.exists())
+                        trace.write_text(content)
+                        return subprocess.CompletedProcess(['renderer'], 0, hashes, '')
+
+                    with patch.object(tool.subprocess, 'run', side_effect=complete):
+                        if content == json.dumps(fresh):
+                            _, cpu = tool.render('renderer', 'scene', 4, trace)
+                            self.assertEqual(cpu['composite'], 2.0)
                         else:
                             with self.assertRaises(RuntimeError):
                                 tool.render('renderer', 'scene', 4, trace)
