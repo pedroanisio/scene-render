@@ -195,3 +195,55 @@ oracle against `/tmp/scene-render-b1-reference` 309/309 previews, 3/3
 encodes, 2 expected rejections. Golden references and
 `tests/golden.sha256` are unchanged by the fixes. The strict performance
 gate still needs a quiet-machine run.
+
+## Merges
+
+- `90caac6` merges main `d29c3d2` (B1-5 timeline, B1-6 outputs). Conflicts
+  in `scene.h`, `xml_internal.h`, `xml_nodes.c`, `xml_resolve.c`,
+  `capabilities.json` and `coverage-gate.sh` were resolved keeping both
+  sides; main's floors (90.80 / 76.50) kept. B1-5 integration: adjustment
+  accepts `name`, `tags`, `startMarker`, `endMarker` (allowed list and
+  capability rows); adjustment and the new mask properties are registry
+  hosts, so key markers resolve on them; `sequenceType` inherits the
+  groupType matte, blend and adjustment rows; sequences and re-timed groups
+  are matte sources (`b13_review.sequence_and_clock_matte_sources`,
+  `adjustment_timeline_attributes`).
+- `62a0c58` merges main `1e17ede` (B1-4 shapes and paints). Conflicts in
+  the build files, `property.h/.c`, `xml_internal.h`, `xml_nodes.c`,
+  `vector_path_internal.h`, `compositing.c`, `compositor.c` and
+  `capabilities.json` resolved keeping both sides (both op kinds and row
+  kernels; extended shapes are a compositing feature named "shape").
+  Outline deduplication: `mask_outline.c` now builds polygon/star vertices
+  with B1-4's `sr_shape_vertex`; all goldens, including `mattes-masks`,
+  remain byte-identical.
+
+## Follow-up review (Codex, 53de26e..f2a8dc5)
+
+Seven fixes were confirmed complete. The remaining items, each reproduced
+first (the four behaviour cases fail on `62a0c58`; the finding-3 cases fail
+when the private scopes are removed from `sr_effect_bounded`):
+
+| Item | Test | Fix |
+|---|---|---|
+| 9 (card groups) | `card_parent_mask_keeps_adjustment_input` | `21f9ed8`: card groups with adjustment children draw them unmasked into an isolated buffer over the grown clip, then apply the group masks |
+| 3 (test strength) | `bounded_effects_allocate_privately` (aligned_alloc observation of a real bounded render with a large warmed cache; exact pointer/capacity of a small warmed cache after a larger bounded call; nested scopes), `oom.private_effect_scratch_survives_allocation_failures` (12 injected failures, cache unchanged after every replay, no leaks) | `dac2ce4` (tests; `--wrap=aligned_alloc` makes effect scratch injectable) |
+| A (quadratic suffix reach) | `adjustment_effect_reference_limit` (256 accepted and rendered, 257 rejected) | `21f9ed8`: `SR_MAX_ADJUSTMENT_EFFECTS` at load and preparation; one charged reach pass |
+| B (empty matte on stencil card) | `empty_matte_stencil_card_clears` | `21f9ed8`: deferred depth test recorded before the matte |
+| C (HDR at full coverage) | `full_coverage_card_operator_is_exact` (1e8 backdrop, exact white) | `21f9ed8`: copy at coverage >= 1 |
+
+Codex's note on finding 4: the zero initial capture scale (finding 6) also
+empties an inactive capture, so the activity guard is now defence in depth;
+the test still covers the observable behaviour.
+
+## Final evidence (tree `dac2ce4`, after both merges)
+
+- SDK Release CTest 100/100, including `frame_order` over every golden
+  (all lanes), `unit.golden`, `integration` (B1-6 outputs, 1 vs 4 threads,
+  `tests/golden.sha256`) and `unit.oom`.
+- ASan/UBSan CTest (`ASAN_OPTIONS=detect_leaks=0`): 100/100.
+- Coverage gate: 93.03% lines / 79.14% branches (floors 90.80 / 76.50).
+- Byte oracle vs `/tmp/scene-render-b1-reference`: 309/309 previews across
+  42 scenes, 3/3 encodes, 2 expected rejections.
+- Relative to main, only the nine B1-3 golden references are added;
+  `tests/golden.sha256` and every other reference are unchanged.
+- The strict 2% performance gate still needs a quiet-machine run.
