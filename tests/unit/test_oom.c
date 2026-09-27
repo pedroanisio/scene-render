@@ -620,6 +620,9 @@ static void xml_load_survives_allocation_failures(sr_test_ctx *t) {
     check_load(t, "tests/golden/skew.xml", 40);
     check_load(t, "tests/data-compositing.xml", 60);
     check_load(t, "examples/feature-parity.xml", 50);
+    check_load(t, "tests/data-shapes.xml", 80);
+    check_load(t, "tests/golden/gradients.xml", 40);
+    check_load(t, "tests/golden/shapes-strokes.xml", 40);
 }
 
 /* ----------------------------------------------------------------- assets */
@@ -756,6 +759,33 @@ static void frame_render_survives_allocation_failures(sr_test_ctx *t) {
                               {SR_ERR_MEMORY}};
         long n = replay_until_success(t, &spec, &c);
         CHECK(t, n >= (i >= 4 ? 40 : i >= 2 ? 12 : 21));
+        free(c.reference);
+        if (c.loaded) sr_scene_free(&c.scene);
+    }
+}
+
+/* B1-4: paints, stroke geometry, coverage grids and extended vector assets
+ * through one preview frame (asset rasterization included). */
+static void shape_render_survives_allocation_failures(sr_test_ctx *t) {
+    static const unsigned threads[] = {1, 3};
+    for (size_t i = 0; i < 2; ++i) {
+        RenderContext c = {.threads = threads[i], .fixture = "tests/data-shapes.xml"};
+        snprintf(c.path, sizeof(c.path), "%s", sr_test_tmp_path("oom-shapes.ppm"));
+        render_prepare(&c);
+        if (!c.loaded) { SR_FAIL(t, "could not load shape fixture"); return; }
+        if (render_op(&c) != SR_OK || !read_all(c.path, &c.reference, &c.reference_size)) {
+            SR_FAIL(t, "reference render of %s failed", c.fixture);
+            sr_scene_free(&c.scene);
+            return;
+        }
+        render_release(&c);
+        render_prepare(&c);
+        char what[64];
+        snprintf(what, sizeof(what), "%s render (threads=%u)", c.fixture, c.threads);
+        const OomSpec spec = {what, render_op, render_release, render_prepare,
+                              render_same_result, {SR_ERR_MEMORY}};
+        long n = replay_until_success(t, &spec, &c);
+        CHECK(t, n >= 30);
         free(c.reference);
         if (c.loaded) sr_scene_free(&c.scene);
     }
@@ -1136,6 +1166,7 @@ const sr_test_case sr_tests_oom[] = {
     {"asset_load_survives_allocation_failures", asset_load_survives_allocation_failures},
     {"animated_mixer_survives_allocation_failures", animated_mixer_survives_allocation_failures},
     {"frame_render_survives_allocation_failures", frame_render_survives_allocation_failures},
+    {"shape_render_survives_allocation_failures", shape_render_survives_allocation_failures},
     {"relative_lengths_survive_allocation_failures",
      relative_lengths_survive_allocation_failures},
     {"encoder_survives_allocation_failures", encoder_survives_allocation_failures},

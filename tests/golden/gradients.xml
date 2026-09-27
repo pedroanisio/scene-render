@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- B1-4 paints: linear, radial (focal point, focal radius, aspect) and conic
+     gradients; pad, reflect and repeat spreads; object and user units;
+     rotation; animated geometry and stops; colour hints; the four
+     interpolation spaces; dither on and off; gradients on strokes, on a
+     vector asset and on the project background. -->
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="2" seed="5"
+           linearLight="false" background="url(#backdrop)"/>
+  <assets>
+    <vector id="chip" shape="rounded-rect" radius="6" width="52" height="30"
+            fill="url(#chipfill)" stroke="#FFFFFF" strokeWidth="1.5"
+            strokePosition="inside"/>
+  </assets>
+  <paints>
+    <linearGradient id="backdrop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" color="#0E1424"/>
+      <stop offset="1" color="#252038"/>
+    </linearGradient>
+    <linearGradient id="pad" x1="0.2" y1="0" x2="0.8" y2="0">
+      <stop offset="0" color="#FF5E5B"/>
+      <stop offset="0.5" color="#FFED66"/>
+      <stop offset="1" color="#00CECB"/>
+    </linearGradient>
+    <linearGradient id="reflect" x1="0" y1="0" x2="0.35" y2="0" spread="reflect"
+                    rotation="30">
+      <stop offset="0" color="#F7F7F7"/>
+      <stop offset="1" color="#5D2E8C"/>
+    </linearGradient>
+    <linearGradient id="repeat" x1="0" y1="0" x2="12" y2="6" units="user"
+                    spread="repeat">
+      <stop offset="0" color="#FFB400"/>
+      <stop offset="0.5" color="#FFB400"/>
+      <stop offset="0.5" color="#2A2A40"/>
+      <stop offset="1" color="#2A2A40"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" color="#FFFFFF"/>
+      <stop offset="0.4" color="#FFD166"/>
+      <stop offset="1" color="#EF476F" opacity="0.2"/>
+    </radialGradient>
+    <radialGradient id="focal" cx="0.5" cy="0.5" r="0.5" fx="0.3" fy="0.3"
+                    fr="0.05">
+      <animate property="fx"><key time="0" value="0.25"/><key time="2" value="0.7"/></animate>
+      <stop offset="0" color="#E0FBFC"/>
+      <stop offset="1" color="#1B4965"/>
+    </radialGradient>
+    <radialGradient id="rings" cx="0.5" cy="0.5" r="0.18" aspect="2"
+                    spread="repeat">
+      <stop offset="0" color="#06D6A0"/>
+      <stop offset="1" color="#073B4C"/>
+    </radialGradient>
+    <conicGradient id="wheel" cx="0.5" cy="0.5" angle="0">
+      <animate property="angle"><key time="0" value="0"/><key time="2" value="180"/></animate>
+      <stop offset="0" color="#FF0054"/>
+      <stop offset="0.33" color="#FFBD00"/>
+      <stop offset="0.66" color="#390099"/>
+      <stop offset="1" color="#FF0054"/>
+    </conicGradient>
+    <linearGradient id="moving" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" color="#118AB2"/>
+      <stop offset="0.3" color="#FFFFFF">
+        <animate property="offset"><key time="0" value="0.1"/><key time="2" value="0.9"/></animate>
+        <animate property="color"><key time="0" value="#FFFFFF"/><key time="2" value="#FFD166"/></animate>
+      </stop>
+      <stop offset="1" color="#073B4C"/>
+    </linearGradient>
+    <linearGradient id="hint" x1="0" y1="0" x2="1" y2="0" interpolationSpace="srgb">
+      <stop offset="0" color="#000000" midpoint="0.2"/>
+      <stop offset="1" color="#FFFFFF"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" color="#FF4D6D"/>
+      <stop offset="1" color="#4CC9F0"/>
+    </linearGradient>
+    <linearGradient id="linear" x1="0" y1="0" x2="1" y2="0" interpolationSpace="linear">
+      <stop offset="0" color="#FF0000"/><stop offset="1" color="#0000FF"/>
+    </linearGradient>
+    <linearGradient id="srgb" x1="0" y1="0" x2="1" y2="0" interpolationSpace="srgb">
+      <stop offset="0" color="#FF0000"/><stop offset="1" color="#0000FF"/>
+    </linearGradient>
+    <linearGradient id="oklab" x1="0" y1="0" x2="1" y2="0" interpolationSpace="oklab">
+      <stop offset="0" color="#FF0000"/><stop offset="1" color="#0000FF"/>
+    </linearGradient>
+    <linearGradient id="oklch" x1="0" y1="0" x2="1" y2="0" interpolationSpace="oklch">
+      <stop offset="0" color="#FF0000"/><stop offset="1" color="#0000FF"/>
+    </linearGradient>
+    <linearGradient id="dithered" x1="0" y1="0" x2="1" y2="0" dither="true">
+      <stop offset="0" color="#202028"/><stop offset="1" color="#30303C"/>
+    </linearGradient>
+    <linearGradient id="banded" x1="0" y1="0" x2="1" y2="0" dither="false">
+      <stop offset="0" color="#202028"/><stop offset="1" color="#30303C"/>
+    </linearGradient>
+    <linearGradient id="chipfill" x1="0" y1="0" x2="0" y2="1" interpolationSpace="oklab">
+      <stop offset="0" color="#9B5DE5"/><stop offset="1" color="#00BBF9"/>
+    </linearGradient>
+  </paints>
+  <composition>
+    <!-- Row 1 -->
+    <shape id="c-pad" shape="rect" x="4" y="6" width="56" height="48" fill="url(#pad)"/>
+    <shape id="c-reflect" shape="rect" x="68" y="6" width="56" height="48"
+           fill="url(#reflect)"/>
+    <shape id="c-repeat" shape="rect" x="132" y="6" width="56" height="48"
+           fill="url(#repeat)"/>
+    <shape id="c-sun" shape="ellipse" x="196" y="6" width="56" height="48"
+           fill="url(#sun)"/>
+    <shape id="c-focal" shape="ellipse" x="260" y="6" width="56" height="48"
+           fill="url(#focal)"/>
+    <!-- Row 2 -->
+    <shape id="c-rings" shape="rect" x="4" y="64" width="56" height="48"
+           fill="url(#rings)"/>
+    <shape id="c-wheel" shape="polygon" points="8" x="68" y="62" width="56"
+           height="52" fill="url(#wheel)"/>
+    <shape id="c-moving" shape="rect" x="132" y="64" width="56" height="48"
+           fill="url(#moving)"/>
+    <shape id="c-hint" shape="rect" x="196" y="64" width="56" height="48"
+           fill="url(#hint)"/>
+    <shape id="c-rim" shape="star" points="5" x="260" y="60" width="56" height="56"
+           fill="#1A1A2E" stroke="url(#rim)" strokeWidth="6" strokeJoin="round"/>
+    <!-- Row 3 -->
+    <shape id="s-linear" shape="rect" x="4" y="122" width="120" height="12"
+           fill="url(#linear)"/>
+    <shape id="s-srgb" shape="rect" x="4" y="136" width="120" height="12"
+           fill="url(#srgb)"/>
+    <shape id="s-oklab" shape="rect" x="4" y="150" width="120" height="12"
+           fill="url(#oklab)"/>
+    <shape id="s-oklch" shape="rect" x="4" y="164" width="120" height="12"
+           fill="url(#oklch)"/>
+    <shape id="d-on" shape="rect" x="132" y="122" width="120" height="26"
+           fill="url(#dithered)"/>
+    <shape id="d-off" shape="rect" x="132" y="150" width="120" height="26"
+           fill="url(#banded)"/>
+    <layer id="chip-layer" asset="chip" x="262" y="134"/>
+  </composition>
+</scene>

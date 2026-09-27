@@ -753,6 +753,9 @@ static bool generated_collisions(ParseContext *ctx) {
     for (size_t i = 0; i < scene->physics.field_count; ++i)
         if (!collision(ctx, scene->physics.fields[i].id, grid, "forceField"))
             return false;
+    for (size_t i = 0; i < scene->paint_count; ++i)
+        if (!collision(ctx, scene->paints[i].id, scene->paints[i].source_line,
+                       "paint")) return false;
     return true;
 }
 
@@ -779,6 +782,17 @@ static bool resolve_shared(ParseContext *ctx) {
     for (size_t i = 0; i < scene->physics.field_count; ++i)
         if (!resolve_host(ctx, SR_PROPERTY_FIELD, &scene->physics.fields[i], NULL))
             return false;
+    /* B1-4 paints and stops use the project clock like other shared hosts. */
+    for (size_t i = 0; i < scene->paint_count; ++i) {
+        SrPaint *paint = &scene->paints[i];
+        SrPropertyHost kind = paint->type == SR_PAINT_LINEAR ? SR_PROPERTY_LINEAR_GRADIENT
+            : paint->type == SR_PAINT_RADIAL ? SR_PROPERTY_RADIAL_GRADIENT
+            : SR_PROPERTY_CONIC_GRADIENT;
+        if (!resolve_host(ctx, kind, paint, NULL)) return false;
+        for (size_t j = 0; j < paint->stop_count; ++j)
+            if (!resolve_host(ctx, SR_PROPERTY_GRADIENT_STOP, &paint->stops[j], NULL))
+                return false;
+    }
     return true;
 }
 

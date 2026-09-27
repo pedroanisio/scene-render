@@ -17,6 +17,7 @@
 #include "scene_render/random.h"
 #include "compositor_coverage_internal.h"
 #include "compositor_matte_internal.h"
+#include "compositor_shape_internal.h"
 
 #include <float.h>
 #include <limits.h>
@@ -36,7 +37,8 @@
  * read and write only their own pixel. */
 typedef enum {
     SR_OP_IMAGE, SR_OP_SHAPE, SR_OP_BUFFER, SR_OP_DISC, SR_OP_CLEAR,
-    SR_OP_OPERATOR, SR_OP_REPLACE
+    SR_OP_OPERATOR, SR_OP_REPLACE,
+    SR_OP_COVERAGE              /* B1-4 extended shape, compositor_shape.c */
 } SrOpKind;
 
 /* Grid deformations evaluated once per draw: the offsets of every
@@ -77,6 +79,7 @@ typedef struct {
     bool has_card;            /* SR_OP_BUFFER: depth test with `card` */
     SrCardTest card;
     SrClip bounds;
+    const SrShapeRaster *raster; /* SR_OP_COVERAGE, borrowed (immediate) */
     SrCompositeOwner owner;   /* source of queued resource reservations */
     void *owned;              /* queued copy of the mask chain, or NULL */
     const SrLumaConfig *luma; /* SR_OP_OPERATOR/REPLACE: render-owned */
@@ -1089,11 +1092,47 @@ static void sr_operator_rows(const SrDrawOp *op, size_t begin, size_t end) {
     }
 }
 
+/* B1-4 extended shapes: coverage grids and paints come from the immutable
+ * raster; opacity, masks, deformation and blending follow the other ops. */
+static void sr_coverage_rows(const SrDrawOp *op, size_t begin, size_t end) {
+    float *const base = op->target.px;
+    const size_t stride = op->target.width;
+    const int x0 = op->bounds.x0, x1 = op->bounds.x1;
+    const size_t y0 = (size_t)op->bounds.y0;
+    const SrMat3 inv = op->inverse;
+    const SrShapeRaster *const raster = op->raster;
+    const bool deform = op->deform != NULL;
+    for (size_t y = y0 + begin; y < y0 + end; ++y) {
+        const double cy = (double)y + 0.5;
+        float *restrict d = base + (y * stride + (size_t)x0) * 4;
+        for (int x = x0; x < x1; ++x, d += 4) {
+            const double cx = (double)x + 0.5;
+            float coverage = op->masks
+                ? op->opacity * sr_link_coverage(op->masks, cx, cy) : op->opacity;
+            if (!(coverage > 0.0f)) continue;
+            SrVec2 local = sr_mat_apply(&inv, cx, cy);
+            if (deform && !sr_deform_inverse(op->node, &local, op->deform_width,
+                                             op->deform_height, op->deform))
+                continue;
+            float s[4];
+            if (!sr_shape_raster_sample(raster, x, (int)y, local.x, local.y, s))
+                continue;
+            s[0] *= coverage; s[1] *= coverage;
+            s[2] *= coverage; s[3] *= coverage;
+            sr_blend_px_inline(op->blend, d, s);
+        }
+    }
+}
+
 /* Rows are offsets from bounds.y0 so sr_parallel_for can split [0, rows). */
 static void sr_op_rows(void *opaque, size_t begin, size_t end) {
     const SrDrawOp *op = opaque;
     if (op->kind == SR_OP_OPERATOR || op->kind == SR_OP_REPLACE) {
         sr_operator_rows(op, begin, end);
+        return;
+    }
+    if (op->kind == SR_OP_COVERAGE) {
+        sr_coverage_rows(op, begin, end);
         return;
     }
     if (op->kind == SR_OP_DISC) {
@@ -1435,10 +1474,67 @@ static SrStatus sr_draw_image(SrDrawContext *context, const SrNode *node,
     return status;
 }
 
+/* B1-4 extended shapes run immediately: the raster lives on this frame. */
+static SrStatus sr_draw_shape_path(SrDrawContext *context, const SrNode *node,
+                                   SrMat3 world, SrMat3 inverse, double opacity,
+                                   SrClip clip, const SrTarget *target,
+                                   const SrMaskLink *masks) {
+    SrCompositeResources *resources = context->compositor->resources;
+    SrCompositeOwner previous = sr_composite_owner(resources,
+        sr_composite_node_owner(context->scene, node, "shape"));
+    const SrNodeGeometry *geometry = sr_length_node(context->lengths, node);
+    double width = geometry ? geometry->box.width : node->shape_width;
+    double height = geometry ? geometry->box.height : node->shape_height;
+    SrDeformState deform;
+    SrStatus status = sr_deform_prepare(context->scene, node, context->time,
+                                        resources, &deform);
+    if (status != SR_OK) {
+        sr_composite_owner(resources, previous);
+        return status;
+    }
+    bool deforms = sr_node_deforms(node);
+    SrShapeInput input = {context->scene, node, context->time, width, height,
+                          world, clip, deforms, resources, context->diag};
+    SrShapeRaster raster;
+    status = sr_shape_raster_build(&input, &raster);
+    if (status == SR_OK && !raster.empty) {
+        SrDrawOp op = sr_op_base(context, node, target, inverse, opacity,
+                                 context->time, masks);
+        op.kind = SR_OP_COVERAGE;
+        op.raster = &raster;
+        op.deform = deforms ? &deform : NULL;
+        op.deform_width = width;
+        op.deform_height = height;
+        if (deforms) {
+            const double *e = raster.extent;
+            double pad = fmax(fmax(-e[0], -e[1]), fmax(e[2] - width, e[3] - height));
+            op.bounds = sr_clip_intersect(
+                sr_deformed_bounds(node, world, width, height,
+                                   fmax(pad, 0.0) + op.aa + 1.0, context->time,
+                                   &deform, target), clip);
+        } else {
+            op.bounds = raster.bounds;
+        }
+        uint64_t area = (uint64_t)(op.bounds.x1 - op.bounds.x0) *
+                        (uint64_t)(op.bounds.y1 - op.bounds.y0);
+        if (!sr_composite_work(resources, area, raster.pixel_cost))
+            status = SR_ERR_RENDER;
+        else
+            status = sr_op_submit(context->compositor, &op, true);
+    }
+    sr_shape_raster_free(&raster);
+    sr_deform_free(&deform);
+    sr_composite_owner(resources, previous);
+    return status;
+}
+
 static SrStatus sr_draw_shape(SrDrawContext *context, const SrNode *node,
                               SrMat3 world, SrMat3 inverse, double opacity,
                               SrClip clip, const SrTarget *target,
                               const SrMaskLink *masks) {
+    if (node->shape_style.extended)
+        return sr_draw_shape_path(context, node, world, inverse, opacity, clip,
+                                  target, masks);
     SrCompositeResources *resources = context->compositor->resources;
     if (resources) {
         SrCompositeOwner previous = sr_composite_owner(resources,
@@ -2405,6 +2501,21 @@ static bool sr_content_bounds_impl(const SrDrawContext *context, const SrNode *n
     }
     SrVec2 corners[4] = {{-pad, -pad}, {w + pad, -pad}, {w + pad, h + pad},
                          {-pad, h + pad}};
+    if (node->type == SR_NODE_SHAPE && node->shape_style.extended) {
+        double e[4];
+        if (!sr_shape_local_bounds(context->compositor->resources, node,
+                                   context->time, w, h, e)) {
+            /* A ledger failure is fatal; nonfinite values leave the bounds
+             * unknown, which callers treat conservatively. */
+            const SrCompositeResources *r = context->compositor->resources;
+            if (r && r->status != SR_OK) *status = r->status;
+            return false;
+        }
+        corners[0] = (SrVec2){e[0], e[1]};
+        corners[1] = (SrVec2){e[2], e[1]};
+        corners[2] = (SrVec2){e[2], e[3]};
+        corners[3] = (SrVec2){e[0], e[3]};
+    }
     for (int i = 0; i < 4; ++i) {
         SrVec2 p = sr_mat_point(m, corners[i]);
         if (local.skewed && (!isfinite(p.x) || !isfinite(p.y))) {

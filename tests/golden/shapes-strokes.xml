@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- B1-4 shapes and strokes: every shape kind, the three caps and joins,
+     the miter limit, dashes with an animated offset, inside/outside strokes,
+     paint order, fill rules, simultaneous and sequential animated trims,
+     animated star radii and roundness, a deformed star and a depth card. -->
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="2" seed="41"
+           linearLight="false" background="#141A26"/>
+  <composition>
+    <camera id="camera" z="-400" zoom="400"/>
+    <!-- Row 1: shape kinds. -->
+    <shape id="rrect" shape="rounded-rect" x="4" y="10" width="48" height="36"
+           cornerRadii="2 14 2 14" fill="#2F6FB0" stroke="#CFE6FF" strokeWidth="2"/>
+    <shape id="hex" shape="polygon" points="6" x="57" y="6" width="44" height="44"
+           outerRoundness="0.15" fill="#D9A441" stroke="#FFF1C8" strokeWidth="2"
+           strokeJoin="round"/>
+    <shape id="star" shape="star" points="5" x="110" y="6" width="44" height="44"
+           outerRadius="22" fill="#E0566B" stroke="#FFFFFF" strokeWidth="1.5"
+           strokeJoin="miter" miterLimit="8">
+      <animate property="innerRadius">
+        <key time="0" value="8"/><key time="2" value="15" interpolation="ease-in-out"/>
+      </animate>
+      <animate property="innerRoundness">
+        <key time="0" value="0"/><key time="2" value="0.6"/>
+      </animate>
+    </shape>
+    <shape id="line" shape="line" x="188" y="28" width="48" height="28"
+           rotation="-30" anchorX="24" anchorY="14" stroke="#9BE7A5"
+           strokeWidth="5" strokeCap="round"/>
+    <shape id="evenodd" shape="path" fillRule="evenodd" x="216" y="6" width="44"
+           height="44" path="M 22 1 L 35 42 L 1 16 L 43 16 L 9 42 Z"
+           fill="#7FC8F8" stroke="#10324A" strokeWidth="1"/>
+    <!-- Row 2: joins, miter limit, caps and dashes. -->
+    <shape id="miter" shape="path" x="4" y="64" width="48" height="40"
+           path="M 4 34 L 14 8 L 24 34 L 34 8 L 44 34" fill="#00000000"
+           stroke="#F2F2F2" strokeWidth="4" strokeJoin="miter" miterLimit="10"
+           strokeCap="butt"/>
+    <shape id="bevel" shape="path" x="57" y="64" width="48" height="40"
+           path="M 4 34 L 14 8 L 24 34 L 34 8 L 44 34" fill="#00000000"
+           stroke="#F2F2F2" strokeWidth="4" strokeJoin="miter" miterLimit="1.5"
+           strokeCap="square"/>
+    <shape id="round" shape="path" x="110" y="64" width="48" height="40"
+           path="M 4 34 L 14 8 L 24 34 L 34 8 L 44 34" fill="#00000000"
+           stroke="#F2F2F2" strokeWidth="4" strokeJoin="round" strokeCap="round"/>
+    <shape id="dashes" shape="rect" x="164" y="68" width="46" height="32"
+           fill="#00000000" stroke="#FFC857" strokeWidth="2.5" dash="7 4">
+      <animate property="dashOffset"><key time="0" value="0"/><key time="2" value="22"/></animate>
+    </shape>
+    <shape id="dots" shape="ellipse" x="216" y="64" width="48" height="40"
+           fill="#00000000" stroke="#FF8FA3" strokeWidth="4" strokeCap="round"
+           dash="0 8"/>
+    <!-- Row 3: positions, paint order, trims, deformation and a card. -->
+    <shape id="inside" shape="star" points="6" x="4" y="122" width="48" height="48"
+           fill="#3A4F7A" stroke="#F5B642" strokeWidth="4" strokePosition="inside"
+           strokeJoin="round"/>
+    <shape id="outside" shape="rounded-rect" radius="8" x="62" y="130" width="40"
+           height="32" fill="#3A4F7A" stroke="#42C3F5" strokeWidth="4"
+           strokePosition="outside"/>
+    <shape id="order" shape="polygon" points="5" x="112" y="122" width="48"
+           height="48" fill="#E8E8E8" fillRule="nonzero" stroke="#8A3FFC"
+           strokeWidth="6" strokeJoin="bevel" paintOrder="stroke-fill"/>
+    <shape id="drawon" shape="path" x="170" y="120" width="60" height="52"
+           path="M 4 44 C 12 4 30 4 32 26 C 34 48 52 50 56 8 M 6 50 L 54 50"
+           fill="#00000000" stroke="#8CF28C" strokeWidth="3" strokeCap="round"
+           strokeJoin="round" trimMode="sequential">
+      <animate property="trimEnd"><key time="0" value="0.05"/><key time="2" value="1"/></animate>
+    </shape>
+    <shape id="spin" shape="ellipse" x="252" y="126" width="36" height="36"
+           fill="#00000000" stroke="#FFFFFF" strokeWidth="4" strokeCap="round"
+           trimStart="0" trimEnd="0.3">
+      <animate property="trimOffset"><key time="0" value="0"/><key time="2" value="1.5"/></animate>
+    </shape>
+    <shape id="wobble" shape="star" points="4" x="274" y="66" width="36" height="36"
+           fill="#F25F5C" stroke="#FFE066" strokeWidth="1.5">
+      <deform><modifier type="wave" amount="2" frequency="2" axis="x">
+        <animate property="phase"><key time="0" value="0"/><key time="2" value="6.283"/></animate>
+      </modifier></deform>
+    </shape>
+    <shape id="tilt" shape="polygon" points="3" x="272" y="6" width="44" height="44"
+           threeD="true" fill="#5CDB95" stroke="#05386B" strokeWidth="2">
+      <animate property="rotation.y"><key time="0" value="-40"/><key time="2" value="40"/></animate>
+    </shape>
+  </composition>
+</scene>

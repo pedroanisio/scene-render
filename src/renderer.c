@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "scene_render/renderer.h"
+#include "scene_render/paint.h"
 #include "compositing_internal.h"
 #include "output_media_internal.h"
 #include "output_plan_internal.h"
@@ -257,12 +258,24 @@ static SrStatus sr_render_frame(SrScene *scene, uint64_t index,
                                 SrDiagnostics *diag) {
     double start = sr_monotonic_seconds();
     SrStageMark mark = sr_stage_begin();
-    float background[4];
-    sr_color_to_blend(&scene->project, scene->project.background, background);
-    sr_frame_clear(composition, background, threads);
-    sr_stage_end(times, SR_STAGE_CLEAR, mark);
     double time = (double)index * scene->project.fps_den / scene->project.fps_num;
     SrStatus status;
+    if (scene->background_paint.paint) {
+        /* B1-4 paint background: every pixel is written by the fill. */
+        status = sr_paint_fill_frame(scene->background_paint.paint,
+                                     &scene->project, time, composition,
+                                     threads, diag);
+        if (status != SR_OK) {
+            sr_stage_end(times, SR_STAGE_CLEAR, mark);
+            *seconds += sr_monotonic_seconds() - start;
+            return status;
+        }
+    } else {
+        float background[4];
+        sr_color_to_blend(&scene->project, scene->project.background, background);
+        sr_frame_clear(composition, background, threads);
+    }
+    sr_stage_end(times, SR_STAGE_CLEAR, mark);
     if (scene->has_cards) {
         /* Cards interleave with the 3D objects: one timed stage. */
         mark = sr_stage_begin();

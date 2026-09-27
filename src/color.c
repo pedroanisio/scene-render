@@ -100,6 +100,12 @@ static Matrix3 gamut_matrix(SrColorSpace source, SrColorSpace target) {
     return multiply(inverse(rgb_to_xyz(target)), rgb_to_xyz(source));
 }
 
+void sr_color_gamut_matrix(SrColorSpace source, SrColorSpace target,
+                           double out[3][3]) {
+    Matrix3 matrix = gamut_matrix(source, target);
+    memcpy(out, matrix.value, sizeof(matrix.value));
+}
+
 static bool same_gamut(SrColorSpace a, SrColorSpace b) {
     /* Rec.709 and sRGB share primaries and white point. */
     bool a_srgb = a == SR_COLOR_SRGB || a == SR_COLOR_REC709;

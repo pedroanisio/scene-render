@@ -3,6 +3,7 @@
 #include "compositor_coverage_internal.h"
 #include "particles_internal.h"
 #include "scene_render/markers.h"
+#include "compositor_shape_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +34,7 @@ static SrStatus fail(const SrScene *scene, const SrNode *node,
 
 bool sr_node_uses_compositing(const SrNode *node) {
     return node && (node->blend > SR_BLEND_DIFFERENCE ||
+        (node->type == SR_NODE_SHAPE && node->shape_style.extended) ||
         node->transform.skew_x.base != 0 || node->transform.skew_y.base != 0 ||
         node->transform.skew_x.track.count || node->transform.skew_y.track.count ||
         node->type == SR_NODE_ADJUSTMENT || node->matte || node->matte_id ||
@@ -44,6 +46,7 @@ const char *sr_node_compositing_attribute(const SrNode *node) {
     if (node->type == SR_NODE_ADJUSTMENT) return "effects";
     if (node->matte || node->matte_id) return "matte";
     if (sr_node_masks_advanced(node)) return "mask";
+    if (node->type == SR_NODE_SHAPE && node->shape_style.extended) return "shape";
     return "skewX/skewY";
 }
 
@@ -571,6 +574,19 @@ SrStatus sr_scene_prepare_compositing(SrScene *scene, SrDiagnostics *diag) {
     if (status != SR_OK) return status;
     for (size_t i = 0; i < plan->count; ++i) {
         const SrNode *node = plan->nodes[i].node;
+        if (node->type == SR_NODE_SHAPE) {
+            uint64_t bytes;
+            const char *attribute, *message;
+            if (!sr_shape_style_prepare(node, &bytes, &attribute, &message) ||
+                bytes > SR_MAX_COMPOSITE_BYTES - plan->owned_bytes) {
+                if (diag) sr_diag_error(diag, node->source_line, "shape", attribute,
+                    "%s", message ? message : "prepared shape geometry exceeds the byte limit");
+                sr_composite_plan_free(plan);
+                return SR_ERR_RENDER;
+            }
+            plan->owned_bytes += bytes;
+            continue;
+        }
         if (node->type != SR_NODE_PARTICLES) continue;
         uint64_t bytes;
         if (!sr_particles_cache_bound(node, &bytes) ||

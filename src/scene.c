@@ -4,6 +4,7 @@
 #include "scene_render/video.h"
 #include "scene_render/color.h"
 #include "scene_render/compositing.h"
+#include "scene_render/paint.h"
 #include "scene_render/markers.h"
 #include "scene_render/outputs.h"
 #include "particles_internal.h"
@@ -86,6 +87,7 @@ static void asset_free(SrAsset *asset) {
     free(asset->font_file);
     free(asset->text_language);
     free(asset->vector_path);
+    sr_vector_ext_free(asset->vector_ext);
     free(asset->audio_pcm);
     if (asset->mesh) {
         free(asset->mesh->triangles);
@@ -190,6 +192,9 @@ void sr_scene_free(SrScene *scene) {
     for (size_t i = 0; i < scene->extra_output_count; ++i)
         sr_output_free(&scene->extra_outputs[i]);
     free(scene->extra_outputs);
+    for (size_t i = 0; i < scene->paint_count; ++i) sr_paint_free(&scene->paints[i]);
+    free(scene->paints);
+    sr_paint_ref_free(&scene->background_paint);
     sr_font_cache_free(scene->font_cache);
     *scene = (SrScene){0};
 }
@@ -237,6 +242,7 @@ SrNode *sr_node_create(SrScene *scene, SrNodeType type) {
     node->time_stretch = 1.0;
     node->fill = sr_anim_color_static((SrColor){1, 1, 1, 1});
     node->stroke = sr_anim_color_static((SrColor){0, 0, 0, 0});
+    sr_shape_style_init(&node->shape_style);
     node->particle_rate.base = 10.0;
     node->particle_lifetime.base = 1.0;
     node->particle_speed.base = 100.0;
@@ -317,6 +323,7 @@ void sr_node_free(SrNode *node) {
     free(node->soft_body.offsets);
     sr_anim_color_free(&node->fill);
     sr_anim_color_free(&node->stroke);
+    sr_shape_style_free(&node->shape_style);
     sr_anim_color_free(&node->particle_color);
     sr_anim_color_free(&node->particle_color_end);
     anim_free(&node->particle_direction);
@@ -400,6 +407,8 @@ bool sr_scene_id_exists(const SrScene *scene, const char *id) {
     for (size_t i = 0; i < scene->physics.field_count; ++i)
         if (scene->physics.fields[i].id &&
             strcmp(scene->physics.fields[i].id, id) == 0) return true;
+    for (size_t i = 0; i < scene->paint_count; ++i)
+        if (scene->paints[i].id && strcmp(scene->paints[i].id, id) == 0) return true;
     return false;
 }
 

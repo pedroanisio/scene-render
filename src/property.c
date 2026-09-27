@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "scene_render/property.h"
 #include "compositing_limits_internal.h"
+#include "scene_render/paint.h"
 
 #include <float.h>
 #include <math.h>
@@ -21,6 +22,15 @@
      low, high, flags, error}
 #define BOUNDED(hosts, type, field, name, attr, low, high, error) \
     BOUNDED_FLAGS(hosts, type, field, name, attr, low, high, 0, error)
+/* B1-4 hosts: every new animation name requires 1.1. */
+#define B14(hosts, type, field, name, low, high, error) \
+    BOUNDED_FLAGS(hosts, type, field, name, name, low, high, \
+                  SR_PROPERTY_REQUIRE_1_1, error)
+#define SHAPE14(field, name, low, high, error) \
+    BOUNDED_FLAGS(H(SHAPE), SrNode, field, name, name, low, high, \
+                  SR_PROPERTY_REQUIRE_1_1 | SR_PROPERTY_SHAPE_STYLE, error)
+#define GRADIENTS (H(LINEAR_GRADIENT) | H(RADIAL_GRADIENT) | H(CONIC_GRADIENT))
+#define COORD SR_MAX_SHAPE_COORDINATE
 
 static const SrProperty properties[] = {
     COLOR(H(MATERIAL), SrMaterial, base_color, "baseColor", "baseColor", 0),
@@ -61,6 +71,59 @@ static const SrProperty properties[] = {
     NUMBER(H(PARTICLES), SrNode, particle_direction, "direction", "direction", 0),
     COLOR(H(SHAPE), SrNode, fill, "fill", "fill", 0),
     COLOR(H(SHAPE), SrNode, stroke, "stroke", "stroke", 0),
+    SHAPE14(shape_style.radius, "radius", 0, COORD,
+        "radius keys must be in [0,1e9]"),
+    SHAPE14(shape_style.inner_radius, "innerRadius", 0, COORD,
+        "innerRadius keys must be in [0,1e9]"),
+    SHAPE14(shape_style.outer_radius, "outerRadius", 0, COORD,
+        "outerRadius keys must be in [0,1e9]"),
+    SHAPE14(shape_style.inner_roundness, "innerRoundness", 0, 1,
+        "innerRoundness keys must be in [0,1]"),
+    SHAPE14(shape_style.outer_roundness, "outerRoundness", 0, 1,
+        "outerRoundness keys must be in [0,1]"),
+    SHAPE14(shape_style.trim_start, "trimStart", 0, 1,
+        "trimStart keys must be in [0,1]"),
+    SHAPE14(shape_style.trim_end, "trimEnd", 0, 1,
+        "trimEnd keys must be in [0,1]"),
+    SHAPE14(shape_style.trim_offset, "trimOffset",
+        -SR_MAX_TRIM_OFFSET, SR_MAX_TRIM_OFFSET,
+        "trimOffset keys must be within +-1e6"),
+    SHAPE14(shape_style.stroke.dash_offset, "dashOffset", -COORD,
+        COORD, "dashOffset keys must be within +-1e9"),
+    B14(GRADIENTS, SrPaint, rotation, "rotation", -COORD, COORD,
+        "gradient rotation keys must be within +-1e9"),
+    B14(H(LINEAR_GRADIENT), SrPaint, x1, "x1", -COORD, COORD,
+        "gradient coordinates must be within +-1e9"),
+    B14(H(LINEAR_GRADIENT), SrPaint, y1, "y1", -COORD, COORD,
+        "gradient coordinates must be within +-1e9"),
+    B14(H(LINEAR_GRADIENT), SrPaint, x2, "x2", -COORD, COORD,
+        "gradient coordinates must be within +-1e9"),
+    B14(H(LINEAR_GRADIENT), SrPaint, y2, "y2", -COORD, COORD,
+        "gradient coordinates must be within +-1e9"),
+    B14(H(RADIAL_GRADIENT) | H(CONIC_GRADIENT), SrPaint, cx, "cx", -COORD, COORD,
+        "gradient coordinates must be within +-1e9"),
+    B14(H(RADIAL_GRADIENT) | H(CONIC_GRADIENT), SrPaint, cy, "cy", -COORD, COORD,
+        "gradient coordinates must be within +-1e9"),
+    B14(H(RADIAL_GRADIENT), SrPaint, r, "r", 0, COORD,
+        "gradient radii must be in [0,1e9]"),
+    B14(H(RADIAL_GRADIENT), SrPaint, fx, "fx", -COORD, COORD,
+        "gradient coordinates must be within +-1e9"),
+    B14(H(RADIAL_GRADIENT), SrPaint, fy, "fy", -COORD, COORD,
+        "gradient coordinates must be within +-1e9"),
+    B14(H(RADIAL_GRADIENT), SrPaint, fr, "fr", 0, COORD,
+        "gradient radii must be in [0,1e9]"),
+    B14(H(RADIAL_GRADIENT), SrPaint, aspect, "aspect", 1e-9, COORD,
+        "gradient aspect keys must be in [1e-9,1e9]"),
+    B14(H(CONIC_GRADIENT), SrPaint, angle, "angle", -COORD, COORD,
+        "gradient angle keys must be within +-1e9"),
+    B14(H(GRADIENT_STOP), SrGradientStop, offset, "offset", 0, 1,
+        "stop offset keys must be in [0,1]"),
+    COLOR(H(GRADIENT_STOP), SrGradientStop, color, "color", "color",
+          SR_PROPERTY_REQUIRE_1_1),
+    B14(H(GRADIENT_STOP), SrGradientStop, opacity, "opacity", 0, 1,
+        "stop opacity keys must be in [0,1]"),
+    B14(H(GRADIENT_STOP), SrGradientStop, midpoint, "midpoint", 0, 1,
+        "stop midpoint keys must be in [0,1]"),
     COLOR(H(PARTICLES), SrNode, particle_color, "color", "color", 0),
     COLOR(H(PARTICLES), SrNode, particle_color_end, "colorEnd", "colorEnd",
           SR_PROPERTY_PARTICLE_END_COLOR),

@@ -15,6 +15,19 @@
     "markersType/beatGrid",
     "compositionType/sequence",
     "groupType/sequence",
+    "scene/paints",
+    "paintsType/linearGradient",
+    "paintsType/radialGradient",
+    "paintsType/conicGradient",
+    "linearGradientType/stop",
+    "linearGradientType/animate",
+    "radialGradientType/stop",
+    "radialGradientType/animate",
+    "conicGradientType/stop",
+    "conicGradientType/animate",
+    "gradientBaseType/stop",
+    "gradientBaseType/animate",
+    "stopType/animate",
     "compositionType/adjustment",
     "groupType/adjustment",
     "adjustmentType/mask",
@@ -115,6 +128,78 @@
     "beatGridType/@offset",
     "beatGridType/@beatsPerBar",
     "stillType/@marker",
+    "shapeType/@path",
+    "shapeType/@fillRule",
+    "shapeType/@radius",
+    "shapeType/@cornerRadii",
+    "shapeType/@points",
+    "shapeType/@innerRadius",
+    "shapeType/@outerRadius",
+    "shapeType/@innerRoundness",
+    "shapeType/@outerRoundness",
+    "shapeType/@strokeCap",
+    "shapeType/@strokeJoin",
+    "shapeType/@miterLimit",
+    "shapeType/@dash",
+    "shapeType/@dashOffset",
+    "shapeType/@strokePosition",
+    "shapeType/@paintOrder",
+    "shapeType/@trimStart",
+    "shapeType/@trimEnd",
+    "shapeType/@trimOffset",
+    "shapeType/@trimMode",
+    "vectorAssetType/@radius",
+    "vectorAssetType/@points",
+    "vectorAssetType/@innerRadius",
+    "vectorAssetType/@strokeCap",
+    "vectorAssetType/@strokeJoin",
+    "vectorAssetType/@miterLimit",
+    "vectorAssetType/@dash",
+    "vectorAssetType/@dashOffset",
+    "vectorAssetType/@strokePosition",
+    "vectorAssetType/@paintOrder",
+    "linearGradientType/@id",
+    "linearGradientType/@spread",
+    "linearGradientType/@units",
+    "linearGradientType/@interpolationSpace",
+    "linearGradientType/@dither",
+    "linearGradientType/@rotation",
+    "linearGradientType/@x1",
+    "linearGradientType/@y1",
+    "linearGradientType/@x2",
+    "linearGradientType/@y2",
+    "radialGradientType/@id",
+    "radialGradientType/@spread",
+    "radialGradientType/@units",
+    "radialGradientType/@interpolationSpace",
+    "radialGradientType/@dither",
+    "radialGradientType/@rotation",
+    "radialGradientType/@cx",
+    "radialGradientType/@cy",
+    "radialGradientType/@r",
+    "radialGradientType/@fx",
+    "radialGradientType/@fy",
+    "radialGradientType/@fr",
+    "radialGradientType/@aspect",
+    "conicGradientType/@id",
+    "conicGradientType/@spread",
+    "conicGradientType/@units",
+    "conicGradientType/@interpolationSpace",
+    "conicGradientType/@dither",
+    "conicGradientType/@rotation",
+    "conicGradientType/@cx",
+    "conicGradientType/@cy",
+    "conicGradientType/@angle",
+    "gradientBaseType/@id",
+    "gradientBaseType/@spread",
+    "gradientBaseType/@units",
+    "gradientBaseType/@interpolationSpace",
+    "gradientBaseType/@dither",
+    "gradientBaseType/@rotation",
+    "stopType/@offset",
+    "stopType/@color",
+    "stopType/@opacity",
+    "stopType/@midpoint",
     "maskType/@path",
     "maskType/@points",
     "maskType/@innerRadius",
@@ -430,6 +515,125 @@
       "section",
       "beat"
     ],
+    "shapeType/@shape": [
+      "rounded-rect",
+      "polygon",
+      "star",
+      "line",
+      "path"
+    ],
+    "shapeType/@fillRule": [
+      "nonzero",
+      "evenodd"
+    ],
+    "shapeType/@trimMode": [
+      "simultaneous",
+      "sequential"
+    ],
+    "vectorAssetType/@shape": [
+      "rounded-rect",
+      "polygon",
+      "star",
+      "line"
+    ],
+    "shapeType/@strokeCap": [
+      "butt",
+      "round",
+      "square"
+    ],
+    "vectorAssetType/@strokeCap": [
+      "butt",
+      "round",
+      "square"
+    ],
+    "shapeType/@strokeJoin": [
+      "miter",
+      "round",
+      "bevel"
+    ],
+    "vectorAssetType/@strokeJoin": [
+      "miter",
+      "round",
+      "bevel"
+    ],
+    "shapeType/@strokePosition": [
+      "center",
+      "inside",
+      "outside"
+    ],
+    "vectorAssetType/@strokePosition": [
+      "center",
+      "inside",
+      "outside"
+    ],
+    "shapeType/@paintOrder": [
+      "fill-stroke",
+      "stroke-fill"
+    ],
+    "vectorAssetType/@paintOrder": [
+      "fill-stroke",
+      "stroke-fill"
+    ],
+    "linearGradientType/@spread": [
+      "pad",
+      "reflect",
+      "repeat"
+    ],
+    "linearGradientType/@units": [
+      "object",
+      "user"
+    ],
+    "linearGradientType/@interpolationSpace": [
+      "linear",
+      "srgb",
+      "oklab",
+      "oklch"
+    ],
+    "radialGradientType/@spread": [
+      "pad",
+      "reflect",
+      "repeat"
+    ],
+    "radialGradientType/@units": [
+      "object",
+      "user"
+    ],
+    "radialGradientType/@interpolationSpace": [
+      "linear",
+      "srgb",
+      "oklab",
+      "oklch"
+    ],
+    "conicGradientType/@spread": [
+      "pad",
+      "reflect",
+      "repeat"
+    ],
+    "conicGradientType/@units": [
+      "object",
+      "user"
+    ],
+    "conicGradientType/@interpolationSpace": [
+      "linear",
+      "srgb",
+      "oklab",
+      "oklch"
+    ],
+    "gradientBaseType/@spread": [
+      "pad",
+      "reflect",
+      "repeat"
+    ],
+    "gradientBaseType/@units": [
+      "object",
+      "user"
+    ],
+    "gradientBaseType/@interpolationSpace": [
+      "linear",
+      "srgb",
+      "oklab",
+      "oklch"
+    ],
     "maskType/@type": [
       "path",
       "polygon",
@@ -594,7 +798,8 @@
       "relative-length"
     ],
     "projectType/@background": [
-      "token"
+      "token",
+      "paint-reference"
     ],
     "shapeType/@anchorX": [
       "relative-length"
@@ -603,13 +808,15 @@
       "relative-length"
     ],
     "shapeType/@fill": [
-      "token"
+      "token",
+      "paint-reference"
     ],
     "shapeType/@height": [
       "relative-length"
     ],
     "shapeType/@stroke": [
-      "token"
+      "token",
+      "paint-reference"
     ],
     "shapeType/@width": [
       "relative-length"
@@ -624,12 +831,17 @@
       "token"
     ],
     "vectorAssetType/@fill": [
-      "token"
+      "token",
+      "paint-reference"
     ],
     "vectorAssetType/@stroke": [
-      "token"
+      "token",
+      "paint-reference"
     ],
     "markerType/@color": [
+      "token"
+    ],
+    "stopType/@color": [
       "token"
     ],
     "adjustmentType/@x": [
