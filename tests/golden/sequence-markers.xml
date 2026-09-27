@@ -1,0 +1,64 @@
+<scene version="1.1">
+  <project width="320" height="180" fps="24" duration="1" background="#10141C"/>
+  <markers>
+    <marker id="hit" time="0.5" kind="cue" label="Hit" color="#FACC15"/>
+    <marker id="out" time="0.875" duration="0.125" kind="section" label="Outro"/>
+    <marker time="0.1" kind="beat" label="unreferenced"/>
+    <beatGrid bpm="240" offset="0" beatsPerBar="4"/>
+  </markers>
+  <composition>
+    <!-- Row 1: a sequence with a positive gap; items and keys are slot-relative. -->
+    <sequence id="gapped" name="Gapped row" tags="row sequence" timeGap="0.0833333333">
+      <group id="g1" end="0.25" name="First">
+        <shape id="g1s" shape="rect" width="30" height="24" x="10" y="12" fill="#F87171">
+          <animate property="position.x"><key time="0" value="10"/><key time="0.25" value="70"/></animate>
+        </shape>
+      </group>
+      <group id="g2" end="0.25">
+        <shape id="g2s" shape="ellipse" width="28" height="28" x="110" y="10" fill="#FBBF24">
+          <animate property="position.x" timeBase="normalized"><key time="0" value="110"/><key time="1" value="170"/></animate>
+        </shape>
+      </group>
+      <shape id="g3" shape="rect" width="30" height="24" x="210" y="12" end="0.3" fill="#34D399">
+        <animate property="position.x" timeBase="local"><key time="0" value="210"/><key time="0.3" value="280"/></animate>
+        <mask type="rect" width="30" height="24">
+          <animate property="width" timeBase="local"><key time="0" value="6"/><key time="0.3" value="30"/></animate>
+        </mask>
+      </shape>
+    </sequence>
+    <!-- Row 2: a sequence whose items overlap by 0.125 s. -->
+    <sequence id="overlap" start="0.0" timeGap="-0.125" y="50">
+      <shape id="o1" shape="rect" width="90" height="20" x="10" end="0.5" fill="#60A5FA" opacity="0.8"/>
+      <shape id="o2" shape="rect" width="90" height="20" x="100" y="6" end="0.5" fill="#C084FC" opacity="0.8">
+        <animate property="opacity"><key time="0" value="0.2"/><key time="0.5" value="1"/></animate>
+      </shape>
+      <shape id="o3" shape="rect" width="90" height="20" x="190" y="12" fill="#F472B6" opacity="0.8"/>
+    </sequence>
+    <!-- Row 3: a re-timed group; its children run at double speed from 0.25 s,
+         0.25 s into their content, including a particle emitter. -->
+    <group id="fast" start="0.25" timeOffset="0.25" timeScale="2" name="Double speed">
+      <shape id="fastbar" shape="rect" width="16" height="16" x="10" y="92" fill="#2DD4BF">
+        <animate property="position.x"><key time="0.5" value="10"/><key time="2.25" value="190"/></animate>
+      </shape>
+      <particleEmitter id="fastfx" x="250" y="100" rate="30" lifetime="0.5" speed="60"
+                       spread="40" size="2" direction="-90" color="#FDE68A" seed="7"
+                       start="0.5"/>
+    </group>
+    <!-- Row 4: marker-bounded node and keys snapped to markers and beats. -->
+    <shape id="window" shape="rect" width="60" height="22" x="10" y="130" fill="#FACC15"
+           startMarker="hit" endMarker="out" tags="cta"/>
+    <shape id="beats" shape="ellipse" width="20" height="20" x="100" y="131" fill="#E5E7EB">
+      <animate property="position.x" defaultInterpolation="ease-out">
+        <key marker="bar.1" time="0" value="100"/>
+        <key marker="beat.2" time="0" value="150"/>
+        <key marker="beat.3" time="0" value="120"/>
+        <key marker="hit" time="0.125" value="200"/>
+        <key marker="beat.5" time="-0.05" value="290"/>
+      </animate>
+      <animate property="fill" defaultInterpolation="step">
+        <key marker="beat.1" time="0" value="#E5E7EB"/>
+        <key marker="hit" time="0" value="#FB923C"/>
+      </animate>
+    </shape>
+  </composition>
+</scene>

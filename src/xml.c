@@ -129,8 +129,20 @@ static void start_shape(ParseContext *ctx, const XML_Char **attrs) {
     sr_xml_start_node(ctx, "shape", attrs, SR_NODE_SHAPE);
 }
 
+static void start_sequence(ParseContext *ctx, const XML_Char **attrs) {
+    sr_xml_start_node(ctx, "sequence", attrs, SR_NODE_GROUP);
+}
+
 static void start_particles(ParseContext *ctx, const XML_Char **attrs) {
     sr_xml_start_node(ctx, "particleEmitter", attrs, SR_NODE_PARTICLES);
+}
+
+static void start_poster(ParseContext *ctx, const XML_Char **attrs) {
+    sr_xml_start_still(ctx, attrs, SR_STILL_POSTER);
+}
+
+static void start_thumbnail(ParseContext *ctx, const XML_Char **attrs) {
+    sr_xml_start_still(ctx, attrs, SR_STILL_THUMBNAIL);
 }
 
 /* Handlers that construct an animation host push their own frame. Plain
@@ -143,7 +155,10 @@ static const ElementDispatch dispatch[] = {
     {"styles", P(E_SCENE), NULL, E_STYLES, offsetof(ParseContext, seen_styles),
      11, true, true},
     {"token", P(E_STYLES), sr_xml_start_token, E_TOKEN, 0, 11, true, true},
-    SECTION("output", sr_xml_start_output, E_OUTPUT, seen_output),
+    /* Outputs push their own frame; the handler counts and bounds them. */
+    {"output", P(E_SCENE), sr_xml_start_output, E_OUTPUT, 0, 10, true, false},
+    {"poster", P(E_OUTPUT), start_poster, E_STILL, 0, 11, true, true},
+    {"thumbnail", P(E_OUTPUT), start_thumbnail, E_STILL, 0, 11, true, true},
     SECTION("assets", NULL, E_ASSETS, seen_assets),
     ENTRY("image", P(E_ASSETS), sr_xml_start_image, E_IMAGE, true),
     ENTRY("video", P(E_ASSETS), sr_xml_start_video, E_VIDEO, true),
@@ -153,9 +168,14 @@ static const ElementDispatch dispatch[] = {
     ENTRY("mesh", P(E_ASSETS), sr_xml_start_mesh, E_MESH, true),
     SECTION("materials", NULL, E_MATERIALS, seen_materials),
     ENTRY("material", P(E_MATERIALS), sr_xml_start_material, E_MATERIAL, false),
+    {"markers", P(E_SCENE), NULL, E_MARKERS, offsetof(ParseContext, seen_markers),
+     11, true, true},
+    {"marker", P(E_MARKERS), sr_xml_start_marker, E_MARKER, 0, 11, true, true},
+    {"beatGrid", P(E_MARKERS), sr_xml_start_beat_grid, E_BEAT_GRID, 0, 11, true, true},
     SECTION("composition", NULL, E_COMPOSITION, seen_composition),
     SECTION("scene360", sr_xml_start_scene360, E_SCENE360, seen_scene360),
     ENTRY("group", CONTAINERS, start_group, E_GROUP, false),
+    {"sequence", CONTAINERS, start_sequence, E_GROUP, 0, 11, true, false},
     ENTRY("layer", CONTAINERS, start_layer, E_LAYER, false),
     ENTRY("shape", CONTAINERS, start_shape, E_LAYER, false),
     ENTRY("particleEmitter", CONTAINERS, start_particles, E_PARTICLES, false),

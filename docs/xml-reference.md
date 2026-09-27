@@ -85,6 +85,10 @@ The 1.0 subset of the root sequence is:
 </scene>
 ```
 
+In version 1.1 the root may hold several `output` elements (see
+[Outputs](#outputs-11-several-outputs-codecs-and-stills)); a 1.0 document keeps at
+most one.
+
 Runtime paths inside XML are relative to the XML file. CLI output/preview paths
 are relative to the current working directory.
 
@@ -310,7 +314,8 @@ the 3D pass is rendered at N x N samples per pixel and box-filtered (memory
 about `24 x width x height x N^2` bytes during the pass). With 1 the 3D pass
 is unchanged.
 
-`output` requires `path` and `codec` (`h264`, `h265`, or `ffv1`). It accepts
+`output` requires `path` and `codec` (`h264`, `h265`, or `ffv1` in 1.0; the
+1.1 codecs are listed under [Outputs](#outputs-11-several-outputs-codecs-and-stills)). It accepts
 `pixelFormat`, `preset`, mutually usable `crf`/`bitrate`, `audioCodec`,
 `audioBitrate`, `colorSpace="srgb|rec709|display-p3|rec2020"`,
 `colorRange="limited|full"`, and `sphericalMetadata`. Encoding runs
@@ -328,6 +333,179 @@ range to the `colorRange` range, and the stream is tagged accordingly.
 Timestamps are constant-rate (`0..N-1` in units of `1/fps`) and the output is
 bit-exact: identical scenes produce identical files. Unavailable encoders are
 reported when the encoder opens, before the first frame renders.
+
+## Outputs (1.1): several outputs, codecs and stills
+
+A 1.1 document may declare up to 16 (`SR_MAX_OUTPUTS`) `output` elements. When
+there is more than one, each needs a unique `id`. A 1.0 document keeps one
+output; a second one fails with `requires version="1.1"`. The attributes of
+this section are accepted in both versions on the one output; the codecs,
+containers and stills require 1.1.
+
+### Passes
+
+Outputs with the same effective `width`, `height` and `fps` share one render
+pass: every frame is composited once and each output converts and encodes
+that frame (its own colour space and bit depth). Outputs with another size
+or rate render in their own pass; nothing is rescaled, because relative
+lengths and viewport units resolve against the output frame. `width`,
+`height` (1–16384) and `fps` (`N` or `N/D`, 1–1000 frames per second) default
+to the project's, including `--resolution`/`--fps` overrides; authored values
+win over those overrides. An equirectangular project renders at its panorama
+size, so per-output sizes need mode `standard` or `viewport`. Assets are
+loaded and physics is prepared for each pass (physics depends on the frame
+size). Passes run in document order of their first output.
+
+### Ranges
+
+`start` (default 0) and `end` (default the project duration) are seconds of
+composition time, `0 <= start < end <= duration`. An output at rate `r`
+covers frames `[F(start), F(end))` with `F(t) = ceil(t * r - 1e-12)`. The
+file starts at time 0 at its first frame (like `--frame-range`); audio is
+mixed at absolute sample times, so it stays aligned. `--frame-range A:B` is
+applied to every selected output in that output's own frame numbering and
+intersected with its range; an output with no frame left is skipped (info
+diagnostic). When no selected output has a frame, the render fails with
+`empty frame range`.
+
+### Selection and paths on the command line
+
+| Option | Behaviour |
+|---|---|
+| (none) | every output, in document order |
+| `--output-id a,b` | the listed outputs (document order); an unknown or repeated id is exit 2 |
+| `--output FILE` | replaces the path of the single selected output; with several selected outputs it is exit 2 |
+| `--preview-frame N`, `--hash` | one output: the `--output-id` one (which must name one) or the first; rendered at that output's size, rate and colour space |
+| `--resume` | each selected output renders in its own pass with its own `OUTPUT.parts/`; gif, apng and sequences cannot resume (exit 2) |
+| `--quality` | applies to every selected output whose codec has rate control |
+
+Each output writes `path` resolved against the scene directory. No two
+writers may produce the same file: identical paths, two sequence patterns
+with the same literal prefix and suffix (`f-%01d.png` and `f-%04d.png`), and
+a plain path a pattern can generate are load errors; the check is repeated
+on the effective paths after `--output`. Parent directories are created.
+
+### Codecs and containers
+
+| `codec` | Encoder | Containers (default first) | Default `pixelFormat` | Rate control |
+|---|---|---|---|---|
+| `h264`, `h265` | libx264, libx265 | from the extension: mp4, mov, mkv | `yuv420p` | `crf` 0–51, `preset`, `bitrate` |
+| `ffv1` | ffv1 | mkv | `yuv420p` | — (1.0 accepts and ignores `crf`/`preset`) |
+| `prores` | prores_ks | mov, mkv | `yuv422p10le`; `yuv444p10le` for 4444/4444xq | `proresProfile` |
+| `vp9` | libvpx-vp9 | webm, mkv, mp4 | `yuv420p` | `crf` 0–63 (constant quality) or `bitrate` |
+| `av1` | libsvtav1 | mp4, mkv, webm | `yuv420p` | `crf` 1–63 or `bitrate` |
+| `gif` | gif | gif | `pal8` (per-frame palette) | — |
+| `apng` | apng | apng | `rgb24` | — |
+| `png-sequence` | png | one file per frame | `rgb24` | — |
+| `tiff-sequence` | tiff (PackBits) | one file per frame | `rgb24` | — |
+| `exr-sequence` | exr (float, ZIP16) | one file per frame | `gbrpf32le` | — |
+
+`container` (`mp4`, `mov`, `mkv`, `webm`) picks the muxer whatever the path
+extension; `mxf`, `wav`, `m4a` and `mp3` are unsupported in this build.
+Without it, 1.0 codecs keep the 1.0 rule (the extension decides; others are an
+error), and prores/vp9/av1 use the extension when it names an allowed
+container and the table default otherwise. A WebM output without
+`audioCodec` uses `libopus`. `proresProfile` is `proxy`, `lt`, `422` (default),
+`hq`, `4444` or `4444xq`. For vp9 and av1, `preset` takes the x264 names:
+`ultrafast`, `superfast`, `veryfast`, `faster`, `fast`, `medium`, `slow`,
+`slower`, `veryslow`, `placebo` map to libvpx `cpu-used` 5, 5, 4, 4, 3, 2, 1, 1,
+0, 0 (deadline `good`) and SVT-AV1 presets 12, 11, 10, 9, 8, 7, 5, 4, 2, 1.
+SVT-AV1 rejects `bitrate` for very small frames (it needs adaptive
+quantization, which it disables below roughly 128×72); use `crf` there.
+
+gif, apng and the sequences carry no audio (info diagnostic when the scene has
+audio tracks) and cannot embed metadata: with authored metadata they need
+`embedMetadata="false"`. The other codecs carry the scene audio as in 1.0.
+
+An attribute that has no meaning for the codec is a load error, never ignored:
+`crf`/`preset`/`bitrate` on prores, gif, apng and sequences;
+`keyframeInterval` on intra-only codecs; `bFrames` outside h264/h265;
+`loopCount` outside gif/apng; `proresProfile` outside prores; `container` on
+gif, apng and sequences; `faststart` outside mp4/mov.
+
+- `keyframeInterval` (seconds) sets the GOP length `max(1, round(s * fps))`
+  for h264, h265, vp9 and av1. For h264/h265 without the attribute the
+  encoder's own default stays (existing encodes keep their bytes); vp9 and
+  av1 use the schema default of 2 s.
+- `bFrames` (0–16) sets the maximum number of B-frames of h264/h265.
+- `faststart` (default true, the 1.0 behaviour) moves the MP4/MOV index to
+  the front; `false` leaves it at the end.
+- `loopCount` (0–65535, default 0) is the number of plays; 0 loops forever.
+  APNG writes it as `plays`; GIF writes `loop = loopCount - 1` and, for
+  `loopCount="1"`, no loop extension.
+
+**Image sequences.** `path` is a pattern with exactly one integer conversion
+in its last path component: `%0Nd` with N from 1 to 9 (xs:anyURI only admits
+this form: `%d` and `%%` are not valid URI escapes, although the loader would
+accept them). Files are numbered by absolute composition frame index at the
+output's rate, so `--frame-range` slices of a sequence need no renaming.
+Each file is written under a temporary name and renamed when complete.
+
+**EXR** stores premultiplied linear light in the output gamut: the blend-space
+frame is unpremultiplied, decoded with the working-space transfer curve when
+the project is not `linearLight` (sign-symmetric and not clamped, so
+over-range values survive), converted to the output gamut and premultiplied
+again. `gbrapf32le` adds the alpha plane.
+
+**GIF palette.** Every frame is quantized alone (so any frame renders alone):
+at most 256 distinct colours are kept exactly (the GIF is then lossless);
+more are reduced by median cut over the sorted colour histogram (the box with
+the widest channel range splits at its count-weighted median; ties go to the
+lowest box and the channel order r, g, b), each entry being the
+count-weighted mean rounded half up. No dithering.
+
+**Threads.** Every added codec runs with one codec worker (SVT-AV1 with
+`lp=1`) in every document version, so container bytes do not depend on
+`--threads` or the machine. Colour conversion and the RGB→Y'CbCr scaler stay
+multi-threaded; both are byte-identical at every thread count. H.264's 1.0
+threading is unchanged.
+
+### Stills
+
+`poster` and `thumbnail` (at most 16 per output, `SR_MAX_OUTPUT_STILLS`) write
+one frame of their output:
+
+| Attribute | Default | Meaning |
+|---|---|---|
+| `path` | required | file, relative to the scene directory |
+| `time` | 0 | seconds; must lie in the output's `[start, end)`. The still shows frame `floor(time * r + 1e-9)` of the output |
+| `format` | `jpeg` | `png` (8-bit RGBA, the preview format) or `jpeg` (baseline 4:2:0, full range); `webp` and `avif` are unsupported in this build |
+| `width` | output width | the still renders at `width x round(width * H / W)` (render, not rescale; height 1–16384) |
+| `quality` | 0.9 | JPEG quantizer `round(2 + (1 - quality) * 29)` |
+| `marker` | none | a marker id or generated `beat.N`/`bar.N` (see Timeline structure); the still's time is the marker instant. Exclusive with `time`; the instant must still lie in the output's `[start, end)`. Unknown ids, ids of other elements and ids outside the beat grid are load errors |
+
+Stills render after
+their output's frames, in their output's colour space. They are written on
+full renders and by the `--frame-range` slice that contains their frame;
+`--hash`, `--preview-frame` and `--validate` write none.
+
+### Limits and fingerprint
+
+`SR_MAX_OUTPUTS` 16, `SR_MAX_OUTPUT_STILLS` 16, output and still dimensions
+16384, output rate 1–1000 fps, sequence numbers below 10^9, and at most 1 GiB
+(`SR_MAX_PASS_FRAME_BYTES`) of per-frame encoder input for the outputs of one
+shared pass. `--resume` manifests of outputs that use any of these attributes
+or codecs add an `output=` line with the effective settings and a `libav=`
+line with the library versions; 1.0 outputs keep their 1.0 manifest.
+
+```xml
+<scene version="1.1">
+  <project width="1920" height="1080" fps="30" duration="20"/>
+  <output id="master" path="out/master.mov" codec="prores" proresProfile="hq">
+    <poster path="out/poster.png" format="png" time="4"/>
+  </output>
+  <output id="web" path="out/web.webm" codec="vp9" crf="32" end="15"/>
+  <output id="social" path="out/social.mp4" codec="h264" width="1080"
+          height="1080" keyframeInterval="1" faststart="true">
+    <thumbnail path="out/thumb.jpg" width="320" time="2"/>
+  </output>
+  <output id="frames" path="out/exr/shot-%04d.exr" codec="exr-sequence"/>
+  <composition>...</composition>
+</scene>
+```
+
+Here `master`, `web` and `frames` share one 1920×1080 pass; `social` and the
+320×180 thumbnail render in their own passes.
 
 ## Assets
 
@@ -1324,9 +1502,12 @@ build.
 It has no children other than `mask`, `animate` and the common node
 attributes `z`, `visible`, `opacity`, `start`, `end`, `x`, `y`, `rotation`,
 `scaleX`, `scaleY`, `anchorX`, `anchorY`, `skewX`, `skewY`, `matte`,
-`matteMode`, `matteVisible` and `blend`. `effects` is required and every id
-must resolve. `threeD`, depth rotations, `parent`, markers, names and tags
-remain unsupported for adjustments.
+`matteMode`, `matteVisible`, `blend`, and the B1-5 `name`, `tags`,
+`startMarker` and `endMarker` (key markers resolve on its tracks and on its
+masks' tracks). `effects` is required and every id must resolve. `threeD`,
+depth rotations and `parent` remain unsupported for adjustments. A
+`sequence`, or a group with `timeOffset`/`timeScale`, can be a matte source
+or consumer like any group; the source's image uses its own resolved clock.
 
 At its position in draw order the adjustment copies the completed parent
 backdrop D (the frame with the background and every earlier sibling at the
@@ -1423,8 +1604,9 @@ alternately to the last/first key. One-key tracks always hold.
 `additive="true"` adds the static property value after interpolation and
 extrapolation. For colour this addition occurs in linear light, including
 alpha; the normal output clamps still apply. `timeBase="composition"`
-uses project seconds. `local` uses elapsed host seconds and its ancestor
-group clocks. Masks and modifiers inherit their owning node's clock.
+uses the host's composition timeline: project seconds, unless a re-timed
+group or a sequence encloses the host (see Timeline structure). `local` uses
+elapsed host seconds on that timeline. Masks and modifiers inherit their owning node's clock.
 `normalized` divides those local seconds by the host duration; a missing
 end uses the project end. A zero or nonfinite normalized span is an error.
 Shared scene hosts use the project interval; audio tracks use `start` through
@@ -1458,3 +1640,124 @@ budget and its cost grows with the evaluated emitter time span. Extended
 emission tracks fail rendering if their cumulative index exceeds
 `SR_MAX_PARTICLE_INDEX` (9e15); this keeps integer conversion and one-particle
 steps exact, even when interpolation overshoots its key values.
+
+## Timeline structure (1.1)
+
+Version 1.1 adds a `markers` section (after `scene360`, before
+`composition`), group clocks, the `sequence` node and node names and tags.
+Everything below resolves once at load time; rendering evaluates no marker,
+clock or sequence, so every frame remains a pure function of the scene and
+its time.
+
+```xml
+<markers>
+  <marker id="hit" time="2.5" kind="cue" label="Logo hit" color="#FACC15"/>
+  <marker id="outro" time="8" duration="2" kind="section"/>
+  <beatGrid bpm="120" offset="0.5" beatsPerBar="4"/>
+</markers>
+```
+
+**Markers.** `time` is composition seconds (magnitude at most 1e6);
+`duration` (default 0, non-negative) and `label` (at most 4096 bytes) are
+stored for later consumers; `color` accepts style tokens. `kind` is `cue`
+(default), `section` or `beat`; `chapter`, `comment`, `todo` and `cta` carry
+batch 3 behaviour and are reported as unsupported in this build. `id` is
+optional; a marker without one cannot be referenced. At most 65536 markers.
+
+**Beat grid.** `beatGrid` generates the ids `beat.N` and `bar.M`, 1-based:
+
+    beat.N  at  offset + (N - 1) * 60 / bpm        (N = 1, 2, ...)
+    bar.M   at  the time of beat.((M - 1) * beatsPerBar + 1)
+
+so `beat.1` and `bar.1` are the downbeat at `offset`. The grid generates the
+beats at or before the project end (at most 1048576, else a load error) and
+the bars whose first beat exists. `bpm` is in (0, 1e6], `offset` in +-1e6,
+`beatsPerBar` in [1, 1024]. Generated ids are exactly `beat.` or `bar.`
+followed by a decimal without sign or leading zero. They join the id table
+before any reference resolves: a marker or any other element whose id equals
+a generated id is an error, and only one `beatGrid` is allowed. `source`
+(tempo analysis) is unsupported in this build.
+
+**References.** `startMarker`, `endMarker` and `key/@marker` name a marker
+or a generated id. An unknown id, an id of another element ("is not a
+marker") and a generated id outside the grid (the message gives the grid's
+range) are load errors at the referring line and attribute.
+
+- `startMarker`/`endMarker` set the node's start/end to the marker instant.
+  They exclude `start`/`end` respectively, and the result must satisfy
+  `0 <= start < end` on the node's clock. The node's composition interval is
+  exactly the marker time, whatever clock encloses it.
+- `<key marker="m" time="dt">` places the key at the marker instant plus
+  `dt`, measured in the track's own units (seconds for `composition` and
+  `local`, the normalized unit for `normalized`); `dt` may be negative
+  (at most 1e6 in magnitude), but the resulting key time must not be.
+  Evaluating the track at the marker instant lands exactly on the key.
+  Snapped keys are then sorted and validated like literal keys (unique
+  times, handle placement, bounds), with errors at the key's line.
+
+**Group clocks.** `timeOffset` o (seconds, magnitude at most 1e6, default 0)
+and `timeScale` q (in [1e-6, 1e6], default 1) re-time a group's children.
+With the group's start s, a child at composition time t sees
+
+    child time = (parent time - s) * q + s + o
+
+so at the group's start the children's timeline reads `s + o`, and it runs q
+times faster from there. The defaults leave children on the parent's
+timeline, as in 1.0 (group `start` does not shift children). Nested groups
+compose; the product of their scales must stay in [1e-6, 1e6]. The group's
+own properties, masks and interval stay on its parent's timeline. Node
+`start`/`end` and `composition` keys of the children are read on the child
+timeline; `local` is elapsed seconds since the host's start on it and
+`normalized` divides by the host's duration on it (an open end is the
+project end mapped onto it). Masks, modifiers and mesh-warp points follow
+their node. Materials, cameras, lights, effects, force fields, 3D objects
+and audio tracks keep project time. `timeScale` is not animatable.
+
+Re-timed content: layer media play at `speed * scale`; particle emission,
+ages and the 1/240 s rate grid run on the emitter's timeline (an emitter in
+a `timeScale="2"` group at time t equals the same emitter at 2t outside it).
+Physics simulates on the project clock: offsets are allowed, but a dynamic
+or kinematic rigid body or a soft body under a combined scale other than 1
+is unsupported in this build.
+
+```xml
+<group id="fast" start="2" timeScale="2" timeOffset="0.5">
+  <shape id="ball" shape="ellipse" width="20" height="20">
+    <animate property="position.x">   <!-- child timeline: 2.5 at t = 2 -->
+      <key time="2.5" value="0"/><key time="4.5" value="300"/>
+    </animate>
+  </shape>
+</group>
+```
+
+**Sequences.** `sequence` accepts every group attribute and child, plus
+`timeGap` (seconds, magnitude at most 1e6; negative values overlap). Its
+child nodes, in document order, are items played one after another:
+
+    slot(0)   = sequence start
+    slot(i+1) = slot(i) + end(i) + timeGap
+
+Each item's `start`, `end`, keys and whole subtree are relative to its slot
+(its own `start` is an additional offset). Every item but the last needs a
+finite `end`; `endMarker` on an item is converted into its slot, while
+`startMarker` on an item is an error because the sequence places it. Items
+are placed before `z` sorting, which only changes drawing order. `object3D`
+and `camera` children keep their scene-global timing, as inside any group.
+`transition` and `transitionDuration` are unsupported in this build (batch 3
+transitions). Adjacent items without a gap meet at bitwise-equal instants.
+
+```xml
+<sequence id="story" timeGap="0.25">
+  <group id="intro" end="2">...</group>     <!-- [0, 2) -->
+  <group id="middle" end="3">...</group>    <!-- [2.25, 5.25) -->
+  <group id="outro">...</group>             <!-- [5.5, ...) -->
+</sequence>
+```
+
+**Names and tags.** Every node accepts `name` (text, at most 1024 bytes) and
+`tags` (whitespace-separated name tokens, at most 64 per node and 128 bytes
+each; a repeated tag is an error). Both are stored for diagnostics, which
+quote the node as `group 'id' ("name")`, and for later safe-area checks.
+
+All timeline limits fail the load with the element and attribute. Timing
+adds no input file, so the XML fingerprint still covers resume.

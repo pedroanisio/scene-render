@@ -8,6 +8,13 @@
     "scene/metadata",
     "metadataType/meta",
     "particleEmitterType/mask",
+    "outputType/poster",
+    "outputType/thumbnail",
+    "scene/markers",
+    "markersType/marker",
+    "markersType/beatGrid",
+    "compositionType/sequence",
+    "groupType/sequence",
     "compositionType/adjustment",
     "groupType/adjustment",
     "adjustmentType/mask",
@@ -61,6 +68,53 @@
     "shapeType/@skewY",
     "particleEmitterType/@skewX",
     "particleEmitterType/@skewY",
+    "outputType/@id",
+    "outputType/@container",
+    "outputType/@width",
+    "outputType/@height",
+    "outputType/@fps",
+    "outputType/@start",
+    "outputType/@end",
+    "outputType/@keyframeInterval",
+    "outputType/@bFrames",
+    "outputType/@faststart",
+    "outputType/@loopCount",
+    "outputType/@proresProfile",
+    "stillType/@time",
+    "stillType/@path",
+    "stillType/@format",
+    "stillType/@width",
+    "stillType/@quality",
+    "groupType/@name",
+    "groupType/@tags",
+    "groupType/@startMarker",
+    "groupType/@endMarker",
+    "layerType/@name",
+    "layerType/@tags",
+    "layerType/@startMarker",
+    "layerType/@endMarker",
+    "shapeType/@name",
+    "shapeType/@tags",
+    "shapeType/@startMarker",
+    "shapeType/@endMarker",
+    "particleEmitterType/@name",
+    "particleEmitterType/@tags",
+    "particleEmitterType/@startMarker",
+    "particleEmitterType/@endMarker",
+    "groupType/@timeOffset",
+    "groupType/@timeScale",
+    "sequenceType/@timeGap",
+    "keyType/@marker",
+    "markerType/@id",
+    "markerType/@time",
+    "markerType/@duration",
+    "markerType/@kind",
+    "markerType/@label",
+    "markerType/@color",
+    "beatGridType/@bpm",
+    "beatGridType/@offset",
+    "beatGridType/@beatsPerBar",
+    "stillType/@marker",
     "maskType/@path",
     "maskType/@points",
     "maskType/@innerRadius",
@@ -100,7 +154,11 @@
     "adjustmentType/@skewX",
     "adjustmentType/@skewY",
     "adjustmentType/@effects",
-    "adjustmentType/@blend"
+    "adjustmentType/@blend",
+    "adjustmentType/@name",
+    "adjustmentType/@tags",
+    "adjustmentType/@startMarker",
+    "adjustmentType/@endMarker"
   ],
   "values": {
     "animateType/@extrapolateBefore": [
@@ -336,6 +394,42 @@
       "alpha-add",
       "behind"
     ],
+    "outputType/@codec": [
+      "h264",
+      "h265",
+      "ffv1",
+      "prores",
+      "vp9",
+      "av1",
+      "png-sequence",
+      "tiff-sequence",
+      "exr-sequence",
+      "gif",
+      "apng"
+    ],
+    "outputType/@container": [
+      "mp4",
+      "mov",
+      "mkv",
+      "webm"
+    ],
+    "outputType/@proresProfile": [
+      "proxy",
+      "lt",
+      "422",
+      "hq",
+      "4444",
+      "4444xq"
+    ],
+    "stillType/@format": [
+      "jpeg",
+      "png"
+    ],
+    "markerType/@kind": [
+      "cue",
+      "section",
+      "beat"
+    ],
     "maskType/@type": [
       "path",
       "polygon",
@@ -535,6 +629,9 @@
     "vectorAssetType/@stroke": [
       "token"
     ],
+    "markerType/@color": [
+      "token"
+    ],
     "adjustmentType/@x": [
       "relative-length"
     ],
@@ -548,9 +645,7 @@
       "relative-length"
     ]
   },
-  "occurrence_limits": {
-    "scene/output": 1
-  },
+  "occurrence_limits": {},
   "vocabularies": {
     "rigidBodyType/@shape": {
       "box": {
@@ -588,5 +683,8 @@
         "implemented": true
       }
     }
+  },
+  "inherits": {
+    "sequenceType": "groupType"
   }
 }

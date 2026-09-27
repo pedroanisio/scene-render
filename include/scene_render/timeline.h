@@ -60,6 +60,7 @@ typedef struct {
     SrVec2 ease_in, ease_out;   /* normalized influence, speed */
     bool ease_in_set, ease_out_set, bezier_set;
     bool tcb_set, spring_set;
+    uint32_t marker;           /* 0, or 1 + SrTimeline reference (B1-5) */
     size_t source_line;
 } SrKeyframe;
 

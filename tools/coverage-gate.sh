@@ -6,13 +6,13 @@
 #
 # usage: tools/coverage-gate.sh [BUILD_DIR]     (default: build/coverage)
 #
-# Floors retain about 2 percentage points of headroom below the B1-3
-# node/card consumers (92.25% lines / 77.25% branches, GCC 15.2, SDK 25.08).
+# Floors retain about 2 percentage points of headroom below B1-5 merged
+# with B1-6 (92.79% lines / 78.51% branches, GCC 15.2, SDK 25.08).
 # Raise them when coverage improves; lowering them needs a reason in the
 # commit message.
 set -eu
-LINE_FLOOR=90.35
-BRANCH_FLOOR=76.10
+LINE_FLOOR=90.80
+BRANCH_FLOOR=76.50
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 build=${1:-$root/build/coverage}

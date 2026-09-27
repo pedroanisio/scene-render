@@ -209,70 +209,6 @@ void sr_xml_start_project(ParseContext *ctx, const XML_Char **attrs) {
     ctx->seen_project = true;
 }
 
-void sr_xml_start_output(ParseContext *ctx, const XML_Char **attrs) {
-    const char *const allowed[] = {"path", "codec", "pixelFormat", "preset",
-                                    "crf", "bitrate", "audioCodec",
-                                    "audioBitrate", "colorSpace", "colorRange",
-                                    "sphericalMetadata", "embedMetadata"};
-    if (!sr_xml_attrs_allowed(ctx, "output", attrs, allowed, 12)) return;
-    ctx->scene->output.source_line = sr_xml_line(ctx);
-    const char *path = sr_xml_required(ctx, "output", attrs, "path");
-    const char *codec = sr_xml_required(ctx, "output", attrs, "codec");
-    if (ctx->failed) return;
-    if (!set_string(&ctx->scene->output.path, path))
-        SR_XML_FAIL_RETURN(ctx, "output", "path", "out of memory");
-    if (strcmp(codec, "h264") == 0) ctx->scene->output.codec = SR_CODEC_H264;
-    else if (strcmp(codec, "h265") == 0) ctx->scene->output.codec = SR_CODEC_H265;
-    else if (strcmp(codec, "ffv1") == 0) ctx->scene->output.codec = SR_CODEC_FFV1;
-    else SR_XML_FAIL_RETURN(ctx, "output", "codec", "expected h264, h265, or ffv1");
-    const char *value;
-    if ((value = sr_xml_attr(attrs, "pixelFormat")) &&
-        !set_string(&ctx->scene->output.pixel_format, value))
-        SR_XML_FAIL_RETURN(ctx, "output", "pixelFormat", "out of memory");
-    if ((value = sr_xml_attr(attrs, "preset")) &&
-        !set_string(&ctx->scene->output.preset, value))
-        SR_XML_FAIL_RETURN(ctx, "output", "preset", "out of memory");
-    if ((value = sr_xml_attr(attrs, "crf"))) {
-        int crf;
-        if (!parse_int(value, &crf) || crf < 0 || crf > 51)
-            SR_XML_FAIL_RETURN(ctx, "output", "crf",
-                               "expected an integer in [0,51]");
-        ctx->scene->output.crf = crf;
-    }
-    if ((value = sr_xml_attr(attrs, "bitrate")) &&
-        (!sr_parse_u64(value, &ctx->scene->output.bitrate) ||
-         ctx->scene->output.bitrate == 0))
-        SR_XML_FAIL_RETURN(ctx, "output", "bitrate",
-                           "expected a positive integer in bits/second");
-    if ((value = sr_xml_attr(attrs, "audioCodec")) &&
-        !set_string(&ctx->scene->output.audio_codec, value))
-        SR_XML_FAIL_RETURN(ctx, "output", "audioCodec", "out of memory");
-    if ((value = sr_xml_attr(attrs, "audioBitrate")) &&
-        (!sr_parse_u64(value, &ctx->scene->output.audio_bitrate) ||
-         !ctx->scene->output.audio_bitrate))
-        SR_XML_FAIL_RETURN(ctx, "output", "audioBitrate",
-                           "expected a positive integer in bits/second");
-    if ((value = sr_xml_attr(attrs, "colorSpace")) &&
-        !sr_color_space_parse(value, &ctx->scene->output.color_space))
-        SR_XML_FAIL_RETURN(ctx, "output", "colorSpace",
-                           "expected srgb, rec709, display-p3, or rec2020");
-    if ((value = sr_xml_attr(attrs, "colorRange"))) {
-        if (!strcmp(value, "full")) ctx->scene->output.full_range = true;
-        else if (!strcmp(value, "limited")) ctx->scene->output.full_range = false;
-        else SR_XML_FAIL_RETURN(ctx, "output", "colorRange",
-                                "expected limited or full");
-    }
-    if ((value = sr_xml_attr(attrs, "sphericalMetadata")) &&
-        !sr_parse_bool(value, &ctx->scene->output.spherical_metadata))
-        SR_XML_FAIL_RETURN(ctx, "output", "sphericalMetadata",
-                           "expected true or false");
-    if ((value = sr_xml_attr(attrs, "embedMetadata")) &&
-        !sr_parse_bool(value, &ctx->scene->output.embed_metadata))
-        SR_XML_FAIL_RETURN(ctx, "output", "embedMetadata",
-                           "expected true or false");
-    ctx->seen_output = true;
-}
-
 void sr_xml_start_image(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"id", "src", "width", "height",
                                     "colorSpace"};
@@ -476,7 +412,7 @@ void sr_xml_start_animate(ParseContext *ctx, const XML_Char **attrs) {
 void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs) {
     const char *const allowed[] = {"time", "value", "interpolation", "bezier",
         "easeIn", "easeOut", "steps", "stepPosition", "tension", "continuity",
-        "bias", "stiffness", "damping", "mass"};
+        "bias", "stiffness", "damping", "mass", "marker"};
     if (!sr_xml_attrs_allowed(ctx, "key", attrs, allowed,
                               sizeof(allowed) / sizeof(allowed[0]))) return;
     ParseFrame *p = sr_xml_parent(ctx);
@@ -485,9 +421,12 @@ void sr_xml_start_key(ParseContext *ctx, const XML_Char **attrs) {
     if (!p || p->kind != E_ANIMATE || !time_text || !value_text) return;
     SrKeyframe key = {.curve = p->curve, .x1 = 0.25, .y1 = 0.1,
                       .x2 = 0.25, .y2 = 1.0};
-    if (!sr_parse_double(time_text, &key.time) || key.time < 0.0)
+    /* With a marker, time is a signed offset from the marker (B1-5). */
+    if (!sr_parse_double(time_text, &key.time) ||
+        (key.time < 0.0 && !sr_xml_attr(attrs, "marker")))
         SR_XML_FAIL_RETURN(ctx, "key", "time",
                            "expected a non-negative time in seconds");
+    if (!sr_xml_key_marker(ctx, attrs, &key)) return;
     SrColor color_value = {0, 0, 0, 0};
     if (p->color_anim) {
         if (!sr_xml_parse_color(ctx, "key", "value", value_text, &color_value))

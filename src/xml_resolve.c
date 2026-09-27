@@ -1,5 +1,6 @@
 #include "xml_internal.h"
 #include "compositing_internal.h"
+#include "scene_render/outputs.h"
 
 #include <math.h>
 #include <string.h>
@@ -197,6 +198,11 @@ static bool resolve_physics(ParseContext *ctx) {
     return true;
 }
 
+static bool resolve_outputs(ParseContext *ctx) {
+    SrStatus status = sr_outputs_resolve(ctx->scene, ctx->diag);
+    ctx->out_of_memory = status == SR_ERR_MEMORY;
+    return status == SR_OK;
+}
 
 bool sr_xml_resolve_scene(ParseContext *ctx) {
     SrCompositePlan *plan = NULL;
@@ -207,10 +213,13 @@ bool sr_xml_resolve_scene(ParseContext *ctx) {
             return false;
         }
     }
-    bool ready = sr_xml_resolve_lengths(ctx) && sr_xml_resolve_compositing(ctx) &&
+    /* Timing follows the bounded preflights and precedes every consumer of
+     * node intervals and track clocks; matte ids resolve before sorting. */
+    bool ready = sr_xml_resolve_lengths(ctx) && sr_xml_resolve_timeline(ctx) &&
+        sr_xml_resolve_compositing(ctx) &&
         resolve_nodes(ctx, ctx->scene->root, false) && resolve_audio(ctx) &&
         resolve_camera(ctx) && resolve_visual(ctx) && resolve_effects(ctx) &&
-        resolve_physics(ctx);
+        resolve_physics(ctx) && resolve_outputs(ctx);
     if (ready) sr_node_sort_children(ctx->scene->root);
     sr_composite_plan_free(plan);
     /* Preflight protects recursive consumers; the published index must follow

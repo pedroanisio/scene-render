@@ -5,6 +5,7 @@
  * sr_scene_prepare_compositing so XML and direct-C scenes share it. */
 #include "xml_internal.h"
 #include "compositing_internal.h"
+#include "scene_render/markers.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -176,13 +177,14 @@ void sr_xml_start_adjustment(ParseContext *ctx, const XML_Char **attrs) {
     static const char *const allowed[] = {"id", "z", "visible", "opacity", "x",
         "y", "rotation", "scaleX", "scaleY", "anchorX", "anchorY", "start",
         "end", "skewX", "skewY", "matte", "matteMode", "matteVisible",
-        "effects", "blend"};
+        "effects", "blend", "name", "tags", "startMarker", "endMarker"};
     if (!sr_xml_attrs_allowed(ctx, "adjustment", attrs, allowed,
                               sizeof(allowed) / sizeof(allowed[0]))) return;
     SrNode *node = sr_node_create(ctx->scene, SR_NODE_ADJUSTMENT);
     if (!node) SR_XML_FAIL_RETURN(ctx, "adjustment", NULL, "out of memory");
     const char *effects = sr_xml_required(ctx, "adjustment", attrs, "effects");
     if (!effects || !sr_xml_parse_node_common(ctx, "adjustment", attrs, node) ||
+        !sr_xml_parse_node_timeline(ctx, "adjustment", attrs, node, false) ||
         !sr_xml_parse_matte(ctx, "adjustment", attrs, node)) {
         sr_node_free(node);
         return;
@@ -231,7 +233,8 @@ static int id_order(const void *left, const void *right) {
 
 static const char *node_element(const SrNode *node) {
     switch (node->type) {
-    case SR_NODE_GROUP: return "group";
+    case SR_NODE_GROUP:
+        return node->timeline && node->timeline->sequence ? "sequence" : "group";
     case SR_NODE_MEDIA: return "layer";
     case SR_NODE_SHAPE: return "shape";
     case SR_NODE_PARTICLES: return "particleEmitter";

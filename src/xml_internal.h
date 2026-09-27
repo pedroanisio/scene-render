@@ -14,7 +14,8 @@ typedef enum {
     E_MATERIAL, E_LIGHTS, E_LIGHT, E_EFFECTS, E_EFFECT, E_PHYSICS,
     E_FORCE_FIELD, E_CONSTRAINT, E_PARTICLES, E_RIGID_BODY, E_SOFT_BODY,
     E_DEFORM, E_MODIFIER, E_OBJECT3D, E_POINT, E_STYLES, E_TOKEN,
-    E_METADATA, E_META, E_ADJUSTMENT
+    E_METADATA, E_META, E_STILL, E_MARKERS, E_MARKER, E_BEAT_GRID,
+    E_ADJUSTMENT
 } ElementKind;
 
 typedef struct {
@@ -33,6 +34,7 @@ typedef struct {
     SrAnimValue *point;         /* mesh-warp point: [0] = x, [1] = y */
     const SrProperty *property; /* animate/key: immutable registry entry */
     SrAnimColor *color_anim;    /* animate/key: target color track */
+    SrOutput *output;           /* output: the element's scene output */
     SrCurve curve;
 } ParseFrame;
 
@@ -49,6 +51,7 @@ typedef struct {
     bool out_of_memory;         /* the failure was an allocation (exit 8) */
     bool seen_styles;
     bool seen_metadata;
+    bool seen_markers;
     bool seen_project;
     bool seen_output;
     bool seen_assets;
@@ -90,6 +93,8 @@ void sr_xml_start_token(ParseContext *ctx, const XML_Char **attrs);
 
 void sr_xml_start_project(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_output(ParseContext *ctx, const XML_Char **attrs);
+void sr_xml_start_still(ParseContext *ctx, const XML_Char **attrs,
+                        SrStillKind kind);
 void sr_xml_start_image(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_video(ParseContext *ctx, const XML_Char **attrs);
 void sr_xml_start_audio(ParseContext *ctx, const XML_Char **attrs);
@@ -135,6 +140,21 @@ bool sr_xml_anim_length_attr(ParseContext *ctx, const char *element,
                               const XML_Char **attrs, const char *attribute,
                               SrAnimValue *value, bool positive);
 bool sr_xml_finish_animation(ParseContext *ctx, ParseFrame *frame);
+/* Finalizes and validates one animation track: NULL, or the problem with
+ * its key line (0 when not key-specific) and attribute. */
+const char *sr_xml_track_problem(SrAnimValue *value, SrAnimColor *color,
+                                 size_t *line, const char **attribute);
+
+/* Timeline structure (B1-5, src/xml_timeline.c). */
+void sr_xml_start_marker(ParseContext *ctx, const XML_Char **attrs);
+void sr_xml_start_beat_grid(ParseContext *ctx, const XML_Char **attrs);
+bool sr_xml_parse_node_timeline(ParseContext *ctx, const char *element,
+                                const XML_Char **attrs, SrNode *node,
+                                bool sequence);
+bool sr_xml_key_marker(ParseContext *ctx, const XML_Char **attrs, SrKeyframe *key);
+/* True when the track has marker keys: validation waits for resolution. */
+bool sr_xml_track_deferred(ParseContext *ctx, const SrTrack *track);
+bool sr_xml_resolve_timeline(ParseContext *ctx);
 
 #define SR_XML_FAIL_RETURN(context, element, attribute, message)               \
     do {                                                                       \

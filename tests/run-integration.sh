@@ -271,6 +271,86 @@ test "$color" = "tv,bt709,bt709,bt709" || {
     --output "$work/ffv1.mkv" --threads 1
 test "$(field "$work/ffv1.mkv" video codec)" = "ffv1"
 
+# B1-6: several outputs of one scene (tests/data-outputs.xml). The shared
+# 96x54@12 pass feeds h264, prores, vp9, av1, apng, png and tiff sequences
+# and the poster; the gif (48x27@6), thumbnail (48x27) and exr (4 fps)
+# render in their own passes. Every file is identical at 1 and 4 threads.
+stage_outputs() {
+    sed -e "s#\.\./build/test-artifacts/outputs/#$work/$1/#g" \
+        -e "s#\.\./examples/#$root/examples/#g" \
+        "$root/tests/data-outputs.xml" > "$work/$1.xml"
+}
+for threads in 1 4; do
+    rm -rf "$work/outputs-$threads"
+    stage_outputs "outputs-$threads"
+    "$binary" --scene "$work/outputs-$threads.xml" --threads "$threads"
+done
+(cd "$work/outputs-1" && find . -type f | LC_ALL=C sort) > "$work/outputs-files.txt"
+test "$(wc -l < "$work/outputs-files.txt")" -eq 52
+while read -r file; do
+    cmp "$work/outputs-1/$file" "$work/outputs-4/$file"
+done < "$work/outputs-files.txt"
+outputs="$work/outputs-1"
+probe_is() {
+    actual="$(field "$1" video codec),$(field "$1" video width)x$(field "$1" video height),$(field "$1" video frames)"
+    test "$actual" = "$2" || {
+        echo "unexpected probe of $1: $actual (expected $2)" >&2
+        exit 1
+    }
+}
+probe_is "$outputs/main.mp4" "h264,96x54,24"
+probe_is "$outputs/master.mov" "prores,96x54,24"
+probe_is "$outputs/web.webm" "vp9,96x54,12"
+probe_is "$outputs/av1.mkv" "av1,96x54,24"
+probe_is "$outputs/loop.gif" "gif,48x27,12"
+probe_is "$outputs/anim.png" "apng,96x54,12"
+probe_is "$outputs/png/f-012.png" "png,96x54,1"
+probe_is "$outputs/tiff/f-012.tif" "tiff,96x54,1"
+probe_is "$outputs/exr/f-004.exr" "exr,96x54,1"
+probe_is "$outputs/poster.png" "png,96x54,1"
+probe_is "$outputs/thumb.jpg" "mjpeg,48x27,1"
+test "$(field "$outputs/web.webm" audio codec)" = "opus"
+test "$(field "$outputs/master.mov" audio codec)" = "aac"
+test "$(field "$outputs/master.mov" video pix_fmt)" = "yuv422p10le"
+test "$(field "$outputs/exr/f-004.exr" video pix_fmt)" = "gbrpf32le"
+test ! -e "$outputs/tiff/f-011.tif"
+test ! -e "$outputs/png/f-024.png"
+golden outputs-png "$outputs/png/f-012.png"
+golden outputs-tiff "$outputs/tiff/f-012.tif"
+golden outputs-exr "$outputs/exr/f-004.exr"
+golden outputs-apng "$outputs/anim.png"
+golden outputs-gif "$outputs/loop.gif"
+golden outputs-poster "$outputs/poster.png"
+# An output rendered alone (--output-id) equals its shared-pass bytes; a
+# preview renders at the selected output's size.
+rm -rf "$work/outputs-alone"
+stage_outputs outputs-alone
+"$binary" --scene "$work/outputs-alone.xml" --output-id web,loop --threads 2
+cmp "$work/outputs-alone/web.webm" "$outputs/web.webm"
+cmp "$work/outputs-alone/loop.gif" "$outputs/loop.gif"
+test ! -e "$work/outputs-alone/main.mp4"
+"$binary" --scene "$work/outputs-alone.xml" --output-id loop --preview-frame 3 \
+    --preview-out "$work/outputs-alone/preview.png"
+probe_is "$work/outputs-alone/preview.png" "png,48x27,1"
+# Selection errors are argument errors (exit 2).
+set +e
+"$binary" --scene "$work/outputs-alone.xml" --output "$work/x.mp4" 2>/dev/null
+test $? -eq 2 || { echo "--output with several outputs must fail" >&2; exit 1; }
+"$binary" --scene "$work/outputs-alone.xml" --output-id nope --validate 2>/dev/null
+test $? -eq 2 || { echo "unknown --output-id must fail" >&2; exit 1; }
+"$binary" --scene "$work/outputs-alone.xml" --output-id loop --resume 2>/dev/null
+test $? -eq 2 || { echo "--resume of a gif must fail" >&2; exit 1; }
+set -e
+# --resume of one output, then a rerun that reuses every segment.
+"$binary" --scene "$work/outputs-alone.xml" --output-id master --resume \
+    --segment-frames 10 --keep-parts --threads 4
+test "$(find "$work/outputs-alone/master.mov.parts" -name 'seg-*.mkv' | wc -l)" -eq 3
+probe_is "$work/outputs-alone/master.mov" "prores,96x54,24"
+cp "$work/outputs-alone/master.mov" "$work/outputs-alone/master-first.mov"
+"$binary" --scene "$work/outputs-alone.xml" --output-id master --resume \
+    --segment-frames 10
+cmp "$work/outputs-alone/master.mov" "$work/outputs-alone/master-first.mov"
+
 # PNG previews through libavcodec.
 "$binary" --scene "$root/examples/keyframe-curves.xml" \
     --resolution 320x180 --preview-frame 30 --preview-out "$work/preview.png"

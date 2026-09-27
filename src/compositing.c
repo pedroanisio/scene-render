@@ -2,6 +2,7 @@
 #include "compositing_internal.h"
 #include "compositor_coverage_internal.h"
 #include "particles_internal.h"
+#include "scene_render/markers.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,7 +11,8 @@
 static const char *element(const SrScene *scene, const SrNode *node) {
     if (!node || node == scene->root) return "composition";
     switch (node->type) {
-    case SR_NODE_GROUP: return "group";
+    case SR_NODE_GROUP:
+        return node->timeline && node->timeline->sequence ? "sequence" : "group";
     case SR_NODE_MEDIA: return "layer";
     case SR_NODE_SHAPE: return "shape";
     case SR_NODE_PARTICLES: return "particleEmitter";

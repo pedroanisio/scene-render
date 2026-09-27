@@ -4,6 +4,8 @@
 #include "scene_render/video.h"
 #include "scene_render/color.h"
 #include "scene_render/compositing.h"
+#include "scene_render/markers.h"
+#include "scene_render/outputs.h"
 #include "particles_internal.h"
 #include "compositing_internal.h"
 
@@ -56,6 +58,8 @@ void sr_scene_init(SrScene *scene) {
     scene->output.color_space = SR_COLOR_SRGB;
     scene->output.spherical_metadata = true;
     scene->output.embed_metadata = true;
+    scene->output.b_frames = -1;
+    scene->output.faststart = true;
     scene->audio.sample_rate = 48000;
     scene->audio.channels = 2;
     scene->scene360.width = 3840;
@@ -112,6 +116,7 @@ void sr_scene_free(SrScene *scene) {
     if (!scene) return;
     sr_scene_invalidate_compositing(scene);
     sr_node_free(scene->root);
+    sr_timeline_free(scene->timeline);
     for (size_t i = 0; i < scene->token_count; ++i) {
         free(scene->tokens[i].name);
         free(scene->tokens[i].value);
@@ -180,9 +185,11 @@ void sr_scene_free(SrScene *scene) {
     free(scene->physics.fields); free(scene->physics.cache_path);
     free(scene->physics.cache_dir);
     free(scene->scene360.viewport_camera_id);
-    free(scene->source_path); free(scene->base_dir); free(scene->output.path);
-    free(scene->output.pixel_format); free(scene->output.preset);
-    free(scene->output.audio_codec);
+    free(scene->source_path); free(scene->base_dir);
+    sr_output_free(&scene->output);
+    for (size_t i = 0; i < scene->extra_output_count; ++i)
+        sr_output_free(&scene->extra_outputs[i]);
+    free(scene->extra_outputs);
     sr_font_cache_free(scene->font_cache);
     *scene = (SrScene){0};
 }
@@ -219,6 +226,7 @@ SrNode *sr_node_create(SrScene *scene, SrNodeType type) {
     node->order = scene ? scene->next_order++ : 0;
     node->visible = true;
     node->end_time = INFINITY;
+    node->clock_scale = 1.0;
     node->opacity.base = 1.0;
     node->transform.scale_x.base = 1.0;
     node->transform.scale_y.base = 1.0;
@@ -335,6 +343,7 @@ void sr_node_free(SrNode *node) {
     anim_free(&node->particle_speed); anim_free(&node->particle_spread);
     anim_free(&node->particle_size);
     transform_free(&node->transform);
+    sr_node_timeline_free(node->timeline);
     free(node);
 }
 

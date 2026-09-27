@@ -83,6 +83,12 @@ static void defaults_and_every_option(sr_test_ctx *t)
                    "--segment-frames", "40") == SR_OK);
     CHECK(t, o.render.resume && o.render.keep_parts);
     CHECK_INT(t, o.render.segment_frames, 40);
+    CHECK(t, PARSE(&o, e, "--scene", "s", "--output-id", "a,b2") == SR_OK);
+    CHECK_STR(t, o.render.output_ids, "a,b2");
+    CHECK(t, PARSE(&o, e, "--scene", "s", "--output-id", ",a") == SR_ERR_ARGUMENT);
+    CHECK(t, PARSE(&o, e, "--scene", "s", "--output-id", "a,") == SR_ERR_ARGUMENT);
+    CHECK(t, PARSE(&o, e, "--scene", "s", "--output-id", "a",
+                   "--output-id", "b") == SR_ERR_ARGUMENT);
     CHECK(t, PARSE(&o, e, "--help") == SR_OK && o.help);
     CHECK(t, PARSE(&o, e, "-h") == SR_OK && o.help);
     CHECK(t, PARSE(&o, e, "--version") == SR_OK && o.version);

@@ -305,7 +305,82 @@ static void additive_inner_radius_base(sr_test_ctx *t) {
     sr_frame_free(&frames[1]);
 }
 
+/* B1-5 merge: sequences and re-timed groups are matte sources; the
+ * source's own clock drives its captured image. */
+static void sequence_and_clock_matte_sources(sr_test_ctx *t) {
+    const char *xml = "<scene version=\"1.1\">\n"
+        "<project width=\"32\" height=\"16\" fps=\"4\" duration=\"2\" "
+        "background=\"#00000000\"/>\n<composition>"
+        "<sequence id=\"seq\"><shape id=\"a\" shape=\"rect\" width=\"8\" height=\"16\" "
+        "end=\"1\" fill=\"#FFFFFF\"/><shape id=\"b\" shape=\"rect\" x=\"8\" width=\"8\" "
+        "height=\"16\" end=\"1\" fill=\"#FFFFFF\"/></sequence>"
+        "<group id=\"fast\" timeOffset=\"0.5\" timeScale=\"2\">"
+        "<shape id=\"m\" shape=\"rect\" x=\"16\" width=\"8\" height=\"16\" "
+        "fill=\"#FFFFFF\"><animate property=\"position.x\"><key time=\"0\" value=\"16\"/>"
+        "<key time=\"2.5\" value=\"24\"/></animate></shape></group>"
+        "<shape id=\"c1\" shape=\"rect\" width=\"16\" height=\"16\" fill=\"#FF0000\" "
+        "matte=\"seq\"/>"
+        "<shape id=\"c2\" shape=\"rect\" x=\"16\" width=\"16\" height=\"16\" "
+        "fill=\"#00FF00\" matte=\"fast\"/></composition></scene>";
+    SrScene scene;
+    char *message = NULL;
+    SrStatus status = b13_load(t, xml, &scene, &message);
+    CHECK_INT(t, status, SR_OK);
+    if (status != SR_OK) { fprintf(stderr, "%s\n", message ? message : ""); free(message); return; }
+    free(message);
+    SrFrame early, late;
+    CHECK_INT(t, b13_render(&scene, .5, 1, &early, NULL), SR_OK);
+    CHECK_INT(t, b13_render(&scene, 1.5, 4, &late, NULL), SR_OK);
+    /* Sequence item a plays first, item b in the second slot. */
+    CHECK_NEAR(t, st_px(&early, 4, 8)[3], 1, 1e-6);
+    CHECK_NEAR(t, st_px(&early, 12, 8)[3], 0, 0);
+    CHECK_NEAR(t, st_px(&late, 4, 8)[3], 0, 0);
+    CHECK_NEAR(t, st_px(&late, 12, 8)[3], 1, 1e-6);
+    /* The re-timed source is at local time 0.5 + 2*1.5 = 3.5 (hold): x=24. */
+    CHECK_NEAR(t, st_px(&late, 20, 8)[3], 0, 0);
+    CHECK_NEAR(t, st_px(&late, 28, 8)[3], 1, 1e-6);
+    sr_frame_free(&early);
+    sr_frame_free(&late);
+    sr_scene_free(&scene);
+}
+
+/* B1-5 merge: adjustments take name/tags/markers, and key markers resolve
+ * on adjustment and advanced-mask tracks. */
+static void adjustment_timeline_attributes(sr_test_ctx *t) {
+    const char *xml = "<scene version=\"1.1\">\n"
+        "<project width=\"16\" height=\"16\" fps=\"4\" duration=\"2\"/>\n"
+        "<markers><marker id=\"go\" time=\"1\"/></markers><composition>"
+        "<shape id=\"s\" shape=\"rect\" width=\"16\" height=\"16\" fill=\"#FF8000\"/>"
+        "<adjustment id=\"a\" effects=\"g\" name=\"Grade\" tags=\"look\" "
+        "startMarker=\"go\"><animate property=\"opacity\"><key time=\"0\" value=\"0\"/>"
+        "<key time=\"0.9\" marker=\"go\" value=\"1\"/></animate>"
+        "<mask type=\"rect\" width=\"16\" height=\"16\"><animate property=\"feather\">"
+        "<key time=\"0\" value=\"0\"/><key time=\"0.9\" marker=\"go\" value=\"2\"/></animate></mask>"
+        "</adjustment></composition>"
+        "<effects><effect id=\"g\" type=\"color-grade\" saturation=\"0\"/></effects></scene>";
+    SrScene scene;
+    char *message = NULL;
+    SrStatus status = b13_load(t, xml, &scene, &message);
+    CHECK_INT(t, status, SR_OK);
+    if (status != SR_OK) { fprintf(stderr, "%s\n", message ? message : ""); free(message); return; }
+    free(message);
+    SrNode *adjustment = sr_scene_find_node(&scene, "a");
+    CHECK(t, adjustment && adjustment->timeline);
+    CHECK_NEAR(t, adjustment->start_time, 1, 0);
+    SrFrame before, after;
+    CHECK_INT(t, b13_render(&scene, .5, 1, &before, NULL), SR_OK);
+    CHECK_INT(t, b13_render(&scene, 1.5, 1, &after, NULL), SR_OK);
+    const float *b = st_px(&before, 8, 8), *a = st_px(&after, 8, 8);
+    CHECK(t, b[0] > b[2] + .5f);                 /* not active yet: orange */
+    CHECK(t, a[0] - a[2] < .75f * (b[0] - b[2])); /* active: greyer */
+    sr_frame_free(&before);
+    sr_frame_free(&after);
+    sr_scene_free(&scene);
+}
+
 const sr_test_case sr_tests_b13_review[] = {
+    {"sequence_and_clock_matte_sources", sequence_and_clock_matte_sources},
+    {"adjustment_timeline_attributes", adjustment_timeline_attributes},
     {"work_rejection_releases_reservation", work_rejection_releases_reservation},
     {"path_edges_charge_columns", path_edges_charge_columns},
     {"effects_use_private_scratch", effects_use_private_scratch},

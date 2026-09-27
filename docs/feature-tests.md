@@ -74,6 +74,7 @@ verify it. Test names are `suite.case` of `sr-unit-tests` (CTest entry
 | Feature | Implementation | Verified by |
 |---|---|---|
 | In-process encode: H.264, H.265, FFV1; MP4/MOV/Matroska; AAC audio; bit-exact output | `encoder` | `encode.h264_mp4_round_trip`, `encode.h265_mp4_round_trip`, `encode.ffv1_mkv_round_trip`, `encode.bitexact_output`, `encode.open_rejects_bad_configuration`, `encode.finish_once_and_destroy_unfinished`, `integration` |
+| 1.1 outputs: several outputs, shared and separate passes, per-output ranges, `--output-id`; ProRes, VP9, AV1, GIF, APNG, PNG/TIFF/EXR sequences; container, GOP, B-frames, faststart, loops; PNG/JPEG stills | `outputs`, `output_plan`, `encoder`, `gif_palette`, `output_media`, `renderer` | `outputs.*` (18 cases), `golden.output_codecs`, `oom.outputs_survive_allocation_failures`, `cli.output_*`, `integration` (every codec at 1/4 threads, six `outputs-*` hashes) |
 | libav failure handling | `encoder`, `video`, `audio` | `encode_faults.*` (every wrapped libav call), `encode_faults.finish_failure_keeps_moov` |
 | Allocation-failure handling (every core allocation during load, asset load, one frame, encode) | all modules | `oom.*` (6 cases) |
 | Preview PNG/PPM and FNV-1a preview hash | `renderer` | `cli.preview_png`, `cli.preview_default_name`, every `golden.*` case, `integration` (PNG previews) |
