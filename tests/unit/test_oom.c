@@ -31,6 +31,7 @@
 #include <string.h>
 
 #include "harness.h"
+#include "scene_render/effects.h"
 #include "fixture.h"
 #include "resource_fixture.h"
 #include "length_frame.h"
@@ -52,6 +53,8 @@ void *__wrap_calloc(size_t count, size_t size);
 void *__wrap_realloc(void *ptr, size_t size);
 void __real_free(void *ptr);
 void __wrap_free(void *ptr);
+void *__real_aligned_alloc(size_t alignment, size_t size);
+void *__wrap_aligned_alloc(size_t alignment, size_t size);
 
 /* Allocations left before the injected failure; -1 disarms. Atomic because
  * rendering may allocate on worker threads. */
@@ -169,6 +172,28 @@ void *__wrap_realloc(void *ptr, size_t size) {
 void __wrap_free(void *ptr) {
     live_remove(ptr);
     __real_free(ptr);
+}
+
+/* Effect scratch uses aligned_alloc; it is injectable like malloc and its
+ * calls are observable (sr_test_aligned_stats) by the B1-3 review tests. */
+static atomic_ulong g_aligned_calls;
+static atomic_size_t g_aligned_max;
+void *__wrap_aligned_alloc(size_t alignment, size_t size) {
+    void *ptr = oom_should_fail() ? NULL : __real_aligned_alloc(alignment, size);
+    atomic_fetch_add(&g_aligned_calls, 1);
+    size_t max = atomic_load(&g_aligned_max);
+    while (size > max && !atomic_compare_exchange_weak(&g_aligned_max, &max, size)) {}
+    live_add(ptr);
+    return ptr;
+}
+
+void sr_test_aligned_stats(bool reset, unsigned long *calls, size_t *largest) {
+    if (calls) *calls = atomic_load(&g_aligned_calls);
+    if (largest) *largest = atomic_load(&g_aligned_max);
+    if (reset) {
+        atomic_store(&g_aligned_calls, 0);
+        atomic_store(&g_aligned_max, 0);
+    }
 }
 
 static void oom_arm(long n) {
@@ -618,6 +643,7 @@ static void xml_load_survives_allocation_failures(sr_test_ctx *t) {
     check_load(t, "tests/data-timeline.xml", 60);
     check_load(t, "tests/golden/sequence-markers.xml", 40);
     check_load(t, "tests/golden/skew.xml", 40);
+    check_load(t, "tests/data-compositing.xml", 60);
     check_load(t, "examples/feature-parity.xml", 50);
     check_load(t, "tests/data-shapes.xml", 80);
     check_load(t, "tests/golden/gradients.xml", 40);
@@ -735,9 +761,10 @@ static bool render_same_result(void *opaque) {
 
 static void frame_render_survives_allocation_failures(sr_test_ctx *t) {
     static const unsigned threads[] = {1, 3};
-    for (size_t i = 0; i < 4; ++i) {
+    for (size_t i = 0; i < 6; ++i) {
         RenderContext c = {.threads = threads[i % 2],
-            .fixture = i == 3 ? "tests/data-animation-hosts.xml" :
+            .fixture = i >= 4 ? "tests/data-compositing.xml" :
+                i == 3 ? "tests/data-animation-hosts.xml" :
                 i == 2 ? "tests/data-animation.xml" : "tests/data-oom.xml"};
         snprintf(c.path, sizeof(c.path), "%s", sr_test_tmp_path("oom-frame.ppm"));
         render_prepare(&c);
@@ -756,7 +783,7 @@ static void frame_render_survives_allocation_failures(sr_test_ctx *t) {
                               render_same_result,
                               {SR_ERR_MEMORY}};
         long n = replay_until_success(t, &spec, &c);
-        CHECK(t, n >= (i >= 2 ? 12 : 21));
+        CHECK(t, n >= (i >= 4 ? 40 : i >= 2 ? 12 : 21));
         free(c.reference);
         if (c.loaded) sr_scene_free(&c.scene);
     }
@@ -1147,7 +1174,78 @@ static void injection_and_leak_check_work(sr_test_ctx *t) {
     CHECK_INT(t, live_stop(), 0);
 }
 
+/* ------------------------------------------- private bounded effect scratch */
+
+typedef struct {
+    SrScene scene;
+    SrFrame frame;
+    SrEffectsPrivate cache;     /* the warmed thread cache before replays */
+    long mismatches;
+} PrivateEffectContext;
+
+/* A bounded adjustment render under injection: every replay, including
+ * allocation failures inside the effect's private scope, must leave the
+ * calling thread's warmed cache exactly in place and leak nothing. */
+static SrStatus private_effect_op(void *opaque) {
+    PrivateEffectContext *c = opaque;
+    SrCompositor compositor;
+    sr_compositor_init(&compositor, 1);
+    SrDiagnostics diag = quiet_diag("oom-private-effect");
+    SrStatus status = sr_compositor_render_scene(&compositor, &c->scene, 0,
+                                                 &c->frame, &diag);
+    sr_compositor_free(&compositor);
+    SrEffectsPrivate now;
+    sr_effects_private_begin(&now);
+    sr_effects_private_end(&now);
+    if (now.data[0] != c->cache.data[0] || now.capacity[0] != c->cache.capacity[0] ||
+        now.data[1] != c->cache.data[1] || now.transfer != c->cache.transfer)
+        ++c->mismatches;
+    return status;
+}
+
+static void private_effect_scratch_survives_allocation_failures(sr_test_ctx *t) {
+    PrivateEffectContext c = {0};
+    SrDiagnostics diag = quiet_diag("oom-private-effect");
+    const char *path = sr_test_tmp_path("oom-private-effect.xml");
+    FILE *file = fopen(path, "w");
+    if (!file) { SR_FAIL(t, "cannot write fixture"); return; }
+    fputs("<scene version=\"1.1\">\n<project width=\"64\" height=\"64\" fps=\"2\" "
+          "duration=\"1\" linearLight=\"true\"/>\n<composition><shape id=\"r\" "
+          "shape=\"rect\" width=\"32\" height=\"64\" fill=\"#FF0000\"/>"
+          "<adjustment id=\"a\" effects=\"b g s\"/></composition><effects>"
+          "<effect id=\"b\" type=\"blur\" radius=\"4\"/>"
+          "<effect id=\"g\" type=\"color-grade\" saturation=\"0.5\"/>"
+          "<effect id=\"s\" type=\"drop-shadow\" radius=\"3\" offsetX=\"2\"/>"
+          "</effects></scene>", file);
+    fclose(file);
+    if (sr_scene_load_xml(path, &c.scene, &diag) != SR_OK ||
+        sr_frame_init(&c.frame, 64, 64) != SR_OK) {
+        SR_FAIL(t, "fixture");
+        sr_scene_free(&c.scene);
+        return;
+    }
+    /* Warm a small legacy cache (and transfer tables) on this thread. */
+    SrEffect blur = {.type = SR_EFFECT_BLUR, .enabled = true,
+                     .intensity = {.base = 1}, .radius = {.base = 1}};
+    SrEffect *refs[1] = {&blur};
+    SrEffectRect rect = {0, 0, 8, 8};
+    CHECK_INT(t, sr_effects_apply_group(&c.scene, refs, 1, 0, &c.frame,
+                                        sr_mat_identity(), &rect, 1), SR_OK);
+    sr_effects_private_begin(&c.cache);
+    sr_effects_private_end(&c.cache);
+    const OomSpec spec = {"bounded private effect scratch", private_effect_op,
+                          NULL, NULL, NULL, {SR_ERR_MEMORY}};
+    long n = replay_until_success(t, &spec, &c);
+    CHECK(t, n >= 8);
+    CHECK_INT(t, c.mismatches, 0);
+    sr_frame_free(&c.frame);
+    sr_scene_free(&c.scene);
+    sr_effects_release();
+}
+
 const sr_test_case sr_tests_oom[] = {
+    {"private_effect_scratch_survives_allocation_failures",
+     private_effect_scratch_survives_allocation_failures},
     {"injection_and_leak_check_work", injection_and_leak_check_work},
     {"prepared_paths_survive_allocation_failures",
      prepared_paths_survive_allocation_failures},

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Adjustment layers over a shared backdrop: blur inside an animated
+     feathered star, desaturation gated by a moving luma matte, a multiply
+     adjustment inside an isolated group with animated opacity, and a
+     full-frame vignette that starts at 1 s. Siblings above an adjustment
+     stay untouched. -->
+<scene version="1.1">
+  <project width="320" height="180" fps="12" duration="2" seed="61"
+           linearLight="false" background="#1A2230"/>
+  <composition>
+    <shape id="stripe0" shape="rect" x="0" width="20" height="180" fill="#E8A36A"/>
+    <shape id="stripe1" shape="rect" x="40" width="20" height="180" fill="#3A7ECA"/>
+    <shape id="stripe2" shape="rect" x="80" width="20" height="180" fill="#62D08A"/>
+    <shape id="stripe3" shape="rect" x="120" width="20" height="180" fill="#F0605A"/>
+    <shape id="stripe4" shape="rect" x="160" width="20" height="180" fill="#D059B9"/>
+    <shape id="stripe5" shape="rect" x="200" width="20" height="180" fill="#F2E8D2"/>
+    <shape id="stripe6" shape="rect" x="240" width="20" height="180" fill="#5CB6E8"/>
+    <shape id="stripe7" shape="rect" x="280" width="20" height="180" fill="#E8B04C"/>
+    <shape id="dot0" shape="ellipse" x="12" y="30" width="30" height="30" fill="#F0605A">
+      <animate property="position.y"><key time="0" value="30"/>
+        <key time="2" value="60"/></animate></shape>
+    <shape id="dot1" shape="ellipse" x="64" y="70" width="30" height="30" fill="#D059B9">
+      <animate property="position.y"><key time="0" value="70"/>
+        <key time="2" value="110"/></animate></shape>
+    <shape id="dot2" shape="ellipse" x="116" y="110" width="30" height="30" fill="#F2E8D2">
+      <animate property="position.y"><key time="0" value="110"/>
+        <key time="2" value="60"/></animate></shape>
+    <shape id="dot3" shape="ellipse" x="168" y="30" width="30" height="30" fill="#5CB6E8">
+      <animate property="position.y"><key time="0" value="30"/>
+        <key time="2" value="110"/></animate></shape>
+    <shape id="dot4" shape="ellipse" x="220" y="70" width="30" height="30" fill="#E8B04C">
+      <animate property="position.y"><key time="0" value="70"/>
+        <key time="2" value="60"/></animate></shape>
+    <shape id="dot5" shape="ellipse" x="272" y="110" width="30" height="30" fill="#E8A36A">
+      <animate property="position.y"><key time="0" value="110"/>
+        <key time="2" value="110"/></animate></shape>
+    <adjustment id="blurry" effects="soft" x="60" y="60">
+      <mask type="star" radius="40" points="5" innerRadius="20" feather="4">
+        <animate property="radius"><key time="0" value="34"/>
+          <key time="2" value="52"/></animate></mask>
+    </adjustment>
+    <shape id="lens" shape="ellipse" x="150" y="50" width="70" height="70" fill="#FFFFFF">
+      <animate property="position.x"><key time="0" value="120"/>
+        <key time="2" value="190"/></animate></shape>
+    <adjustment id="grey" effects="mono" matte="lens" matteMode="luma"/>
+    <shape id="above" shape="rect" x="140" y="8" width="40" height="18" fill="#F0605A"/>
+    <group id="panel" x="226" y="96">
+      <shape id="panelbg" shape="rect" width="90" height="80" fill="#F2E8D2"/>
+      <shape id="panelfg" shape="ellipse" x="10" y="10" width="50" height="50" fill="#3A7ECA"/>
+      <adjustment id="tint" effects="warm" blend="multiply">
+        <mask type="polygon" x="45" y="40" radius="38" points="6"/>
+        <animate property="opacity"><key time="0" value=".2"/>
+          <key time="2" value="1"/></animate></adjustment>
+      <shape id="panelfront" shape="rect" x="60" y="54" width="24" height="20" fill="#62D08A"/>
+    </group>
+    <adjustment id="vig" effects="edge" start="1"/>
+  </composition>
+  <effects>
+    <effect id="soft" type="blur" radius="5"/>
+    <effect id="mono" type="color-grade" saturation="0" contrast="1.2"/>
+    <effect id="warm" type="color-grade" saturation="1.4" brightness="-0.1"/>
+    <effect id="edge" type="vignette" intensity="0.8"/>
+  </effects>
+</scene>

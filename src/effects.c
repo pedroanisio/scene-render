@@ -91,6 +91,44 @@ static float *scratch_get(size_t slot, size_t floats) {
     return data;
 }
 
+/* Bounded (B1-3) callers run effects with private scratch: the calling
+ * thread's cached buffers are set aside, the call allocates fresh storage
+ * sized for its own rectangle, and the scope end frees it and restores the
+ * cache. Scratch contents are write-before-read, so results are identical
+ * to the cached path; only ownership and lifetime differ. */
+void sr_effects_private_begin(SrEffectsPrivate *saved) {
+    for (size_t slot = 0; slot < SCRATCH_SLOTS; ++slot) {
+        saved->data[slot] = scratch_data[slot];
+        saved->capacity[slot] = scratch_capacity[slot];
+        scratch_data[slot] = NULL;
+        scratch_capacity[slot] = 0;
+    }
+    saved->transfer = cached_transfer;
+    saved->space = cached_space;
+    cached_transfer = NULL;
+}
+
+uint64_t sr_effects_private_end(SrEffectsPrivate *saved) {
+    uint64_t bytes = 0;
+    for (size_t slot = 0; slot < SCRATCH_SLOTS; ++slot) {
+        if (scratch_data[slot])
+            bytes += (scratch_capacity[slot] * sizeof(float) + SCRATCH_ALIGN - 1) /
+                     SCRATCH_ALIGN * SCRATCH_ALIGN;
+        free(scratch_data[slot]);
+        scratch_data[slot] = saved->data[slot];
+        scratch_capacity[slot] = saved->capacity[slot];
+    }
+    if (cached_transfer) bytes += sizeof(Transfer);
+    free(cached_transfer);
+    cached_transfer = saved->transfer;
+    cached_space = saved->space;
+    return bytes;
+}
+
+uint64_t sr_effects_transfer_bytes(void) {
+    return sizeof(Transfer);
+}
+
 void sr_effects_release(void) {
     for (size_t slot = 0; slot < SCRATCH_SLOTS; ++slot) {
         free(scratch_data[slot]);

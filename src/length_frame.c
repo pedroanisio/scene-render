@@ -25,6 +25,7 @@ static const char *element(const SrNode *node) {
     case SR_NODE_MEDIA: return "layer";
     case SR_NODE_SHAPE: return "shape";
     case SR_NODE_PARTICLES: return "particleEmitter";
+    case SR_NODE_ADJUSTMENT: return "adjustment";
     }
     return "node";
 }

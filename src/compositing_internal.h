@@ -12,6 +12,8 @@ typedef struct {
     size_t mask_offset;
     size_t left, right;       /* AVL lookup links, SIZE_MAX for absent */
     unsigned height;
+    size_t matte_source;      /* capture index when a matte source, else SIZE_MAX */
+    bool suppressed;          /* matte source not drawn normally */
 } SrCompositeNode;
 
 /* Owns its array; entries follow finalized tree preorder. An AVL tree keyed
@@ -22,6 +24,13 @@ typedef struct SrCompositePlan {
     size_t count, capacity, mask_count;
     size_t lookup_root;
     uint64_t owned_bytes;
+    /* Track-matte sources in dependency order (a source's own matte
+     * requirements precede it); consumers of source k are
+     * consumers[consumer_offsets[k] .. consumer_offsets[k + 1]). */
+    const SrNode **matte_sources;
+    size_t matte_source_count;
+    size_t *consumer_offsets;
+    const SrNode **consumers;
 } SrCompositePlan;
 
 /* out must not already own storage. Builds unpublished structure before XML
@@ -33,7 +42,12 @@ void sr_composite_plan_free(SrCompositePlan *plan);
 const SrCompositeNode *sr_composite_plan_node(const SrCompositePlan *plan,
                                                const SrNode *node);
 
+struct SrMaskPath;
+void sr_mask_path_free(struct SrMaskPath *path);  /* compositor_coverage.c */
+
 bool sr_node_uses_compositing(const SrNode *node);
+/* The attribute named by diagnostics about the node's new features. */
+const char *sr_node_compositing_attribute(const SrNode *node);
 SrStatus sr_composite_scene_ready(const SrScene *scene, SrDiagnostics *diag);
 SrStatus sr_composite_node_ready(const SrScene *scene, const SrNode *node,
                                   SrDiagnostics *diag);

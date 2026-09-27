@@ -22,6 +22,9 @@ difference, and keeps the rendered frame in `BUILD/test_tmp/golden/`.
 |---|---|---|
 | `composite.xml` | all six blend modes in linear light, opacity/rotation/fill keys, cubic-bezier key, z order | 0, 12, 23 |
 | `blend-modes.xml` | all 28 color modes over matching translucent backdrops, animated source opacity/rotation, including nonseparable color and plus-lighter alpha | 0, 12, 23 |
+| `blend-operators.xml` | the seven flattened operators (dissolve, stencil/silhouette alpha and luma, alpha-add, behind) on automatically isolated parents, animated source rotation/opacity, a stencil and a dissolve inside a projected card | 0, 12, 23 |
+| `mattes-masks.xml` | the six mask modes in authored order, path/polygon/star masks with animated feather, expansion, radius and innerRadius, opacity/invert and `none`; alpha, alpha-inverted, luma and luma-inverted track mattes from moving sources, one `matteVisible` | 0, 12, 23 |
+| `adjustment.xml` | adjustment layers: blur inside an animated feathered star, desaturation through a moving luma matte, a multiply adjustment with animated opacity inside an isolated group, a vignette that starts at 1 s; later siblings untouched | 0, 12, 23 |
 | `skew.xml` | ordered two-axis skew, animated shear, nested masks, projected media, particles and soft-body rest poses | 0, 12, 23 |
 | `groups-masks.xml` | nested isolated groups (blend, opacity), pass-through group with an animated rounded-rect mask and an animated inverted mask, masked shape | 0, 12, 23 |
 | `paths.xml` | cubic/quadratic/relative path commands, evenodd vs nonzero, open and closed strokes, stroked rect/ellipse vectors and shapes | 0, 12, 23 |

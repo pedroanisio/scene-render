@@ -289,6 +289,21 @@ larger-prior/shuffled histories and actual one/four-worker dispatch. Malformed
 track storage and clock/count limits fail before indexing with source owners;
 existing OOM replay continues to cover all changed cleanup paths.
 
+## B1-3 feature consumers
+
+Branch `b1-3-mattes-masks` connects the new features: advanced-mask
+coverage grids, per-mask rasters, morphology rows, blur scratch, polygon
+vertices and path scanline cells (allocations plus reserved pass work);
+operator buffers (depth pool) and operator/replacement pixel work; matte
+capture scratch, retained two-channel coverage and the per-frame capture
+table; adjustment backdrop copies; and calling-thread reservations for
+group, card and adjustment effects and card depth-of-field blur, which run
+in a private scratch scope (no borrowed thread-local capacity) and are
+released when the call returns. Lighting/shadow scratch, renderer outer targets,
+viewport extraction and whole-frame global effects remain unconnected, so
+the ledger is documented to users as covering B1-3 feature work, not as a
+complete per-frame bound.
+
 ## Integration and verification
 
 Integrate the ledger into actual consumers in reviewable increments. An

@@ -31,6 +31,22 @@ SrStatus sr_effects_apply_group(const SrScene *scene, SrEffect *const *effects,
 SrStatus sr_effects_blur_rect(SrFrame *frame, SrEffectRect *rect,
                               double radius, unsigned threads);
 
+/* Private scratch scope for bounded compositing (see effects.c): begin sets
+ * the calling thread's cached scratch and transfer tables aside; end frees
+ * whatever the enclosed calls allocated, restores the cache, and returns the
+ * retained scratch/table bytes those calls held (their peak, as buffers only
+ * grow within a scope). Calls in between must be on the same thread. */
+typedef struct {
+    float *data[2];
+    size_t capacity[2];
+    void *transfer;
+    int space;
+} SrEffectsPrivate;
+void sr_effects_private_begin(SrEffectsPrivate *saved);
+uint64_t sr_effects_private_end(SrEffectsPrivate *saved);
+/* Bytes of one transfer-table allocation. */
+uint64_t sr_effects_transfer_bytes(void);
+
 /* Frees the calling thread's cached effect scratch buffers and transfer
  * tables (they are otherwise kept, grow-only, for reuse across frames and
  * released at exit). Later effect calls reallocate them. */

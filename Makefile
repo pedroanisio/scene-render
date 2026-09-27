@@ -70,7 +70,7 @@ TEST_WRAPS := avformat_alloc_output_context2 avcodec_find_encoder_by_name \
 TEST_LDFLAGS := $(foreach fn,$(TEST_WRAPS),-Wl,--wrap=$(fn))
 # --- Verification depth (P7): golden images and allocation-failure
 # injection (tests/unit/test_golden.c, tests/unit/test_oom.c).
-TEST_LDFLAGS += -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free
+TEST_LDFLAGS += -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free,--wrap=aligned_alloc
 P7_UNIT_SUITES := golden oom
 # ----------------------------------------------------------------------
 
@@ -80,12 +80,13 @@ CORE_SOURCES := src/common.c src/card.c src/parallel.c src/random.c \
 	src/timeline.c src/length.c src/length_frame.c src/curves.c src/property.c src/scene.c \
 	src/assets.c src/text.c src/procedural.c src/audio.c src/compositor.c \
 	src/compositing.c src/compositor_resources.c src/compositor_evaluation.c \
-	src/compositor_geometry.c src/compositor_shape.c src/camera.c \
+	src/compositor_geometry.c src/compositor_shape.c src/compositor_coverage.c \
+	src/compositor_matte.c src/mask_outline.c src/camera.c \
 	src/lighting.c src/effects.c src/particles.c src/deform.c src/physics.c \
 	src/encoder.c src/outputs.c src/outputs_resolve.c src/gif_palette.c src/output_plan.c src/output_media.c src/video.c src/renderer.c \
 	src/resume.c src/xml.c \
 	src/xml_elements.c src/xml_lengths.c src/xml_animation.c src/xml_nodes.c \
-	src/xml_resolve.c src/xml_audio.c \
+	src/xml_resolve.c src/xml_compositing.c src/xml_audio.c \
 	src/xml_camera.c \
 	src/xml_visual.c src/xml_shapes.c \
 	src/xml_physics.c src/xml_styles.c src/xml_metadata.c src/xml_outputs.c src/metadata.c \
@@ -103,6 +104,7 @@ UNIT_SUITES := timeline shapes paint xml_shapes length length_frame length_physi
 	composite_evaluation composite_geometry composite_particles group raster mask path \
 	mask_path fuzz_mask_path image \
 	encode encode_faults audio video fx anim_color particles deform shadow text args resume depth \
+	blend_operators mask_advanced fuzz_mask_xml matte adjustment b13_review \
 	$(P7_UNIT_SUITES)
 TEST_CPPFLAGS := -Isrc -DSR_TEST_DATA_DIR='"$(CURDIR)"' \
 	-DSR_TEST_TMP_DIR='"$(abspath $(BUILD))/test_tmp"'

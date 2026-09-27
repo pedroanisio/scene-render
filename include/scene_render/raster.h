@@ -19,6 +19,35 @@ void sr_blend_px(SrBlendMode mode, float dst[4], const float src[4]);
  * the separate entry keeps new kernels out of legacy inline hot paths. */
 void sr_blend_px_color(SrBlendMode mode, float dst[4], const float src[4]);
 
+/* Physical luminance of blend-space colors: straight RGB clamped to [0,1],
+ * decoded with the working transfer unless the project is linear-light,
+ * then dotted with the working gamut's Y row. Precomputed per render. */
+typedef struct {
+    bool decode;
+    SrColorSpace space;
+    double row[3];
+} SrLumaConfig;
+
+void sr_luma_config_init(const SrProject *project, SrLumaConfig *config);
+/* Y in [0,1] of a premultiplied pixel; zero where alpha is not positive. */
+double sr_luma_px(const SrLumaConfig *config, const float px[4]);
+
+/* Flattened-node operators acting on premultiplied `dst` with the
+ * premultiplied flattened source `src` (docs/design/b1-3-compositing.md):
+ *   behind            C = D + (1-b)*S,  A = b + (1-b)*a
+ *   stencil-*         C = D*k,          A = b*k
+ *   silhouette-*      C = D*(1-k),      A = b*(1-k)
+ *   alpha-add         A = min(a+b,1),   C = (S+D)*A/(a+b) (zero at a+b=0)
+ * with k = a (alpha variants) or a*Y(s) (luma variants). A transparent
+ * source is significant: an empty stencil clears. `luma` may be NULL for
+ * the non-luma operators. Dissolve uses sr_dissolve_px instead. */
+void sr_blend_operator_px(SrBlendMode mode, const SrLumaConfig *luma,
+                          float dst[4], const float src[4]);
+
+/* Dissolve: with u in [0,1), the source pixel becomes its straight color at
+ * alpha one when u < alpha and transparent otherwise, then source-over. */
+void sr_dissolve_px(float dst[4], const float src[4], double u);
+
 /* Signed distance (negative inside) from local point (lx, ly) to the
  * rect/ellipse/rounded-rect occupying [x, x+w] x [y, y+h]. The ellipse uses
  * the first-order estimate g/|grad g|, exact on the outline. */
@@ -73,7 +102,7 @@ static inline float sr_blend_mix(SrBlendMode mode, float cb, float cs) {
 
 static inline void sr_blend_px_inline(SrBlendMode mode, float *dst,
                                       const float *src) {
-    if (mode >= SR_BLEND_PLUS_LIGHTER && mode < SR_BLEND_COUNT) {
+    if (mode >= SR_BLEND_PLUS_LIGHTER && mode < SR_BLEND_COLOR_END) {
         sr_blend_px_color(mode, dst, src);
         return;
     }

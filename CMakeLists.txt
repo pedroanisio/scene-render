@@ -90,6 +90,9 @@ set(SCENE_RENDER_SOURCES
     src/compositor_resources.c
     src/compositor_evaluation.c
     src/compositor_geometry.c
+    src/compositor_coverage.c
+    src/compositor_matte.c
+    src/mask_outline.c
     src/compositor_shape.c
     src/camera.c
     src/lighting.c
@@ -112,6 +115,7 @@ set(SCENE_RENDER_SOURCES
     src/xml_animation.c
     src/xml_nodes.c
     src/xml_resolve.c
+    src/xml_compositing.c
     src/xml_audio.c
     src/xml_camera.c
     src/xml_visual.c
@@ -158,7 +162,8 @@ if(BUILD_TESTING)
                        raster mask path mask_path fuzz_mask_path image
                        encode encode_faults audio video
                        fx anim_color particles deform shadow text args resume
-                       depth)
+                       depth blend_operators mask_advanced fuzz_mask_xml matte
+                       adjustment b13_review)
     file(GLOB SR_UNIT_SOURCES CONFIGURE_DEPENDS
          ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/*.c)
     add_executable(sr-unit-tests ${SR_UNIT_SOURCES})
@@ -194,7 +199,7 @@ if(BUILD_TESTING)
     # through a failing counter.
     list(APPEND SR_UNIT_SUITES golden oom)
     target_link_options(sr-unit-tests PRIVATE
-        -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+        -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free,--wrap=aligned_alloc)
     # --------------------------------------------------------------------
     # libav fault injection (tests/unit/test_encode_faults.c): every libav
     # call made by the statically linked core goes through a wrapper that can

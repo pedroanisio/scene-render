@@ -107,7 +107,7 @@ typedef struct {
 
 #define P(kind) (UINT64_C(1) << (kind))
 #define CONTAINERS (P(E_GROUP) | P(E_COMPOSITION))
-#define NODES (P(E_GROUP) | P(E_LAYER) | P(E_PARTICLES))
+#define NODES (P(E_GROUP) | P(E_LAYER) | P(E_PARTICLES) | P(E_ADJUSTMENT))
 #define ANIM_HOSTS (NODES | P(E_CAMERA) | P(E_MASK) | P(E_LIGHT) | \
                     P(E_EFFECT) | P(E_MODIFIER) | P(E_OBJECT3D) | \
                     P(E_FORCE_FIELD) | P(E_POINT) | P(E_MATERIAL) | P(E_AUDIO_TRACK) | \
@@ -191,6 +191,8 @@ static const ElementDispatch dispatch[] = {
     ENTRY("particleEmitter", CONTAINERS, start_particles, E_PARTICLES, false),
     ENTRY("object3D", CONTAINERS, sr_xml_start_object3d, E_OBJECT3D, false),
     ENTRY("camera", CONTAINERS, sr_xml_start_camera, E_CAMERA, false),
+    {"adjustment", CONTAINERS, sr_xml_start_adjustment, E_ADJUSTMENT, 0, 11,
+     true, false},
     ENTRY("mask", NODES, sr_xml_start_mask, E_MASK, false),
     ENTRY("rigidBody", P(E_LAYER) | P(E_PARTICLES), sr_xml_start_rigid_body,
           E_RIGID_BODY, false),

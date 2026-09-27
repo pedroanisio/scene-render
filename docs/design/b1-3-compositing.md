@@ -494,12 +494,21 @@ compositing preparation phase must install those checks for all new B1-3
 features before B1-3 is complete, including direct-C scenes; it remains an
 explicit requirement alongside advanced-mask and matte preparation.
 
-The structural preparation phase now installs the explicit lifecycle and
-2D ownership node/mask/depth checks. The bounded mask-path parser is implemented
-as an internal preparation primitive; mask ownership/integration,
-matte/adjustment graph edges, captures and shared live surface/work accounting
-remain pending; the named constants below do not imply those consumers are
-implemented.
+The structural preparation phase installs the explicit lifecycle and 2D
+ownership node/mask/depth checks. Mask ownership (scene-owned prepared path
+geometry), the matte/adjustment dependency graph and edge limit, per-frame
+captures and the B1-3 surface/work consumers are implemented on branch
+`b1-3-mattes-masks` (evidence: `docs/reviews/b1-3-mattes-masks.md`).
+
+Implementation deviations recorded there: `object3D` is not accepted as a
+matte source (explicit wrong-kind load diagnostic); adjustment layers do not
+accept `threeD` (capability unsupported, direct-C preparation error);
+matte captures and adjustment-source prefix replays contain 2D content and
+the project background but not 3D objects, and card sources are
+depth-clipped without the shared depth buffer. Bounded effect and
+depth-of-field calls use private per-call scratch (`sr_effects_private_*`)
+covered by calling-thread reservations; legacy calls keep the thread-local
+effect caches.
 
 | Constant | Bound |
 |---|---:|

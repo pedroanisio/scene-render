@@ -22,14 +22,33 @@ typedef struct {
     double x, y, width, height, radius;
 } SrMaskEval;
 
+/* Maps a projective card's plane-buffer pixel coordinates to composition
+ * pixels: plane (u, v) = (buffer - 1) / s + (u0, v0), then the pose's
+ * homography. Borrowed from the card draw, which flushes its plane queue
+ * before returning. NULL everywhere else: targets share composition pixels. */
+typedef struct {
+    const SrCardPose *pose;
+    double s, u0, v0;
+} SrPlaneMap;
+
+struct SrCoverageGrid;
+struct SrMatteCapture;
+
 /* The masks of one node, evaluated in that node's inverse world transform.
- * Links chain outward so coverage is the product over the whole chain. */
+ * Links chain outward so coverage is the product over the whole chain.
+ * A link with `grid` (advanced masks, compositor_coverage.c) or `matte`
+ * (track matte, compositor_matte.c) replaces the analytic mask loop; both
+ * are frame-owned immutable storage that outlives every queued borrower. */
 typedef struct SrMaskLink {
     const SrMaskEval *masks;
     size_t count;
     SrMat3 inverse;
     double aa;
     const struct SrMaskLink *parent;
+    const struct SrCoverageGrid *grid;
+    const struct SrMatteCapture *matte;
+    SrMatteMode matte_mode;
+    const SrPlaneMap *plane;    /* matte sampling inside a projective card */
 } SrMaskLink;
 
 typedef struct {
@@ -52,6 +71,22 @@ typedef struct {
     bool write;
 } SrCardTest;
 
+/* Render-wide values shared by every context copy of one outer render. */
+typedef struct {
+    SrLumaConfig luma;
+    uint32_t width, height;         /* composition (root target) pixels */
+    struct SrMatteFrame *mattes;    /* this frame's captures, or NULL */
+} SrFrameShared;
+
+/* Restricted traversal rendering one matte source's own image. Ancestors
+ * contribute placement and opacity only (their masks, mattes, effects and
+ * blends are excluded); `path[0]` is the root and `path[length-1]` the
+ * source. */
+typedef struct {
+    const SrNode *const *path;
+    size_t length;
+} SrCapturePath;
+
 /* The scene and evaluated geometry are borrowed and read-only during drawing.
  * The compositor, diagnostics and lighting pass are render-owned mutable
  * state. A copied context must propagate the root lighting handoff when it
@@ -67,6 +102,15 @@ typedef struct {
     SrLightingPass *lighting;   /* 3D objects still to interleave, or NULL */
     const SrLengthFrame *lengths; /* borrowed, including inside card buffers */
     bool skewed;                /* this transform chain uses nonzero skew */
+    const SrFrameShared *shared;  /* NULL only for legacy-only scenes */
+    const SrPlaneMap *plane;    /* inside a projective card plane, or NULL */
+    const SrNode *flatten_node; /* node drawn into its own operator buffer */
+    const SrCapturePath *capture; /* matte source traversal, or NULL */
+    const SrNode *capture_source; /* source drawn as its own image, or NULL */
+    size_t capture_level;       /* path index of the node being drawn */
+    double capture_opacity;     /* ancestor opacity product for the source */
+    double *capture_scale;      /* receives that product at the source */
+    SrCardTest *card_defer;     /* flattened card: receives its depth test */
 } SrDrawContext;
 
 #endif

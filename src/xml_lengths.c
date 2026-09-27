@@ -7,7 +7,8 @@ static bool length_limits(ParseContext *ctx, const SrNode *node, size_t depth,
     const char *element = node == ctx->scene->root ? "composition" :
         node->type == SR_NODE_GROUP ? "group" :
         node->type == SR_NODE_MEDIA ? "layer" :
-        node->type == SR_NODE_SHAPE ? "shape" : "particleEmitter";
+        node->type == SR_NODE_SHAPE ? "shape" :
+        node->type == SR_NODE_ADJUSTMENT ? "adjustment" : "particleEmitter";
     const char *message = NULL;
     if (depth > SR_MAX_LENGTH_DEPTH)
         message = "relative length depth limit is 256";

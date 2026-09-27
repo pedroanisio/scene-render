@@ -23,15 +23,16 @@ static bool resolve_nodes(ParseContext *ctx, SrNode *node, bool in_card) {
         ctx->scene->has_cards = true;
     }
     if (node->effect_ref_count) {
+        const char *element = node->type == SR_NODE_ADJUSTMENT ? "adjustment" : "group";
         node->effect_refs = sr_alloc(node->effect_ref_count * sizeof(*node->effect_refs));
         if (!node->effect_refs) {
-            sr_diag_error(ctx->diag, node->source_line, "group", "effects", "out of memory");
+            sr_diag_error(ctx->diag, node->source_line, element, "effects", "out of memory");
             return false;
         }
         for (size_t i = 0; i < node->effect_ref_count; ++i) {
             SrEffect *effect = find_effect(ctx->scene, node->effect_ids[i]);
             if (!effect) {
-                sr_diag_error(ctx->diag, node->source_line, "group", "effects",
+                sr_diag_error(ctx->diag, node->source_line, element, "effects",
                               "unknown effect id '%s'", node->effect_ids[i]);
                 return false;
             }
@@ -216,8 +217,9 @@ bool sr_xml_resolve_scene(ParseContext *ctx) {
         }
     }
     /* Timing follows the bounded preflights and precedes every consumer of
-     * node intervals and track clocks. */
+     * node intervals and track clocks; matte ids resolve before sorting. */
     bool ready = sr_xml_resolve_lengths(ctx) && sr_xml_resolve_timeline(ctx) &&
+        sr_xml_resolve_compositing(ctx) &&
         resolve_nodes(ctx, ctx->scene->root, false) && resolve_audio(ctx) &&
         resolve_camera(ctx) && resolve_visual(ctx) && resolve_effects(ctx) &&
         resolve_physics(ctx) && resolve_outputs(ctx);

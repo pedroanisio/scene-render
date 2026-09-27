@@ -22,6 +22,11 @@ static Matrix3 rgb_to_xyz(SrColorSpace space) {
         {0.01933390,0.11919200,0.95030410}}};
 }
 
+void sr_color_luminance_row(SrColorSpace space, double row[3]) {
+    Matrix3 matrix = rgb_to_xyz(space);
+    for (size_t i = 0; i < 3; ++i) row[i] = matrix.value[1][i];
+}
+
 static Matrix3 multiply(Matrix3 left, Matrix3 right) {
     Matrix3 result = {0};
     for (size_t row=0; row<3; ++row) for (size_t column=0; column<3; ++column)

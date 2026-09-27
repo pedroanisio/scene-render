@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "scene_render/property.h"
+#include "compositing_limits_internal.h"
 #include "scene_render/paint.h"
 
 #include <float.h>
@@ -9,6 +10,7 @@
 
 #define H(kind) (UINT32_C(1) << SR_PROPERTY_##kind)
 #define NODES (H(GROUP) | H(LAYER) | H(SHAPE) | H(PARTICLES))
+#define TRANSFORM_HOSTS (NODES | H(ADJUSTMENT))
 #define NUMBER(hosts, type, field, name, attr, flags) \
     {hosts, name, attr, SR_PROPERTY_NUMBER, offsetof(type, field), \
      -DBL_MAX, DBL_MAX, flags, NULL}
@@ -41,20 +43,20 @@ static const SrProperty properties[] = {
             "audio volume keys must be in [0,1]"),
     BOUNDED(H(AUDIO_TRACK), SrAudioTrack, pan, "pan", "pan", -1, 1,
             "audio pan keys must be in [-1,1]"),
-    NUMBER(NODES, SrNode, opacity, "opacity", "opacity", 0),
-    NUMBER(NODES, SrNode, transform.x, "position.x", "x", SR_PROPERTY_LENGTH_X),
-    NUMBER(NODES, SrNode, transform.y, "position.y", "y", SR_PROPERTY_LENGTH_Y),
-    NUMBER(NODES, SrNode, transform.rotation, "rotation", "rotation", 0),
-    NUMBER(NODES, SrNode, transform.scale_x, "scale.x", "scaleX", 0),
-    NUMBER(NODES, SrNode, transform.scale_y, "scale.y", "scaleY", 0),
-    BOUNDED_FLAGS(NODES, SrNode, transform.skew_x, "skew.x", "skewX",
+    NUMBER(TRANSFORM_HOSTS, SrNode, opacity, "opacity", "opacity", 0),
+    NUMBER(TRANSFORM_HOSTS, SrNode, transform.x, "position.x", "x", SR_PROPERTY_LENGTH_X),
+    NUMBER(TRANSFORM_HOSTS, SrNode, transform.y, "position.y", "y", SR_PROPERTY_LENGTH_Y),
+    NUMBER(TRANSFORM_HOSTS, SrNode, transform.rotation, "rotation", "rotation", 0),
+    NUMBER(TRANSFORM_HOSTS, SrNode, transform.scale_x, "scale.x", "scaleX", 0),
+    NUMBER(TRANSFORM_HOSTS, SrNode, transform.scale_y, "scale.y", "scaleY", 0),
+    BOUNDED_FLAGS(TRANSFORM_HOSTS, SrNode, transform.skew_x, "skew.x", "skewX",
             -SR_MAX_SKEW_DEGREES, SR_MAX_SKEW_DEGREES, SR_PROPERTY_REQUIRE_1_1,
             "skew keys must be within [-89,89] degrees"),
-    BOUNDED_FLAGS(NODES, SrNode, transform.skew_y, "skew.y", "skewY",
+    BOUNDED_FLAGS(TRANSFORM_HOSTS, SrNode, transform.skew_y, "skew.y", "skewY",
             -SR_MAX_SKEW_DEGREES, SR_MAX_SKEW_DEGREES, SR_PROPERTY_REQUIRE_1_1,
             "skew keys must be within [-89,89] degrees"),
-    NUMBER(NODES, SrNode, transform.anchor_x, "anchor.x", "anchorX", SR_PROPERTY_LENGTH_X),
-    NUMBER(NODES, SrNode, transform.anchor_y, "anchor.y", "anchorY", SR_PROPERTY_LENGTH_Y),
+    NUMBER(TRANSFORM_HOSTS, SrNode, transform.anchor_x, "anchor.x", "anchorX", SR_PROPERTY_LENGTH_X),
+    NUMBER(TRANSFORM_HOSTS, SrNode, transform.anchor_y, "anchor.y", "anchorY", SR_PROPERTY_LENGTH_Y),
     NUMBER(NODES, SrNode, source_time, "source.time", NULL, 0),
     NUMBER(NODES, SrNode, transform.z, "depth", "depth", SR_PROPERTY_DEPTH_CARD),
     NUMBER(NODES, SrNode, transform.rotation_x, "rotation.x", "rotationX",
@@ -130,6 +132,17 @@ static const SrProperty properties[] = {
     NUMBER(H(MASK), SrMask, width, "width", "width", SR_PROPERTY_LENGTH_X),
     NUMBER(H(MASK), SrMask, height, "height", "height", SR_PROPERTY_LENGTH_Y),
     NUMBER(H(MASK), SrMask, radius, "radius", "radius", 0),
+    BOUNDED_FLAGS(H(MASK), SrMask, opacity, "opacity", "opacity", 0, 1,
+            SR_PROPERTY_REQUIRE_1_1, "mask opacity keys must be in [0,1]"),
+    BOUNDED_FLAGS(H(MASK), SrMask, feather, "feather", "feather", 0,
+            SR_MAX_MASK_FILTER_RADIUS, SR_PROPERTY_REQUIRE_1_1,
+            "mask feather keys must be in [0,4096]"),
+    BOUNDED_FLAGS(H(MASK), SrMask, expansion, "expansion", "expansion",
+            -(double)SR_MAX_MASK_FILTER_RADIUS, SR_MAX_MASK_FILTER_RADIUS,
+            SR_PROPERTY_REQUIRE_1_1, "mask expansion keys must be within +-4096"),
+    BOUNDED_FLAGS(H(MASK), SrMask, inner_radius, "innerRadius", "innerRadius", 0,
+            SR_MAX_MASK_COORDINATE, SR_PROPERTY_REQUIRE_1_1,
+            "mask innerRadius keys must be in [0,1e9]"),
     {H(POINT), "x", "x", SR_PROPERTY_NUMBER, 0,
      -DBL_MAX, DBL_MAX, 0, NULL},
     {H(POINT), "y", "y", SR_PROPERTY_NUMBER, sizeof(SrAnimValue),
@@ -193,6 +206,7 @@ SrPropertyHost sr_property_node_host(const SrNode *node) {
     case SR_NODE_MEDIA: return SR_PROPERTY_LAYER;
     case SR_NODE_SHAPE: return SR_PROPERTY_SHAPE;
     case SR_NODE_PARTICLES: return SR_PROPERTY_PARTICLES;
+    case SR_NODE_ADJUSTMENT: return SR_PROPERTY_ADJUSTMENT;
     default: return SR_PROPERTY_HOST_COUNT;
     }
 }

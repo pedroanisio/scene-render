@@ -211,6 +211,9 @@ GOLDEN(style_tokens, "styles.xml", 0, 12, 20)
 GOLDEN(sequence_markers, "sequence-markers.xml", 0, 12, 18)
 GOLDEN(composite_blend_modes, "composite.xml", 0, 12, 23)
 GOLDEN(extended_color_blends, "blend-modes.xml", 0, 12, 23)
+GOLDEN(parent_blend_operators, "blend-operators.xml", 0, 12, 23)
+GOLDEN(mattes_and_masks, "mattes-masks.xml", 0, 12, 23)
+GOLDEN(adjustment_layers, "adjustment.xml", 0, 12, 23)
 GOLDEN(skew_transforms, "skew.xml", 0, 12, 23)
 GOLDEN(groups_and_masks, "groups-masks.xml", 0, 12, 23)
 GOLDEN(vector_paths, "paths.xml", 0, 12, 23)
@@ -278,6 +281,9 @@ const sr_test_case sr_tests_golden[] = {
     {"sequence_markers", sequence_markers},
     {"composite_blend_modes", composite_blend_modes},
     {"extended_color_blends", extended_color_blends},
+    {"parent_blend_operators", parent_blend_operators},
+    {"mattes_and_masks", mattes_and_masks},
+    {"adjustment_layers", adjustment_layers},
     {"skew_transforms", skew_transforms},
     {"groups_and_masks", groups_and_masks},
     {"vector_paths", vector_paths},

@@ -1,18 +1,23 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "compositing_internal.h"
+#include "compositor_coverage_internal.h"
 #include "particles_internal.h"
+#include "scene_render/markers.h"
 #include "compositor_shape_internal.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 static const char *element(const SrScene *scene, const SrNode *node) {
     if (!node || node == scene->root) return "composition";
     switch (node->type) {
-    case SR_NODE_GROUP: return "group";
+    case SR_NODE_GROUP:
+        return node->timeline && node->timeline->sequence ? "sequence" : "group";
     case SR_NODE_MEDIA: return "layer";
     case SR_NODE_SHAPE: return "shape";
     case SR_NODE_PARTICLES: return "particleEmitter";
+    case SR_NODE_ADJUSTMENT: return "adjustment";
     }
     return "node";
 }
@@ -31,12 +36,26 @@ bool sr_node_uses_compositing(const SrNode *node) {
     return node && (node->blend > SR_BLEND_DIFFERENCE ||
         (node->type == SR_NODE_SHAPE && node->shape_style.extended) ||
         node->transform.skew_x.base != 0 || node->transform.skew_y.base != 0 ||
-        node->transform.skew_x.track.count || node->transform.skew_y.track.count);
+        node->transform.skew_x.track.count || node->transform.skew_y.track.count ||
+        node->type == SR_NODE_ADJUSTMENT || node->matte || node->matte_id ||
+        sr_node_masks_advanced(node));
+}
+
+const char *sr_node_compositing_attribute(const SrNode *node) {
+    if (node->blend > SR_BLEND_DIFFERENCE) return "blend";
+    if (node->type == SR_NODE_ADJUSTMENT) return "effects";
+    if (node->matte || node->matte_id) return "matte";
+    if (sr_node_masks_advanced(node)) return "mask";
+    if (node->type == SR_NODE_SHAPE && node->shape_style.extended) return "shape";
+    return "skewX/skewY";
 }
 
 void sr_composite_plan_free(SrCompositePlan *plan) {
     if (!plan) return;
     free(plan->nodes);
+    free(plan->matte_sources);
+    free(plan->consumer_offsets);
+    free(plan->consumers);
     free(plan);
 }
 
@@ -184,7 +203,7 @@ static SrStatus append_node(const SrScene *scene, SrCompositePlan *plan,
                     : "compositing preparation storage limit exceeded");
     index = plan->count++;
     plan->nodes[index] = (SrCompositeNode){node, parent, depth, plan->mask_count,
-                                         SIZE_MAX, SIZE_MAX, 1};
+                                         SIZE_MAX, SIZE_MAX, 1, SIZE_MAX, false};
     plan->mask_count += node->mask_count;
     if (!used) plan->lookup_root = index;
     else if (directions[used - 1]) plan->nodes[ancestors[used - 1]].right = index;
@@ -229,6 +248,327 @@ SrStatus sr_composite_plan_build(const SrScene *scene, SrCompositePlan **out,
     return status;
 }
 
+static SrStatus mask_fail(SrDiagnostics *diag, const SrMask *mask,
+                           SrStatus status, const char *attribute,
+                           const char *message) {
+    if (diag) sr_diag_error(diag, mask->source_line, "mask", attribute, "%s", message);
+    return status;
+}
+
+static const char *path_error(SrPathParseError error) {
+    switch (error) {
+    case SR_PATH_PARSE_SYNTAX: return "malformed path data";
+    case SR_PATH_PARSE_BYTES: return "path text exceeds 1048576 bytes";
+    case SR_PATH_PARSE_COMMANDS: return "path exceeds 65536 commands";
+    case SR_PATH_PARSE_CONTOURS: return "path exceeds 4096 contours";
+    case SR_PATH_PARSE_POINTS: return "path exceeds 262144 flattened points";
+    case SR_PATH_PARSE_COORDINATE: return "path coordinate outside +-1e9";
+    case SR_PATH_PARSE_STORAGE: return "path storage exceeds the compositing byte limit";
+    case SR_PATH_PARSE_MEMORY: return "out of memory preparing mask path";
+    default: return "invalid path";
+    }
+}
+
+/* Masks, adjustment nodes and aggregate authored B1-3 ownership. Path masks
+ * are (re)parsed here, so the immutable geometry always matches the text. */
+static SrStatus prepare_nodes(const SrScene *scene, SrCompositePlan *plan,
+                              SrDiagnostics *diag) {
+    for (size_t i = 0; i < plan->count; ++i) {
+        SrNode *node = (SrNode *)plan->nodes[i].node;
+        if (node->type == SR_NODE_ADJUSTMENT) {
+            if (node->child_count)
+                return fail(scene, node, diag, SR_ERR_RENDER, NULL,
+                            "an adjustment layer has no children");
+            if (node->card)
+                return fail(scene, node, diag, SR_ERR_RENDER, "threeD",
+                            "adjustment depth cards are unsupported in this build");
+            if (node->effect_ref_count > SR_MAX_ADJUSTMENT_EFFECTS)
+                return fail(scene, node, diag, SR_ERR_RENDER, "effects",
+                            "adjustment effect list limit is 256");
+            if (!node->effect_ref_count || !node->effect_refs)
+                return fail(scene, node, diag, SR_ERR_RENDER, "effects",
+                            "an adjustment layer requires resolved effects");
+            for (size_t k = 0; k < node->effect_ref_count; ++k)
+                if (!node->effect_refs[k])
+                    return fail(scene, node, diag, SR_ERR_RENDER, "effects",
+                                "an adjustment layer requires resolved effects");
+        }
+        if (node->matte_id) {
+            size_t bytes = strlen(node->matte_id) + 1;
+            if (bytes > SR_MAX_COMPOSITE_BYTES - plan->owned_bytes)
+                return fail(scene, node, diag, SR_ERR_RENDER, "matte",
+                            "compositing preparation storage limit exceeded");
+            plan->owned_bytes += bytes;
+        }
+        for (size_t k = 0; k < node->mask_count; ++k) {
+            SrMask *mask = &node->masks[k];
+            const char *message = NULL;
+            const char *attribute = sr_mask_validate(mask, &message);
+            if (attribute) return mask_fail(diag, mask, SR_ERR_RENDER, attribute, message);
+            if (mask->type != SR_MASK_PATH) {
+                sr_mask_path_free(mask->prepared);
+                mask->prepared = NULL;
+                continue;
+            }
+            size_t text = strlen(mask->path) + 1;
+            if (text > SR_MAX_MASK_PATH_BYTES + 1 ||
+                text > SR_MAX_COMPOSITE_BYTES - plan->owned_bytes)
+                return mask_fail(diag, mask, SR_ERR_RENDER, "path",
+                                 "path text exceeds 1048576 bytes");
+            plan->owned_bytes += text;
+            SrPathParseInfo info;
+            SrStatus status = sr_mask_path_prepare(mask,
+                SR_MAX_COMPOSITE_BYTES - plan->owned_bytes, &info);
+            if (status != SR_OK) {
+                char message_text[160];
+                snprintf(message_text, sizeof(message_text), "%s at byte %zu",
+                         path_error(info.error), info.byte_offset);
+                return mask_fail(diag, mask, status == SR_ERR_MEMORY
+                                 ? SR_ERR_MEMORY : SR_ERR_RENDER, "path",
+                                 message_text);
+            }
+            plan->owned_bytes += mask->prepared->owned_bytes;
+        }
+    }
+    return SR_OK;
+}
+
+typedef struct {
+    size_t from, to;            /* source indices */
+    const SrNode *consumer;     /* owner of the closing matte edge */
+} MatteEdge;
+
+static int edge_order(const void *left, const void *right) {
+    const MatteEdge *a = left, *b = right;
+    if (a->from != b->from) return (a->from > b->from) - (a->from < b->from);
+    return (a->to > b->to) - (a->to < b->to);
+}
+
+static bool node_kind_ok(const SrNode *node) {
+    return node->type == SR_NODE_GROUP || node->type == SR_NODE_MEDIA ||
+           node->type == SR_NODE_SHAPE || node->type == SR_NODE_PARTICLES ||
+           node->type == SR_NODE_ADJUSTMENT;
+}
+
+static SrStatus cycle_fail(const SrScene *scene, SrDiagnostics *diag,
+                           const SrNode *consumer, const SrNode *const *chain,
+                           size_t count) {
+    if (!diag) return SR_ERR_RENDER;
+    char text[512];
+    size_t used = 0;
+    text[0] = '\0';
+    for (size_t i = 0; i < count && used + 80 < sizeof(text); ++i) {
+        int written = snprintf(text + used, sizeof(text) - used, "%s%.64s",
+                               i ? " -> " : "", chain[i]->id ? chain[i]->id : "");
+        if (written > 0) used += (size_t)written;
+    }
+    if (count > 0 && used + 80 < sizeof(text))
+        snprintf(text + used, sizeof(text) - used, " -> %.64s",
+                 chain[0]->id ? chain[0]->id : "");
+    sr_diag_error(diag, consumer->source_line, element(scene, consumer), "matte",
+                  "track matte dependency cycle: %s", text);
+    return SR_ERR_RENDER;
+}
+
+/* Sources, suppression, consumers and a dependency order. Capturing source
+ * A draws A's whole subtree, so A requires the matte of every consumer in
+ * that subtree (edge A -> matte). Containment references therefore close a
+ * cycle, while a group may use a descendant as its matte: capture excludes
+ * ancestor mattes. Iterative colored DFS; the edge stack is bounded. */
+static SrStatus prepare_mattes(const SrScene *scene, SrCompositePlan *plan,
+                               SrDiagnostics *diag) {
+    size_t sources = 0, consumers = 0;
+    for (size_t i = 0; i < plan->count; ++i) {
+        const SrNode *node = plan->nodes[i].node;
+        if (!node->matte) {
+            if (node->matte_id)
+                return fail(scene, node, diag, SR_ERR_RENDER, "matte",
+                            "track matte reference is unresolved");
+            continue;
+        }
+        if ((unsigned)node->matte_mode > SR_MATTE_LUMA_INVERTED)
+            return fail(scene, node, diag, SR_ERR_RENDER, "matteMode",
+                        "unknown matte mode");
+        SrCompositeNode *source = (SrCompositeNode *)sr_composite_plan_node(plan, node->matte);
+        if (!source || node->matte == scene->root || !node_kind_ok(node->matte))
+            return fail(scene, node, diag, SR_ERR_RENDER, "matte",
+                        "track matte must reference a render node of this composition");
+        if (source->matte_source == SIZE_MAX) {
+            source->matte_source = sources++;
+            source->suppressed = true;
+        }
+        if (node->matte_visible) source->suppressed = false;
+        ++consumers;
+    }
+    if (!sources) return SR_OK;
+    if (sources > SR_MAX_COMPOSITE_CAPTURES)
+        return fail(scene, scene->root, diag, SR_ERR_RENDER, "matte",
+                    "track matte source limit is 65536");
+    SrStatus status = SR_ERR_MEMORY;
+    MatteEdge *edges = NULL;
+    size_t edge_count = 0, *offsets = NULL, *order = NULL, *position = NULL;
+    size_t *consumer_index = NULL;
+    const SrNode **by_index = sr_alloc(sources * sizeof(*by_index));
+    unsigned char *color = sr_alloc(sources);
+    size_t *stack = sr_alloc(sources * sizeof(*stack));
+    size_t *cursor = sr_alloc(sources * sizeof(*cursor));
+    order = sr_alloc(sources * sizeof(*order));
+    position = sr_alloc(sources * sizeof(*position));
+    offsets = sr_alloc((sources + 1) * sizeof(*offsets));
+    consumer_index = sr_alloc(consumers * sizeof(*consumer_index));
+    if (!by_index || !color || !stack || !cursor || !order || !position || !offsets ||
+        !consumer_index)
+        goto done;
+    size_t capacity = 0, listed = 0;
+    for (size_t i = 0; i < plan->count; ++i)
+        if (plan->nodes[i].node->matte) consumer_index[listed++] = i;
+    for (size_t i = 0; i < plan->count; ++i) {
+        const SrCompositeNode *entry = &plan->nodes[i];
+        if (entry->matte_source != SIZE_MAX) by_index[entry->matte_source] = entry->node;
+        if (!entry->node->matte) continue;
+        size_t to = sr_composite_plan_node(plan, entry->node->matte)->matte_source;
+        for (size_t a = i; a != SIZE_MAX; a = plan->nodes[a].parent) {
+            if (plan->nodes[a].matte_source == SIZE_MAX) continue;
+            if (edge_count == SR_MAX_COMPOSITE_EDGES) {
+                status = fail(scene, entry->node, diag, SR_ERR_RENDER, "matte",
+                              "track matte dependency edge limit is 1048576");
+                goto done;
+            }
+            if (edge_count == capacity) {
+                size_t next = capacity ? capacity * 2 : 64;
+                MatteEdge *grown = sr_realloc(edges, next * sizeof(*grown));
+                if (!grown) goto done;
+                edges = grown;
+                capacity = next;
+            }
+            edges[edge_count++] = (MatteEdge){plan->nodes[a].matte_source, to,
+                                              entry->node};
+        }
+    }
+    /* An adjustment source's image replays its preceding siblings, whose
+     * subtrees are the preorder range between its parent and itself. */
+    for (size_t a = 0; a < plan->count; ++a) {
+        const SrCompositeNode *adjustment = &plan->nodes[a];
+        if (adjustment->matte_source == SIZE_MAX ||
+            adjustment->node->type != SR_NODE_ADJUSTMENT ||
+            adjustment->parent == SIZE_MAX) continue;
+        /* Binary search keeps the scan proportional to the edges produced,
+         * which the edge limit bounds. */
+        size_t lo = 0, hi = consumers;
+        while (lo < hi) {
+            size_t mid = lo + (hi - lo) / 2;
+            if (consumer_index[mid] <= adjustment->parent) lo = mid + 1;
+            else hi = mid;
+        }
+        for (size_t c = lo; c < consumers && consumer_index[c] < a; ++c) {
+            const SrNode *node = plan->nodes[consumer_index[c]].node;
+            if (edge_count == SR_MAX_COMPOSITE_EDGES) {
+                status = fail(scene, node, diag, SR_ERR_RENDER, "matte",
+                              "track matte dependency edge limit is 1048576");
+                goto done;
+            }
+            if (edge_count == capacity) {
+                size_t next = capacity ? capacity * 2 : 64;
+                MatteEdge *grown = sr_realloc(edges, next * sizeof(*grown));
+                if (!grown) goto done;
+                edges = grown;
+                capacity = next;
+            }
+            edges[edge_count++] = (MatteEdge){adjustment->matte_source,
+                sr_composite_plan_node(plan, node->matte)->matte_source, node};
+        }
+    }
+    if (edge_count > 1) qsort(edges, edge_count, sizeof(*edges), edge_order);
+    for (size_t k = 0; k <= sources; ++k) offsets[k] = 0;
+    for (size_t e = 0; e < edge_count; ++e) ++offsets[edges[e].from + 1];
+    for (size_t k = 0; k < sources; ++k) offsets[k + 1] += offsets[k];
+    size_t emitted = 0;
+    for (size_t k = 0; k < sources; ++k) color[k] = 0;
+    for (size_t root = 0; root < sources; ++root) {
+        if (color[root]) continue;
+        size_t depth = 0;
+        stack[depth++] = root;
+        cursor[root] = offsets[root];
+        color[root] = 1;
+        while (depth) {
+            size_t vertex = stack[depth - 1];
+            if (cursor[vertex] == offsets[vertex + 1]) {
+                color[vertex] = 2;
+                order[emitted++] = vertex;
+                --depth;
+                continue;
+            }
+            const MatteEdge *edge = &edges[cursor[vertex]++];
+            if (color[edge->to] == 1) {
+                size_t start = depth;
+                while (start > 0 && stack[start - 1] != edge->to) --start;
+                const SrNode *chain[16];
+                size_t count = 0;
+                for (size_t k = start ? start - 1 : 0; k < depth && count < 16; ++k)
+                    chain[count++] = by_index[stack[k]];
+                status = cycle_fail(scene, diag, edge->consumer, chain, count);
+                goto done;
+            }
+            if (color[edge->to] == 0) {
+                color[edge->to] = 1;
+                cursor[edge->to] = offsets[edge->to];
+                stack[depth++] = edge->to;
+            }
+        }
+    }
+    /* Publish dependency order: capture index = position in `order`. */
+    plan->matte_sources = sr_alloc(sources * sizeof(*plan->matte_sources));
+    plan->consumer_offsets = sr_alloc((sources + 1) * sizeof(*plan->consumer_offsets));
+    plan->consumers = sr_alloc(consumers * sizeof(*plan->consumers));
+    if (!plan->matte_sources || !plan->consumer_offsets || !plan->consumers) goto done;
+    for (size_t k = 0; k < sources; ++k) position[order[k]] = k;
+    for (size_t k = 0; k < sources; ++k) plan->matte_sources[k] = by_index[order[k]];
+    for (size_t k = 0; k <= sources; ++k) plan->consumer_offsets[k] = 0;
+    for (size_t i = 0; i < plan->count; ++i) {
+        SrCompositeNode *entry = &plan->nodes[i];
+        if (entry->matte_source != SIZE_MAX)
+            entry->matte_source = position[entry->matte_source];
+    }
+    for (size_t i = 0; i < plan->count; ++i) {
+        const SrNode *node = plan->nodes[i].node;
+        if (!node->matte) continue;
+        ++plan->consumer_offsets[sr_composite_plan_node(plan, node->matte)->matte_source + 1];
+    }
+    for (size_t k = 0; k < sources; ++k)
+        plan->consumer_offsets[k + 1] += plan->consumer_offsets[k];
+    for (size_t k = 0; k < sources; ++k) cursor[k] = plan->consumer_offsets[k];
+    for (size_t i = 0; i < plan->count; ++i) {
+        const SrNode *node = plan->nodes[i].node;
+        if (!node->matte) continue;
+        size_t k = sr_composite_plan_node(plan, node->matte)->matte_source;
+        plan->consumers[cursor[k]++] = node;
+    }
+    plan->matte_source_count = sources;
+    uint64_t bytes = sources * (sizeof(*plan->matte_sources) + sizeof(size_t)) +
+                     sizeof(size_t) + consumers * sizeof(*plan->consumers);
+    if (bytes > SR_MAX_COMPOSITE_BYTES - plan->owned_bytes) {
+        status = fail(scene, scene->root, diag, SR_ERR_RENDER, "matte",
+                      "compositing preparation storage limit exceeded");
+        goto done;
+    }
+    plan->owned_bytes += bytes;
+    status = SR_OK;
+done:
+    if (status == SR_ERR_MEMORY)
+        fail(scene, scene->root, diag, SR_ERR_MEMORY, NULL,
+             "out of memory preparing track mattes");
+    free(edges);
+    free(consumer_index);
+    free(offsets);
+    free(order);
+    free(position);
+    free(by_index);
+    free(color);
+    free(stack);
+    free(cursor);
+    return status;
+}
+
 SrStatus sr_scene_prepare_compositing(SrScene *scene, SrDiagnostics *diag) {
     if (!scene) return SR_ERR_ARGUMENT;
     sr_scene_invalidate_compositing(scene);
@@ -262,6 +602,12 @@ SrStatus sr_scene_prepare_compositing(SrScene *scene, SrDiagnostics *diag) {
         }
         plan->owned_bytes += bytes;
     }
+    status = prepare_nodes(scene, plan, diag);
+    if (status == SR_OK) status = prepare_mattes(scene, plan, diag);
+    if (status != SR_OK) {
+        sr_composite_plan_free(plan);
+        return status;
+    }
     /* Initial preparation may admit nodes whose legacy caches were warmed.
      * Clear them only after every bound passes, before publishing ownership. */
     for (size_t i = 0; i < plan->count; ++i) {
@@ -283,9 +629,7 @@ SrStatus sr_composite_node_ready(const SrScene *scene, const SrNode *node,
                                   SrDiagnostics *diag) {
     if (!scene->compositing && sr_node_uses_compositing(node))
         return fail(scene, node, diag, SR_ERR_RENDER,
-                    node->blend > SR_BLEND_DIFFERENCE ? "blend"
-                    : node->type == SR_NODE_SHAPE && node->shape_style.extended
-                    ? "shape" : "skewX/skewY",
+                    sr_node_compositing_attribute(node),
                     "new feature requires compositing preparation");
     return SR_OK;
 }

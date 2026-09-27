@@ -8,7 +8,7 @@
 #include <string.h>
 
 /* Splits a whitespace-separated id list into node->effect_ids. */
-static bool parse_effect_ids(SrNode *node, const char *text) {
+bool sr_xml_parse_effect_ids(SrNode *node, const char *text) {
     size_t capacity = 0;
     const char *cursor = text;
     while (*cursor) {
@@ -160,9 +160,10 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
     static const char *const common[] = {"id", "z", "visible", "opacity", "x",
         "y", "rotation", "scaleX", "scaleY", "anchorX", "anchorY", "start",
         "end", "depth", "rotationX", "rotationY", "threeD", "zDepth",
-        "skewX", "skewY", "name", "tags", "startMarker", "endMarker"};
+        "skewX", "skewY", "name", "tags", "startMarker", "endMarker",
+        "matte", "matteMode", "matteVisible"};
     bool sequence = !strcmp(name, "sequence");
-    const char *allowed[64];
+    const char *allowed[68];
     memcpy(allowed, common, sizeof(common));
     size_t count = sizeof(common) / sizeof(common[0]);
     if (type == SR_NODE_GROUP) {
@@ -222,7 +223,8 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
     SrNode *node = sr_node_create(ctx->scene, type);
     if (!node) SR_XML_FAIL_RETURN(ctx, name, NULL, "out of memory");
     if (!sr_xml_parse_node_common(ctx, name, attrs, node) ||
-        !sr_xml_parse_node_timeline(ctx, name, attrs, node, sequence)) {
+        !sr_xml_parse_node_timeline(ctx, name, attrs, node, sequence) ||
+        !sr_xml_parse_matte(ctx, name, attrs, node)) {
         sr_node_free(node);
         return;
     }
@@ -246,7 +248,7 @@ void sr_xml_start_node(ParseContext *ctx, const char *name,
             SR_XML_FAIL_RETURN(ctx, name, "blend", "unsupported blend mode");
         }
         const char *effects = sr_xml_attr(attrs, "effects");
-        if (effects && !parse_effect_ids(node, effects)) {
+        if (effects && !sr_xml_parse_effect_ids(node, effects)) {
             sr_node_free(node);
             SR_XML_FAIL_RETURN(ctx, name, "effects", "out of memory");
         }
