@@ -70,7 +70,7 @@ TEST_WRAPS := avformat_alloc_output_context2 avcodec_find_encoder_by_name \
 TEST_LDFLAGS := $(foreach fn,$(TEST_WRAPS),-Wl,--wrap=$(fn))
 # --- Verification depth (P7): golden images and allocation-failure
 # injection (tests/unit/test_golden.c, tests/unit/test_oom.c).
-TEST_LDFLAGS += -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free
+TEST_LDFLAGS += -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free,--wrap=aligned_alloc
 P7_UNIT_SUITES := golden oom
 # ----------------------------------------------------------------------
 

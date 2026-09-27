@@ -3,6 +3,7 @@
 #define SR_TEST_HARNESS_H
 
 #include <math.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -80,6 +81,8 @@ extern const sr_test_case sr_tests_fuzz_mask_xml[];
 extern const sr_test_case sr_tests_matte[];
 extern const sr_test_case sr_tests_adjustment[];
 extern const sr_test_case sr_tests_b13_review[];
+/* test_oom.c: aligned_alloc calls and the largest size since the last reset. */
+void sr_test_aligned_stats(bool reset, unsigned long *calls, size_t *largest);
 extern const sr_test_case sr_tests_compositing[];
 extern const sr_test_case sr_tests_composite_resources[];
 extern const sr_test_case sr_tests_composite_evaluation[];

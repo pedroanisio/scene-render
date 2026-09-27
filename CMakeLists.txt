@@ -199,7 +199,7 @@ if(BUILD_TESTING)
     # through a failing counter.
     list(APPEND SR_UNIT_SUITES golden oom)
     target_link_options(sr-unit-tests PRIVATE
-        -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+        -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free,--wrap=aligned_alloc)
     # --------------------------------------------------------------------
     # libav fault injection (tests/unit/test_encode_faults.c): every libav
     # call made by the statically linked core goes through a wrapper that can

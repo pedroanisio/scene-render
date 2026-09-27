@@ -378,7 +378,191 @@ static void adjustment_timeline_attributes(sr_test_ctx *t) {
     sr_scene_free(&scene);
 }
 
+/* Follow-up 9: a card group keeps its adjustment child's backdrop too. */
+static void card_parent_mask_keeps_adjustment_input(sr_test_ctx *t) {
+    const char *xml = "<scene version=\"1.1\">\n"
+        "<project width=\"48\" height=\"16\" fps=\"2\" duration=\"1\" "
+        "background=\"#00000000\"/>\n<composition>"
+        "<camera id=\"cam\" z=\"-300\" zoom=\"300\" active=\"true\"/>"
+        "<group id=\"g\" threeD=\"true\"><mask type=\"rect\" x=\"16\" width=\"16\" "
+        "height=\"16\"/><shape id=\"w\" shape=\"rect\" x=\"8\" width=\"4\" height=\"16\" "
+        "fill=\"#FFFFFF\"/><adjustment id=\"a\" effects=\"b\"/></group></composition>"
+        "<effects><effect id=\"b\" type=\"blur\" radius=\"12\"/></effects></scene>";
+    SrFrame frame;
+    CHECK_INT(t, b13_render_xml(t, xml, 0, 1, &frame, NULL), SR_OK);
+    CHECK(t, st_px(&frame, 17, 8)[3] > .01f);
+    CHECK_NEAR(t, st_px(&frame, 10, 8)[3], 0, 1e-6);
+    sr_frame_free(&frame);
+}
+
+static SrStatus adjustment_render(sr_test_ctx *t, uint32_t size, SrScene *scene) {
+    char xml[1024];
+    snprintf(xml, sizeof(xml), "<scene version=\"1.1\">\n"
+             "<project width=\"%u\" height=\"%u\" fps=\"2\" duration=\"1\"/>\n"
+             "<composition><shape id=\"r\" shape=\"rect\" width=\"8\" height=\"%u\" "
+             "fill=\"#FF0000\"/><adjustment id=\"a\" effects=\"b\"/></composition>"
+             "<effects><effect id=\"b\" type=\"blur\" radius=\"3\"/></effects></scene>",
+             size, size, size);
+    return b13_load(t, xml, scene, NULL);
+}
+
+static SrStatus legacy_blur(sr_test_ctx *t, uint32_t size) {
+    char xml[1024];
+    snprintf(xml, sizeof(xml), "<scene version=\"1.0\">\n"
+             "<project width=\"%u\" height=\"%u\" fps=\"2\" duration=\"1\"/>\n"
+             "<composition><group id=\"g\" effects=\"b\"><shape id=\"r\" shape=\"rect\" "
+             "width=\"%u\" height=\"%u\" fill=\"#FF0000\"/></group></composition>"
+             "<effects><effect id=\"b\" type=\"blur\" radius=\"3\"/></effects></scene>",
+             size, size, size, size);
+    SrFrame frame;
+    SrStatus status = b13_render_xml(t, xml, 0, 1, &frame, NULL);
+    if (status == SR_OK) sr_frame_free(&frame);
+    return status;
+}
+
+/* Follow-up 3: a real bounded effect call allocates its own scratch (even
+ * with a large warmed cache on the thread), leaves a small warmed cache
+ * exactly in place when it needs more, and nests. */
+static void bounded_effects_allocate_privately(sr_test_ctx *t) {
+    sr_effects_release();
+    CHECK_INT(t, legacy_blur(t, 512), SR_OK);        /* warm: large cache */
+    SrScene scene;
+    if (adjustment_render(t, 32, &scene) != SR_OK) { SR_FAIL(t, "load"); return; }
+    unsigned long calls = 0;
+    size_t largest = 0;
+    SrFrame frame;
+    sr_test_aligned_stats(true, NULL, NULL);
+    CHECK_INT(t, b13_render(&scene, 0, 1, &frame, NULL), SR_OK);
+    sr_test_aligned_stats(true, &calls, &largest);
+    CHECK(t, calls > 0);                 /* private scratch, not the cache */
+    CHECK(t, largest < 64u * 1024u);     /* sized for the 32x32 call */
+    sr_frame_free(&frame);
+    sr_scene_free(&scene);
+    /* A small warmed cache survives a larger bounded call unchanged. */
+    sr_effects_release();
+    CHECK_INT(t, legacy_blur(t, 16), SR_OK);
+    SrEffectsPrivate before, after;
+    sr_effects_private_begin(&before);
+    sr_effects_private_end(&before);
+    if (adjustment_render(t, 256, &scene) == SR_OK) {
+        CHECK_INT(t, b13_render(&scene, 0, 1, &frame, NULL), SR_OK);
+        sr_frame_free(&frame);
+        sr_scene_free(&scene);
+    }
+    sr_effects_private_begin(&after);
+    CHECK(t, after.data[0] == before.data[0]);
+    CHECK_INT(t, after.capacity[0], before.capacity[0]);
+    CHECK(t, before.capacity[0] > 0);
+    /* Nesting: an inner scope starts empty and restores the outer one. */
+    SrEffectsPrivate inner;
+    SrFrame small = {0};
+    CHECK_INT(t, sr_frame_init(&small, 32, 32), SR_OK);
+    SrEffect blur = {.type = SR_EFFECT_BLUR, .enabled = true,
+                     .intensity = {.base = 1}, .radius = {.base = 3}};
+    SrEffect *refs[1] = {&blur};
+    SrEffectRect rect = {0, 0, 32, 32};
+    SrScene empty;
+    fx_scene(&empty, 32, 32);
+    CHECK_INT(t, sr_effects_apply_group(&empty, refs, 1, 0, &small,
+                                        sr_mat_identity(), &rect, 1), SR_OK);
+    sr_effects_private_begin(&inner);
+    CHECK(t, inner.capacity[0] > 0);     /* the outer scope's allocation */
+    rect = (SrEffectRect){0, 0, 32, 32};
+    CHECK_INT(t, sr_effects_apply_group(&empty, refs, 1, 0, &small,
+                                        sr_mat_identity(), &rect, 1), SR_OK);
+    CHECK(t, sr_effects_private_end(&inner) > 0);
+    CHECK(t, sr_effects_private_end(&after) > 0);
+    SrEffectsPrivate check;
+    sr_effects_private_begin(&check);
+    CHECK(t, check.data[0] == before.data[0]);
+    sr_effects_private_end(&check);
+    sr_frame_free(&small);
+    sr_scene_free(&empty);
+    sr_effects_release();
+}
+
+/* Follow-up A: the adjustment effect list is bounded by a named limit. */
+static void adjustment_effect_reference_limit(sr_test_ctx *t) {
+    size_t size = 257 * 3 + 2048;
+    char *xml = malloc(size);
+    CHECK(t, xml != NULL);
+    if (!xml) return;
+    for (unsigned count = 256; count <= 257; ++count) {
+        size_t used = (size_t)snprintf(xml, size, "<scene version=\"1.1\">\n"
+            "<project width=\"8\" height=\"8\" fps=\"2\" duration=\"1\"/>\n"
+            "<composition><adjustment id=\"a\" effects=\"");
+        for (unsigned i = 0; i < count; ++i)
+            used += (size_t)snprintf(xml + used, size - used, "%se", i ? " " : "");
+        snprintf(xml + used, size - used, "\"/></composition><effects><effect id=\"e\" "
+                 "type=\"blur\" radius=\"1\" enabled=\"false\"/></effects></scene>");
+        SrScene scene;
+        char *message = NULL;
+        SrStatus status = b13_load(t, xml, &scene, &message);
+        if (count == 256) {
+            CHECK_INT(t, status, SR_OK);
+            SrFrame frame;
+            if (status == SR_OK) {
+                CHECK_INT(t, b13_render(&scene, 0, 1, &frame, NULL), SR_OK);
+                sr_frame_free(&frame);
+            }
+        } else {
+            CHECK(t, status != SR_OK);
+            CHECK_CONTAINS(t, message, "effect list limit is 256");
+        }
+        if (status == SR_OK) sr_scene_free(&scene);
+        free(message);
+    }
+    free(xml);
+}
+
+#define STENCIL_CARD "<scene version=\"1.1\">\n" \
+    "<project width=\"32\" height=\"32\" fps=\"2\" duration=\"1\" " \
+    "background=\"#FF8000\"/>\n<composition>" \
+    "<camera id=\"cam\" z=\"-300\" zoom=\"300\" active=\"true\"/>" \
+    "<shape id=\"src\" shape=\"rect\" width=\"8\" height=\"8\" visible=\"false\" " \
+    "fill=\"#FFFFFF\"/><shape id=\"s\" shape=\"rect\" x=\"8\" y=\"8\" width=\"16\" " \
+    "height=\"16\" threeD=\"true\" fill=\"#FFFFFF\" blend=\"stencil-alpha\" " \
+    "matte=\"src\"/></composition></scene>"
+
+/* Follow-up B: an active stencil card with an empty matte still clears. */
+static void empty_matte_stencil_card_clears(sr_test_ctx *t) {
+    SrFrame frame;
+    CHECK_INT(t, b13_render_xml(t, STENCIL_CARD, 0, 1, &frame, NULL), SR_OK);
+    CHECK_NEAR(t, st_px(&frame, 16, 16)[3], 0, 0);
+    CHECK_NEAR(t, st_px(&frame, 2, 2)[3], 0, 0);
+    sr_frame_free(&frame);
+}
+
+/* Follow-up C: a fully visible card operator copies its result exactly,
+ * even over an HDR backdrop. */
+static void full_coverage_card_operator_is_exact(sr_test_ctx *t) {
+    const char *xml = "<scene version=\"1.1\">\n"
+        "<project width=\"32\" height=\"32\" fps=\"2\" duration=\"1\" seed=\"1\"/>\n"
+        "<composition><camera id=\"cam\" z=\"-300\" zoom=\"300\" active=\"true\"/>"
+        "<shape id=\"d\" shape=\"rect\" width=\"32\" height=\"32\" threeD=\"true\" "
+        "fill=\"#FFFFFF\" blend=\"dissolve\"/></composition></scene>";
+    SrScene scene;
+    if (b13_load(t, xml, &scene, NULL) != SR_OK) { SR_FAIL(t, "load"); return; }
+    SrFrame frame = {0};
+    CHECK_INT(t, sr_frame_init(&frame, 32, 32), SR_OK);
+    const float hdr[4] = {1e8f, 1e8f, 1e8f, 1};
+    sr_frame_clear(&frame, hdr, 1);
+    SrCompositor compositor;
+    sr_compositor_init(&compositor, 1);
+    CHECK_INT(t, sr_compositor_render_scene(&compositor, &scene, 0, &frame, NULL), SR_OK);
+    sr_compositor_free(&compositor);
+    const float white[4] = {1, 1, 1, 1};
+    CHECK(t, !memcmp(st_px(&frame, 16, 16), white, sizeof(white)));
+    sr_frame_free(&frame);
+    sr_scene_free(&scene);
+}
+
 const sr_test_case sr_tests_b13_review[] = {
+    {"card_parent_mask_keeps_adjustment_input", card_parent_mask_keeps_adjustment_input},
+    {"bounded_effects_allocate_privately", bounded_effects_allocate_privately},
+    {"adjustment_effect_reference_limit", adjustment_effect_reference_limit},
+    {"empty_matte_stencil_card_clears", empty_matte_stencil_card_clears},
+    {"full_coverage_card_operator_is_exact", full_coverage_card_operator_is_exact},
     {"sequence_and_clock_matte_sources", sequence_and_clock_matte_sources},
     {"adjustment_timeline_attributes", adjustment_timeline_attributes},
     {"work_rejection_releases_reservation", work_rejection_releases_reservation},
