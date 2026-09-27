@@ -202,6 +202,11 @@ void sr_xml_start_adjustment(ParseContext *ctx, const XML_Char **attrs) {
         sr_node_free(node);
         SR_XML_FAIL_RETURN(ctx, "adjustment", "effects", "out of memory");
     }
+    if (node->effect_ref_count > SR_MAX_ADJUSTMENT_EFFECTS) {
+        sr_node_free(node);
+        SR_XML_FAIL_RETURN(ctx, "adjustment", "effects",
+                           "adjustment effect list limit is 256");
+    }
     if (!node->effect_ref_count) {
         sr_node_free(node);
         SR_XML_FAIL_RETURN(ctx, "adjustment", "effects",

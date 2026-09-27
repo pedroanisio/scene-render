@@ -282,6 +282,9 @@ static SrStatus prepare_nodes(const SrScene *scene, SrCompositePlan *plan,
             if (node->card)
                 return fail(scene, node, diag, SR_ERR_RENDER, "threeD",
                             "adjustment depth cards are unsupported in this build");
+            if (node->effect_ref_count > SR_MAX_ADJUSTMENT_EFFECTS)
+                return fail(scene, node, diag, SR_ERR_RENDER, "effects",
+                            "adjustment effect list limit is 256");
             if (!node->effect_ref_count || !node->effect_refs)
                 return fail(scene, node, diag, SR_ERR_RENDER, "effects",
                             "an adjustment layer requires resolved effects");

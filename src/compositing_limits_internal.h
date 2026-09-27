@@ -20,5 +20,8 @@
 #define SR_MAX_MASK_VERTICES 4096u
 #define SR_MAX_MASK_FILTER_RADIUS 4096u
 #define SR_MAX_MASK_COORDINATE 1e9
+/* Effect references of one adjustment layer (each evaluates its reach once
+ * per frame and runs one bounded effect pass). */
+#define SR_MAX_ADJUSTMENT_EFFECTS 256u
 
 #endif

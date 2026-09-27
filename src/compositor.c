@@ -1051,7 +1051,10 @@ static void sr_operator_rows(const SrDrawOp *op, size_t begin, size_t end) {
                 if (!(coverage > 0.0f)) continue;
                 if (op->blend == SR_BLEND_DISSOLVE) sr_dissolve_px(result, src, u);
                 else sr_blend_operator_px(op->blend, op->luma, result, src);
-                for (int c = 0; c < 4; ++c) d[c] += coverage * (result[c] - d[c]);
+                if (coverage >= 1.0f)
+                    memcpy(d, result, sizeof(result));
+                else
+                    for (int c = 0; c < 4; ++c) d[c] += coverage * (result[c] - d[c]);
                 continue;
             }
             if (op->kind == SR_OP_REPLACE) {
@@ -1883,18 +1886,27 @@ static SrStatus sr_composite_effects(SrDrawContext *context, const SrNode *node,
         sr_composite_node_owner(context->scene, node, "effects"));
     SrEffectRect region = *rect;
     int w = (int)frame->width, h = (int)frame->height;
+    /* One reach evaluation per effect (animated radius/offsets), charged
+     * before the chain; the suffix reach is the total minus the prefix. */
+    double later = 0.0;
+    if (chain) {
+        if (!sr_composite_work(resources, node->effect_ref_count, 256)) {
+            sr_composite_owner(resources, previous);
+            return SR_ERR_RENDER;
+        }
+        for (size_t j = 0; j < node->effect_ref_count; ++j)
+            later += sr_effect_reach(node->effect_refs[j], context->time);
+    }
     for (size_t i = 0; i < node->effect_ref_count && status == SR_OK; ++i) {
         const SrEffect *effect = node->effect_refs[i];
+        uint64_t reach = (uint64_t)sr_effect_reach(effect, context->time);
         if (chain) {
-            double later = 0.0;
-            for (size_t j = i + 1; j < node->effect_ref_count; ++j)
-                later += sr_effect_reach(node->effect_refs[j], context->time);
+            later -= (double)reach;
             *rect = (SrEffectRect){sr_clamp_int(region.x0 - later, 0, w),
                                    sr_clamp_int(region.y0 - later, 0, h),
                                    sr_clamp_int(region.x1 + later, 0, w),
                                    sr_clamp_int(region.y1 + later, 0, h)};
         }
-        uint64_t reach = (uint64_t)sr_effect_reach(effect, context->time);
         uint64_t ew = sr_rect_extent(rect->x0, rect->x1, reach, frame->width);
         uint64_t eh = sr_rect_extent(rect->y0, rect->y1, reach, frame->height);
         uint64_t pixels = 2 * eh * (4 * ew + 48) + 64;
@@ -2042,6 +2054,23 @@ static SrStatus sr_node_masks_end(SrDrawContext *context, SrNodeMasks *masks,
     return status;
 }
 
+/* Summed effect reach of a group's adjustment children: the backdrop they
+ * read beyond their own region. Charged per reference. */
+static bool sr_adjustment_reach(const SrDrawContext *context, const SrNode *node,
+                                double *reach) {
+    *reach = 0.0;
+    if (!context->scene->compositing) return true;
+    for (size_t i = 0; i < node->child_count; ++i) {
+        const SrNode *child = node->children[i];
+        if (child->type != SR_NODE_ADJUSTMENT) continue;
+        if (!sr_composite_work(context->compositor->resources,
+                               child->effect_ref_count + 1, 256)) return false;
+        for (size_t k = 0; k < child->effect_ref_count; ++k)
+            *reach += sr_effect_reach(child->effect_refs[k], context->time);
+    }
+    return true;
+}
+
 /* Operator and adjustment children need an isolated, transparent parent
  * buffer. This is a static property of the authored children (including
  * inactive ones), so activity never changes a parent's coordinate system. */
@@ -2108,19 +2137,7 @@ static SrStatus sr_draw_group(SrDrawContext *context, const SrNode *node,
              * own region too: keep the ancestors' clip grown by the reach
              * of every adjustment chain, before this group's masks cut it. */
             double adjust = 0.0;
-            if (context->scene->compositing) {
-                for (size_t i = 0; i < node->child_count; ++i) {
-                    const SrNode *child = node->children[i];
-                    if (child->type != SR_NODE_ADJUSTMENT) continue;
-                    if (!sr_composite_work(context->compositor->resources,
-                                           child->effect_ref_count + 1, 4)) {
-                        status = SR_ERR_RENDER;
-                        break;
-                    }
-                    for (size_t k = 0; k < child->effect_ref_count; ++k)
-                        adjust += sr_effect_reach(child->effect_refs[k], context->time);
-                }
-            }
+            if (!sr_adjustment_reach(context, node, &adjust)) status = SR_ERR_RENDER;
             if (status == SR_OK && (node->effect_ref_count || adjust > 0.0)) {
                 double reach = adjust;
                 for (size_t i = 0; i < node->effect_ref_count; ++i)
@@ -2455,9 +2472,40 @@ static SrStatus sr_draw_content(SrDrawContext *context, const SrNode *node,
     SrNodeMasks masks;
     SrStatus status = sr_node_masks_begin(context, node, world, inverse, clip,
                                           target, NULL, true, false, &masks);
-    if (status == SR_OK && !masks.empty)
+    double adjust = 0.0;
+    if (status == SR_OK && !sr_adjustment_reach(context, node, &adjust))
+        status = SR_ERR_RENDER;
+    if (status == SR_OK && !masks.empty && adjust > 0.0 && node->mask_count) {
+        /* Adjustment children read the backdrop around their region: draw
+         * the children unmasked into an isolated buffer over the clip grown
+         * by that reach, then cut it with the card group's masks. */
+        SrGroupBuffer *buffer = NULL;
+        status = sr_pool_get(context->compositor, depth, target->width,
+                             target->height, &buffer);
+        if (status == SR_OK) {
+            int w = (int)target->width, h = (int)target->height;
+            SrClip fill = {sr_clamp_int(clip.x0 - adjust, 0, w),
+                           sr_clamp_int(clip.y0 - adjust, 0, h),
+                           sr_clamp_int(clip.x1 + adjust, 0, w),
+                           sr_clamp_int(clip.y1 + adjust, 0, h)};
+            SrTarget content = {buffer->frame.px, target->width, target->height,
+                                buffer};
+            status = sr_draw_children(context, node, world, fill, &content,
+                                      depth + 1, NULL);
+        }
+        if (status == SR_OK) {
+            SrDrawOp op = {.kind = SR_OP_BUFFER, .target = *target,
+                           .blend = SR_BLEND_NORMAL, .opacity = 1.0f,
+                           .inverse = inverse, .aa = sr_pixel_footprint(inverse),
+                           .masks = masks.chain, .buffer = buffer};
+            op.bounds = sr_clip_intersect(masks.clip, (SrClip){buffer->x0,
+                buffer->y0, buffer->x1, buffer->y1});
+            status = sr_op_submit(context->compositor, &op, false);
+        }
+    } else if (status == SR_OK && !masks.empty) {
         status = sr_draw_children(context, node, world, masks.clip, target,
                                   depth, masks.chain);
+    }
     return sr_node_masks_end(context, &masks, status);
 }
 
@@ -2921,17 +2969,18 @@ static SrStatus sr_draw_card(SrDrawContext *context, const SrNode *node,
     if (status != SR_OK) return status;
     buffer->x0 = rect.x0; buffer->y0 = rect.y0;
     buffer->x1 = rect.x1; buffer->y1 = rect.y1;
+    /* A flattened operator card defers its depth test to the operator
+     * that composites its final image (sr_draw_flattened). It is set before
+     * the matte is applied: an empty matte is an empty image, not culling. */
+    bool defer = node == context->flatten_node && context->card_defer;
+    if (defer)
+        *context->card_defer = (SrCardTest){context->compositor->depth, view, pose,
+                                            false};
     SrNodeMasks masks;
     status = sr_node_masks_begin(context, node, sr_mat_identity(),
         sr_mat_identity(), clip, target, outer, false, !ancestor, &masks);
     if (status != SR_OK || masks.empty)
         return sr_node_masks_end(context, &masks, status);
-    /* A flattened operator card defers its depth test to the operator
-     * that composites its final image (sr_draw_flattened). */
-    bool defer = node == context->flatten_node && context->card_defer;
-    if (defer)
-        *context->card_defer = (SrCardTest){context->compositor->depth, view, pose,
-                                            false};
     SrDrawOp op = {.kind = SR_OP_BUFFER, .target = *target,
                    .blend = ancestor ? SR_BLEND_NORMAL : sr_node_blend(context, node),
                    .opacity = (float)opacity, .inverse = sr_mat_identity(),
