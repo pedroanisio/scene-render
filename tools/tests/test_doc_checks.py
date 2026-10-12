@@ -61,6 +61,59 @@ class DocFactsTests(unittest.TestCase):
         self.assertEqual(doc_facts.main(["--check"]), 0)
 
 
+class LayoutTests(unittest.TestCase):
+    """The README's Layout block names every crate, every module of a crate whose entry lists its `src/`, and every
+    example directory."""
+
+    def tree(self, root):
+        for path in ("crates/sr-a/src/inner", "crates/sr-b/src", "crates/cli", "examples/one"):
+            (root / path).mkdir(parents=True)
+        for crate in ("sr-a", "sr-b", "cli"):
+            (root / "crates" / crate / "Cargo.toml").write_text("")
+        for path in ("crates/sr-a/src/lib.rs", "crates/sr-a/src/alpha.rs", "crates/sr-a/src/inner/mod.rs",
+                     "crates/sr-b/src/lib.rs", "crates/sr-b/src/beta.rs"):
+            (root / path).write_text("")
+
+    def readme(self, entries):
+        return "# x\n\n## Layout\n\n```\n" + "\n".join(entries) + "\n```\n\n## Tests\n"
+
+    def problems(self, entries):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            self.tree(root)
+            return doc_facts.layout_problems(self.readme(entries), root)
+
+    COMPLETE = [
+        "crates/sr-a/src/            alpha, inner (a directory module),",
+        "                            continued on an indented line",
+        "crates/sr-b/src/            beta",
+        "crates/cli/                 the command line",
+        "examples/one/               an example",
+    ]
+
+    def test_a_complete_block_is_accepted(self):
+        self.assertEqual(self.problems(self.COMPLETE), [])
+
+    def test_a_module_missing_from_its_entry_is_named(self):
+        entries = [e.replace("alpha, ", "") for e in self.COMPLETE]
+        self.assertEqual(self.problems(entries), ["Layout entry of crates/sr-a does not name module alpha"])
+
+    def test_a_directory_module_is_required_too(self):
+        entries = [e.replace("inner (a directory module),", "") for e in self.COMPLETE]
+        self.assertEqual(self.problems(entries), ["Layout entry of crates/sr-a does not name module inner"])
+
+    def test_a_crate_without_an_entry_is_named(self):
+        entries = [e for e in self.COMPLETE if not e.startswith("crates/sr-b")]
+        self.assertEqual(self.problems(entries), ["Layout names no entry for crates/sr-b"])
+
+    def test_an_example_directory_without_a_line_is_named(self):
+        entries = [e for e in self.COMPLETE if not e.startswith("examples/")]
+        self.assertEqual(self.problems(entries), ["Layout does not name examples/one/"])
+
+    def test_the_readme_of_this_repository_names_everything(self):
+        self.assertEqual(doc_facts.layout_problems((ROOT / "README.md").read_text()), [])
+
+
 class TrackedDocsTests(unittest.TestCase):
     def test_tracked_docs_skip_files_deleted_from_the_working_tree(self):
         # git ls-files still lists a tracked file that was removed but not yet staged

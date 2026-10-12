@@ -34,7 +34,7 @@ jobs:
       - uses: ./.github/actions/setup
       - run: python3 tools/check_release_hygiene.py --all
       - run: python3 tools/doc_facts.py --check
-      - run: python3 tools/doc_links.py --exclude README.md
+      - run: python3 tools/doc_links.py
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --features scene-render/pdf -- -D warnings
       - run: cargo test --workspace --doc --features scene-render/pdf --locked --no-fail-fast

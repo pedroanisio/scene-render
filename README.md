@@ -881,14 +881,22 @@ Encoding reports preserve template diagnostics in `evaluation_warnings`; human o
 schema/                     the XSD and Schematron contract
 crates/sr-model/build.rs    generator: tables, typed model, assert catalogue
 crates/sr-model/src/        diag, xsd/{simple,structure}, rules, assets, values, parse, model, element (name-based
-                            attribute access), document, codes
+                            attribute access), document, codes; effect_attrs (the effect attribute bag), foam (which water takes albedo foam), inert (attributes
+                            valid and without effect), program and program_ids (build-mode programs and their scoped ids)
 crates/sr-eval/src/         program (templating, instantiation, compilation), eval (frames), layout, channel,
                             curve, expr/{parse,vm}, value, path, data, rng, rig (constraints, bones,
                             tracking, stabilisation), sim (physics and particles), sim3d (3D rigid bodies), agents (flocks, fluids,
-                            slime, erosion), geo (map cameras for rendering and expressions), codes
+                            slime, erosion), geo (map cameras for rendering and expressions), codes; connector (SREP 16), points (repeat points), region (pdf regions), safe_area (`enforce`), font_policy
+                            (pinned fonts), stroke_font (Hershey fonts), fractal (SREP 75), parametric (SREP 70), joints (model sockets),
+                            local_ids (SREP 87), mesh_sequence (mesh caches), physcache (baked physics), inert (rule I8), pending (accepted
+                            SREPs not implemented); the cratering and fracture family: crater, debris, splash, fracture, group (coupled
+                            solvers), ocean, particles3d, pyro, terrain, solid, voxel, voxels, voxel_asset, voxel_cache, voxel_crater,
+                            voxel_cut
 crates/sr-3d/src/           import (glTF, OBJ, PLY, splats, FBX, USD), usdc (USD crate reader), prim (primitives,
                             extrusion), clay (SDF blobs, surface nets), anim, material,
-                            light (colour temperature, IES), env (HDRI prefiltering), camera, mtlx
+                            light (colour temperature, IES), env (HDRI prefiltering), camera, mtlx; voxel (`.vox` import), occupancy (cell lattices), pieces (cut bodies), crater, fracture, terrain (globe
+                            relief), sequence (mesh-cache time selection), sampling (texture sampling), mtlx_graph (MaterialX pattern
+                            graphs), sky (procedural dome sky), subsurface (SREP 71 lobe)
 crates/sr-gpu/src/          gpu (device), color, drape (drawings rasterised on the CPU), render_map3d (3D maps and
                             globes), resources (textures, images, pool), paint, render (planning,
                             caching, execution), video (decode conversion, frame blending, optical flow),
@@ -900,12 +908,15 @@ crates/sr-gpu/src/          gpu (device), color, drape (drawings rasterised on t
                             lights, 360), render_access (contrast probes, flash grid), particles (instanced
                             particle quads), raster (fine-stage dispatch), golden, types; WGSL: common, d24
                             (seeded hashes), shaders, raster, effects, analysis, particles, sphere, transfer,
-                            video, flow, output, pathtrace, three, three_{bind,depth,post,sort,splat,ssr,types}
+                            video, flow, output, pathtrace, three, three_{bind,depth,post,sort,splat,ssr,types}; geodesic (black-hole rendering), compute (SREP 67 compute node), serial (error-diffusion, segmented-sort),
+                            checkpoints (effect state on disk), render_voxels (voxel objects), volume (medium instances and brick packing),
+                            caption_dump, safe_audit and text_audit (audits of captions, safe areas and text fit), wgsl_layout (test
+                            support: WGSL struct layouts)
 crates/sr-vector/src/       geom, path, shapes, measure (trim, dash), stroke, modifiers, deform, arap, d24 (seeded
                             hashes and noise), rig, track, scene, tile (coarse stage and CPU fine stage), svg,
-                            lottie, zip
+                            lottie, zip; markers (stroke markers, SREP 15)
 crates/sr-text/src/         font, style, layout, glyph (outlines, COLR, bitmaps), animate (animators, presets,
-                            text on a path), captions, chart, audiogram, code, formula
+                            text on a path), captions, chart, audiogram, code, formula; extrusion (glyph outlines for solid extrusion)
 crates/sr-media/src/        probe, decode (video look-ahead, audio), encode (codecs, containers, hardware, stills),
                             spherical (360 metadata), still (image formats, orientation), icc (colour profiles),
                             heif (HEIF colour boxes)
@@ -915,16 +926,24 @@ crates/sr-geo/src/          data (GeoJSON, TopoJSON, KML, GPX), sphere (spherica
                             tiles (tile selection and placement); styles/ (the built-in Protomaps styles)
 crates/sr-resolve/src/      the resolve step: protocol (requests, keys), doc (in-place attribute edits), providers
                             (whisper, piper, audioforge, openai, elevenlabs, tiles, external programs), and
-                            bin/example_provider (the reference provider)
+                            bin/example_provider (the reference provider); pdf (PDF pages and phrase boxes, SREP 17)
 crates/sr-audio/src/        layout, dsp, effects, loudness, mix, analysis, wav
 crates/sr-sim/src/          physics (Rapier world, joints, checkpoints), physics3d (Rapier 3D), soft, particles, fields, timeline, flock,
-                            fluid, slime, erosion, rng
+                            fluid, slime, erosion, rng; cratering (impact craters), granular (deposit beds), hydrostatics, exchange (coupled solvers), gr and
+                            sedov (analytic references), stress, surface, ocean, particles3d, pyro
+crates/sr-volume/src/        sparse volumetric grids and bounded deterministic caches: openvdb (OpenVDB ingestion), sequence
+                            (cache timing), bake (content-addressed bakes, SRVSEQ), advection (motion-aware interpolation),
+                            medium (participating media), thermal (blackbody emission)
+crates/sr-wasm/src/          the WebAssembly host for `<program>` (Wasmtime, fuel, canonical NaNs)
 crates/sr-fuzz/src/         mutators, targets and the sr-fuzz campaign runner
-crates/sr-deliver/src/      audio (scene mix, analysis table), pipeline, destinations, access (flash analysis)
+crates/sr-deliver/src/      audio (scene mix, analysis table), pipeline, destinations, access (flash analysis); capabilities (the manifest, SREP 22), captions, segments and segment_audio (output segments, SREP 13),
+                            overlay, ceiling (true-peak), legibility (SREP 19), render_report (SREP 18)
 crates/scene-render/        CLI
 crates/*/tests/             per-crate test suites, fixtures and golden frames
 tests/corpus/               conformance documents, media fixtures, manifest.json
 examples/splat/             a synthetic 3DGS capture generator and a turntable scene
+examples/cinematic-impact/  the impact scenes of the cinematic-impact ledger, and their sky
+examples/program-maze/      a maze made by a WebAssembly program, with its Rust source and build script
 tools/                      oracle.py, build_corpus.py, oracle_diff.py, kitchen_sink.xml.in, perf_layers.py,
                             perf_video.py, perf_vector.py, perf_text.py, perf_effects.py, perf_3d.py,
                             perf_physics.py, evidence.py and evidence/ (cases, probe scenes),
@@ -937,7 +956,7 @@ tools/                      oracle.py, build_corpus.py, oracle_diff.py, kitchen_
 `cargo test` runs every crate's suites. GPU tests skip with a message when no adapter exists unless `SR_REQUIRE_GPU=1` is set (as in renderer CI), and media tests skip when FFmpeg is missing. By subsystem:
 
 - **Document model:** lexical types, attribute coverage of every complex type, the conformance corpus, the load-time budget.
-- **Evaluation:** curves, noise and RNG golden values, parser and VM, channels, data formats, 23 semantics tests (transforms, keys, expressions, links, timing, templating, repeats, instances, includes, transitions, mattes, motion paths, cameras, audio, every error code, order-independent determinism), the frame-evaluation budget; every constraint type, node and bone IK, skeleton animation, track constraints, stabilisation and error E17.
+- **Evaluation:** curves, noise and RNG golden values, parser and VM, channels, data formats, semantics tests (transforms, keys, expressions, links, timing, templating, repeats, instances, includes, transitions, mattes, motion paths, cameras, audio, every error code, order-independent determinism), the frame-evaluation budget; every constraint type, node and bone IK, skeleton animation, track constraints, stabilisation and error E17.
 - **Compositor:** layout geometry and semantics, colour matrices and transfers, paint transforms, mip chains, CIEDE2000, path flattening, and 22 GPU tests (placement and rotation, all 35 blend modes against a CPU reference, partial alpha, dissolve, stencils, every mask shape and combine mode, mattes, isolation, instance and prefix caching, gradients in four spaces, mesh gradients, generators, 2.5D projection and sorting, fit modes, flex layout, image sequences, working spaces, reporting of unsupported content) plus the golden frames.
 - **Media and delivery:** every transfer against published code values and round trips, probing, frame-accurate random access and frame-rate resampling, deep and alpha layouts, video conversion (BT.709, 10-bit, rotation, alpha), frame mixing and optical-flow accuracy, delivery codes in NV12, P010, RGBA and float with range, dither, letterboxing and PQ reference white, every codec and container read back, sequences, ProRes alpha, HDR10 metadata, audio muxing, two-pass rate control, stills, the audio effects and layouts, EBU Tech 3341 loudness, true peak, fades, automation, buses, ducking, normalisation, time-stretching, mapped video audio, surround and ambisonic mixes, analysis and beats, WAV output, and end-to-end delivery with a round-trip luma check, loudness target, file-size fitting and signed uploads to a local server.
 - **Vector and rigging:** path parsing, primitive areas, flattening tolerance, trim, dashes, stroke areas, rasteriser coverage against analytic areas with both fill rules, layers, masks and mattes, the nine modifiers, the 14 deformers, puppet pins and rigidity, two-bone and FABRIK IK, skinning, SVG with clip paths, gradients and masks, Lottie keyframes, parenting, masks, mattes, trim, slots, segments and dotLottie, all six tracking formats; on the GPU, shape coverage and batching, strokes with trim, dash and position, modifiers, gradients, isolated shapes, SVG, Lottie and vector assets, corner-pinned and skinned layers, puppet pins, and pattern-filled shapes.

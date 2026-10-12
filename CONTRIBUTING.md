@@ -62,8 +62,8 @@ cargo test --workspace --features scene-render/pdf --locked
 python3 -m unittest discover -s tools/tests -v
 ```
 
-- **GPU tests:** they skip without an adapter unless `SR_REQUIRE_GPU=1` is set. CI runs them on Vulkan in six
-  shards (`tools/gpu_shards.py`).
+- **GPU tests:** they skip without an adapter unless `SR_REQUIRE_GPU=1` is set. CI runs the tests on Vulkan in
+  <!-- facts:ci-shards -->20<!-- /facts --> shards (`tools/ci_tests.py`).
 - **Corpus:** when you change the schema or the rules, run `python3 tools/build_corpus.py`. Commit the result:
   CI fails if `tests/corpus` differs from what the generator writes.
 - **Staged files:** `tools/check_release_hygiene.py --staged` checks only what you are about to commit.

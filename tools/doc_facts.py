@@ -88,6 +88,49 @@ def process(path, values, write):
     return problems
 
 
+SKIPPED_MODULES = {"lib", "main", "mod", "bin"}
+
+
+def layout_problems(readme, root=ROOT):
+    """The crates, modules and example directories that the README's Layout block does not name.
+
+    The block is a hand-written inventory of what the tree holds; an entry per crate (`crates/NAME/...`, continued on
+    indented lines) names the modules of its `src/`, and `examples/NAME/` names an example directory."""
+    start = readme.find("\n## Layout")
+    if start < 0:
+        return ["README has no Layout section"]
+    block = readme[start:].split("\n```")[1]
+    entries = {}
+    current = None
+    for line in block.splitlines():
+        m = re.match(r"(?:crates/([A-Za-z0-9_-]+)\b|(examples)/|(\S))", line)
+        if line.startswith(" ") or not line.strip():
+            if current is not None:
+                entries[current] = entries.get(current, "") + " " + line
+            continue
+        current = m.group(1) or ("examples" if m.group(2) else "other:" + line.split()[0])
+        entries[current] = entries.get(current, "") + " " + line
+    problems = []
+    for crate in sorted(p.name for p in (root / "crates").iterdir() if (p / "Cargo.toml").exists()):
+        text = entries.get(crate)
+        if text is None:
+            problems.append(f"Layout names no entry for crates/{crate}")
+            continue
+        src = root / "crates" / crate / "src"
+        if "src/" not in text or not src.is_dir():
+            continue  # an entry that describes the crate as a whole, such as the CLI
+        words = set(re.findall(r"[A-Za-z0-9_]+", text))
+        for item in sorted(src.iterdir()):
+            name = item.stem if item.is_file() and item.suffix == ".rs" else item.name if item.is_dir() else None
+            if name and name not in SKIPPED_MODULES and name not in words:
+                problems.append(f"Layout entry of crates/{crate} does not name module {name}")
+    examples = entries.get("examples", "")
+    for d in sorted(p.name for p in (root / "examples").iterdir() if p.is_dir()):
+        if f"examples/{d}/" not in examples:
+            problems.append(f"Layout does not name examples/{d}/")
+    return problems
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -107,6 +150,10 @@ def main(argv=None):
             unknown = p.startswith("unknown")
             failed |= args.check or unknown
             print(f"{f.relative_to(ROOT)}: {p}" + ("" if args.check or unknown else " (rewritten)"))
+    if not args.files:
+        for p in layout_problems((ROOT / "README.md").read_text()):
+            failed = True
+            print(f"README.md: {p}")
     return 1 if failed else 0
 
 
