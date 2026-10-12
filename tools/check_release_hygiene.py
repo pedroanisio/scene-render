@@ -13,6 +13,7 @@ rejects an acceptance ledger that is not whole (a repeated key, a milestone with
 Exit status 1 when a rule A or B match remains. Legitimate exceptions go in ALLOW with a reason.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -216,11 +217,37 @@ def file_digest(path):
         return None
 
 
+ORIGIN_PREVIOUS = "previous-repository"
+
+
+def _git(base, *args):
+    done = subprocess.run(["git", "-C", base, *args], capture_output=True)
+    return done.stdout if done.returncode == 0 else None
+
+
+def past_digests(base, file):
+    """The SHA-256 of `file` at every commit that touched it, or None when the history is not here (not a git
+    repository, no commit yet, or a shallow clone)."""
+    if _git(base, "rev-parse", "--verify", "-q", "HEAD") is None:
+        return None
+    shallow = _git(base, "rev-parse", "--is-shallow-repository")
+    if shallow is None or shallow.strip() == b"true":
+        return None
+    revisions = _git(base, "log", "--format=%H", "--", file)
+    out = set()
+    for rev in (revisions or b"").decode().split():
+        blob = _git(base, "show", f"{rev}:{file}")
+        if blob is not None:
+            out.add(hashlib.sha256(blob).hexdigest())
+    return out
+
+
 def check_digests(base, data):
     """Rule L4: a digest the ledger pins equals the SHA-256 of that file in the tree, or is listed in HISTORICAL with
     its file. Rule L5: a HISTORICAL entry is still needed: the ledger pins it and the tree's file differs. A pin that
     nobody checks reads as evidence; this keeps each one either current or declared past."""
     allowed = set()
+    inherited = set()
     errors = []
     path = os.path.join(base, HISTORICAL)
     if os.path.isfile(path):
@@ -228,6 +255,8 @@ def check_digests(base, data):
             with open(path, encoding="utf-8") as f:
                 entries = json.load(f, object_pairs_hook=_refuse_repeats)["digests"]
             allowed = {(e["file"], e["sha256"]) for e in entries}
+            # entries recorded before this repository's history began: nothing here can show their revision
+            inherited = {(e["file"], e["sha256"]) for e in entries if e.get("origin") == ORIGIN_PREVIOUS}
         except (ValueError, KeyError, TypeError) as e:
             return [f"{HISTORICAL}: L1 the list does not parse whole: {e}"]
     pinned = set(ledger_digests(data))
@@ -241,6 +270,14 @@ def check_digests(base, data):
             errors.append(f"{LEDGER}: L4 the digest {digest[:12]} of {file} {state} the tree; update the pin, or list it in {HISTORICAL} if it is a past revision's")
     for file, digest in sorted(allowed - pinned):
         errors.append(f"{HISTORICAL}: L5 {file} {digest[:12]} is not pinned by the ledger; remove the entry")
+    # Rule L6: a past digest is one the file really had here, unless the entry says it predates this history
+    # (`"origin": "previous-repository"`). Without it the list is a way to silence L4 with any value.
+    for file, digest in sorted((allowed - inherited) & pinned):
+        if file_digest(os.path.join(base, file)) == digest:
+            continue
+        seen = past_digests(base, file)
+        if seen is not None and digest not in seen:
+            errors.append(f"{HISTORICAL}: L6 {file} {digest[:12]} is not the digest of any committed revision of the file")
     return errors
 
 

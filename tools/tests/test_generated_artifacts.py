@@ -1,8 +1,10 @@
 """Checked-in files that a script or a build produces are what that script or build produces from what is checked in."""
 import hashlib
 import json
+import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -106,6 +108,63 @@ class MazeTests(unittest.TestCase):
         script = (MAZE / "build.sh").read_text()
         self.assertIn("maze.source-sha256", script)
         self.assertIn("Cargo.toml Cargo.lock src", script)
+
+    def test_the_module_is_what_the_sources_build_to(self):
+        """Rebuilds in a scratch copy and compares bytes. The build needs the wasm target: without it the test is
+        skipped, and SR_REQUIRE_WASM=1 (set it where the target is installed) makes its absence a failure."""
+        libdir = subprocess.run(["rustc", "--print", "target-libdir", "--target", "wasm32-unknown-unknown"],
+                                capture_output=True, text=True).stdout.strip()
+        have_target = bool(libdir) and pathlib.Path(libdir).is_dir() and any(pathlib.Path(libdir).glob("libcore-*"))
+        if not have_target:
+            if os.environ.get("SR_REQUIRE_WASM") == "1":
+                self.fail("wasm32-unknown-unknown is not installed and SR_REQUIRE_WASM=1")
+            self.skipTest("wasm32-unknown-unknown is not installed")
+        with tempfile.TemporaryDirectory() as d:
+            work = pathlib.Path(d) / "maze"
+            shutil.copytree(MAZE / "maze", work, ignore=shutil.ignore_patterns("target"))
+            done = subprocess.run(
+                ["cargo", "build", "--release", "--locked", "--target", "wasm32-unknown-unknown"],
+                cwd=work, capture_output=True, text=True, env={**os.environ, "CARGO_TARGET_DIR": str(pathlib.Path(d) / "t")})
+            self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+            built = pathlib.Path(d) / "t/wasm32-unknown-unknown/release/sr_example_maze.wasm"
+            self.assertEqual(hashlib.sha256(built.read_bytes()).hexdigest(),
+                             hashlib.sha256((MAZE / "maze.wasm").read_bytes()).hexdigest(),
+                             "maze.wasm is not what its sources build to: run examples/program-maze/build.sh")
+
+
+class OpenVdbFixtureTests(unittest.TestCase):
+    """The .vdb fixtures come from tools/openvdb_fixture.cpp, which needs the OpenVDB library that CI does not have.
+    The bytes cannot be regenerated here; what is checked is that the generator and the checked-in files list the same
+    names, and that a test reads every file."""
+
+    DATA = ROOT / "crates/sr-volume/tests/data/openvdb"
+
+    def generated(self):
+        text = (TOOLS / "openvdb_fixture.cpp").read_text()
+        names = set(re.findall(r'save\("([a-z0-9-]+)"', text))
+        # the two-frame loop saves `frame == 0 ? "render-0" : "render-1"`
+        names |= set(re.findall(r'"(render-\d)"', text))
+        return names
+
+    def test_the_generator_and_the_checked_in_files_name_the_same_fixtures(self):
+        checked_in = {p.stem for p in self.DATA.glob("*.vdb")}
+        generated = self.generated()
+        self.assertGreater(len(generated), 14)
+        self.assertEqual(sorted(generated - checked_in), [], "the generator writes files that are not checked in")
+        self.assertEqual(sorted(checked_in - generated), [], "checked-in files the generator does not write")
+
+    def test_every_fixture_is_read_by_a_test(self):
+        tests = "".join(p.read_text() for c in (ROOT / "crates").iterdir() for p in (c / "tests").rglob("*.rs")
+                        if (c / "tests").is_dir())
+        src = (ROOT / "crates/sr-volume/src/openvdb/codec.rs").read_text()
+        unread = [n for n in sorted(self.generated())
+                  if f'"{n}"' not in tests and f"{n}.vdb" not in tests + src
+                  and not (n.startswith("render-") and "render-%d.vdb" in tests)]
+        self.assertEqual(unread, [], "fixtures no test opens: delete them or test them")
+
+    def test_the_generator_is_a_development_tool_the_ci_does_not_build(self):
+        ci = "".join(p.read_text() for p in (ROOT / ".github").rglob("*.yml"))
+        self.assertNotIn("openvdb_fixture", ci, "CI builds it now: compare its output with the checked-in files")
 
 
 if __name__ == "__main__":

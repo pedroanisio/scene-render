@@ -1,765 +1,955 @@
 {
-  "note": "Digests the evidence ledger pins for files that have since changed or left the repository (rule L4 of tools/check_release_hygiene.py). Each entry is the file's digest when its milestone was recorded.",
+  "note": "Digests the evidence ledger pins for files that have since changed or left the repository (rule L4 of tools/check_release_hygiene.py). Each entry is the file's digest when its milestone was recorded. Rule L6: an entry without `origin` must be the digest of a committed revision of the file; `origin: previous-repository` marks the digests recorded before this repository's history began, which nothing here can show.",
   "digests": [
     {
       "file": "Cargo.lock",
-      "sha256": "2cde8facb62a3400067fd33d49fba982b7b46e9f0238a0ada96b0b0e333d250d"
+      "sha256": "2cde8facb62a3400067fd33d49fba982b7b46e9f0238a0ada96b0b0e333d250d",
+      "origin": "previous-repository"
     },
     {
       "file": "Cargo.lock",
-      "sha256": "e62c1f371ec8a658fd35ca93869584e913a3837851361961a576ee5599e2050f"
+      "sha256": "e62c1f371ec8a658fd35ca93869584e913a3837851361961a576ee5599e2050f",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/scene-render/src/changes.rs",
-      "sha256": "bc43f7980bf28ef9ff5a405367f168172aaeb15c9603094286391b9cf1db0475"
+      "sha256": "bc43f7980bf28ef9ff5a405367f168172aaeb15c9603094286391b9cf1db0475",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/scene-render/tests/cli.rs",
-      "sha256": "39d07fa6ead74365926b0c361358422b74af95c8e7b59b277d48b841c6c37cdb"
+      "sha256": "39d07fa6ead74365926b0c361358422b74af95c8e7b59b277d48b841c6c37cdb",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-3d/Cargo.toml",
-      "sha256": "99a03ee7dc38fa17aeaa6735488d55a2695d1f47a9d125a24eaf83feac6136ad"
+      "sha256": "99a03ee7dc38fa17aeaa6735488d55a2695d1f47a9d125a24eaf83feac6136ad",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-3d/src/crater.rs",
-      "sha256": "ff22d4b45d2ff261f8babb056fea5e44fd754f38ba0fc0750849deeffb9372d8"
+      "sha256": "ff22d4b45d2ff261f8babb056fea5e44fd754f38ba0fc0750849deeffb9372d8",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-3d/src/fracture.rs",
-      "sha256": "a183f065b43c3d6bb5ce5fea976ea67b57c5b2d6b2ed62e15d67b1baba5e8604"
+      "sha256": "a183f065b43c3d6bb5ce5fea976ea67b57c5b2d6b2ed62e15d67b1baba5e8604",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-3d/src/fracture/validate.rs",
-      "sha256": "13b955f9a26a17f1f58bb1145485fc9dee35d0928224e8e5abd401868e3de912"
+      "sha256": "13b955f9a26a17f1f58bb1145485fc9dee35d0928224e8e5abd401868e3de912",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-3d/src/lib.rs",
-      "sha256": "db6cc59fd9e19afa04a3b2818b355e0145b06a9560556acc55a51ba23057c741"
+      "sha256": "db6cc59fd9e19afa04a3b2818b355e0145b06a9560556acc55a51ba23057c741",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-3d/src/prim.rs",
-      "sha256": "08d4b629feebb30cef8256b63832c33c1e342d351929e66b5df1ebabf04d8ad5"
+      "sha256": "08d4b629feebb30cef8256b63832c33c1e342d351929e66b5df1ebabf04d8ad5",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-3d/tests/crater.rs",
-      "sha256": "239f7cf0abe8ff1d15c4fbbbb1b1e9fa74c536e639ccd3e0c1e09cd34c643f5c"
+      "sha256": "239f7cf0abe8ff1d15c4fbbbb1b1e9fa74c536e639ccd3e0c1e09cd34c643f5c",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-3d/tests/fracture.rs",
-      "sha256": "9b1488889de9a721a3069e98be3a6298c7faef90674fe5707a38eccef03ba8ab"
+      "sha256": "9b1488889de9a721a3069e98be3a6298c7faef90674fe5707a38eccef03ba8ab",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-3d/tests/fracture_surface.rs",
-      "sha256": "8fadb991a4a5fefc8d38cc6d82fd0f4c6cd2aeba293b9907c89c21b4cab0c602"
+      "sha256": "8fadb991a4a5fefc8d38cc6d82fd0f4c6cd2aeba293b9907c89c21b4cab0c602",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-3d/tests/sequence.rs",
-      "sha256": "d53956bde81824e745acb6ce17364f0a48d78d3d9c8841837486829a5da64d43"
+      "sha256": "d53956bde81824e745acb6ce17364f0a48d78d3d9c8841837486829a5da64d43",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-3d/tests/terrain.rs",
-      "sha256": "d36694912c8e52c5e6a5f350a34c75b28a6c03e9d91f2b6fabed0be56006a58f"
+      "sha256": "d36694912c8e52c5e6a5f350a34c75b28a6c03e9d91f2b6fabed0be56006a58f",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/crater.rs",
-      "sha256": "4b69e1e18a80dceab34e45e275183220659736cdc1b8a62add81c3f84191b051"
+      "sha256": "4b69e1e18a80dceab34e45e275183220659736cdc1b8a62add81c3f84191b051",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/eval.rs",
-      "sha256": "1e9263376079ebf56afaf9ef80f125347e7207e578a8271220026615db7eea1a"
+      "sha256": "1e9263376079ebf56afaf9ef80f125347e7207e578a8271220026615db7eea1a",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/eval.rs",
-      "sha256": "b2cc5b65e03fb17eab0d4f0e52578b714620b428b03356c26ddb8e90a2df43cf"
+      "sha256": "b2cc5b65e03fb17eab0d4f0e52578b714620b428b03356c26ddb8e90a2df43cf",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/fracture.rs",
-      "sha256": "18020fd65a8a0540610669a6b316bf8bef0c8c045be918b11753c25c15b4b754"
+      "sha256": "18020fd65a8a0540610669a6b316bf8bef0c8c045be918b11753c25c15b4b754",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/fracture/source.rs",
-      "sha256": "420ae44d7601b357aed311abf9611700c63254caf00c2e8431a2a83cc679b037"
+      "sha256": "420ae44d7601b357aed311abf9611700c63254caf00c2e8431a2a83cc679b037",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/fracture/source.rs",
-      "sha256": "a707998781f5af258454e01efabfc0d08955bc939d5faad43505f9fd1430d07c"
+      "sha256": "a707998781f5af258454e01efabfc0d08955bc939d5faad43505f9fd1430d07c",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/lib.rs",
-      "sha256": "0154260d3a32ffcf2d74d149ab730a162d9088ee1173636c1ef1a71075e10931"
+      "sha256": "0154260d3a32ffcf2d74d149ab730a162d9088ee1173636c1ef1a71075e10931",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/lib.rs",
-      "sha256": "4c6bd5edb77bd31171f9c4f22907fe10c5e38812f9fc335d2585f742c8fa317c"
+      "sha256": "4c6bd5edb77bd31171f9c4f22907fe10c5e38812f9fc335d2585f742c8fa317c",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/ocean.rs",
-      "sha256": "346e7c118c52c1d6d059e22d38d461e732cd94b7087fdd5d61727c91f27ae6e9"
+      "sha256": "346e7c118c52c1d6d059e22d38d461e732cd94b7087fdd5d61727c91f27ae6e9",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/ocean/whitewater.rs",
-      "sha256": "0096481422573133c9ef8b089bca9a81fb40b35b55693abcb7cdcaae54db4130"
+      "sha256": "0096481422573133c9ef8b089bca9a81fb40b35b55693abcb7cdcaae54db4130",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/particles3d.rs",
-      "sha256": "31dbda17a7e76d63d1debd5077af3faa8c1d5406d64987b22a90158ad402265d"
+      "sha256": "31dbda17a7e76d63d1debd5077af3faa8c1d5406d64987b22a90158ad402265d",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/particles3d.rs",
-      "sha256": "ee2f69ea6051b84851ff986c611392e1d4539c1ab3c015c0d9c46c19d4be3992"
+      "sha256": "ee2f69ea6051b84851ff986c611392e1d4539c1ab3c015c0d9c46c19d4be3992",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/particles3d.rs",
-      "sha256": "ef239ddea7704d0f2119f9f621b81fd86ad777a222c4a90fe2e2e84f63e2cbc7"
+      "sha256": "ef239ddea7704d0f2119f9f621b81fd86ad777a222c4a90fe2e2e84f63e2cbc7",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/particles3d.rs",
-      "sha256": "f2fdc9d19156e3b9fc5fb85432e98c93020568572af4042a8ecbd1f952bd25cd"
+      "sha256": "f2fdc9d19156e3b9fc5fb85432e98c93020568572af4042a8ecbd1f952bd25cd",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/particles3d/colliders.rs",
-      "sha256": "608cf41444c6d29f76398e3ec0ad92584573aff2bee91e53b7f173cba8e68c60"
+      "sha256": "608cf41444c6d29f76398e3ec0ad92584573aff2bee91e53b7f173cba8e68c60",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/particles3d/colliders.rs",
-      "sha256": "b9fb71559bf55d71595bc509921acafddf83b7be9ce2155e820764cb7fb2bbc1"
+      "sha256": "b9fb71559bf55d71595bc509921acafddf83b7be9ce2155e820764cb7fb2bbc1",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/particles3d/colliders.rs",
-      "sha256": "bbba3722775a79a87ae8cf7a65b1bed3a762b36f2b02a72b9f10025495862d18"
+      "sha256": "bbba3722775a79a87ae8cf7a65b1bed3a762b36f2b02a72b9f10025495862d18",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/particles3d/colliders.rs",
-      "sha256": "c0e2fb9d79b0f79039a685bfc142637b177c0750688313ee4f63f3a834bd4d16"
+      "sha256": "c0e2fb9d79b0f79039a685bfc142637b177c0750688313ee4f63f3a834bd4d16",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/program.rs",
-      "sha256": "11c3617d466132418c1841ecb7159dd7af781380bc15ddc9014d87679a4a4c2c"
+      "sha256": "11c3617d466132418c1841ecb7159dd7af781380bc15ddc9014d87679a4a4c2c",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/program.rs",
-      "sha256": "d8b94ff0344868939215b8fe8f9a7abb2db336caab4964238d69c505711160d0"
+      "sha256": "d8b94ff0344868939215b8fe8f9a7abb2db336caab4964238d69c505711160d0",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/pyro.rs",
-      "sha256": "9aba11e2fb46780ec98421f4a6bc3b6c036377f970c01f36e59b1024f70757ee"
+      "sha256": "9aba11e2fb46780ec98421f4a6bc3b6c036377f970c01f36e59b1024f70757ee",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/pyro.rs",
-      "sha256": "d65ee0cbb6cdf0784d4e307ab935251825f028bef990ca4832f993d088d056c1"
+      "sha256": "d65ee0cbb6cdf0784d4e307ab935251825f028bef990ca4832f993d088d056c1",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/pyro.rs",
-      "sha256": "e347a43437a2920e260a2a0f67ecf24de2c772389ce751dc65536b4e8f9dd763"
+      "sha256": "e347a43437a2920e260a2a0f67ecf24de2c772389ce751dc65536b4e8f9dd763",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/pyro.rs",
-      "sha256": "f41c17276e486065df1310f8fd8966dca58462c0f2d544bf46742bd580c5be66"
+      "sha256": "f41c17276e486065df1310f8fd8966dca58462c0f2d544bf46742bd580c5be66",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/pyro/colliders.rs",
-      "sha256": "4c25bdd1633d19883de57f89f3ac96c6c35741b01897ccf18d90547f3317d6c1"
+      "sha256": "4c25bdd1633d19883de57f89f3ac96c6c35741b01897ccf18d90547f3317d6c1",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/pyro/colliders.rs",
-      "sha256": "4cbc3e578dbba0ebc3fcba8be9e95e8dc4173b2737cc3fbbea4814da3543b194"
+      "sha256": "4cbc3e578dbba0ebc3fcba8be9e95e8dc4173b2737cc3fbbea4814da3543b194",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/pyro/colliders.rs",
-      "sha256": "73eeb9654f143b8e8ffcbc8eb0fb1efe3e956db9d36f4d627741381fcb6744aa"
+      "sha256": "73eeb9654f143b8e8ffcbc8eb0fb1efe3e956db9d36f4d627741381fcb6744aa",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/pyro/colliders.rs",
-      "sha256": "7a921c57aa1e75600575835c5478004bd78f953d354d4b9cdf1ded389956bfb5"
+      "sha256": "7a921c57aa1e75600575835c5478004bd78f953d354d4b9cdf1ded389956bfb5",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/sim.rs",
-      "sha256": "9b0c3fe53125401cb0ccee5af85bd65bad4ba4cb16103b42a29a57be7d2a1a9f"
+      "sha256": "9b0c3fe53125401cb0ccee5af85bd65bad4ba4cb16103b42a29a57be7d2a1a9f",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/sim.rs",
-      "sha256": "e73417883fab6cd61ae654113b46d7fe7e04c500153d045173dbe8e9b7e7c154"
+      "sha256": "e73417883fab6cd61ae654113b46d7fe7e04c500153d045173dbe8e9b7e7c154",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/sim3d.rs",
-      "sha256": "443871c17662944749c4199c22656923eedc3d7a17e58f0b2f7c88d14ab604f9"
+      "sha256": "443871c17662944749c4199c22656923eedc3d7a17e58f0b2f7c88d14ab604f9",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/sim3d.rs",
-      "sha256": "73f443ca9987a0ad82a19d1e9868bcbea2c8138f413d0b9cfd25d8fbd0acfef2"
+      "sha256": "73f443ca9987a0ad82a19d1e9868bcbea2c8138f413d0b9cfd25d8fbd0acfef2",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/sim3d.rs",
-      "sha256": "9f319e6427741a91d11959f11e2aeda73475f3b8dbd14f37dd068069a4e7ea17"
+      "sha256": "9f319e6427741a91d11959f11e2aeda73475f3b8dbd14f37dd068069a4e7ea17",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/sim3d.rs",
-      "sha256": "b10446d19d6d2e0a5c5b4206f7fbe77d661a0f7368e7bc25325516c6aa21b12d"
+      "sha256": "b10446d19d6d2e0a5c5b4206f7fbe77d661a0f7368e7bc25325516c6aa21b12d",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/sim3d.rs",
-      "sha256": "c352a7c2907dc32a90e21410b65ada63f56875fbfeaea4f3005b2ca334655218"
+      "sha256": "c352a7c2907dc32a90e21410b65ada63f56875fbfeaea4f3005b2ca334655218",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/solid.rs",
-      "sha256": "55be2771442f66ed19f357d46a94fc2939e6f504817181648891746bfe9fc0fb"
+      "sha256": "55be2771442f66ed19f357d46a94fc2939e6f504817181648891746bfe9fc0fb",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/solid.rs",
-      "sha256": "95558c34b76af360641ed5da6709708062d56b3c12e36cf0ef6cc985d2fd60e1"
+      "sha256": "95558c34b76af360641ed5da6709708062d56b3c12e36cf0ef6cc985d2fd60e1",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/src/terrain.rs",
-      "sha256": "f6b13c9f9b761879c6c8f926a93b40ab6a1cb9fdbcfae12330cb85d04c016483"
+      "sha256": "f6b13c9f9b761879c6c8f926a93b40ab6a1cb9fdbcfae12330cb85d04c016483",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/tests/cinematic_impact.rs",
-      "sha256": "7919f68d5b2ecb5c522a0db364eb1be64f94e36054a97cc7c112b0a0563ac44c"
+      "sha256": "7919f68d5b2ecb5c522a0db364eb1be64f94e36054a97cc7c112b0a0563ac44c",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/tests/crater.rs",
-      "sha256": "b4c004423fe827113762550fea775d05e4796e51da98c1d3b5c1e2bec653ed0c"
+      "sha256": "b4c004423fe827113762550fea775d05e4796e51da98c1d3b5c1e2bec653ed0c",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/tests/crater.rs",
-      "sha256": "cf899344bc03976adc5f83d47940903d5c6d33033f55ebe9841b1506b2ac6d61"
+      "sha256": "cf899344bc03976adc5f83d47940903d5c6d33033f55ebe9841b1506b2ac6d61",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/tests/crater_memory.rs",
-      "sha256": "16f7ebfc680f9b28fe9911faaed1a1af9d8940a2e3df468fa7ffd4503b5f6459"
+      "sha256": "16f7ebfc680f9b28fe9911faaed1a1af9d8940a2e3df468fa7ffd4503b5f6459",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/tests/fracture.rs",
-      "sha256": "464c7917504811cadef4ed201c91fef2f712a51f605f377ec628830f8439c1c9"
+      "sha256": "464c7917504811cadef4ed201c91fef2f712a51f605f377ec628830f8439c1c9",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/tests/fracture.rs",
-      "sha256": "fbb557fda97e1a18b29fa1a0962a932a8cd47dd1ae88586e4ef26a089e764b7e"
+      "sha256": "fbb557fda97e1a18b29fa1a0962a932a8cd47dd1ae88586e4ef26a089e764b7e",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/tests/fracture_colliders.rs",
-      "sha256": "83d2a1d2aa6a444bfddc14e23db3dc108d07e1d9fb23bec2c77ff2f3929538f5"
+      "sha256": "83d2a1d2aa6a444bfddc14e23db3dc108d07e1d9fb23bec2c77ff2f3929538f5",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/tests/mesh_sequence.rs",
-      "sha256": "2bb0bd2286508dbfd519ec5379326fbb87d7569fb1f02bacd742b2bec3765dda"
+      "sha256": "2bb0bd2286508dbfd519ec5379326fbb87d7569fb1f02bacd742b2bec3765dda",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/tests/ocean.rs",
-      "sha256": "e39a8509b8aa008ea3462c936f3a1b21c029af3b4105df90643c632706f74af7"
+      "sha256": "e39a8509b8aa008ea3462c936f3a1b21c029af3b4105df90643c632706f74af7",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/tests/pyro_colliders.rs",
-      "sha256": "6deeab9b29939734853403f843c80848b3cf04fa8db8c4389530db5f050b22b0"
+      "sha256": "6deeab9b29939734853403f843c80848b3cf04fa8db8c4389530db5f050b22b0",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/tests/solid_colliders.rs",
-      "sha256": "f0bccf56de8bdfabb9e4cdef4da92267eeb19e39a6c4772e064291cd86d926ef"
+      "sha256": "f0bccf56de8bdfabb9e4cdef4da92267eeb19e39a6c4772e064291cd86d926ef",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-eval/tests/terrain.rs",
-      "sha256": "385b4bc8870c4a16549359ba82bbbb85c1a79d76f8dd6847bca1877d167a9999"
+      "sha256": "385b4bc8870c4a16549359ba82bbbb85c1a79d76f8dd6847bca1877d167a9999",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-geo/src/pmtiles.rs",
-      "sha256": "3a1e25cffdb3ab5e8944b61afef649648106a25ba4ea12fc180828d1da22705c"
+      "sha256": "3a1e25cffdb3ab5e8944b61afef649648106a25ba4ea12fc180828d1da22705c",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/src/render.rs",
-      "sha256": "7fe8b2e16a9fecf59324f0736264fddf8e3d4ceadc85f832e5256a2b597cf03d"
+      "sha256": "7fe8b2e16a9fecf59324f0736264fddf8e3d4ceadc85f832e5256a2b597cf03d",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/src/render.rs",
-      "sha256": "cbea41301da7ea2e9608b0c906b161e40dd47f60cf9bb7c127cf171f3b2b9035"
+      "sha256": "cbea41301da7ea2e9608b0c906b161e40dd47f60cf9bb7c127cf171f3b2b9035",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/src/render_map3d.rs",
-      "sha256": "df2d444e83d9de999bd44433803230ab273ac7436592488b79c8475f952cafed"
+      "sha256": "df2d444e83d9de999bd44433803230ab273ac7436592488b79c8475f952cafed",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/src/render_three.rs",
-      "sha256": "3801359ce1e3aee133710c11230bcfafc804682638bcc1551368fb4840a4a77c"
+      "sha256": "3801359ce1e3aee133710c11230bcfafc804682638bcc1551368fb4840a4a77c",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/src/render_three.rs",
-      "sha256": "480d8e27a30952b699581f80805a592ddc1ac79a1e1ac1701f88455de9e7a624"
+      "sha256": "480d8e27a30952b699581f80805a592ddc1ac79a1e1ac1701f88455de9e7a624",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/src/render_three.rs",
-      "sha256": "920b8ed125bcf72ea864a024acd0e9651b81076889fd1c06bc3b8567ea627ade"
+      "sha256": "920b8ed125bcf72ea864a024acd0e9651b81076889fd1c06bc3b8567ea627ade",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/src/render_three.rs",
-      "sha256": "ace54beaee6e189459e9b5bc324805e9a2dc32ee1d76f1804f9f3e0b74969bcf"
+      "sha256": "ace54beaee6e189459e9b5bc324805e9a2dc32ee1d76f1804f9f3e0b74969bcf",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/src/render_three.rs",
-      "sha256": "d8b44dc40924f569449266f1ddd27d7214d1f3f9c420795bf4246dc3dae13885"
+      "sha256": "d8b44dc40924f569449266f1ddd27d7214d1f3f9c420795bf4246dc3dae13885",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/src/render_three.rs",
-      "sha256": "e3ff98c2e4054f05a324b3dc461a13a7d45e3140b571025c5ae31389dff4dcc4"
+      "sha256": "e3ff98c2e4054f05a324b3dc461a13a7d45e3140b571025c5ae31389dff4dcc4",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/src/render_three.rs",
-      "sha256": "e4ee60664bf13778528a3164c14252ea9f306eff6f300d1c9f952ee4bc0fb7ab"
+      "sha256": "e4ee60664bf13778528a3164c14252ea9f306eff6f300d1c9f952ee4bc0fb7ab",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/src/text.rs",
-      "sha256": "4239855271da8bb44dcb3eb15fd85f7d3bfedb5c0925f10f566c65f99747a468"
+      "sha256": "4239855271da8bb44dcb3eb15fd85f7d3bfedb5c0925f10f566c65f99747a468",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/src/three.rs",
-      "sha256": "0e17567fa2d7bbd0a68e11b62ead907ae3dbcc05b486ef684ce6206a530615e1"
+      "sha256": "0e17567fa2d7bbd0a68e11b62ead907ae3dbcc05b486ef684ce6206a530615e1",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/src/three.rs",
-      "sha256": "d206a5a32f71798981e9774c4472e26e81b8116b7e05b5d2d6ba2b51ceb7088f"
+      "sha256": "d206a5a32f71798981e9774c4472e26e81b8116b7e05b5d2d6ba2b51ceb7088f",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/src/three.wgsl",
-      "sha256": "897de2efca17263f779616e92546844c35f9f020ba0da1eef101de03fe5023a0"
+      "sha256": "897de2efca17263f779616e92546844c35f9f020ba0da1eef101de03fe5023a0",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/tests/crater.rs",
-      "sha256": "c35cd806bd3f38c152efb3b9358e60cead83201eb0bc1ff6c3f985235c8fd8d9"
+      "sha256": "c35cd806bd3f38c152efb3b9358e60cead83201eb0bc1ff6c3f985235c8fd8d9",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/tests/crater.rs",
-      "sha256": "cccd4b30a7a77eebc0c286b6435efd3d4de5019d3d16e0f46b057468569c18c8"
+      "sha256": "cccd4b30a7a77eebc0c286b6435efd3d4de5019d3d16e0f46b057468569c18c8",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/tests/fracture.rs",
-      "sha256": "46ab47a175cf3f4f7347b3092505f5375ee64085807fbe93867e0e8a9ed60cce"
+      "sha256": "46ab47a175cf3f4f7347b3092505f5375ee64085807fbe93867e0e8a9ed60cce",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/tests/fracture.rs",
-      "sha256": "760c29cff61a41ccf81bbdcb23f15619a7b69c1404a5dca1e0ed2f7983839a45"
+      "sha256": "760c29cff61a41ccf81bbdcb23f15619a7b69c1404a5dca1e0ed2f7983839a45",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/tests/maps3d.rs",
-      "sha256": "053429562ec0a9442994900b12e0c04d76739fe269bf7364cf144335017d4c7f"
+      "sha256": "053429562ec0a9442994900b12e0c04d76739fe269bf7364cf144335017d4c7f",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/tests/mesh_sequence.rs",
-      "sha256": "10c5013a6cc9888db45f3158896ce8927b24265bf48041a5b0c18ada8d636af8"
+      "sha256": "10c5013a6cc9888db45f3158896ce8927b24265bf48041a5b0c18ada8d636af8",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/tests/ocean.rs",
-      "sha256": "65e927bcb8bc2be35daa30bafaa3fa9b3ba0e026f4aa8599b55e8f9bc87fc040"
+      "sha256": "65e927bcb8bc2be35daa30bafaa3fa9b3ba0e026f4aa8599b55e8f9bc87fc040",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/tests/three.rs",
-      "sha256": "3f01c3be40d0756b89d1784b27fa082ca6c3c30b9da3b1479cd05af8893c2513"
+      "sha256": "3f01c3be40d0756b89d1784b27fa082ca6c3c30b9da3b1479cd05af8893c2513",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-gpu/tests/volume.rs",
-      "sha256": "698f5cabcbcaaf7fb6717d4315c621e01228d5d5fe600a3a369b6437afcb2c7e"
+      "sha256": "698f5cabcbcaaf7fb6717d4315c621e01228d5d5fe600a3a369b6437afcb2c7e",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-model/src/assets.rs",
-      "sha256": "e60d026d4344d664d40c84956540ab0ef540b1d55cfb14636cf65eb420bb6f7e"
+      "sha256": "e60d026d4344d664d40c84956540ab0ef540b1d55cfb14636cf65eb420bb6f7e",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-model/src/rules.rs",
-      "sha256": "2409e9c95723c8eedff057d98a18d4f3d39dc05a56b06246e243d3732648ac69"
+      "sha256": "2409e9c95723c8eedff057d98a18d4f3d39dc05a56b06246e243d3732648ac69",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-model/src/rules.rs",
-      "sha256": "738b2dd7494e54ad2c0e90f92907a22ad548e15dccd80ad2597113b511295a8c"
+      "sha256": "738b2dd7494e54ad2c0e90f92907a22ad548e15dccd80ad2597113b511295a8c",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-model/src/rules.rs",
-      "sha256": "7642d22c827eb164516bf2ec0679fd7b2ffc509c622499825b1ffd6ec8679059"
+      "sha256": "7642d22c827eb164516bf2ec0679fd7b2ffc509c622499825b1ffd6ec8679059",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-model/src/rules.rs",
-      "sha256": "771e7a7e17b8ca6446f7419bc7557d6e2ed94d9ece7fa24e65c1743e1a721cc8"
+      "sha256": "771e7a7e17b8ca6446f7419bc7557d6e2ed94d9ece7fa24e65c1743e1a721cc8",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-model/src/rules.rs",
-      "sha256": "961b536d48aa9bb4d1784c4e77cf4cf6afaae3299ccee0b2a32bb8156d81e7c2"
+      "sha256": "961b536d48aa9bb4d1784c4e77cf4cf6afaae3299ccee0b2a32bb8156d81e7c2",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-model/src/rules.rs",
-      "sha256": "be4b27bce179afbf24c47a1b1229210d0d2e5f779ecdc989297c837e273dbec5"
+      "sha256": "be4b27bce179afbf24c47a1b1229210d0d2e5f779ecdc989297c837e273dbec5",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-model/src/rules.rs",
-      "sha256": "f9079f71c5896ed7eab4b382d6d02d3b7a8a99af73be3db09998c55bdf63b0a5"
+      "sha256": "f9079f71c5896ed7eab4b382d6d02d3b7a8a99af73be3db09998c55bdf63b0a5",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-model/tests/crater.rs",
-      "sha256": "c3b9a37b194cd3709bb93e5fe4cee175db1e63a6daad5b99bb06e54e5e500b64"
+      "sha256": "c3b9a37b194cd3709bb93e5fe4cee175db1e63a6daad5b99bb06e54e5e500b64",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-model/tests/fracture.rs",
-      "sha256": "cc64cb83ca4dc3398a986258aaaaea316d800e2736483f56e7e229ae75fc1235"
+      "sha256": "cc64cb83ca4dc3398a986258aaaaea316d800e2736483f56e7e229ae75fc1235",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-model/tests/fracture.rs",
-      "sha256": "f4678383ef9d3d5de616b0c350409388752dea8c9a8e6069eab332cd09cc6dad"
+      "sha256": "f4678383ef9d3d5de616b0c350409388752dea8c9a8e6069eab332cd09cc6dad",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-model/tests/mesh_sequence.rs",
-      "sha256": "15116ab0b762af0068464e090b7315bf0a6823e78883a535a33438a4db02094a"
+      "sha256": "15116ab0b762af0068464e090b7315bf0a6823e78883a535a33438a4db02094a",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-model/tests/ocean_rules.rs",
-      "sha256": "dd10151d7622581b6be8bca660646aefd17141fd323358a94c8088df11922cb0"
+      "sha256": "dd10151d7622581b6be8bca660646aefd17141fd323358a94c8088df11922cb0",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-model/tests/pyro_rules.rs",
-      "sha256": "2b57052ad0070a0527896de4b46c6c523840a93d37cbd4179f67752f9cc3ff90"
+      "sha256": "2b57052ad0070a0527896de4b46c6c523840a93d37cbd4179f67752f9cc3ff90",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-model/tests/terrain_rules.rs",
-      "sha256": "11a5be37e19419a938f428070e38678a7341ae01b9a40f0872a5c60f0c26c6e6"
+      "sha256": "11a5be37e19419a938f428070e38678a7341ae01b9a40f0872a5c60f0c26c6e6",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/src/ocean.rs",
-      "sha256": "7b08495f0bcd79ec08ccc558a0ac4ef10c50e93b6d518e6e0f060c9ce7212105"
+      "sha256": "7b08495f0bcd79ec08ccc558a0ac4ef10c50e93b6d518e6e0f060c9ce7212105",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/src/ocean/flux.rs",
-      "sha256": "47f448b9bfbf0396980b92ccd39beb266a6686777bc7b4ae6638a3e413f27107"
+      "sha256": "47f448b9bfbf0396980b92ccd39beb266a6686777bc7b4ae6638a3e413f27107",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/src/ocean/impulse.rs",
-      "sha256": "24048b0f085c5b90703bb0be919a63740444c693afdfdd13c129390ffe997426"
+      "sha256": "24048b0f085c5b90703bb0be919a63740444c693afdfdd13c129390ffe997426",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/src/ocean/whitewater.rs",
-      "sha256": "c685e072c029be278cd729053157a30c9aa3561831f4c52665caf28fde6b0527"
+      "sha256": "c685e072c029be278cd729053157a30c9aa3561831f4c52665caf28fde6b0527",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/src/particles3d.rs",
-      "sha256": "7bcd9c73a88df39a22b1be398caf40349a270990736070c53c94eaeab1b9d97e"
+      "sha256": "7bcd9c73a88df39a22b1be398caf40349a270990736070c53c94eaeab1b9d97e",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/src/particles3d.rs",
-      "sha256": "955fc74095e883b47138bf629c7150a8d33ff176f9859bc9c68e5a5f293244f9"
+      "sha256": "955fc74095e883b47138bf629c7150a8d33ff176f9859bc9c68e5a5f293244f9",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/src/particles3d.rs",
-      "sha256": "ee70e446a1cf707ab16dd7581ab6675209ffeaf18455b84ab4e6bd7491c51e60"
+      "sha256": "ee70e446a1cf707ab16dd7581ab6675209ffeaf18455b84ab4e6bd7491c51e60",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/src/particles3d/collider.rs",
-      "sha256": "5dd13392b687a73ede440609023a25cf0c191d7d20ba6ac5ba309e4aa6bd31b4"
+      "sha256": "5dd13392b687a73ede440609023a25cf0c191d7d20ba6ac5ba309e4aa6bd31b4",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/src/physics3d.rs",
-      "sha256": "05225346179739e310b9ddd1d7e1ae7806e6d8bc62894b7a6436aac8bbc5a1b1"
+      "sha256": "05225346179739e310b9ddd1d7e1ae7806e6d8bc62894b7a6436aac8bbc5a1b1",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/src/physics3d.rs",
-      "sha256": "4e0e543c246c5e5e6e854e5c9e506b8a8b7da6f23391fc75ad65b7ff71d89c7c"
+      "sha256": "4e0e543c246c5e5e6e854e5c9e506b8a8b7da6f23391fc75ad65b7ff71d89c7c",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/src/physics3d.rs",
-      "sha256": "722ee7f0c30af1d3b9375c275070d4c2247368c92d6c4f56b6951770e5f53d78"
+      "sha256": "722ee7f0c30af1d3b9375c275070d4c2247368c92d6c4f56b6951770e5f53d78",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/src/physics3d/fracture.rs",
-      "sha256": "1a56fd82397d6ef93ee16cb65d0f5ffb1de205a7c0e8e910aae54e0420842628"
+      "sha256": "1a56fd82397d6ef93ee16cb65d0f5ffb1de205a7c0e8e910aae54e0420842628",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/src/physics3d/fracture.rs",
-      "sha256": "86d55ad6a88601b1d8a6ac545dfd1e611c125c912253978bd8518475bb835caa"
+      "sha256": "86d55ad6a88601b1d8a6ac545dfd1e611c125c912253978bd8518475bb835caa",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/src/pyro.rs",
-      "sha256": "d476d9a84729123e7c8f859484848803a905f2971dd8f9a232cf4aa5e7e379b1"
+      "sha256": "d476d9a84729123e7c8f859484848803a905f2971dd8f9a232cf4aa5e7e379b1",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/tests/deforming_colliders.rs",
-      "sha256": "293b57dcbd1d753cc4c0d697663790c67eab33e3917c9bc90d0f8e06cee95a83"
+      "sha256": "293b57dcbd1d753cc4c0d697663790c67eab33e3917c9bc90d0f8e06cee95a83",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/tests/deforming_colliders.rs",
-      "sha256": "79db827eccd4f617a2052f5e7be91b72872baf61b6ae9460cf95936c21aa437f"
+      "sha256": "79db827eccd4f617a2052f5e7be91b72872baf61b6ae9460cf95936c21aa437f",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/tests/deforming_particles.rs",
-      "sha256": "0252dbb0779e4002521c5b1fc5268475e482a8eeab61790b862f3ceb4ef7b57a"
+      "sha256": "0252dbb0779e4002521c5b1fc5268475e482a8eeab61790b862f3ceb4ef7b57a",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/tests/fracture.rs",
-      "sha256": "97962318ec6a14febe2b97f0d742939ad5e972fb44fc4dbe3e02d1c320d2bd1d"
+      "sha256": "97962318ec6a14febe2b97f0d742939ad5e972fb44fc4dbe3e02d1c320d2bd1d",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/tests/fracture.rs",
-      "sha256": "fe5d2a1014e562c4942f45eb5b057e48a007b6c2cc06ee6785c5d0d7babc0b67"
+      "sha256": "fe5d2a1014e562c4942f45eb5b057e48a007b6c2cc06ee6785c5d0d7babc0b67",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/tests/ocean.rs",
-      "sha256": "3009d9e4e84e4a479193b6c57f864c7c5e7612755fb551d97236475456875b2e"
+      "sha256": "3009d9e4e84e4a479193b6c57f864c7c5e7612755fb551d97236475456875b2e",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/tests/particles3d.rs",
-      "sha256": "6b6f2c47d1cf99afb5b54c75f9b3f14c5ee9ca8b1536a8817fdba451ce98f855"
+      "sha256": "6b6f2c47d1cf99afb5b54c75f9b3f14c5ee9ca8b1536a8817fdba451ce98f855",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/tests/particles3d.rs",
-      "sha256": "74b899a8130e393f6bfbd8a0e970ba4e1b10b01d128c1b4337b5f9fadcc0beeb"
+      "sha256": "74b899a8130e393f6bfbd8a0e970ba4e1b10b01d128c1b4337b5f9fadcc0beeb",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/tests/pyro_mesh.rs",
-      "sha256": "30487df67975526b0db42d1baa64c86e2444af24b95f7fded63ff766e97e0c55"
+      "sha256": "30487df67975526b0db42d1baa64c86e2444af24b95f7fded63ff766e97e0c55",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-sim/tests/whitewater.rs",
-      "sha256": "8facbbcf9955e33e0b4ad875f2ec0617cf678536c79861a5d42beeab2165a971"
+      "sha256": "8facbbcf9955e33e0b4ad875f2ec0617cf678536c79861a5d42beeab2165a971",
+      "origin": "previous-repository"
     },
     {
       "file": "crates/sr-text/src/extrusion.rs",
-      "sha256": "8889e7a7d20c1c18a1025abd25d6d0370c18c7585e6669485f101ef584bcefd9"
+      "sha256": "8889e7a7d20c1c18a1025abd25d6d0370c18c7585e6669485f101ef584bcefd9",
+      "origin": "previous-repository"
     },
     {
       "file": "examples/cinematic-impact/hero.scene.xml",
-      "sha256": "d827c4fac1683716f675b97f4f69393ec72616b79933c21d6d7f42499f258651"
+      "sha256": "d827c4fac1683716f675b97f4f69393ec72616b79933c21d6d7f42499f258651",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-00.obj",
-      "sha256": "f79d0c74fc0218bfac3665e18075612f5fcf3f73ea2c6a5273fb349217c57506"
+      "sha256": "f79d0c74fc0218bfac3665e18075612f5fcf3f73ea2c6a5273fb349217c57506",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-01.obj",
-      "sha256": "b565bb7f28f92ba163d56fa008db4ded6d986d571af9fcaf33c1af5231618cf9"
+      "sha256": "b565bb7f28f92ba163d56fa008db4ded6d986d571af9fcaf33c1af5231618cf9",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-02.obj",
-      "sha256": "b4f8c21341340be0fd0dcff3646f176fea72348d70ae353bbd1758086e622a3a"
+      "sha256": "b4f8c21341340be0fd0dcff3646f176fea72348d70ae353bbd1758086e622a3a",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-03.obj",
-      "sha256": "6c305e8354e400e7ffaafc3688813fa546cd44b3d4c9edfe1abb465eeca4b2ce"
+      "sha256": "6c305e8354e400e7ffaafc3688813fa546cd44b3d4c9edfe1abb465eeca4b2ce",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-04.obj",
-      "sha256": "646d012dce28577cd97689a2f2844825a28a5f85d47b37434df35cdc17c114e3"
+      "sha256": "646d012dce28577cd97689a2f2844825a28a5f85d47b37434df35cdc17c114e3",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-05.obj",
-      "sha256": "4579c073b8e35adf427eb83ccfb6779ec0780ee6252f63997ffb4768395e92ee"
+      "sha256": "4579c073b8e35adf427eb83ccfb6779ec0780ee6252f63997ffb4768395e92ee",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-06.obj",
-      "sha256": "e51c5a6dd22fef0c04a1a3eb2669bb1fa1fa61e4ff2a360d94d2f5720c2a58d4"
+      "sha256": "e51c5a6dd22fef0c04a1a3eb2669bb1fa1fa61e4ff2a360d94d2f5720c2a58d4",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-07.obj",
-      "sha256": "f9eab9da47f1b70c041314dae062c2e078c1692bd7223c0b5e7aec51d6c99310"
+      "sha256": "f9eab9da47f1b70c041314dae062c2e078c1692bd7223c0b5e7aec51d6c99310",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-08.obj",
-      "sha256": "c1f2ebc8c4091194b04d6481b503ccf1e94dbe4b348d2c63beddfad90f32fa6d"
+      "sha256": "c1f2ebc8c4091194b04d6481b503ccf1e94dbe4b348d2c63beddfad90f32fa6d",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-09.obj",
-      "sha256": "863925d37c1b9c36fe8a8c25d593b016d8c77cf3a447fe4ca1bb7f4830f70893"
+      "sha256": "863925d37c1b9c36fe8a8c25d593b016d8c77cf3a447fe4ca1bb7f4830f70893",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-10.obj",
-      "sha256": "b8f5c949ba16653e65e73e86ba3b551cd3db39b65dbbafcafe83f5e7d2de6972"
+      "sha256": "b8f5c949ba16653e65e73e86ba3b551cd3db39b65dbbafcafe83f5e7d2de6972",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-11.obj",
-      "sha256": "959b5c5e9b3422846cbad65a7c210d1f38ef40193471aadae4684142d1b0430a"
+      "sha256": "959b5c5e9b3422846cbad65a7c210d1f38ef40193471aadae4684142d1b0430a",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-12.obj",
-      "sha256": "61d54f3cbe56883c7a62fe89800699383e1d87c89f28bafb67307a2021b67eef"
+      "sha256": "61d54f3cbe56883c7a62fe89800699383e1d87c89f28bafb67307a2021b67eef",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-13.obj",
-      "sha256": "9a4fff49c450a1b18caa4cd39ec318a55b7fc8767be3442ed8f48538e4266f4c"
+      "sha256": "9a4fff49c450a1b18caa4cd39ec318a55b7fc8767be3442ed8f48538e4266f4c",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-14.obj",
-      "sha256": "581f2cac223c2ee9df74bc344b789e5da8d394b626eef3b5a2175175116fea57"
+      "sha256": "581f2cac223c2ee9df74bc344b789e5da8d394b626eef3b5a2175175116fea57",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-15.obj",
-      "sha256": "34635d6f55acce7a09edd7f7416bc0dedc8358b195cf8a15c69244b77ccce86c"
+      "sha256": "34635d6f55acce7a09edd7f7416bc0dedc8358b195cf8a15c69244b77ccce86c",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-16.obj",
-      "sha256": "eb82978bdfad442c0ac69c3f9c527bc45a6366eed1e102804ba88ad02b6e1883"
+      "sha256": "eb82978bdfad442c0ac69c3f9c527bc45a6366eed1e102804ba88ad02b6e1883",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-17.obj",
-      "sha256": "14001df5e7c8133fedd33cd27f693743759cc273c479550ea9ac0978c0e3e8fe"
+      "sha256": "14001df5e7c8133fedd33cd27f693743759cc273c479550ea9ac0978c0e3e8fe",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-18.obj",
-      "sha256": "b825d4edea8af1e7d627e3eed3ecec45ce8215d8ae15e6072e5de1896be06def"
+      "sha256": "b825d4edea8af1e7d627e3eed3ecec45ce8215d8ae15e6072e5de1896be06def",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-19.obj",
-      "sha256": "1de534005828667ea659692f0868ec4b43bd9feef08eb42c2bafcb42289c303e"
+      "sha256": "1de534005828667ea659692f0868ec4b43bd9feef08eb42c2bafcb42289c303e",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-20.obj",
-      "sha256": "e529db1ed6612a7abc86a456583b6ba4f4c44e938f334b2fc06f72e1438cfa25"
+      "sha256": "e529db1ed6612a7abc86a456583b6ba4f4c44e938f334b2fc06f72e1438cfa25",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-21.obj",
-      "sha256": "8f12f45831a1d61a8b0bd77c4198b6a593a7e732965d5bdeed4c5e7a7dcde61e"
+      "sha256": "8f12f45831a1d61a8b0bd77c4198b6a593a7e732965d5bdeed4c5e7a7dcde61e",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-22.obj",
-      "sha256": "b2c961bb69ed92f9b73dd488e6e610df6078597a35e87ae49bc7f7bbfacfdf2e"
+      "sha256": "b2c961bb69ed92f9b73dd488e6e610df6078597a35e87ae49bc7f7bbfacfdf2e",
+      "origin": "previous-repository"
     },
     {
       "file": "frame-23.obj",
-      "sha256": "d83bc6f7b28810a7c19cc36a48c991f17ce717901d5effba37b6cdf72c772940"
+      "sha256": "d83bc6f7b28810a7c19cc36a48c991f17ce717901d5effba37b6cdf72c772940",
+      "origin": "previous-repository"
     },
     {
       "file": "schema/UPSTREAM",
-      "sha256": "84f6e4d8f0c46f913009bdaaae96f073ff9be04ba15531410e0333f43739e019"
+      "sha256": "84f6e4d8f0c46f913009bdaaae96f073ff9be04ba15531410e0333f43739e019",
+      "origin": "previous-repository"
     },
     {
       "file": "schema/scene-render-1.1.sch",
-      "sha256": "5706d61f6526025b9aed0bfd3e05b8fe5ed342a87724ecb4203adead03d575bc"
+      "sha256": "5706d61f6526025b9aed0bfd3e05b8fe5ed342a87724ecb4203adead03d575bc",
+      "origin": "previous-repository"
     },
     {
       "file": "schema/scene-render-1.1.sch",
-      "sha256": "a0962d008c45061db276ad480b1cd558fb18c184fec68136fee732875802fce6"
+      "sha256": "a0962d008c45061db276ad480b1cd558fb18c184fec68136fee732875802fce6",
+      "origin": "previous-repository"
     },
     {
       "file": "schema/scene-render-1.1.sch",
-      "sha256": "c6b07502954f578fe678bb19dde5549d34a1fabb473dae808d310b5bda70bdb1"
+      "sha256": "c6b07502954f578fe678bb19dde5549d34a1fabb473dae808d310b5bda70bdb1",
+      "origin": "previous-repository"
     },
     {
       "file": "schema/scene-render-1.1.sch",
-      "sha256": "d075d8ded93fcdf2c4a1917a49a612fb5149748fdf8b08a8612262495700c09c"
+      "sha256": "d075d8ded93fcdf2c4a1917a49a612fb5149748fdf8b08a8612262495700c09c",
+      "origin": "previous-repository"
     },
     {
       "file": "schema/scene-render-1.1.sch",
-      "sha256": "d1a9e4fed9756c036f0231256456057834287372cda98aa43eb055e4afa501bb"
+      "sha256": "d1a9e4fed9756c036f0231256456057834287372cda98aa43eb055e4afa501bb",
+      "origin": "previous-repository"
     },
     {
       "file": "schema/scene-render-1.1.sch",
-      "sha256": "eab1c651a8c216fe02fb6b4c5d7162f6c01215e736ee20026d435bf84ec1ff3b"
+      "sha256": "eab1c651a8c216fe02fb6b4c5d7162f6c01215e736ee20026d435bf84ec1ff3b",
+      "origin": "previous-repository"
     },
     {
       "file": "schema/scene-render-1.1.sch",
-      "sha256": "eb196b5d580d21a6e4ac8c778bdb1725336671dc2e7859988c13fd1a71d63571"
+      "sha256": "eb196b5d580d21a6e4ac8c778bdb1725336671dc2e7859988c13fd1a71d63571",
+      "origin": "previous-repository"
     },
     {
       "file": "schema/scene-render-1.1.xsd",
-      "sha256": "04a50b2a73dc1015114d2ba8853d69ca7bbc0219fd5f25e608eea67e580e6372"
+      "sha256": "04a50b2a73dc1015114d2ba8853d69ca7bbc0219fd5f25e608eea67e580e6372",
+      "origin": "previous-repository"
     },
     {
       "file": "schema/scene-render-1.1.xsd",
-      "sha256": "1142f5252aba6404845054fd7a06f9bc2122e63ab8604db9087e0898f242c7c8"
+      "sha256": "1142f5252aba6404845054fd7a06f9bc2122e63ab8604db9087e0898f242c7c8",
+      "origin": "previous-repository"
     },
     {
       "file": "schema/scene-render-1.1.xsd",
-      "sha256": "337ee4e32abcff411dbe9aa2bf3a7c9f75731f80f0360bcf38b25455c6ed490a"
+      "sha256": "337ee4e32abcff411dbe9aa2bf3a7c9f75731f80f0360bcf38b25455c6ed490a",
+      "origin": "previous-repository"
     },
     {
       "file": "schema/scene-render-1.1.xsd",
-      "sha256": "8f0198ba6287443c37f9908642b0df77ed62cb9368d070774b753e0fe6aa60c0"
+      "sha256": "8f0198ba6287443c37f9908642b0df77ed62cb9368d070774b753e0fe6aa60c0",
+      "origin": "previous-repository"
     },
     {
       "file": "schema/scene-render-1.1.xsd",
-      "sha256": "904dd809582e9d31718cb8e2d7cafef2bc305bded1a3e8bbe7a9b3121b55d925"
+      "sha256": "904dd809582e9d31718cb8e2d7cafef2bc305bded1a3e8bbe7a9b3121b55d925",
+      "origin": "previous-repository"
     },
     {
       "file": "schema/scene-render-1.1.xsd",
-      "sha256": "a3eb25d112f88bf614865db6fd5ed70f3825f824e8624b762935502e822f21a4"
+      "sha256": "a3eb25d112f88bf614865db6fd5ed70f3825f824e8624b762935502e822f21a4",
+      "origin": "previous-repository"
     },
     {
       "file": "schema/scene-render-1.1.xsd",
-      "sha256": "b6f00963096e971d4ec8f82a72dd09b278ef3006dd77945c496d6135a678774c"
+      "sha256": "b6f00963096e971d4ec8f82a72dd09b278ef3006dd77945c496d6135a678774c",
+      "origin": "previous-repository"
     },
     {
       "file": "srep-0000-cinematic-impact.md",
-      "sha256": "07fbc55bda57650e3f3c666c533d6100b8f54e1f53ede58de010aa903dda837c"
+      "sha256": "07fbc55bda57650e3f3c666c533d6100b8f54e1f53ede58de010aa903dda837c",
+      "origin": "previous-repository"
     },
     {
       "file": "srep-0000-cinematic-impact.md",
-      "sha256": "278836554338d31e7be9fd90197a39968b98283328a8ac07f16060752370463f"
+      "sha256": "278836554338d31e7be9fd90197a39968b98283328a8ac07f16060752370463f",
+      "origin": "previous-repository"
     },
     {
       "file": "srep-0000-cinematic-impact.md",
-      "sha256": "2e4870272fcc05e3f159f72d5b0c724343d676851d9dae7a7462985ee0a9d085"
+      "sha256": "2e4870272fcc05e3f159f72d5b0c724343d676851d9dae7a7462985ee0a9d085",
+      "origin": "previous-repository"
     },
     {
       "file": "srep-0000-cinematic-impact.md",
-      "sha256": "5a8f1ca9f1b9ff29ed06c769489053d762ac7a57c0e89ab76a9b5cdeed7eae12"
+      "sha256": "5a8f1ca9f1b9ff29ed06c769489053d762ac7a57c0e89ab76a9b5cdeed7eae12",
+      "origin": "previous-repository"
     },
     {
       "file": "srep-0000-cinematic-impact.md",
-      "sha256": "67d479e786948f7698231441b16f89bddbd5ad30198876c9f74c5965f0353cfe"
+      "sha256": "67d479e786948f7698231441b16f89bddbd5ad30198876c9f74c5965f0353cfe",
+      "origin": "previous-repository"
     },
     {
       "file": "srep-0000-cinematic-impact.md",
-      "sha256": "705166cf33b2f33e2a269d15e7413e60070cbdc54d7871fd9088322d023ff615"
+      "sha256": "705166cf33b2f33e2a269d15e7413e60070cbdc54d7871fd9088322d023ff615",
+      "origin": "previous-repository"
     },
     {
       "file": "srep-0000-cinematic-impact.md",
-      "sha256": "7edb88908d29fb6ea1b5df6e9c47d882ef4b29cbe94270161fc62edb7077320a"
+      "sha256": "7edb88908d29fb6ea1b5df6e9c47d882ef4b29cbe94270161fc62edb7077320a",
+      "origin": "previous-repository"
     },
     {
       "file": "srep-0000-cinematic-impact.md",
-      "sha256": "88631516dbf726e336bba9ef45f05aec3a1106b0c0d3af095e746b060a273a29"
+      "sha256": "88631516dbf726e336bba9ef45f05aec3a1106b0c0d3af095e746b060a273a29",
+      "origin": "previous-repository"
     },
     {
       "file": "srep-0000-cinematic-impact.md",
-      "sha256": "8af8ced7b08ce716854fbbf16aa714881af6fc90c05c6a86c78b16fcbab899fc"
+      "sha256": "8af8ced7b08ce716854fbbf16aa714881af6fc90c05c6a86c78b16fcbab899fc",
+      "origin": "previous-repository"
     },
     {
       "file": "srep-0000-cinematic-impact.md",
-      "sha256": "b0af0fa8c7478436d7bb8da3393fa69e5018d07165c91a34682024e3f2c97ee5"
+      "sha256": "b0af0fa8c7478436d7bb8da3393fa69e5018d07165c91a34682024e3f2c97ee5",
+      "origin": "previous-repository"
     },
     {
       "file": "srep-0000-cinematic-impact.md",
-      "sha256": "b1d4c2c533e9f3b84278656190393d4b93740146451e3d36304363dfbfb96ab7"
+      "sha256": "b1d4c2c533e9f3b84278656190393d4b93740146451e3d36304363dfbfb96ab7",
+      "origin": "previous-repository"
     },
     {
       "file": "srep-0000-cinematic-impact.md",
-      "sha256": "c2f8799fb474d22873d40bc34d9fb34de6d5db1e91b400cde97cc7ffdc4d7378"
+      "sha256": "c2f8799fb474d22873d40bc34d9fb34de6d5db1e91b400cde97cc7ffdc4d7378",
+      "origin": "previous-repository"
     },
     {
       "file": "srep-0000-cinematic-impact.md",
-      "sha256": "c3c830bb67f9f7c5a1a194681c8198179c5c5b949d6b8756bc90f5814eeb901c"
+      "sha256": "c3c830bb67f9f7c5a1a194681c8198179c5c5b949d6b8756bc90f5814eeb901c",
+      "origin": "previous-repository"
     },
     {
       "file": "tests/corpus/manifest.json",
-      "sha256": "16738b970a54024e2bc776a4225d62792cae3039e7e692a048ccd0b089419bfe"
+      "sha256": "16738b970a54024e2bc776a4225d62792cae3039e7e692a048ccd0b089419bfe",
+      "origin": "previous-repository"
     },
     {
       "file": "tests/corpus/manifest.json",
-      "sha256": "20cc1091e3341e2a915e7cf9670c74e963693bc8005bdad464f94c8bc33e1eb6"
+      "sha256": "20cc1091e3341e2a915e7cf9670c74e963693bc8005bdad464f94c8bc33e1eb6",
+      "origin": "previous-repository"
     },
     {
       "file": "tests/corpus/manifest.json",
-      "sha256": "c95c28c6e3acd93e7e8ea72625479f12b1d19fd13a5676d7f26b53dc053df01c"
+      "sha256": "c95c28c6e3acd93e7e8ea72625479f12b1d19fd13a5676d7f26b53dc053df01c",
+      "origin": "previous-repository"
     },
     {
       "file": "tools/build_corpus.py",
-      "sha256": "40ec3e957b1bef2d528ed970f0b3eb6ae05d7b3a1ff4c0f510f6c134e95838c2"
+      "sha256": "40ec3e957b1bef2d528ed970f0b3eb6ae05d7b3a1ff4c0f510f6c134e95838c2",
+      "origin": "previous-repository"
     },
     {
       "file": "tools/build_corpus.py",
-      "sha256": "85e8b4fcdf89967bd55dfd9184473d634590b85308367fb1f2929e6df19a7441"
+      "sha256": "85e8b4fcdf89967bd55dfd9184473d634590b85308367fb1f2929e6df19a7441",
+      "origin": "previous-repository"
     },
     {
       "file": "tools/build_corpus.py",
-      "sha256": "874de97175ea44cfde3d1a9248c9b7a6f646bee3d09bcb56898251d0af52e91d"
+      "sha256": "874de97175ea44cfde3d1a9248c9b7a6f646bee3d09bcb56898251d0af52e91d",
+      "origin": "previous-repository"
     },
     {
       "file": "tools/build_corpus.py",
-      "sha256": "99e75cc90f1a4bde7a1928f1e488d47d0b98d4b3b888d046c868654dd7280af9"
+      "sha256": "99e75cc90f1a4bde7a1928f1e488d47d0b98d4b3b888d046c868654dd7280af9",
+      "origin": "previous-repository"
     },
     {
       "file": "tools/build_corpus.py",
-      "sha256": "b58488c9448b088b066ffd10cd7b0aa4d3dd38e53a56a8a672de9d6f84c36ce7"
+      "sha256": "b58488c9448b088b066ffd10cd7b0aa4d3dd38e53a56a8a672de9d6f84c36ce7",
+      "origin": "previous-repository"
     },
     {
       "file": "tools/tests/test_build_corpus.py",

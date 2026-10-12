@@ -121,7 +121,7 @@ class WorkerIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             subprocess.run(["git", "init", "-q", directory], check=True)
-            subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.test",
+            subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.test", "-c", "core.hooksPath=/dev/null",
                             "commit", "--allow-empty", "-qm", "fixture"], cwd=root, check=True)
             commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
             binary = root / "fake-libtest"

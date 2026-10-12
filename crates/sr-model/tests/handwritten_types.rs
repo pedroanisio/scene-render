@@ -10,7 +10,7 @@
 //! The parser may take more than the schema does; the validator has refused those documents before the parser sees them.
 //! `LENIENT` lists what is known to be taken, so a parser that becomes stricter or looser than that is seen.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use regex::Regex;
@@ -224,6 +224,31 @@ const TEXT_ONLY: &[(&str, &str)] = &[
     ("unitTripleType.base", "the base of unitTripleType, read as the same Vec<f64>"),
     ("densityTonemapType@reference", "an anonymous union kept as its text"),
     ("densityTonemapType@reference.member1", "a member of that union, kept as its text"),
+];
+
+/// Per type, how many values one edit from a valid sample the parser takes and the schema's facets (as interpreted
+/// here, without whitespace collapsing) refuse. What the walk finds is mostly a leading or trailing space, a leading
+/// `+`, a leading zero and a bare `.5` or `5.`: the parsers read numbers with Rust's number parsers and trim their
+/// input, where the schema's patterns are narrower. The values reach a parser only after the schema validator has
+/// passed the document, so these are a property of the parsers, not of what a document may contain. The counts pin
+/// that: a parser that is tightened or loosened moves its count and has to be looked at.
+const EDIT_LENIENT: &[(&str, usize)] = &[
+    ("aspectType", 15),
+    ("colorListType", 16),
+    ("colorType", 259),
+    ("fpsType", 15),
+    ("languageTagType", 2744),
+    ("lengthType", 10),
+    ("paintRefType", 343),
+    ("paintType", 107),
+    ("pointListType", 8),
+    ("pointType", 21),
+    ("positiveLengthType", 27),
+    ("positiveRelativeLength", 55),
+    ("relativeLength", 54),
+    ("sha256Type", 226),
+    ("timecodeType", 12),
+    ("unitTripleType", 123),
 ];
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -592,6 +617,40 @@ fn the_parser_takes_what_a_widened_schema_would_admit_one_edit_from_a_sample() {
         refused.is_empty(),
         "values.rs refuses what the schema accepts:\n{}",
         refused.into_iter().collect::<Vec<_>>().join("\n")
+    );
+}
+
+/// The other direction of the walk: one edit away from a valid sample the schema refuses, and the parser takes it. The
+/// samples list some of these by hand (`LENIENT`); this finds the rest, and pins them so a parser that grows more
+/// permissive, or is tightened, shows up.
+#[test]
+fn what_the_parser_takes_one_edit_from_a_sample_beyond_the_schema_is_what_is_pinned() {
+    let text = schema_text();
+    let doc = roxmltree::Document::parse(&text).unwrap();
+    let schema = Schema { doc: &doc };
+    let alphabet = alphabet(&text);
+    let mut taken: BTreeMap<String, usize> = BTreeMap::new();
+    for (name, rows) in samples() {
+        let mut seen = BTreeSet::new();
+        for (sample, valid) in &rows {
+            if !valid {
+                continue;
+            }
+            for edited in edits(sample, &alphabet) {
+                if !schema.accepts_named(name, &edited) && rust_accepts(name, &edited) == Some(true) {
+                    seen.insert(edited);
+                }
+            }
+        }
+        if !seen.is_empty() {
+            taken.insert(name.to_string(), seen.len());
+        }
+    }
+    let pinned: BTreeMap<String, usize> = EDIT_LENIENT.iter().map(|(n, c)| (n.to_string(), *c)).collect();
+    assert_eq!(
+        taken, pinned,
+        "left: types whose parser takes this many one-edit values the schema refuses; right: EDIT_LENIENT. \
+         Tighten the parser, or record the new count with the reason"
     );
 }
 

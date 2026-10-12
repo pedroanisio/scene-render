@@ -44,6 +44,10 @@ def facts():
         out[f"rule-{fam.lower()}-max"] = f"{fam}{families[fam]}"
     out["rule-families"] = str(len(families))
 
+    xsd = ET.parse(ROOT / "schema/scene-render-1.1.xsd").getroot()
+    blend = [t for t in xsd.iter(XS + "simpleType") if t.get("name") == "blendType"]
+    out["blend-modes"] = str(len(list(blend[0].iter(XS + "enumeration"))))
+
     corpus = json.loads((ROOT / "tests/corpus/manifest.json").read_text())
     for kind in ("valid", "invalid", "warnings"):
         out[f"corpus-{kind}"] = str(len(corpus[kind]))
@@ -88,6 +92,7 @@ def process(path, values, write):
     return problems
 
 
+XS = "{http://www.w3.org/2001/XMLSchema}"
 SKIPPED_MODULES = {"lib", "main", "mod", "bin"}
 
 
@@ -119,7 +124,13 @@ def layout_problems(readme, root=ROOT):
         src = root / "crates" / crate / "src"
         if "src/" not in text or not src.is_dir():
             continue  # an entry that describes the crate as a whole, such as the CLI
-        words = set(re.findall(r"[A-Za-z0-9_]+", text))
+        # `three_{bind,depth}` stands for three_bind and three_depth
+        expanded = re.sub(r"(\w+)\{([^}]*)\}", lambda m: " ".join(m.group(1) + x.strip() for x in m.group(2).split(",")), text)
+        words = set(re.findall(r"[A-Za-z0-9_]+", text)) | set(re.findall(r"[A-Za-z0-9_]+", expanded))
+        # the other direction: a snake_case name in the entry is a module, file or directory of the crate
+        present = {p.stem for p in (root / "crates" / crate).rglob("*") if "target" not in p.parts}
+        for name in sorted(set(re.findall(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b", expanded)) - present):
+            problems.append(f"Layout entry of crates/{crate} names {name}, which is not in the crate")
         for item in sorted(src.iterdir()):
             name = item.stem if item.is_file() and item.suffix == ".rs" else item.name if item.is_dir() else None
             if name and name not in SKIPPED_MODULES and name not in words:

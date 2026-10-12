@@ -33,6 +33,11 @@ class Repo:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text)
 
+    def commit(self):
+        # no hooks: a user's global commit hooks have no business in a throwaway repository
+        subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "first"], cwd=self.path,
+                       check=True)
+
     def stage(self, name):
         subprocess.run(["git", "add", name], cwd=self.path, check=True)
 
@@ -260,6 +265,70 @@ class LedgerDigests(unittest.TestCase):
         r = self.check(None, extra={"nested": [{"x": {"inputs_sha256": {"src/a.rs": SHA_OLD}}}]})
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("L4", r.stdout)
+
+    def committed(self, old_text, current_text, historical, origin=None):
+        """A repository whose `src/a.rs` was committed as `old_text` and now reads `current_text`; the ledger pins
+        the digest of `old_text`."""
+        import json
+        repo = Repo()
+        repo.write("src/a.rs", old_text)
+        repo.write("a.md", "clean\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo.path, check=True)
+        repo.commit()
+        repo.write("src/a.rs", current_text)
+        ledger = {"milestones": [dict(milestone("one"), source_sha256={"src/a.rs": hashlib.sha256(old_text.encode()).hexdigest()})]}
+        repo.write(LEDGER, json.dumps(ledger))
+        entry = {"file": "src/a.rs", "sha256": historical}
+        if origin:
+            entry["origin"] = origin
+        repo.write(HISTORICAL, json.dumps({"digests": [entry]}))
+        return repo.check("--all")
+
+    def test_a_historical_entry_that_is_a_committed_revision_passes(self):
+        digest = hashlib.sha256(b"first\n").hexdigest()
+        r = self.committed("first\n", "second\n", digest)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_historical_entry_no_commit_ever_had_is_refused(self):
+        # the ledger pins the digest of the file as committed; the list names a different value, as a made-up
+        # entry would, and the ledger's own pin then has no entry at all
+        import json
+        repo = Repo()
+        repo.write("src/a.rs", "first\n")
+        repo.write("a.md", "clean\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo.path, check=True)
+        repo.commit()
+        repo.write("src/a.rs", "second\n")
+        invented = hashlib.sha256(b"never committed\n").hexdigest()
+        ledger = {"milestones": [dict(milestone("one"), source_sha256={"src/a.rs": invented})]}
+        repo.write(LEDGER, json.dumps(ledger))
+        repo.write(HISTORICAL, json.dumps({"digests": [{"file": "src/a.rs", "sha256": invented}]}))
+        r = repo.check("--all")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("L6", r.stdout)
+
+    def test_an_entry_from_the_previous_repository_is_not_asked_for_a_revision(self):
+        import json
+        repo = Repo()
+        repo.write("src/a.rs", "now\n")
+        repo.write("a.md", "clean\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo.path, check=True)
+        repo.commit()
+        old = hashlib.sha256(b"before this history\n").hexdigest()
+        ledger = {"milestones": [dict(milestone("one"), source_sha256={"src/a.rs": old})]}
+        repo.write(LEDGER, json.dumps(ledger))
+        repo.write(HISTORICAL, json.dumps({"digests": [{"file": "src/a.rs", "sha256": old,
+                                                       "origin": "previous-repository"}]}))
+        r = repo.check("--all")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_repository_without_history_is_not_asked_for_revisions(self):
+        r = self.check({"src/a.rs": SHA_OLD}, historical=[("src/a.rs", SHA_OLD)])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_every_historical_entry_of_this_repository_is_a_revision_or_declared_inherited(self):
+        errors = [e for e in hygiene.check_ledger(str(ROOT)) if "L6" in e]
+        self.assertEqual(errors, [])
 
     def test_every_pin_of_this_repository_is_current_or_declared(self):
         errors = [e for e in hygiene.check_ledger(str(ROOT)) if "L4" in e or "L5" in e]

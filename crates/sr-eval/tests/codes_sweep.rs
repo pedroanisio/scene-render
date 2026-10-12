@@ -118,6 +118,25 @@ fn every_code_the_readme_names_is_in_a_catalogue() {
 }
 
 #[test]
+fn every_exemption_is_still_written_in_source() {
+    let written: BTreeSet<String> = sources().iter().flat_map(|(_, t)| literals(t)).collect();
+    let unused: Vec<&&str> = NOT_CODES.iter().filter(|n| !written.contains(**n)).collect();
+    assert!(unused.is_empty(), "NOT_CODES entries no source writes any more (drop them): {unused:?}");
+    let catalogued: Vec<&&str> = NOT_CODES.iter().filter(|n| catalogue().contains(**n)).collect();
+    assert!(catalogued.is_empty(), "NOT_CODES entries that are catalogued codes (drop them): {catalogued:?}");
+}
+
+/// A catalogued code whose spelling the sweep's pattern cannot see would never be found at an emit site or in the
+/// README: it would look unused to every check above. Codes that are not hand-written literals (the Schematron
+/// asserts the rule engine emits, and the inert ones) are not swept.
+#[test]
+fn every_swept_catalogue_code_is_spelled_as_the_sweep_reads_it() {
+    let re = Regex::new(r"^(?:[A-Z]{1,5}[0-9]{1,3}|XML)$").unwrap();
+    let odd: Vec<String> = hand_emitted().into_iter().filter(|c| !re.is_match(c)).collect();
+    assert!(odd.is_empty(), "catalogued codes the literal sweep cannot see (widen the pattern): {odd:?}");
+}
+
+#[test]
 fn the_sweep_flags_an_unlisted_code_and_a_prefixed_message() {
     let known: BTreeSet<String> = ["E01", "CMP12"].iter().map(|s| s.to_string()).collect();
     assert_eq!(strays(r#"diag("E99", "x"); diag("E01", "y");"#, &known), vec!["E99"]);
