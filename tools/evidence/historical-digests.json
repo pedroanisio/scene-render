@@ -760,6 +760,10 @@
     {
       "file": "tools/build_corpus.py",
       "sha256": "b58488c9448b088b066ffd10cd7b0aa4d3dd38e53a56a8a672de9d6f84c36ce7"
+    },
+    {
+      "file": "tools/tests/test_build_corpus.py",
+      "sha256": "e6b2b44a1b86ed274d1a6a66c4cedf7bd64fcb394b322e79e421b12b51ae0935"
     }
   ]
 }
