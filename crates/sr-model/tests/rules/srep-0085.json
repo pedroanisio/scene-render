@@ -1,0 +1,764 @@
+{
+ "srep-0085-c13-min-size-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><assets><text id=\"t\" text=\"Hi\" width=\"60\" height=\"30\" size=\"10\" minSize=\"+0.5\" maxSize=\"1\"/></assets><composition><layer id=\"l\" asset=\"t\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C13",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c13-max-size-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><assets><text id=\"t\" text=\"Hi\" width=\"60\" height=\"30\" size=\"10\" minSize=\"0.5\" maxSize=\"+1\"/></assets><composition><layer id=\"l\" asset=\"t\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C13",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c13-min-size-plus-1-above-max": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><assets><text id=\"t\" text=\"Hi\" width=\"60\" height=\"30\" size=\"10\" minSize=\"+1\" maxSize=\"0.5\"/></assets><composition><layer id=\"l\" asset=\"t\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C13",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "C13"
+    ]
+   }
+  }
+ },
+ "srep-0085-c14-size-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><assets><text id=\"t\" text=\"Hi\" width=\"60\" height=\"30\" size=\"+1\" letterSpacing=\"2\"/></assets><composition><layer id=\"l\" asset=\"t\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C14",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c14-letter-spacing-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><assets><text id=\"t\" text=\"Hi\" width=\"60\" height=\"30\" size=\"10\" letterSpacing=\"+0.5\"/></assets><composition><layer id=\"l\" asset=\"t\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C14",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c14-letter-spacing-plus-5-size-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><assets><text id=\"t\" text=\"Hi\" width=\"60\" height=\"30\" size=\"+1\" letterSpacing=\"+5\"/></assets><composition><layer id=\"l\" asset=\"t\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C14",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "C14"
+    ]
+   }
+  }
+ },
+ "srep-0085-c15-speed-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><assets><image id=\"img\" src=\"../assets/tile.png\" width=\"16\" height=\"16\"/></assets><composition><layer id=\"l\" asset=\"img\" speed=\"+1\"><timeRemap><key time=\"0\" value=\"0\"/><key time=\"1\" value=\"0.5\"/></timeRemap></layer></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C15",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c15-speed-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><assets><image id=\"img\" src=\"../assets/tile.png\" width=\"16\" height=\"16\"/></assets><composition><layer id=\"l\" asset=\"img\" speed=\"+0.5\"><timeRemap><key time=\"0\" value=\"0\"/><key time=\"1\" value=\"0.5\"/></timeRemap></layer></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C15",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "C15"
+    ]
+   }
+  }
+ },
+ "srep-0085-c15-speed-exponent": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><assets><image id=\"img\" src=\"../assets/tile.png\" width=\"16\" height=\"16\"/></assets><composition><layer id=\"l\" asset=\"img\" speed=\"1e0\"><timeRemap><key time=\"0\" value=\"0\"/><key time=\"1\" value=\"0.5\"/></timeRemap></layer></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C15",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   },
+   "native_only": "speed is written 1e0, which a strict XPath 1.0 number() reads as NaN; the native validator is normative for it (SREP 85, Semantics 4)"
+  }
+ },
+ "srep-0085-c37-offsets-plus-0.5-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><paints><linearGradient id=\"g\"><stop offset=\"0\" color=\"#FF0000\"/><stop offset=\"+0.5\" color=\"#00FF00\"/><stop offset=\"+1\" color=\"#0000FF\"/></linearGradient></paints><composition><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"url(#g)\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C37",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c37-offsets-plus-1-then-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><paints><linearGradient id=\"g\"><stop offset=\"0\" color=\"#FF0000\"/><stop offset=\"+1\" color=\"#00FF00\"/><stop offset=\"+0.5\" color=\"#0000FF\"/></linearGradient></paints><composition><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"url(#g)\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C37",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "C37"
+    ]
+   }
+  }
+ },
+ "srep-0085-c38-times-plus-0.5-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"><animate property=\"opacity\"><key time=\"0\" value=\"0\"/><key time=\"+0.5\" value=\"0.5\"/><key time=\"+1\" value=\"1\"/></animate></shape></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C38",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c38-times-plus-1-then-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"><animate property=\"opacity\"><key time=\"0\" value=\"0\"/><key time=\"+1\" value=\"0.5\"/><key time=\"+0.5\" value=\"1\"/></animate></shape></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C38",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "C38"
+    ]
+   }
+  }
+ },
+ "srep-0085-c44-end-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><output id=\"o\" path=\"out/frame_%04d.png\" codec=\"png-sequence\" end=\"+1\"></output><composition><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C44",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c44-start-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><output id=\"o\" path=\"out/frame_%04d.png\" codec=\"png-sequence\" start=\"+0.5\" end=\"1\"></output><composition><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C44",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c44-end-plus-0.5-before-start-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><output id=\"o\" path=\"out/frame_%04d.png\" codec=\"png-sequence\" start=\"+1\" end=\"+0.5\"></output><composition><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C44",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "C44"
+    ]
+   }
+  }
+ },
+ "srep-0085-c54-start-plus-0": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><output id=\"o\" path=\"out/frame_%04d.png\" codec=\"png-sequence\" start=\"+0\"><segment from=\"0\" to=\"1\"/></output><composition><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C54",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c54-start-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><output id=\"o\" path=\"out/frame_%04d.png\" codec=\"png-sequence\" start=\"+0.5\"><segment from=\"0\" to=\"1\"/></output><composition><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C54",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "C54"
+    ]
+   }
+  }
+ },
+ "srep-0085-c54-start-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><output id=\"o\" path=\"out/frame_%04d.png\" codec=\"png-sequence\" start=\"+1\"><segment from=\"0\" to=\"1\"/></output><composition><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C54",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "C54"
+    ]
+   }
+  }
+ },
+ "srep-0085-c52-end-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.1\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><fluid id=\"f\" width=\"10\" height=\"10\"><fluidSource start=\"0.5\" end=\"+1\"/></fluid></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C52",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c52-start-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.1\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><fluid id=\"f\" width=\"10\" height=\"10\"><fluidSource start=\"+0.5\" end=\"1\"/></fluid></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C52",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c52-end-plus-0.5-before-start-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.1\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><fluid id=\"f\" width=\"10\" height=\"10\"><fluidSource start=\"+1\" end=\"+0.5\"/></fluid></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C52",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "C52"
+    ]
+   }
+  }
+ },
+ "srep-0085-c53-domain-plus-0.5-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.1\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><assets><geo id=\"g\" src=\"../assets/squares.geojson\"/><map id=\"m\" width=\"64\" height=\"32\"><geoLayer geo=\"g\" fillBy=\"id\" domain=\"0 +0.5 +1\"/></map></assets><composition><layer id=\"l\" asset=\"m\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C53",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c53-domain-plus-1-then-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.1\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><assets><geo id=\"g\" src=\"../assets/squares.geojson\"/><map id=\"m\" width=\"64\" height=\"32\"><geoLayer geo=\"g\" fillBy=\"id\" domain=\"0 +1 +0.5\"/></map></assets><composition><layer id=\"l\" asset=\"m\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C53",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "C53"
+    ]
+   }
+  }
+ },
+ "srep-0085-c56-to-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><output id=\"o\" path=\"out/frame_%04d.png\" codec=\"png-sequence\"><segment from=\"0\" to=\"+1\"/></output><composition><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C56",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c56-from-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><output id=\"o\" path=\"out/frame_%04d.png\" codec=\"png-sequence\"><segment from=\"+0.5\" to=\"1\"/></output><composition><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C56",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c56-duration-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"+1\"/><output id=\"o\" path=\"out/frame_%04d.png\" codec=\"png-sequence\"><segment from=\"0\" to=\"1\"/></output><composition><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C56",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-c56-to-plus-1-after-duration-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.2\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"0.5\"/><output id=\"o\" path=\"out/frame_%04d.png\" codec=\"png-sequence\"><segment from=\"0\" to=\"+1\"/></output><composition><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 C56",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "C56"
+    ]
+   }
+  }
+ },
+ "srep-0085-pyro1-voxel-size-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><object3D id=\"cloud\" primitive=\"volume\"><pyro width=\"8\" height=\"8\" depth=\"8\" voxelSize=\"+1\" dt=\"0.1\"><pyroSource shape=\"sphere\" radius=\"2\" densityRate=\"2\" start=\"0.15\" end=\"0.35\"/></pyro><medium blackbody=\"true\" emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 PYRO1",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-pyro1-voxel-size-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><object3D id=\"cloud\" primitive=\"volume\"><pyro width=\"8\" height=\"8\" depth=\"8\" voxelSize=\"+0.5\" dt=\"0.1\"><pyroSource shape=\"sphere\" radius=\"2\" densityRate=\"2\" start=\"0.15\" end=\"0.35\"/></pyro><medium blackbody=\"true\" emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 PYRO1",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-pyro1-width-plus-8.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><object3D id=\"cloud\" primitive=\"volume\"><pyro width=\"+8.5\" height=\"8\" depth=\"8\" voxelSize=\"1\" dt=\"0.1\"><pyroSource shape=\"sphere\" radius=\"2\" densityRate=\"2\" start=\"0.15\" end=\"0.35\"/></pyro><medium blackbody=\"true\" emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 PYRO1",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "PYRO1"
+    ]
+   }
+  }
+ },
+ "srep-0085-pyro2-end-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><object3D id=\"cloud\" primitive=\"volume\"><pyro width=\"8\" height=\"8\" depth=\"8\" voxelSize=\"1\" dt=\"0.1\"><pyroSource shape=\"sphere\" radius=\"2\" densityRate=\"2\" start=\"0.15\" end=\"+1\"/></pyro><medium blackbody=\"true\" emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 PYRO2",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-pyro2-start-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><object3D id=\"cloud\" primitive=\"volume\"><pyro width=\"8\" height=\"8\" depth=\"8\" voxelSize=\"1\" dt=\"0.1\"><pyroSource shape=\"sphere\" radius=\"2\" densityRate=\"2\" start=\"+0.5\" end=\"1\"/></pyro><medium blackbody=\"true\" emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 PYRO2",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-pyro2-end-plus-0.5-before-start-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><object3D id=\"cloud\" primitive=\"volume\"><pyro width=\"8\" height=\"8\" depth=\"8\" voxelSize=\"1\" dt=\"0.1\"><pyroSource shape=\"sphere\" radius=\"2\" densityRate=\"2\" start=\"+1\" end=\"+0.5\"/></pyro><medium blackbody=\"true\" emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 PYRO2",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "PYRO2"
+    ]
+   }
+  }
+ },
+ "srep-0085-pyro4-scale-x-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><object3D id=\"cloud\" primitive=\"volume\"><pyro width=\"8\" height=\"8\" depth=\"8\" voxelSize=\"1\" dt=\"0.1\"><pyroSource shape=\"sphere\" radius=\"2\" scaleX=\"+1\" densityRate=\"2\" start=\"0.15\" end=\"0.35\"/></pyro><medium blackbody=\"true\" emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 PYRO4",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-pyro4-scale-y-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><object3D id=\"cloud\" primitive=\"volume\"><pyro width=\"8\" height=\"8\" depth=\"8\" voxelSize=\"1\" dt=\"0.1\"><pyroSource shape=\"sphere\" radius=\"2\" scaleY=\"+0.5\" densityRate=\"2\" start=\"0.15\" end=\"0.35\"/></pyro><medium blackbody=\"true\" emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 PYRO4",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-pyro4-scale-z-plus-0": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><object3D id=\"cloud\" primitive=\"volume\"><pyro width=\"8\" height=\"8\" depth=\"8\" voxelSize=\"1\" dt=\"0.1\"><pyroSource shape=\"sphere\" radius=\"2\" scaleZ=\"+0\" densityRate=\"2\" start=\"0.15\" end=\"0.35\"/></pyro><medium blackbody=\"true\" emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 PYRO4",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "PYRO4"
+    ]
+   }
+  }
+ },
+ "srep-0085-vol4-bounds-max-z-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><assets><volume id=\"smoke\" src=\"../assets/srep79-uniform.srvol\" boundsMinX=\"0\" boundsMinY=\"0\" boundsMinZ=\"0\" boundsMaxX=\"32\" boundsMaxY=\"32\" boundsMaxZ=\"+1\"/></assets><composition><object3D id=\"cloud\" primitive=\"volume\" volume=\"smoke\"><medium emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 VOL4",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-vol4-bounds-min-z-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><assets><volume id=\"smoke\" src=\"../assets/srep79-uniform.srvol\" boundsMinX=\"0\" boundsMinY=\"0\" boundsMinZ=\"+0.5\" boundsMaxX=\"32\" boundsMaxY=\"32\" boundsMaxZ=\"2\"/></assets><composition><object3D id=\"cloud\" primitive=\"volume\" volume=\"smoke\"><medium emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 VOL4",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-vol4-bounds-min-z-plus-1-above-max-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><assets><volume id=\"smoke\" src=\"../assets/srep79-uniform.srvol\" boundsMinX=\"0\" boundsMinY=\"0\" boundsMinZ=\"+1\" boundsMaxX=\"32\" boundsMaxY=\"32\" boundsMaxZ=\"+0.5\"/></assets><composition><object3D id=\"cloud\" primitive=\"volume\" volume=\"smoke\"><medium emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 VOL4",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "VOL4"
+    ]
+   }
+  }
+ },
+ "srep-0085-p3d3-lifetime-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"2\"/><composition><particles3D id=\"dust\" rate=\"0\" speed=\"5\" spread=\"120\" gravityY=\"8\" lifetime=\"+1\"><burst time=\"0\" count=\"12\"/></particles3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 P3D3",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-p3d3-speed-variance-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"2\"/><composition><particles3D id=\"dust\" rate=\"0\" speed=\"5\" spread=\"120\" gravityY=\"8\" lifetime=\"2\" speedVariance=\"+0.5\"><burst time=\"0\" count=\"12\"/></particles3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 P3D3",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-p3d3-burst-time-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"2\"/><composition><particles3D id=\"dust\" rate=\"0\" speed=\"5\" spread=\"120\" gravityY=\"8\" lifetime=\"2\" ><burst time=\"+0.5\" count=\"12\"/></particles3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 P3D3",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-p3d3-lifetime-variance-plus-1-lifetime-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"2\"/><composition><particles3D id=\"dust\" rate=\"0\" speed=\"5\" spread=\"120\" gravityY=\"8\" lifetime=\"+0.5\" lifetimeVariance=\"+1\"><burst time=\"0\" count=\"12\"/></particles3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 P3D3",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "P3D3"
+    ]
+   }
+  }
+ },
+ "srep-0085-p3d10-angle-plus-1-spread-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"2\"/><composition><object3D id=\"ball\" primitive=\"sphere\" radius=\"1\" y=\"-10\"><rigidBody mass=\"1\" velocityY=\"20\"/></object3D><object3D id=\"ground\" primitive=\"plane\" width=\"40\" height=\"40\" segments=\"8\" y=\"2\" rotationX=\"-90\"><crater id=\"pit\" source=\"ball\" targetMaterial=\"softRock\"/></object3D><particles3D id=\"debris\" rate=\"0\" lifetime=\"1\"><burst crater=\"pit\" count=\"12\" angle=\"+1\" angleSpread=\"+0.5\"/></particles3D></composition><physics pixelsPerMeter=\"1\"/></scene>\n",
+  "expected": {
+   "rule": "SREP 85 P3D10",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-p3d10-angle-plus-0.5-spread-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"2\"/><composition><object3D id=\"ball\" primitive=\"sphere\" radius=\"1\" y=\"-10\"><rigidBody mass=\"1\" velocityY=\"20\"/></object3D><object3D id=\"ground\" primitive=\"plane\" width=\"40\" height=\"40\" segments=\"8\" y=\"2\" rotationX=\"-90\"><crater id=\"pit\" source=\"ball\" targetMaterial=\"softRock\"/></object3D><particles3D id=\"debris\" rate=\"0\" lifetime=\"1\"><burst crater=\"pit\" count=\"12\" angle=\"+0.5\" angleSpread=\"+1\"/></particles3D></composition><physics pixelsPerMeter=\"1\"/></scene>\n",
+  "expected": {
+   "rule": "SREP 85 P3D10",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "P3D10"
+    ]
+   }
+  }
+ },
+ "srep-0085-ocn3-cell-size-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"2\"/><composition><ocean id=\"sea\" width=\"8\" depth=\"8\" cellSize=\"+0.5\" bottomDepth=\"2\"><waterImpulse time=\"0.3\" radius=\"2\" amplitude=\"0.1\"/><wave wavelength=\"4\" amplitude=\"0.1\" phase=\"0\"/><whitewater emissionRate=\"2\" threshold=\"0.3\"/></ocean></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 OCN3",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-ocn3-impulse-x-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"2\"/><composition><ocean id=\"sea\" width=\"8\" depth=\"8\" cellSize=\"0.5\" bottomDepth=\"2\"><waterImpulse time=\"0.3\" radius=\"2\" x=\"+1\" amplitude=\"0.1\"/><wave wavelength=\"4\" amplitude=\"0.1\" phase=\"0\"/><whitewater emissionRate=\"2\" threshold=\"0.3\"/></ocean></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 OCN3",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-ocn3-wavelength-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"2\"/><composition><ocean id=\"sea\" width=\"8\" depth=\"8\" cellSize=\"0.5\" bottomDepth=\"2\"><waterImpulse time=\"0.3\" radius=\"2\" amplitude=\"0.1\"/><wave wavelength=\"+0.5\" amplitude=\"0.1\" phase=\"0\"/><whitewater emissionRate=\"2\" threshold=\"0.3\"/></ocean></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 OCN3",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "OCN3"
+    ]
+   }
+  }
+ },
+ "srep-0085-ocn5-whitewater-plus-0.5-to-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"2\"/><composition><ocean id=\"sea\" width=\"8\" depth=\"8\" cellSize=\"0.5\" bottomDepth=\"2\"><waterImpulse time=\"0.3\" radius=\"2\" amplitude=\"0.1\"/><wave wavelength=\"4\" amplitude=\"0.1\" phase=\"0\"/><whitewater emissionRate=\"2\" threshold=\"0.3\" start=\"+0.5\" end=\"+1\"/></ocean></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 OCN5",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   }
+  }
+ },
+ "srep-0085-ocn5-whitewater-end-plus-0.5-before-start-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"2\"/><composition><ocean id=\"sea\" width=\"8\" depth=\"8\" cellSize=\"0.5\" bottomDepth=\"2\"><waterImpulse time=\"0.3\" radius=\"2\" amplitude=\"0.1\"/><wave wavelength=\"4\" amplitude=\"0.1\" phase=\"0\"/><whitewater emissionRate=\"2\" threshold=\"0.3\" start=\"+1\" end=\"+0.5\"/></ocean></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 OCN5",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "OCN5"
+    ]
+   }
+  }
+ },
+ "srep-0085-pyro11-voxel-size-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"32\" height=\"32\" fps=\"30\" duration=\"1\"/>\n<composition><object3D id=\"cloud\" primitive=\"volume\"><pyro boundary=\"open\" follow=\"true\" followMargin=\"2\" followLoss=\"0.000001\" width=\"8\" height=\"8\" depth=\"8\" voxelSize=\"+1\" dt=\"0.1\"><pyroSource shape=\"sphere\" radius=\"2\" densityRate=\"2\" start=\"0.15\" end=\"0.35\"/><pyroImpulse shape=\"box\" width=\"2\" height=\"2\" depth=\"2\" time=\"0.5\" density=\"1\" temperature=\"3000\"/></pyro><medium blackbody=\"true\" emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 PYRO11",
+   "source": "kit case srep-0078-valid-pyro-follow (SREP 78) with voxelSize=\"1\" written voxelSize=\"+1\", by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   },
+   "requires": [
+    78
+   ]
+  }
+ },
+ "srep-0085-pyro11-voxel-size-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"32\" height=\"32\" fps=\"30\" duration=\"1\"/>\n<composition><object3D id=\"cloud\" primitive=\"volume\"><pyro boundary=\"open\" follow=\"true\" followMargin=\"2\" followLoss=\"0.000001\" width=\"8\" height=\"8\" depth=\"8\" voxelSize=\"+0.5\" dt=\"0.1\"><pyroSource shape=\"sphere\" radius=\"2\" densityRate=\"2\" start=\"0.15\" end=\"0.35\"/><pyroImpulse shape=\"box\" width=\"2\" height=\"2\" depth=\"2\" time=\"0.5\" density=\"1\" temperature=\"3000\"/></pyro><medium blackbody=\"true\" emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 PYRO11",
+   "source": "kit case srep-0078-valid-pyro-follow (SREP 78) with voxelSize=\"1\" written voxelSize=\"+0.5\", by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   },
+   "requires": [
+    78
+   ]
+  }
+ },
+ "srep-0085-pyc6-x-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"32\" height=\"32\" fps=\"30\" duration=\"1\"/>\n<composition><object3D id=\"cloud\" primitive=\"volume\"><pyro boundary=\"open\" width=\"8\" height=\"8\" depth=\"8\" voxelSize=\"1\" dt=\"0.1\"><pyroSource shape=\"sphere\" radius=\"2\" densityRate=\"2\" start=\"0.15\" end=\"0.35\"/><pyroImpulse shape=\"box\" width=\"2\" height=\"2\" depth=\"2\" time=\"0.5\" density=\"1\" temperature=\"3000\"/><pyroBlast time=\"0.3\" energy=\"1000000\" x=\"+1\" y=\"-1\"/></pyro><medium blackbody=\"true\" emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 PYC6",
+   "source": "kit case srep-0078-valid-pyro-blast (SREP 78) with x=\"1\" written x=\"+1\", by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   },
+   "requires": [
+    78
+   ]
+  }
+ },
+ "srep-0085-pyc6-y-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"32\" height=\"32\" fps=\"30\" duration=\"1\"/>\n<composition><object3D id=\"cloud\" primitive=\"volume\"><pyro boundary=\"open\" width=\"8\" height=\"8\" depth=\"8\" voxelSize=\"1\" dt=\"0.1\"><pyroSource shape=\"sphere\" radius=\"2\" densityRate=\"2\" start=\"0.15\" end=\"0.35\"/><pyroImpulse shape=\"box\" width=\"2\" height=\"2\" depth=\"2\" time=\"0.5\" density=\"1\" temperature=\"3000\"/><pyroBlast time=\"0.3\" energy=\"1000000\" x=\"1\" y=\"+0.5\"/></pyro><medium blackbody=\"true\" emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 PYC6",
+   "source": "kit case srep-0078-valid-pyro-blast (SREP 78) with y=\"-1\" written y=\"+0.5\", by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   },
+   "requires": [
+    78
+   ]
+  }
+ },
+ "srep-0085-pyc6-x-plus-5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"32\" height=\"32\" fps=\"30\" duration=\"1\"/>\n<composition><object3D id=\"cloud\" primitive=\"volume\"><pyro boundary=\"open\" width=\"8\" height=\"8\" depth=\"8\" voxelSize=\"1\" dt=\"0.1\"><pyroSource shape=\"sphere\" radius=\"2\" densityRate=\"2\" start=\"0.15\" end=\"0.35\"/><pyroImpulse shape=\"box\" width=\"2\" height=\"2\" depth=\"2\" time=\"0.5\" density=\"1\" temperature=\"3000\"/><pyroBlast time=\"0.3\" energy=\"1000000\" x=\"+5\" y=\"-1\"/></pyro><medium blackbody=\"true\" emissionScale=\"0.1\"/></object3D></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 PYC6",
+   "source": "kit case srep-0078-valid-pyro-blast (SREP 78) with x=\"1\" written x=\"+5\", by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "PYC6"
+    ]
+   },
+   "requires": [
+    78
+   ]
+  }
+ },
+ "srep-0085-frx11-planes-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"3\"/><assets><voxelAsset id=\"model\" src=\"../assets/srep80-block.vox\" maxCells=\"100000\"/></assets><materials><material id=\"stone\" baseColor=\"#808080\"/></materials><composition><object3D id=\"ball\" primitive=\"sphere\" radius=\"0.2\" x=\"2\" y=\"-8\" z=\"2\"><rigidBody mass=\"500\" velocityY=\"120\"/></object3D><object3D id=\"block\" primitive=\"voxels\" voxels=\"model\" cellSize=\"0.25\" material=\"stone\"><rigidBody density=\"2400\" maxFragments=\"32\" fragmentMinCells=\"1\"/><fracture source=\"ball\" partition=\"planes\" planes=\"+1 0 0 2 0 +1 0 0.5\"/></object3D></composition><physics pixelsPerMeter=\"1\"/></scene>\n",
+  "expected": {
+   "rule": "SREP 85 FRX11",
+   "source": "kit case srep-0080-valid-voxel-fracture-planes (SREP 80) with planes=\"1 0 0 2 0 1 0 0.5\" written planes=\"+1 0 0 2 0 +1 0 0.5\", by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   },
+   "requires": [
+    80
+   ]
+  }
+ },
+ "srep-0085-frx11-planes-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"3\"/><assets><voxelAsset id=\"model\" src=\"../assets/srep80-block.vox\" maxCells=\"100000\"/></assets><materials><material id=\"stone\" baseColor=\"#808080\"/></materials><composition><object3D id=\"ball\" primitive=\"sphere\" radius=\"0.2\" x=\"2\" y=\"-8\" z=\"2\"><rigidBody mass=\"500\" velocityY=\"120\"/></object3D><object3D id=\"block\" primitive=\"voxels\" voxels=\"model\" cellSize=\"0.25\" material=\"stone\"><rigidBody density=\"2400\" maxFragments=\"32\" fragmentMinCells=\"1\"/><fracture source=\"ball\" partition=\"planes\" planes=\"1 0 0 2 0 1 0 +0.5\"/></object3D></composition><physics pixelsPerMeter=\"1\"/></scene>\n",
+  "expected": {
+   "rule": "SREP 85 FRX11",
+   "source": "kit case srep-0080-valid-voxel-fracture-planes (SREP 80) with planes=\"1 0 0 2 0 1 0 0.5\" written planes=\"1 0 0 2 0 1 0 +0.5\", by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   },
+   "requires": [
+    80
+   ]
+  }
+ },
+ "srep-0085-frx11-planes-plus-0-normal": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.3\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"3\"/><assets><voxelAsset id=\"model\" src=\"../assets/srep80-block.vox\" maxCells=\"100000\"/></assets><materials><material id=\"stone\" baseColor=\"#808080\"/></materials><composition><object3D id=\"ball\" primitive=\"sphere\" radius=\"0.2\" x=\"2\" y=\"-8\" z=\"2\"><rigidBody mass=\"500\" velocityY=\"120\"/></object3D><object3D id=\"block\" primitive=\"voxels\" voxels=\"model\" cellSize=\"0.25\" material=\"stone\"><rigidBody density=\"2400\" maxFragments=\"32\" fragmentMinCells=\"1\"/><fracture source=\"ball\" partition=\"planes\" planes=\"1 0 0 2 +0 +0 +0 0.5\"/></object3D></composition><physics pixelsPerMeter=\"1\"/></scene>\n",
+  "expected": {
+   "rule": "SREP 85 FRX11",
+   "source": "kit case srep-0080-valid-voxel-fracture-planes (SREP 80) with planes=\"1 0 0 2 0 1 0 0.5\" written planes=\"1 0 0 2 +0 +0 +0 0.5\", by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "FRX11"
+    ]
+   },
+   "requires": [
+    80
+   ]
+  }
+ },
+ "srep-0085-itr1-check-every-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.6\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><iterate id=\"it\" steps=\"10\" checkEvery=\"+1\"><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></iterate></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 ITR1",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   },
+   "requires": [
+    67
+   ]
+  }
+ },
+ "srep-0085-itr1-steps-plus-20": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.6\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><iterate id=\"it\" steps=\"+20\" checkEvery=\"20\"><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></iterate></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 ITR1",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   },
+   "requires": [
+    67
+   ]
+  }
+ },
+ "srep-0085-itr1-check-every-plus-20-above-steps": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.6\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><iterate id=\"it\" steps=\"10\" checkEvery=\"+20\"><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></iterate></composition></scene>\n",
+  "expected": {
+   "rule": "SREP 85 ITR1",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "ITR1"
+    ]
+   },
+   "requires": [
+    67
+   ]
+  }
+ },
+ "srep-0085-srt1-low-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.6\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><group id=\"g\" effects=\"ps\"><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></group></composition><effects><effect id=\"ps\" type=\"segmented-sort\" direction=\"horizontal\" order=\"ascending\" low=\"+0.5\" high=\"1\"/></effects></scene>\n",
+  "expected": {
+   "rule": "SREP 85 SRT1",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   },
+   "requires": [
+    67
+   ]
+  }
+ },
+ "srep-0085-srt1-high-plus-1": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.6\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><group id=\"g\" effects=\"ps\"><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></group></composition><effects><effect id=\"ps\" type=\"segmented-sort\" direction=\"horizontal\" order=\"ascending\" low=\"0.5\" high=\"+1\"/></effects></scene>\n",
+  "expected": {
+   "rule": "SREP 85 SRT1",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": true
+   },
+   "requires": [
+    67
+   ]
+  }
+ },
+ "srep-0085-srt1-low-plus-1-above-high-plus-0.5": {
+  "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<scene version=\"1.6\"><project width=\"64\" height=\"64\" fps=\"24\" duration=\"1\"/><composition><group id=\"g\" effects=\"ps\"><shape id=\"s\" shape=\"rect\" width=\"10\" height=\"10\" fill=\"#FFFFFF\"/></group></composition><effects><effect id=\"ps\" type=\"segmented-sort\" direction=\"horizontal\" order=\"ascending\" low=\"+1\" high=\"+0.5\"/></effects></scene>\n",
+  "expected": {
+   "rule": "SREP 85 SRT1",
+   "source": "written by conformance/tools/srep85_cases.py",
+   "findings": {
+    "valid": false,
+    "codes": [
+     "SRT1"
+    ]
+   },
+   "requires": [
+    67
+   ]
+  }
+ }
+}

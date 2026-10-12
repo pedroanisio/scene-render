@@ -1,0 +1,5592 @@
+//! The compositor: FrameGraph → linear-light RGBA16F frame.
+//!
+//! Each frame is planned on the CPU into jobs (one per render target) and
+//! executed in one command buffer:
+//!
+//! * **Isolation.** Instances, includes, and groups that are isolated,
+//!   clipped, masked, matted, blended with a non-normal mode or carry
+//!   effects render their children into an offscreen texture, which then
+//!   composites as one layer. Offscreens of sized nodes live in the node's
+//!   local space, so moving the node reuses the texture.
+//! * **Caching.** Every offscreen and matte is keyed by a hash of its
+//!   subtree's state; unchanged subtrees reuse last frame's texture. At the
+//!   root, the longest run of leading draws that did not change since the
+//!   previous frame is restored from a snapshot instead of redrawn.
+//! * **Blending.** Normal and dissolve use fixed-function premultiplied
+//!   over; the other 33 modes copy the backdrop under the layer's bounds and
+//!   composite in the shader.
+//! * **2.5D.** `threeD` nodes project through a perspective camera centred
+//!   on the frame and sort back to front among consecutive 3D siblings.
+//! * **Vector content.** Shapes, vector, SVG and Lottie assets become
+//!   `sr_vector` scenes. Runs of simple shapes (normal blend, no mask,
+//!   matte or 3D) rasterise together straight into the target's pixel
+//!   space; other vector nodes rasterise in local space at their on-screen
+//!   scale and composite like image layers. Deformed raster layers draw as
+//!   a deformed grid mesh.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use sr_eval::{Affine, FrameGraph, FrameNode, Program, Value};
+
+use crate::fx;
+
+#[path = "render_access.rs"]
+mod render_access;
+#[path = "render_fx.rs"]
+mod render_fx;
+#[path = "render_map3d.rs"]
+mod render_map3d;
+#[path = "render_three.rs"]
+mod render_three;
+pub use render_three::ViewOverride;
+use sr_model::element::{AttrValue, Element};
+use sr_model::model::{self as m, AssetsChild};
+
+use crate::color::{self, Working};
+use crate::gpu::Gpu;
+use crate::paint::{token_table, PaintTable};
+use crate::raster::{Raster, RasterJob};
+use crate::resources::{self, Pool, Tex};
+use crate::types::{self, flag, src, Draw, Gen, Globals, Mask, Vertex};
+use crate::vector::Attrs;
+use sr_vector::{Scene, Xf};
+
+/// What the surface of one body of cells is at a frame: the revision of its cells, its quads and their fingerprint
+/// ([`sr_3d::voxel::surface::quads_hash`]), and what the update that made it did (`remeshed` planes, or `full`).
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct VoxelSurfaceStat {
+    pub id: String,
+    /// The body of a piece that came away from the object; none for the object itself.
+    pub body: Option<usize>,
+    pub revision: u64,
+    pub quads: usize,
+    pub hash: u64,
+    pub remeshed: usize,
+    pub full: bool,
+    /// The planes (axis, plane) that an incremental update meshed again; empty for a whole remesh and for a frame that made nothing.
+    pub planes: Vec<(u8, i32)>,
+}
+
+/// Counters for one rendered frame.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct RenderStats {
+    /// Draw calls.
+    pub draws: usize,
+    /// Earlier frames rendered before this one to bring stateful effects to it (a seek; SREP 68), and their draw calls.
+    pub replayed_frames: usize,
+    pub replay_draws: usize,
+    pub replay_fx_passes: usize,
+    /// The stateful shaders inside an `iterate` (effect and node) and the steps each took this frame (SREP 67).
+    pub iterate_steps: Vec<(String, u64)>,
+    /// Saved states of stateful effects (SREP 68 checkpoints on disk) loaded for a seek, and seeks that found none.
+    pub checkpoint_hits: usize,
+    pub checkpoint_misses: usize,
+    /// Render targets rendered (frame, offscreens, mattes, generators).
+    pub targets: usize,
+    /// Offscreens and mattes reused from the previous frame.
+    pub cache_hits: usize,
+    /// Zero-opacity leaves skipped at plan time.
+    pub culled: usize,
+    /// Leading root draws restored from the prefix snapshot.
+    pub prefix_restored: usize,
+    /// Backdrop copies for non-normal blend modes.
+    pub backdrop_copies: usize,
+    /// Nodes whose content belongs to later batches (asset or node kind).
+    pub unsupported: Vec<String>,
+    /// Media that could not be read (missing files, decode failures,
+    /// image-sequence frames missing under `missingFrame="error"`).
+    pub errors: Vec<String>,
+    /// Video frames decoded and converted this frame.
+    pub video_frames: usize,
+    /// Seconds spent waiting for decoded video frames.
+    pub decode_wait: f64,
+    /// CPU seconds spent building vector geometry and encoding it into tiles.
+    pub vector_seconds: f64,
+    /// Effect, transition and finishing passes recorded.
+    pub fx_passes: usize,
+    /// Pixels of the effect targets whose chains ran this frame (a measure of effect work).
+    pub effect_pixels: u64,
+    /// Offscreen textures allocated this frame for effects, motion blur and time effects.
+    pub textures_created: usize,
+    /// Offscreen and cached textures destroyed this frame.
+    pub textures_released: usize,
+    /// CPU seconds evaluating the scene at other times (sub-frames for motion blur and time effects).
+    pub subframe_seconds: f64,
+    /// Sub-frames rendered for motion blur and time effects.
+    pub subframes: usize,
+    /// 3D mesh draws.
+    pub objects3d: usize,
+    /// The `object3D` nodes drawn as meshes this frame, and whether any of their draws reaches into the camera's view
+    /// (their bounds against its frustum). For the render report; nothing here changes the picture.
+    pub objects3d_in_view: Vec<(String, bool)>,
+    /// The `object3D` nodes drawn this frame, in a 3D pass with no environment image, with a material at least
+    /// [`crate::three::METALLIC_NEEDS_ENVIRONMENT`] metallic: the most metallic of their draws. For the render report.
+    pub metal_without_environment: Vec<(String, f32)>,
+    /// 3D triangles drawn (all instances).
+    pub triangles: u64,
+    /// Gaussian splats drawn.
+    pub splats: u64,
+    /// Seconds the rigid-body runtime spent advancing this frame (inclusive of its first-frame build).
+    pub sim_rigid_seconds: f64,
+    /// Seconds the ocean solver spent producing this frame's surface (inclusive, like all four `sim_*` fields).
+    pub sim_ocean_seconds: f64,
+    /// Groups of voxel cells drawn (one draw each) and the CPU seconds spent preparing the surfaces of voxel objects this frame.
+    pub voxel_groups: usize,
+    pub voxel_mesh_seconds: f64,
+    /// The surface of each body of cells drawn this frame (an object of cells and the pieces that came away from it).
+    pub voxel_surfaces: Vec<VoxelSurfaceStat>,
+    /// Surfaces of voxel bodies the renderer keeps after this frame, the cells it read to see which palette indices are in use, and the
+    /// meshes it made and uploaded (a group whose quads did not change keeps its mesh).
+    pub voxel_states: usize,
+    pub voxel_cells_scanned: u64,
+    pub voxel_groups_uploaded: usize,
+    /// Seconds the smoke (participating medium) solver spent advancing to this frame, including any
+    /// rigid-body stepping its colliders trigger.
+    pub sim_smoke_seconds: f64,
+    /// Seconds 2D emitters and native 3D particles spent advancing to this frame, including any
+    /// rigid-body reads they trigger.
+    pub sim_particles_seconds: f64,
+    /// CPU seconds building the `Draw3` lists of meshes and particles for 3D passes.
+    pub draw_prep_seconds: f64,
+    /// CPU seconds preparing volume draws (baking, grid upload) for 3D passes.
+    pub volume_prep_seconds: f64,
+    /// Path tracer CPU seconds assembling geometry, materials and lights (BVHs excluded).
+    pub pt_assemble_seconds: f64,
+    /// Path tracer CPU seconds building BVHs.
+    pub pt_bvh_seconds: f64,
+    /// Path tracer CPU seconds packing and uploading scene buffers.
+    pub pt_pack_seconds: f64,
+    /// WCAG contrast ratio of burned-in text against the backdrop behind it (authored node or caption burn-in).
+    pub contrast: Vec<(ContrastTarget, f64)>,
+    /// Text layers drawn inside an isolated group (offscreen), where the inline probe cannot
+    /// see the final backdrop; delivery measures them by rendering the frame with and without
+    /// the layer (`Renderer::contrast_with_without`).
+    pub contrast_unprobed: Vec<ContrastTarget>,
+    /// The most bytes of vector raster targets (runs of simple shapes and rasterised vector layers) alive at once while
+    /// the frame executed: those the renderer keeps across frames plus the transient ones checked out at that moment.
+    pub peak_vector_target_bytes: u64,
+    /// Vector raster targets that were not kept across frames: rasterised just before their draw into a pooled texture.
+    pub vector_targets_transient: usize,
+    /// Submissions made in the middle of the frame to free transient memory (`Renderer::transient_submit_bytes`).
+    pub mid_frame_submits: usize,
+}
+
+struct Cmd {
+    draw: u32,
+    first_vertex: u32,
+    /// Vertices drawn (6 for a quad, more for a deformed mesh).
+    count: u32,
+    src: Arc<Tex>,
+    backdrop: Option<[u32; 4]>,
+    matte: Option<Arc<Tex>>,
+    hash: u64,
+    /// Adjustment layer: snapshot the target and run passes before drawing.
+    pre: Option<Box<AdjPre>>,
+    /// A transient vector raster (index into `Plan::lazy`): `src` is a placeholder until execution rasterises it just
+    /// before the compositor batch that draws this command.
+    raster: Option<u32>,
+}
+
+struct AdjPre {
+    snapshot: Arc<Tex>,
+    passes: Vec<fx::Pass>,
+    /// A 3D pass rendered into its texture (the snapshot is its backdrop).
+    three: Option<Box<(crate::three::Scene3, Arc<Tex>)>>,
+}
+
+struct Job {
+    target: Arc<Tex>,
+    clear: bool,
+    cmds: Vec<Cmd>,
+    root: bool,
+    /// Effect passes recorded before the draws.
+    fx: Vec<fx::Pass>,
+    /// Optical flow between two finished textures, computed before `fx` (pixel motion blur).
+    flow: Option<(Arc<Tex>, Arc<Tex>, fx::FlowSlot)>,
+    /// Whether the job draws into `target` (effect-only jobs do not).
+    draw: bool,
+    /// Particles drawn into `target` before anything else.
+    parts: Option<Box<crate::particles::ParticleJob>>,
+}
+
+impl Job {
+    fn draws(target: Arc<Tex>, clear: bool, cmds: Vec<Cmd>, root: bool) -> Job {
+        Job { target, clear, cmds, root, fx: Vec::new(), flow: None, draw: true, parts: None }
+    }
+}
+
+struct GenJob {
+    target: Arc<Tex>,
+    bind: wgpu::BindGroup,
+}
+
+/// The `behind` blend code; a draw with it and no backdrop copy uses the fixed-function
+/// destination-over pipeline (the project background).
+const BLEND_UNDER: u32 = 34;
+
+/// Blend modes the fixed-function blender computes exactly, so the shader needs no copy of the
+/// backdrop: add and linear-dodge are dst + src on premultiplied colour, with normal alpha.
+/// (Screen, multiply and plus-lighter clamp or multiply by the backdrop, which it cannot.)
+pub(crate) fn fixed_function_blend(blend: u32) -> bool {
+    matches!(blend, 2 | 17)
+}
+/// Adjustment layers: backdrop + (effect − backdrop) · coverage.
+pub(crate) const BLEND_ADJUST: u32 = 35;
+/// SREP 72 `edgeBlend`: normal source-over computed on sRGB-encoded values while the frame stores linear ones.
+pub(crate) const BLEND_OVER_ENCODED: u32 = 36;
+/// SREP 72 `edgeBlend`: normal source-over computed on linear values while the frame stores encoded ones.
+pub(crate) const BLEND_OVER_LINEAR: u32 = 37;
+
+#[derive(Clone, Copy)]
+struct Space {
+    /// World → target pixels.
+    xform: Affine,
+    size: [u32; 2],
+    /// Target pixels per document unit where the target stands for the frame: the tier's scale,
+    /// or 1 in a sized node's own offscreen.
+    unit: f64,
+}
+
+impl Space {
+    /// The target's extent in document units: the box of a node that has none of its own.
+    fn extent(&self) -> [f64; 2] {
+        [self.size[0] as f64 / self.unit, self.size[1] as f64 / self.unit]
+    }
+}
+
+#[derive(Default)]
+struct Plan {
+    draws: Vec<Draw>,
+    verts: Vec<Vertex>,
+    masks: Vec<Mask>,
+    edges: Vec<[f32; 4]>,
+    paints: PaintTable,
+    jobs: Vec<Job>,
+    gens: Vec<GenJob>,
+    rasters: Vec<RasterJob>,
+    /// Transient vector rasters, recorded just before the batch that draws them (see `Cmd::raster`).
+    lazy: Vec<RasterJob>,
+    /// Pending runs of simple vector nodes, per command list.
+    vbatches: Vec<VBatch>,
+    stats: RenderStats,
+    /// Pooled textures used by effect passes this frame.
+    fx_temps: Vec<Arc<Tex>>,
+    /// Video memory held by motion blur this frame (bytes, estimated).
+    blur_bytes: u64,
+    /// Colour finishing on the frame, and its result (copied back into the frame, or into `post_into`).
+    post: Vec<fx::Pass>,
+    post_out: Option<Arc<Tex>>,
+    /// Where the finished frame lands when it is not the root target: the supersampled frame filtered down.
+    post_into: Option<Arc<Tex>>,
+    /// Contrast probes: node id, target rectangle, backdrop snapshot.
+    probes: Vec<(ContrastTarget, [u32; 4], Arc<Tex>)>,
+}
+
+/// Simple vector nodes waiting to rasterise together into their target's space.
+struct VBatch {
+    /// Address of the command list they belong to.
+    key: usize,
+    space: Space,
+    scene: Scene,
+    hash: u64,
+    first: String,
+}
+
+/// Completed 3D samples retained only while a contrast probe renders its counterfactuals.
+#[derive(Default)]
+struct ContrastThreeCache {
+    entries: std::collections::VecDeque<([u8; 32], Arc<Tex>)>,
+    bytes: u64,
+}
+
+impl ContrastThreeCache {
+    const BUDGET: u64 = 128 << 20;
+
+    fn get(&mut self, key: &[u8; 32]) -> Option<Arc<Tex>> {
+        let index = self.entries.iter().position(|(k, _)| k == key)?;
+        let entry = self.entries.remove(index)?;
+        let texture = entry.1.clone();
+        self.entries.push_back(entry);
+        Some(texture)
+    }
+
+    /// Retain the sample and return evictions to the caller's texture pool.
+    fn insert(&mut self, key: [u8; 32], texture: Arc<Tex>) -> Vec<Arc<Tex>> {
+        let bytes = texture.size[0] as u64 * texture.size[1] as u64 * 8;
+        let mut evicted = Vec::new();
+        if bytes > Self::BUDGET {
+            return evicted;
+        }
+        while self.bytes + bytes > Self::BUDGET {
+            let Some((_, old)) = self.entries.pop_front() else { break };
+            self.bytes -= old.size[0] as u64 * old.size[1] as u64 * 8;
+            evicted.push(old);
+        }
+        self.bytes += bytes;
+        self.entries.push_back((key, texture));
+        evicted
+    }
+}
+
+struct Prefix {
+    hashes: Vec<u64>,
+    tex: Arc<Tex>,
+}
+
+/// A rendered frame, resident on the GPU.
+#[derive(Clone)]
+pub struct Frame {
+    /// The RGBA16F frame texture.
+    pub texture: Arc<Tex>,
+    /// Statistics.
+    pub stats: RenderStats,
+}
+
+/// Coverage for one exact combination of mask, vertices and target size.
+struct MaskCoverage {
+    last_used: u64,
+    bytes: u64,
+    view: Option<wgpu::TextureView>,
+}
+
+type CachedVolume = Result<Option<Arc<sr_volume::Volume>>, String>;
+
+/// The compositor for one program.
+pub struct Renderer {
+    gpu: Gpu,
+    // General shading, plain/antialiased texture, and solid colour variants. The simple
+    // variants avoid the mask/gradient machinery for common full-frame draws.
+    over: [wgpu::RenderPipeline; 5],
+    /// Premultiplied destination-over: the project background, drawn last beneath everything.
+    under: [wgpu::RenderPipeline; 5],
+    blend: [wgpu::RenderPipeline; 2],
+    /// Add and linear-dodge through the blender (see `fixed_function_blend`).
+    additive: [wgpu::RenderPipeline; 5],
+    generator: wgpu::RenderPipeline,
+    mask_coverage: HashMap<Vec<u8>, MaskCoverage>,
+    mask_coverage_budget: u64,
+    mask_coverage_pipelines: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
+    bgl0: wgpu::BindGroupLayout,
+    bgl1: wgpu::BindGroupLayout,
+    bgl2: wgpu::BindGroupLayout,
+    bgl3: wgpu::BindGroupLayout,
+    samp: wgpu::Sampler,
+    samp_repeat: wgpu::Sampler,
+    globals: wgpu::Buffer,
+    dummy: Arc<Tex>,
+    working: Working,
+    tokens: HashMap<String, [f64; 4]>,
+    images: HashMap<String, Option<Arc<Tex>>>,
+    /// Image files whose embedded colour profile could not be honoured, and why.
+    image_notes: HashMap<std::path::PathBuf, String>,
+    /// The last uploaded picture of each grid simulation: (content key, texture).
+    sim_textures: HashMap<Arc<str>, (u64, Arc<Tex>)>,
+    generators: HashMap<u64, Arc<Tex>>,
+    /// Computed fractal pictures (SREP 75), by the hash of everything they show.
+    fractals: HashMap<u64, Arc<Tex>>,
+    subtree: HashMap<String, (u64, Arc<Tex>)>,
+    used: std::collections::HashSet<String>,
+    /// The frame each cache key was last used in (frames counted by `cache_frame`).
+    last_used: HashMap<String, u64>,
+    /// Frames rendered, for cache ages.
+    cache_frame: u64,
+    prefix: Option<Prefix>,
+    prev_root: Vec<u64>,
+    pool: Pool,
+    frame: Option<Arc<Tex>>,
+    /// The working format (SREP 72 `project/@precision`): of the pool, the frame and every pipeline drawing into them.
+    format: wgpu::TextureFormat,
+    /// Why `precision="f32"` could not be honoured on this device; reported with every frame.
+    precision_error: Option<PrecisionError>,
+    /// The frame filtered down from a supersampled render (SREP 72), reused while its size holds.
+    ss_frame: Option<Arc<Tex>>,
+    video: crate::video::VideoEngine,
+    decoders: HashMap<String, Result<sr_media::VideoDecoder, String>>,
+    video_frames: HashMap<String, Arc<Tex>>,
+    // One previous decoded image per interpretation, evicted with the frame cache.
+    video_previous: HashMap<String, (Arc<sr_media::VideoFrame>, Arc<Tex>)>,
+    raster: Raster,
+    lotties: crate::vector::LottieCache,
+    svgs: HashMap<(String, i32), Result<Arc<sr_vector::svg::Svg>, String>>,
+    fx: fx::FxEngine,
+    /// Nodes being drawn without their own opacity, blend, masks and matte (effect sources).
+    bare: std::collections::HashSet<Arc<str>>,
+    /// Nodes a 360 render (`render_360`) floats at z = 0 in its faces, one by one, without a `threeD` of their own: a
+    /// container among them only groups its children and is not placed as one picture.
+    floated: std::collections::HashSet<Arc<str>>,
+    /// The 2.5D pictures being drawn into, innermost last: a `threeD` node inside one is placed within it so that,
+    /// once the picture is placed in turn, the camera has seen the node once (see `proj25`).
+    planes: Vec<render_three::Plane>,
+    /// Nodes being drawn inside a transition.
+    in_transition: std::collections::HashSet<Arc<str>>,
+    /// Drawing a motion-blur sub-frame.
+    sampling: bool,
+    /// The node whose motion-blur samples are being drawn: they blend normally, and their
+    /// accumulation blends as the node does.
+    unblended: Option<Arc<str>>,
+    /// Pixel rectangle of the next frame-space quad (defaults to the whole target).
+    frame_rect: Option<[f64; 4]>,
+    /// 2.5D placement (zDepth, rotationX, rotationY), the pivot in node space and the frame camera for the next
+    /// frame-space quad: set by a node whose offscreen is built in target pixels but must still be placed in 2.5D.
+    frame_three: Option<([f64; 3], [f64; 2], glam::Mat4)>,
+    /// Size of the texture the next `draw_cmd` draws when its source is still a placeholder (a transient vector
+    /// raster): whether it lands texel for pixel depends on the real size.
+    src_size: Option<[u32; 2]>,
+    /// Reuse effect results across frames (off with `SR_FX_NO_CACHE`, for measuring effect cost).
+    fx_cache: bool,
+    /// Bounded accumulations of plain shapes whose complete shutter samples are unchanged.
+    motion_cache: HashMap<Arc<str>, render_fx::MotionBlurCache>,
+    motion_cache_budget: u64,
+    three: Option<Box<crate::three::ThreeEngine>>,
+    contrast_three_cache: Option<ContrastThreeCache>,
+    three_assets: HashMap<String, Arc<Result<sr_3d::Asset, String>>>,
+    volume_assets: HashMap<(std::path::PathBuf, String), CachedVolume>,
+    volume_cache_bytes: usize,
+    baked_sequences: HashMap<(std::path::PathBuf, String), Arc<sr_volume::bake::BakedSequence>>,
+    baked_frames: HashMap<(std::path::PathBuf, String), Arc<sr_volume::Volume>>,
+    mtlx: HashMap<String, Arc<Result<sr_3d::mtlx::MtlxMaterial, String>>>,
+    ies: HashMap<String, Result<Arc<Vec<f32>>, String>>,
+    /// Camera replacement for 360 faces and stereo eyes.
+    pub view_override: Option<render_three::ViewOverride>,
+    /// Quality tier overriding the document's `project@quality`.
+    pub quality: Option<m::ProjectQuality>,
+    /// Measure GPU time with timestamp queries (where the device has them); see `gpu_times`.
+    pub time_gpu: bool,
+    /// The last frame's timestamps.
+    last_timer: Option<fx::Timer>,
+    /// The tier of the frame being rendered.
+    tier: Tier,
+    sphere: Option<render_three::SpherePipe>,
+    particles: Option<Box<crate::particles::ParticleEngine>>,
+    /// Measure the contrast of burned-in text (`accessibility@contrastCheck`).
+    pub contrast_probe: bool,
+    /// Inline probes split vector batches, so deferred comparisons may need a 2D replay.
+    contrast_batch_split: bool,
+    grid: Option<(wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
+    /// Blurred glyph groups of the text layer being drawn (radius in node pixels, node-local scene).
+    pending_blur: Vec<(f64, Scene)>,
+    text: crate::text::TextCache,
+    /// The current mesh key of each clay object (its old meshes are dropped when it changes).
+    clay_keys: HashMap<Arc<str>, String>,
+    /// The visible procedural sky of the last frame without a 3D pass, by its key (SREP 71).
+    sky_bg: Option<(u64, Arc<Tex>)>,
+    /// The surface of each voxels object between frames, by node id.
+    voxel_surfaces: HashMap<(Arc<str>, Option<usize>), render_three::VoxelState>,
+    glyph_tex: HashMap<u64, Option<Arc<Tex>>>,
+    /// Burn only this caption track (an output's `burnCaptions`); otherwise tracks with mode burn or both.
+    pub burn_captions: Option<String>,
+    /// Burn no captions at all: an output with segments burns its own, in output time.
+    pub captions_off: bool,
+    /// Largest texture dimension used for images.
+    pub max_texture: u32,
+    /// Preferred asset representation (`proxy`, …); the asset's own `src` otherwise.
+    pub representation: Option<String>,
+    /// The audio mix for shader audio inputs (set by the delivery pipeline).
+    pub audio: Option<Arc<crate::shader::AudioSignals>>,
+    /// Whether the scene's shaders keep persistent ISF buffers (decided on the first render).
+    persistent_isf: Option<bool>,
+    /// The ids of the stateful (persistent ISF) shader effects, and whether a replay may draw only their nodes (SREP 68).
+    persistent_ids: Option<(std::collections::HashSet<String>, bool)>,
+    /// Where stateful effects' states are saved between processes (SREP 68 checkpoints; `SR_CHECKPOINT_DIR`), and the
+    /// store for this document once opened.
+    checkpoint_dir: Option<std::path::PathBuf>,
+    checkpoint_store: Option<Result<crate::checkpoints::Store, String>>,
+    /// Compute nodes (SREP 67): compiled programs by source, and each node's last picture with the key of its inputs.
+    compute_programs: crate::compute::Cache,
+    compute_textures: HashMap<std::sync::Arc<str>, (u64, Arc<Tex>)>,
+    /// Tiled vector paths reused across frames.
+    tiles: sr_vector::tile::TileCache,
+    /// The frame rendered last (ISF feedback replays on a seek).
+    last_frame: Option<i64>,
+    /// The project seed (seeded 64-bit hash draws default to it).
+    pub(crate) seed: u64,
+    /// The per-frame storage buffers, grown as needed and reused across frames with their bind group.
+    frame_bufs: Option<FrameBufs>,
+    /// The queue submission of the last frame (a pipelined caller waits on it, not on the whole queue).
+    last_submit: Option<wgpu::SubmissionIndex>,
+    /// Bytes of vector raster targets kept across frames (`vbatch:` and `vec:` entries of `subtree`).
+    vector_cached_bytes: u64,
+    /// Bytes of the frame target being rendered.
+    frame_bytes: u64,
+    /// Most bytes of vector raster targets kept across frames; `None` keeps two frames' worth. Targets beyond it are
+    /// transient: rasterised just before the draw that reads them, into a pooled texture released after it.
+    pub vector_cache_budget: Option<u64>,
+    /// Transient GPU memory (raster buffers, released raster targets) recorded since the last submission above which the
+    /// frame submits and waits mid-way, so that memory is freed before the rest of the frame is recorded.
+    pub transient_submit_bytes: u64,
+}
+
+/// A grow-only GPU buffer reused across frames.
+struct GrowBuf {
+    buf: wgpu::Buffer,
+    cap: u64,
+}
+
+/// The per-frame storage buffers and the bind group over them.
+struct FrameBufs {
+    draws: GrowBuf,
+    masks: GrowBuf,
+    edges: GrowBuf,
+    paints: GrowBuf,
+    stops: GrowBuf,
+    verts: GrowBuf,
+    bg0: wgpu::BindGroup,
+}
+
+/// What a quality tier (`project@quality`) trades for speed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tier {
+    /// Internal render scale: targets are this fraction of the document's size, drawn in its
+    /// coordinates (effects, strokes and masks keep their document-unit sizes).
+    pub scale: f64,
+    /// Most motion-blur samples per frame.
+    pub motion_blur_samples: usize,
+    /// Most echo copies.
+    pub echo_samples: usize,
+    /// Most samples along a line (directional, radial and zoom blur, god rays) and lens-blur taps.
+    pub line_samples: f64,
+    /// Film grain and noise are drawn.
+    pub grain: bool,
+}
+
+impl Tier {
+    /// The tier of a quality: `final` as authored; `preview` at full size with at most 4
+    /// motion-blur samples; `draft` at half size with at most 2 motion-blur samples, 4 echoes,
+    /// 8 line samples, and no grain or noise.
+    pub fn of(q: m::ProjectQuality) -> Tier {
+        match q {
+            m::ProjectQuality::Final => {
+                Tier { scale: 1.0, motion_blur_samples: 256, echo_samples: 16, line_samples: 256.0, grain: true }
+            }
+            m::ProjectQuality::Preview => {
+                Tier { scale: 1.0, motion_blur_samples: 4, echo_samples: 16, line_samples: 256.0, grain: true }
+            }
+            m::ProjectQuality::Draft => {
+                Tier { scale: 0.5, motion_blur_samples: 2, echo_samples: 4, line_samples: 8.0, grain: false }
+            }
+        }
+    }
+}
+
+/// Default of `Renderer::transient_submit_bytes`.
+const TRANSIENT_SUBMIT_BYTES: u64 = 512 << 20;
+
+/// Bytes of a `format` texture of `size` (one level).
+fn target_bytes(size: [u32; 2], format: wgpu::TextureFormat) -> u64 {
+    size[0] as u64 * size[1] as u64 * resources::texel_bytes(format) as u64
+}
+
+/// Whether a `subtree` key holds a vector raster target.
+fn vector_key(k: &str) -> bool {
+    k.starts_with("vbatch:") || k.starts_with("vec:")
+}
+
+/// Frames a cache entry may go unused before it is evicted.
+const CACHE_KEEP: u64 = 4;
+
+fn h(words: &[u64]) -> u64 {
+    sr_eval::rng::hash(words)
+}
+
+/// Hash of the animated state of the elements outside the composition (paints, generators,
+/// effects, lights): the same content as their JSON form, without formatting it.
+fn elements_hash(elements: &[sr_eval::ElementState]) -> u64 {
+    let mut f = Fnv(0xcbf2_9ce4_8422_2325);
+    for e in elements {
+        f.str(&e.key);
+        f.str(e.element);
+        f.u64(e.props.0.len() as u64);
+        for (k, v) in &e.props.0 {
+            f.str(k);
+            f.value(v);
+        }
+    }
+    h(&[f.0])
+}
+
+/// Hash of each animated element outside the composition, by key, so a node's caches can
+/// depend on the elements it uses rather than on all of them.
+fn element_hashes(elements: &[sr_eval::ElementState]) -> HashMap<Arc<str>, u64> {
+    elements
+        .iter()
+        .map(|e| {
+            let mut f = Fnv(0xcbf2_9ce4_8422_2325);
+            f.str(e.element);
+            f.u64(e.props.0.len() as u64);
+            for (k, v) in &e.props.0 {
+                f.str(k);
+                f.value(v);
+            }
+            (e.key.clone(), f.0)
+        })
+        .collect()
+}
+
+/// Hash of animated values and of a node's parts, field by field, without formatting them as text.
+fn props_hash(props: &sr_eval::Props, parts: &[sr_eval::ElementState]) -> u64 {
+    let mut f = Fnv(0xcbf2_9ce4_8422_2325);
+    f.u64(props.0.len() as u64);
+    for (k, v) in &props.0 {
+        f.str(k);
+        f.value(v);
+    }
+    f.u64(parts.len() as u64);
+    for p in parts {
+        f.str(&p.key);
+        f.str(p.element);
+        f.u64(p.props.0.len() as u64);
+        for (k, v) in &p.props.0 {
+            f.str(k);
+            f.value(v);
+        }
+    }
+    h(&[f.0])
+}
+
+/// Ids of paints a set of animated values refers to.
+fn paint_refs(props: &sr_eval::Props, out: &mut std::collections::BTreeSet<Arc<str>>) {
+    for (_, v) in &props.0 {
+        if let Value::PaintRef(id) = v {
+            out.insert(id.clone());
+        }
+    }
+}
+
+/// The text measured by an accessibility probe. Captions are not an authored node ID.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+pub enum ContrastTarget {
+    Node(String),
+    Captions,
+}
+
+impl std::fmt::Display for ContrastTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Node(id) => f.write_str(id),
+            Self::Captions => f.write_str("captions (burn-in)"),
+        }
+    }
+}
+
+/// Every attribute the schema types as a paint.
+const PAINT_ATTRS: &[&str] = &[
+    "fill",
+    "stroke",
+    "color",
+    "colorEnd",
+    "colorLow",
+    "colorHigh",
+    "background",
+    "paint",
+    "paint2",
+    "strokeColor",
+    "outline",
+    "headFill",
+    "highlight",
+    "activeColor",
+    "noData",
+];
+
+/// Ids of paints that element `e` and its descendants name in their attributes.
+fn static_paint_refs(e: &dyn Element, out: &mut std::collections::BTreeSet<Arc<str>>) {
+    sr_model::element::walk(e, &mut |d| {
+        for name in PAINT_ATTRS {
+            if let Some(AttrValue::Paint(sr_model::values::Paint::Ref(r))) = d.get_attr(name) {
+                out.insert(Arc::from(r.0.as_str()));
+            }
+        }
+    });
+}
+
+/// FNV-1a over tagged, length-prefixed fields.
+struct Fnv(u64);
+
+impl Fnv {
+    fn byte(&mut self, b: u8) {
+        self.0 ^= b as u64;
+        self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    fn u64(&mut self, v: u64) {
+        v.to_le_bytes().into_iter().for_each(|b| self.byte(b));
+    }
+    fn str(&mut self, s: &str) {
+        self.u64(s.len() as u64);
+        s.bytes().for_each(|b| self.byte(b));
+    }
+    fn len(&mut self, l: &sr_model::values::Length) {
+        self.u64(l.value.to_bits());
+        self.byte(l.unit as u8);
+    }
+    fn value(&mut self, v: &sr_eval::Value) {
+        use sr_eval::Value as V;
+        match v {
+            V::Num(n) => {
+                self.byte(1);
+                self.u64(n.to_bits());
+            }
+            V::Bool(b) => {
+                self.byte(2);
+                self.byte(*b as u8);
+            }
+            V::Str(s) => {
+                self.byte(3);
+                self.str(s);
+            }
+            V::Len(l) => {
+                self.byte(4);
+                self.len(l);
+            }
+            V::Pair(p) => {
+                self.byte(5);
+                self.len(&p[0]);
+                self.len(&p[1]);
+            }
+            V::Color(c) => {
+                self.byte(6);
+                c.iter().for_each(|x| self.u64(x.to_bits()));
+            }
+            V::PaintRef(s) => {
+                self.byte(7);
+                self.str(s);
+            }
+            V::List(l) => {
+                self.byte(8);
+                self.u64(l.len() as u64);
+                l.iter().for_each(|x| self.u64(x.to_bits()));
+            }
+        }
+    }
+}
+
+fn hf(v: f64) -> u64 {
+    v.to_bits()
+}
+
+fn affine_hash(a: &Affine) -> u64 {
+    h(&a.0.map(hf))
+}
+
+/// `frameBlend` of a layer or its time remap: 0 none, 1 frame mix, 2 optical flow.
+fn frame_blend(e: &dyn Element) -> u8 {
+    let code = |v: Option<AttrValue>| match v {
+        Some(AttrValue::Str(s)) if s == "frame-mix" => 1,
+        Some(AttrValue::Str(s)) if s == "optical-flow" => 2,
+        _ => 0,
+    };
+    let own = code(e.get_attr("frameBlend"));
+    if own != 0 {
+        return own;
+    }
+    sr_model::element::children(e)
+        .iter()
+        .filter(|c| c.element_name() == "timeRemap")
+        .map(|c| code(c.get_attr("frameBlend")))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Whether node `e` composites on encoded values (SREP 72 `edgeBlend`): `encoded`, or `inherit` in a document whose
+/// `linearLight` is false.
+fn edge_blend_encoded(e: &dyn Element, linear_light: bool) -> bool {
+    match e.get_attr("edgeBlend") {
+        Some(AttrValue::Str(s)) if s == "encoded" => true,
+        Some(AttrValue::Str(s)) if s == "linear" => false,
+        _ => !linear_light,
+    }
+}
+
+fn blend_index(e: &dyn Element) -> u32 {
+    match e.get_attr("blend") {
+        Some(AttrValue::Str(s)) => m::Blend::ALL.iter().position(|b| b.as_str() == s).unwrap_or(0) as u32,
+        _ => 0,
+    }
+}
+
+/// Where a texture of `tex` texels, drawn over the local rectangle `local` (x0, y0, x1, y1) with texture coordinates
+/// `uv` under `xf` (local to target pixels), maps texel for pixel onto the target: no scale, rotation or flip, and the
+/// rectangle's corners on whole pixels and whole texels. Returns the target-pixel rectangle it covers and the texel at
+/// that rectangle's top-left pixel.
+///
+/// Such a draw must be a copy, but sampling cannot give one: the uv the rasteriser interpolates at a pixel centre is
+/// a few ulp off the texel centre, so a linear sampler weighs in the neighbouring texel (on llvmpipe about 1e-5 of
+/// it, after which the half-float target rounds a quarter of the channels one step down), and the analytic edge
+/// coverage of the outermost pixels comes out a hair under 1. Composites of isolated subtrees at identity or a whole
+/// pixel offset are this case; anything scaled, rotated, flipped or off the pixel grid keeps the filtered path.
+fn aligned_texels(xf: &Affine, local: [f64; 4], uv: [f64; 4], tex: [u32; 2]) -> Option<([f64; 4], [f64; 2])> {
+    // tolerances far below what a linear sampler resolves: 1e-9 of scale is under 1e-5 texel at 8192 texels
+    let [a, b, c, d, _, _] = xf.0;
+    if (a - 1.0).abs() > 1e-9 || (d - 1.0).abs() > 1e-9 || b.abs() > 1e-9 || c.abs() > 1e-9 {
+        return None;
+    }
+    let whole = |v: f64| {
+        let r = v.round();
+        ((v - r).abs() <= 1e-6 && r.abs() < 16_777_216.0).then_some(r)
+    };
+    let p0 = xf.apply([local[0], local[1]]);
+    let p1 = xf.apply([local[2], local[3]]);
+    let (tw, th) = (tex[0] as f64, tex[1] as f64);
+    let (x0, y0, x1, y1) = (whole(p0[0])?, whole(p0[1])?, whole(p1[0])?, whole(p1[1])?);
+    let (u0, v0, u1, v1) = (whole(uv[0] * tw)?, whole(uv[1] * th)?, whole(uv[2] * tw)?, whole(uv[3] * th)?);
+    (x1 > x0 && y1 > y0 && x1 - x0 == u1 - u0 && y1 - y0 == v1 - v0).then_some(([x0, y0, x1, y1], [u0, v0]))
+}
+
+fn to_clip(p: [f64; 2], size: [u32; 2]) -> [f32; 4] {
+    [(2.0 * p[0] / size[0] as f64 - 1.0) as f32, (1.0 - 2.0 * p[1] / size[1] as f64) as f32, 0.0, 1.0]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compositor_pipeline(
+    device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    fragment: &str,
+    blend: Option<wgpu::BlendState>,
+    full_screen: bool,
+    ellipse: bool,
+) -> wgpu::RenderPipeline {
+    let vertices = [Some(wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<Vertex>() as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x2, 2 => Float32x2],
+    })];
+    {
+        let _creation = crate::gpu::creation_lock();
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(fragment),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module,
+                entry_point: Some(if full_screen { "vs_full" } else { "vs_main" }),
+                buffers: if full_screen { &[] } else { &vertices },
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module,
+                entry_point: Some(fragment),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: if fragment == "fs_mask_coverage" { wgpu::TextureFormat::R32Float } else { format },
+                    blend,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[("SINGLE_FEATHERED_ELLIPSE", ellipse as u32 as f64)],
+                    ..Default::default()
+                },
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+}
+
+/// `project/@precision="f32"` asked of a device that cannot blend into or filter 32-bit float textures: SREP 72's
+/// error PREC10, which its message starts with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrecisionError {
+    /// The adapter.
+    pub adapter: String,
+    /// The features it lacks, by name.
+    pub missing: Vec<&'static str>,
+}
+
+impl std::fmt::Display for PrecisionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PREC10: precision=\"f32\" needs 32-bit float working textures that the compositor can blend into and \
+             filter; the adapter {} lacks {}; this is an error, not a silent fallback to f16",
+            self.adapter,
+            self.missing.join(" and ")
+        )
+    }
+}
+
+impl std::error::Error for PrecisionError {}
+
+/// The working format for `precision` on `gpu`, and the error when f32 is asked of a device without the features it
+/// needs (the format is then f16, and every frame reports the error).
+pub fn working_format(gpu: &Gpu, precision: m::Precision) -> (wgpu::TextureFormat, Option<PrecisionError>) {
+    if precision != m::Precision::F32 {
+        return (resources::FORMAT, None);
+    }
+    let have = gpu.device.features();
+    let missing: Vec<&'static str> = [
+        (wgpu::Features::FLOAT32_BLENDABLE, "FLOAT32_BLENDABLE"),
+        (wgpu::Features::FLOAT32_FILTERABLE, "FLOAT32_FILTERABLE"),
+    ]
+    .into_iter()
+    .filter(|(f, _)| !have.contains(*f))
+    .map(|(_, n)| n)
+    .collect();
+    if missing.is_empty() {
+        (resources::FORMAT_F32, None)
+    } else {
+        (resources::FORMAT, Some(PrecisionError { adapter: gpu.info.name.clone(), missing }))
+    }
+}
+
+impl Renderer {
+    /// The working format of this renderer's offscreens and frames (SREP 72 `project/@precision`).
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+
+    /// Builds pipelines and resources for `program`.
+    pub fn new(gpu: Gpu, program: &Program) -> Renderer {
+        let d = &gpu.device;
+        // SREP 72: the working format of every offscreen, effect pass and the frame
+        let (format, precision_error) = working_format(&gpu, program.scene.project.precision);
+        let storage = |b: u32| wgpu::BindGroupLayoutEntry {
+            binding: b,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let tex = |b: u32| wgpu::BindGroupLayoutEntry {
+            binding: b,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let bgl0 = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("frame"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: std::num::NonZeroU64::new(std::mem::size_of::<Draw>() as u64),
+                    },
+                    count: None,
+                },
+                storage(1),
+                storage(2),
+                storage(3),
+                storage(4),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let bgl1 = resources::source_layout(d);
+        let bgl2 = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("backdrop+matte"),
+            entries: &[tex(0), tex(1)],
+        });
+        let bgl3 = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("generator"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("compositor"),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(include_str!("common.wgsl"), include_str!("d24.wgsl"), include_str!("shaders.wgsl")).into(),
+            ),
+        });
+        let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("composite"),
+            bind_group_layouts: &[Some(&bgl0), Some(&bgl1), Some(&bgl2), Some(&bgl3)],
+            immediate_size: 0,
+        });
+        let premul = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let pipe = |fs: &str, blend: Option<wgpu::BlendState>, full_screen: bool, ellipse: bool| {
+            compositor_pipeline(d, &module, &layout, format, fs, blend, full_screen, ellipse)
+        };
+        let blend = [pipe("fs_blend", None, false, false), pipe("fs_blend", None, false, true)];
+        let variants = [
+            ("fs_over", false),
+            ("fs_texture", false),
+            ("fs_solid", false),
+            ("fs_texture_edge", false),
+            ("fs_over", true),
+        ];
+        let over = variants.map(|(fs, ellipse)| pipe(fs, Some(premul), false, ellipse));
+        let dst_over = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let under = variants
+            .map(|(fs, ellipse)| pipe(fs, Some(wgpu::BlendState { color: dst_over, alpha: dst_over }), false, ellipse));
+        let add = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let additive = variants
+            .map(|(fs, ellipse)| pipe(fs, Some(wgpu::BlendState { color: add, alpha: premul.alpha }), false, ellipse));
+        let generator = pipe("fs_generator", None, true, false);
+        let sampler = |mode: wgpu::AddressMode| {
+            d.create_sampler(&wgpu::SamplerDescriptor {
+                address_mode_u: mode,
+                address_mode_v: mode,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                ..Default::default()
+            })
+        };
+        let samp = sampler(wgpu::AddressMode::ClampToEdge);
+        let samp_repeat = sampler(wgpu::AddressMode::Repeat);
+        let working = Working::of(&program.scene);
+        let to_srgb = color::convert(working.space, m::ColorSpace::LinearSrgb);
+        let from_srgb = color::convert(m::ColorSpace::LinearSrgb, working.space);
+        let g = Globals {
+            linear_light: working.linear as u32,
+            // the project seed as a u64 (low, high) for seeded 64-bit hash draws
+            seed: program.seed as u32,
+            pad: [(program.seed >> 32) as u32, 0],
+            to_srgb: types::mat3(&to_srgb),
+            from_srgb: types::mat3(&from_srgb),
+        };
+        let globals = d.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("globals"),
+            size: std::mem::size_of::<Globals>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        gpu.queue.write_buffer(&globals, 0, bytemuck::bytes_of(&g));
+        let dummy = Arc::new(resources::create_as(d, &bgl1, format, [1, 1], 1, "dummy"));
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &dummy.tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &[0u8; 16][..resources::texel_bytes(format) as usize],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(resources::texel_bytes(format)),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        let max_texture = d.limits().max_texture_dimension_2d.min(8192);
+        let (gpu_device, gpu_queue) = (gpu.device.clone(), gpu.queue.clone());
+        let raster = Raster::new_as(&gpu.device, format);
+        Renderer {
+            seed: program.seed,
+            tokens: token_table(&program.scene),
+            gpu,
+            over,
+            under,
+            additive,
+            blend,
+            generator,
+            mask_coverage: HashMap::new(),
+            mask_coverage_budget: 32 * 1024 * 1024,
+            mask_coverage_pipelines: None,
+            bgl0,
+            bgl1,
+            bgl2,
+            bgl3,
+            samp,
+            samp_repeat,
+            globals,
+            dummy,
+            working,
+            images: HashMap::new(),
+            image_notes: HashMap::new(),
+            sim_textures: HashMap::new(),
+            generators: HashMap::new(),
+            fractals: HashMap::new(),
+            subtree: HashMap::new(),
+            used: Default::default(),
+            last_used: HashMap::new(),
+            cache_frame: 0,
+            prefix: None,
+            prev_root: Vec::new(),
+            pool: Pool::of(format),
+            format,
+            precision_error,
+            frame: None,
+            ss_frame: None,
+            fx: {
+                let mut fx = fx::FxEngine::new(gpu_device.clone(), gpu_queue.clone());
+                fx.format = format;
+                fx
+            },
+            bare: Default::default(),
+            floated: Default::default(),
+            planes: Vec::new(),
+            in_transition: Default::default(),
+            sampling: false,
+            unblended: None,
+            frame_rect: None,
+            frame_three: None,
+            src_size: None,
+            fx_cache: std::env::var_os("SR_FX_NO_CACHE").is_none(),
+            motion_cache: HashMap::new(),
+            motion_cache_budget: render_fx::MOTION_BLUR_CACHE_BUDGET,
+            three: None,
+            contrast_three_cache: None,
+            three_assets: HashMap::new(),
+            volume_assets: HashMap::new(),
+            volume_cache_bytes: 0,
+            baked_sequences: HashMap::new(),
+            baked_frames: HashMap::new(),
+            mtlx: HashMap::new(),
+            ies: HashMap::new(),
+            view_override: None,
+            quality: None,
+            time_gpu: false,
+            last_timer: None,
+            tier: Tier::of(m::ProjectQuality::Final),
+            sphere: None,
+            particles: None,
+            contrast_probe: false,
+            contrast_batch_split: false,
+            grid: None,
+            pending_blur: Vec::new(),
+            video: crate::video::VideoEngine::new(gpu_device, gpu_queue),
+            decoders: HashMap::new(),
+            video_frames: HashMap::new(),
+            video_previous: HashMap::new(),
+            max_texture,
+            representation: None,
+            raster,
+            lotties: HashMap::new(),
+            svgs: HashMap::new(),
+            text: Default::default(),
+            clay_keys: HashMap::new(),
+            sky_bg: None,
+            voxel_surfaces: HashMap::new(),
+            glyph_tex: HashMap::new(),
+            burn_captions: None,
+            captions_off: false,
+            audio: None,
+            persistent_isf: None,
+            persistent_ids: None,
+            checkpoint_dir: std::env::var_os("SR_CHECKPOINT_DIR").filter(|v| !v.is_empty()).map(Into::into),
+            checkpoint_store: None,
+            compute_programs: Default::default(),
+            compute_textures: HashMap::new(),
+            tiles: Default::default(),
+            last_frame: None,
+            frame_bufs: None,
+            last_submit: None,
+            vector_cached_bytes: 0,
+            frame_bytes: 0,
+            vector_cache_budget: None,
+            transient_submit_bytes: TRANSIENT_SUBMIT_BYTES,
+        }
+    }
+
+    /// The working colour space of the frames.
+    pub fn working(&self) -> Working {
+        self.working
+    }
+
+    /// The device.
+    /// GPU time of the last frame, with `time_gpu` on a device with timestamp queries; waits
+    /// for that frame's work to complete.
+    pub fn gpu_times(&self) -> Option<fx::GpuTimes> {
+        let t = self.last_timer.as_ref()?;
+        let period = self.gpu.queue.get_timestamp_period();
+        let mut times = t.read(&self.gpu.device, period);
+        for pt in self.three.iter().flat_map(|e| &e.pt_timers) {
+            times.extend(pt.read(&self.gpu.device, period));
+        }
+        for raster in self.three.iter().flat_map(|e| &e.raster_timers) {
+            times.extend(raster.read(&self.gpu.device, period));
+        }
+        Some(times)
+    }
+
+    pub fn gpu(&self) -> &Gpu {
+        &self.gpu
+    }
+
+    // ---------------------------------------------------------- assets
+
+    fn asset<'p>(&self, p: &'p Program, key: &str) -> Option<(&'p AssetsChild, usize)> {
+        let (doc, id) = p.assets.get(key)?;
+        let scene = if *doc == 0 { &p.scene } else { &p.includes.get(*doc as usize - 1)?.1 };
+        let a = scene.assets.as_ref()?.children.iter().find(|c| c.id() == Some(id.as_str()))?;
+        Some((a, *doc as usize))
+    }
+
+    fn image(
+        &mut self,
+        path: std::path::PathBuf,
+        space: m::ColorSpace,
+        transfer: m::Transfer,
+        alpha: m::AlphaMode,
+        embedded: bool,
+    ) -> Option<Arc<Tex>> {
+        let key = format!("{}|{space}|{transfer}|{alpha}|{embedded}", path.display());
+        self.used.insert(format!("image:{key}"));
+        if let Some(t) = self.images.get(&key) {
+            return t.clone();
+        }
+        let t = self.load_image(&path, space, transfer, alpha, embedded);
+        self.images.insert(key, t.clone());
+        t
+    }
+
+    /// A frame of an image sequence: held like a video frame, while it is in use (a sequence
+    /// would otherwise keep every frame it has shown). A frame that cannot be read is remembered.
+    fn sequence_frame(
+        &mut self,
+        path: std::path::PathBuf,
+        space: m::ColorSpace,
+        transfer: m::Transfer,
+        alpha: m::AlphaMode,
+        embedded: bool,
+    ) -> Option<Arc<Tex>> {
+        let key = format!("{}|{space}|{transfer}|{alpha}|{embedded}", path.display());
+        self.used.insert(format!("video:{key}"));
+        if let Some(t) = self.video_frames.get(&key) {
+            return Some(t.clone());
+        }
+        self.used.insert(format!("image:{key}"));
+        if let Some(t) = self.images.get(&key) {
+            return t.clone();
+        }
+        match self.load_image(&path, space, transfer, alpha, embedded) {
+            Some(t) => {
+                self.video_frames.insert(key, t.clone());
+                Some(t)
+            }
+            None => {
+                self.images.insert(key, None);
+                None
+            }
+        }
+    }
+
+    fn load_image(
+        &mut self,
+        path: &std::path::Path,
+        space: m::ColorSpace,
+        transfer: m::Transfer,
+        alpha: m::AlphaMode,
+        embedded: bool,
+    ) -> Option<Arc<Tex>> {
+        match resources::decode_image(path, space, transfer, alpha, embedded, &self.working, self.max_texture) {
+            Ok(d) => {
+                if let Some(note) = &d.note {
+                    self.image_notes.insert(path.to_path_buf(), note.clone());
+                }
+                Some(Arc::new(resources::upload(&self.gpu.device, &self.gpu.queue, &self.bgl1, &d, "image")))
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Source texture for a layer's asset at a source time.
+    /// Source path, primaries and transfer of an asset, honouring the
+    /// preferred representation.
+    fn representation<'a>(
+        &self,
+        reps: &'a [m::Representation],
+        src: &'a str,
+        space: m::ColorSpace,
+        transfer: m::Transfer,
+    ) -> (&'a str, m::ColorSpace, m::Transfer) {
+        match self.representation.as_deref().and_then(|name| reps.iter().find(|r| r.name == name)) {
+            Some(r) => (r.src.as_str(), r.color_space.unwrap_or(space), r.transfer.unwrap_or(transfer)),
+            None => (src, space, transfer),
+        }
+    }
+
+    /// Draws a grid simulation's picture over the node's box.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_sim_image(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        i: usize,
+        space: &Space,
+        op: f64,
+        blend: u32,
+        seed: u32,
+        cmds: &mut Vec<Cmd>,
+        root_hash: u64,
+    ) {
+        let n = &ctx.g.nodes[i];
+        let (Some(img), Some([bw, bh])) = (n.sim_image.clone(), n.size) else { return };
+        let tex = match self.sim_textures.get(&n.id) {
+            Some((k, t)) if *k == img.key => t.clone(),
+            _ => {
+                let working = self.working;
+                let px: Vec<[f32; 4]> = img
+                    .rgba
+                    .iter()
+                    .map(|p| {
+                        let a = p[3] as f64;
+                        if a <= 0.0 {
+                            return [0.0; 4];
+                        }
+                        let c = working.from_linear_srgb([p[0] as f64 / a, p[1] as f64 / a, p[2] as f64 / a, a]);
+                        [(c[0] * a) as f32, (c[1] * a) as f32, (c[2] * a) as f32, a as f32]
+                    })
+                    .collect();
+                let d = resources::Decoded { levels: resources::mips(img.width, img.height, px), note: None };
+                let t = Arc::new(resources::upload(&self.gpu.device, &self.gpu.queue, &self.bgl1, &d, "simulation"));
+                self.sim_textures.insert(n.id.clone(), (img.key, t.clone()));
+                t
+            }
+        };
+        let d = Draw {
+            opacity: op as f32,
+            blend,
+            src_kind: src::TEXTURE,
+            seed,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            ..Default::default()
+        };
+        let hash = h(&[root_hash, sr_eval::rng::hash_str(&n.id), img.key, hf(op), 0x5157]);
+        self.draw_cmd(
+            plan,
+            ctx,
+            i,
+            space,
+            d,
+            [0.0, 0.0, bw, bh],
+            [0.0, 0.0, 1.0, 1.0],
+            &n.world,
+            tex,
+            cmds,
+            hash,
+            false,
+        );
+    }
+
+    /// Runs a compute node and draws its tonemapped histogram over its width × height box (SREP 67).
+    #[allow(clippy::too_many_arguments)]
+    fn emit_compute(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        i: usize,
+        space: &Space,
+        op: f64,
+        blend: u32,
+        seed: u32,
+        cmds: &mut Vec<Cmd>,
+        root_hash: u64,
+    ) {
+        let n = &ctx.g.nodes[i];
+        let (Some(c), Some([bw, bh])) = (n.elem.as_any().downcast_ref::<m::Compute>(), n.size) else { return };
+        // `src` is relative to the document the node is written in (inside an include, the included document)
+        let base = ctx.p.doc_base(n.doc);
+        let source = match sr_model::assets::resolve(&c.src, &base) {
+            sr_model::assets::Resolved::Local(path) => std::fs::read(&path).map_err(|e| (path, e.to_string())),
+            _ => {
+                plan.stats.errors.push(format!("{}: CMP10: compute src {:?} is not a local file", n.id, c.src));
+                return;
+            }
+        };
+        let bytes = match source {
+            Ok(b) => b,
+            Err((path, e)) => {
+                plan.stats.errors.push(format!("{}: CMP10: cannot read {}: {e}", n.id, path.display()));
+                return;
+            }
+        };
+        if let Some(want) = &c.sha256 {
+            let got: [u8; 32] = sha2::Digest::finalize(<sha2::Sha256 as sha2::Digest>::new_with_prefix(&bytes)).into();
+            if got != want.0 {
+                plan.stats.errors.push(format!("{}: CMP10: the SHA-256 of {} differs from @sha256", n.id, c.src));
+                return;
+            }
+        }
+        let Ok(user) = String::from_utf8(bytes) else {
+            plan.stats.errors.push(format!("{}: CMP11: {} is not UTF-8", n.id, c.src));
+            return;
+        };
+        let tm = match crate::compute::tonemap_of(c) {
+            Ok(t) => t,
+            Err(e) => {
+                plan.stats.errors.push(format!("{}: {e}", n.id));
+                return;
+            }
+        };
+        let (seed_lo, seed_hi) = crate::compute::seed_words(ctx.p.scene.project.seed, c.seed);
+        let job = crate::compute::Job {
+            width: c.width as u32,
+            height: c.height as u32,
+            invocations: c.invocations.min(u32::MAX as u64) as u32,
+            channels: if c.channels == m::Channels::V4 { 4 } else { 1 },
+            fraction_bits: c.fraction_bits.min(24) as u32,
+            frame: ctx.g.frame as i32,
+            time: ctx.g.time as f32,
+            seed: ((seed_hi as u64) << 32) | seed_lo as u64,
+            params: crate::compute::params_of(c),
+        };
+        let key = h(&[sr_eval::rng::hash_str(&user), sr_eval::rng::hash_str(&format!("{job:?}{tm:?}"))]);
+        let tex = match self.compute_textures.get(&n.id) {
+            Some((k, t)) if *k == key => t.clone(),
+            _ => {
+                let program = self.compute_programs.get(&self.gpu.device, &user);
+                let program = match program.as_ref() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        plan.stats.errors.push(format!("{}: {e}", n.id));
+                        return;
+                    }
+                };
+                let hist = match crate::compute::run(&self.gpu.device, &self.gpu.queue, program, &job) {
+                    Ok(hst) => hst,
+                    Err(e) => {
+                        plan.stats.errors.push(format!("{}: {e}", n.id));
+                        return;
+                    }
+                };
+                let picture =
+                    crate::compute::tonemap(&hist, job.width, job.height, job.channels, job.fraction_bits, &tm);
+                let working = self.working;
+                let px: Vec<[f32; 4]> = picture
+                    .iter()
+                    .map(|p| {
+                        // display-encoded code values, like a colour literal
+                        let s = working.from_literal([p[0], p[1], p[2], 1.0]);
+                        let a = p[3];
+                        [(s[0] * a) as f32, (s[1] * a) as f32, (s[2] * a) as f32, a as f32]
+                    })
+                    .collect();
+                let d = resources::Decoded { levels: resources::mips(job.width, job.height, px), note: None };
+                let t = Arc::new(resources::upload(&self.gpu.device, &self.gpu.queue, &self.bgl1, &d, "compute"));
+                self.compute_textures.insert(n.id.clone(), (key, t.clone()));
+                t
+            }
+        };
+        let d = Draw {
+            opacity: op as f32,
+            blend,
+            src_kind: src::TEXTURE,
+            seed,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            ..Default::default()
+        };
+        let hash = h(&[root_hash, sr_eval::rng::hash_str(&n.id), key, hf(op), 0xC0E7]);
+        self.draw_cmd(
+            plan,
+            ctx,
+            i,
+            space,
+            d,
+            [0.0, 0.0, bw, bh],
+            [0.0, 0.0, 1.0, 1.0],
+            &n.world,
+            tex,
+            cmds,
+            hash,
+            false,
+        );
+    }
+
+    fn solid_texture(&mut self, rgba: [f32; 4]) -> Arc<Tex> {
+        let key = format!("solid:{rgba:?}");
+        self.used.insert(format!("image:{key}"));
+        if let Some(Some(t)) = self.images.get(&key) {
+            return t.clone();
+        }
+        let d = resources::Decoded { levels: vec![(1, 1, vec![rgba])], note: None };
+        let t = Arc::new(resources::upload(&self.gpu.device, &self.gpu.queue, &self.bgl1, &d, "solid"));
+        self.images.insert(key, Some(t.clone()));
+        t
+    }
+
+    /// Source texture for a layer's asset at a source time.
+    fn layer_source(&mut self, plan: &mut Plan, p: &Program, g: &FrameGraph, n: &FrameNode) -> Option<Arc<Tex>> {
+        let key = n.asset.as_deref()?;
+        let (a, doc) = self.asset(p, key)?;
+        let base = p.base_dirs.get(doc).cloned().unwrap_or_default();
+        match a {
+            AssetsChild::Image(i) => {
+                let (src, space, transfer) = self.representation(&i.representations, &i.src, i.color_space, i.transfer);
+                match sr_model::assets::resolve(src, &base) {
+                    sr_model::assets::Resolved::Local(path) => {
+                        let t = self.image(
+                            path.clone(),
+                            space,
+                            transfer,
+                            i.alpha,
+                            i.color_profile == sr_model::model::ColorProfile::Embedded,
+                        );
+                        if t.is_none() {
+                            plan.stats.errors.push(format!("{}: cannot read image {}", n.id, path.display()));
+                        }
+                        if let Some(note) = self.image_notes.get(&path) {
+                            plan.stats.unsupported.push(format!("{}: {}: {note}", n.id, path.display()));
+                        }
+                        t
+                    }
+                    sr_model::assets::Resolved::Remote(u) => {
+                        plan.stats.errors.push(format!("{}: remote image {u} is not fetched while rendering", n.id));
+                        None
+                    }
+                }
+            }
+            // a pdf page is its pinned cache image, display sRGB with straight alpha; the PDF is never read
+            AssetsChild::Pdf(pdf) => match sr_model::assets::resolve(&pdf.cache, &base) {
+                sr_model::assets::Resolved::Local(path) => {
+                    let t =
+                        self.image(path.clone(), m::ColorSpace::Srgb, m::Transfer::Auto, m::AlphaMode::Straight, false);
+                    if t.is_none() {
+                        plan.stats.errors.push(format!("{}: cannot read the page image {}", n.id, path.display()));
+                    }
+                    t
+                }
+                sr_model::assets::Resolved::Remote(u) => {
+                    plan.stats.errors.push(format!("{}: remote page image {u} is not fetched while rendering", n.id));
+                    None
+                }
+            },
+            AssetsChild::ImageSequence(s) => {
+                let t = n.source_time.unwrap_or(0.0).max(0.0);
+                let count = ((s.last - s.first) / s.step as i64).max(0);
+                let k = ((t * s.fps.as_f64() + 1e-9).floor() as i64).min(count);
+                let hold = if s.missing_frame == m::MissingFrame::Hold { k } else { 0 };
+                for back in 0..=hold {
+                    let frame = s.first + (k - back) * s.step as i64;
+                    let file = sr_model::assets::sequence_frame(&s.src, frame)?;
+                    if let sr_model::assets::Resolved::Local(path) = sr_model::assets::resolve(&file, &base) {
+                        if path.is_file() {
+                            return self.sequence_frame(
+                                path,
+                                s.color_space,
+                                s.transfer,
+                                s.alpha,
+                                s.color_profile == sr_model::model::ColorProfile::Embedded,
+                            );
+                        }
+                    }
+                }
+                let frame = s.first + k * s.step as i64;
+                match s.missing_frame {
+                    m::MissingFrame::Black => Some(self.solid_texture([0.0, 0.0, 0.0, 1.0])),
+                    m::MissingFrame::Transparent | m::MissingFrame::Hold => None,
+                    m::MissingFrame::Error => {
+                        plan.stats
+                            .errors
+                            .push(format!("{}: frame {frame} of image sequence {} is missing", n.id, s.id));
+                        None
+                    }
+                }
+            }
+            AssetsChild::Video(v) => {
+                let (src, space, transfer) = self.representation(&v.representations, &v.src, v.color_space, v.transfer);
+                let path = match sr_model::assets::resolve(src, &base) {
+                    sr_model::assets::Resolved::Local(path) => path,
+                    sr_model::assets::Resolved::Remote(u) => {
+                        plan.stats.errors.push(format!("{}: remote video {u} is not fetched while rendering", n.id));
+                        return None;
+                    }
+                };
+                let blend = frame_blend(&*n.elem);
+                let rotation = v.rotation;
+                self.video_texture(plan, n, &path, v.fps.as_f64(), space, transfer, v.alpha, rotation, blend)
+            }
+            // an asset's animated values are keyed as the node names it: an include's own as `ns/id`
+            AssetsChild::Generator(gen) => Some(self.generator_texture(plan, p, g, &p.doc_key(n.doc, &gen.id), gen)),
+            AssetsChild::Fractal(fr) => self.fractal_texture(plan, g, &p.doc_key(n.doc, &fr.id), fr, &n.id),
+            AssetsChild::Generated(gm) if matches!(gm.kind.as_str(), "image" | "video") => {
+                // generated media renders from its verified cache file
+                let path = match sr_model::assets::resolve(&gm.cache, &base) {
+                    sr_model::assets::Resolved::Local(path) => path,
+                    sr_model::assets::Resolved::Remote(u) => {
+                        plan.stats.errors.push(format!("{}: remote cache {u} is not fetched while rendering", n.id));
+                        return None;
+                    }
+                };
+                if gm.kind.as_str() == "image" {
+                    let t = self.image(path.clone(), m::ColorSpace::Srgb, m::Transfer::Auto, m::AlphaMode::Auto, true);
+                    if t.is_none() {
+                        plan.stats.errors.push(format!("{}: cannot read generated image {}", n.id, path.display()));
+                    }
+                    t
+                } else {
+                    let fps = gm.fps.map(|f| f.as_f64()).unwrap_or(0.0);
+                    let fps = if fps > 0.0 {
+                        fps
+                    } else {
+                        sr_media::probe(&path).ok().and_then(|i| i.video).map(|v| v.fps).unwrap_or(25.0)
+                    };
+                    self.video_texture(
+                        plan,
+                        n,
+                        &path,
+                        fps,
+                        m::ColorSpace::Srgb,
+                        m::Transfer::Auto,
+                        m::AlphaMode::Auto,
+                        m::VideoAssetRotation::V0,
+                        frame_blend(&*n.elem),
+                    )
+                }
+            }
+            other => {
+                let batch = match other.element_name() {
+                    "generated" => "audio only",
+                    "mesh" => "mesh assets draw through object3D",
+                    _ => "not drawable",
+                };
+                plan.stats.unsupported.push(format!("{}: {} asset ({batch})", n.id, other.element_name()));
+                None
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn video_texture(
+        &mut self,
+        plan: &mut Plan,
+        n: &FrameNode,
+        path: &std::path::Path,
+        fps: f64,
+        space: m::ColorSpace,
+        transfer: m::Transfer,
+        alpha: m::AlphaMode,
+        rotation: m::VideoAssetRotation,
+        blend: u8,
+    ) -> Option<Arc<Tex>> {
+        let pkey = format!("{path:?}/{:016x}", fps.to_bits());
+        let vkey = format!("{pkey}/{space:?}/{transfer:?}/{alpha:?}/{rotation:?}");
+        self.used.insert(format!("video-previous:{vkey}"));
+        if !self.decoders.contains_key(&pkey) {
+            let d = sr_media::VideoDecoder::open(path, Some(fps), 8).map_err(|e| e.to_string());
+            self.decoders.insert(pkey.clone(), d);
+        }
+        let x = n.source_time.unwrap_or(0.0).max(0.0) * fps;
+        let n0 = libm::floor(x + 1e-6) as i64;
+        let f = (x - n0 as f64).clamp(0.0, 1.0);
+        let frame_tex = |this: &mut Self, plan: &mut Plan, k: i64| -> Option<Arc<Tex>> {
+            let fkey = format!("{vkey}#{k}");
+            this.used.insert(format!("video:{fkey}"));
+            if let Some(t) = this.video_frames.get(&fkey) {
+                return Some(t.clone());
+            }
+            let dec = match this.decoders.get_mut(&pkey)? {
+                Ok(d) => d,
+                Err(e) => {
+                    plan.stats.errors.push(format!("{}: {e}", n.id));
+                    return None;
+                }
+            };
+            let waited = std::time::Instant::now();
+            let decoded = dec.frame(k);
+            plan.stats.decode_wait += waited.elapsed().as_secs_f64();
+            let frame = match decoded {
+                Ok(f) => f,
+                Err(e) => {
+                    plan.stats.errors.push(format!("{}: {e}", n.id));
+                    return None;
+                }
+            };
+            // a clip that stopped decoding holds its last good frame: say so on the frames it stands in for
+            let failed = frame.index != k && !dec.warnings.is_empty();
+            if failed {
+                if let Some(w) = dec.warnings.last() {
+                    plan.stats.errors.push(format!("{}: {w}", n.id));
+                }
+            }
+            let info = dec.info.clone();
+            if let Some((previous, texture)) = this.video_previous.get(&vkey) {
+                if same_video_pixels(previous, &frame) {
+                    let texture = texture.clone();
+                    if !failed {
+                        this.video_frames.insert(fkey, texture.clone());
+                    }
+                    return Some(texture);
+                }
+            }
+            let quarter = match rotation {
+                m::VideoAssetRotation::V0 => (info.rotation / 90) as u32,
+                m::VideoAssetRotation::V90 => 1,
+                m::VideoAssetRotation::V180 => 2,
+                m::VideoAssetRotation::V270 => 3,
+            };
+            let transfer = if transfer == m::Transfer::Auto {
+                crate::video::Interpretation::transfer_for(&info.transfer).unwrap_or(color::default_transfer(space))
+            } else {
+                transfer
+            };
+            let it = crate::video::Interpretation {
+                space,
+                transfer,
+                alpha: if info.alpha { alpha } else { m::AlphaMode::None },
+                quarter_turns: quarter,
+                matrix: crate::video::Interpretation::matrix_for(&info.matrix, info.height),
+                full_range: info.full_range || info.rgb,
+            };
+            let working = this.working;
+            let t = Arc::new(this.video.convert(&frame, &it, &working, &this.bgl1));
+            plan.stats.video_frames += 1;
+            this.video_previous.insert(vkey.clone(), (frame, t.clone()));
+            if !failed {
+                this.video_frames.insert(fkey, t.clone());
+            }
+            Some(t)
+        };
+        let a = frame_tex(self, plan, n0)?;
+        if blend == 0 || f < 1e-3 {
+            return Some(a);
+        }
+        let b = frame_tex(self, plan, n0 + 1)?;
+        let bkey = format!("{vkey}#{n0}~{}~{blend}", (f * 1e4).round());
+        self.used.insert(format!("video:{bkey}"));
+        if let Some(t) = self.video_frames.get(&bkey) {
+            return Some(t.clone());
+        }
+        let t = Arc::new(if blend == 1 {
+            self.video.mix(&a, &b, f as f32, &self.bgl1)
+        } else {
+            self.video.interpolate(&a, &b, f as f32, &self.bgl1)
+        });
+        self.video_frames.insert(bkey, t.clone());
+        Some(t)
+    }
+
+    /// The picture of generator `gen`, whose animated values have the key `key` ([`Program::doc_key`]).
+    fn generator_texture(
+        &mut self,
+        plan: &mut Plan,
+        p: &Program,
+        g: &FrameGraph,
+        key: &str,
+        gen: &m::GeneratorAsset,
+    ) -> Arc<Tex> {
+        self.generator_texture_keyed(plan, p, g, key, gen).0
+    }
+
+    /// The picture of a generator asset at this frame as RGBA texels in the working representation (premultiplied),
+    /// with its key (the hash of everything it is drawn from) and size: a material map fed by a generator (SREP 71).
+    /// A generator that this frame is the first to need is drawn at once, rather than with the frame's other
+    /// generators, so that it can be read back.
+    fn generator_texels(
+        &mut self,
+        plan: &mut Plan,
+        p: &Program,
+        g: &FrameGraph,
+        key: &str,
+        gen: &m::GeneratorAsset,
+    ) -> (u64, [u32; 2], Vec<[f32; 4]>) {
+        let before = plan.gens.len();
+        let (tex, hash) = self.generator_texture_keyed(plan, p, g, key, gen);
+        if plan.gens.len() > before {
+            self.draw_generator_now(plan, before);
+        }
+        (hash, tex.size, self.fx.read_texels(&tex))
+    }
+
+    /// Draws `plan.gens[k]` now, in a submission of its own, with the paints planned so far.
+    fn draw_generator_now(&self, plan: &Plan, k: usize) {
+        use wgpu::util::DeviceExt;
+        let d = &self.gpu.device;
+        let buffer = |label: &str, bytes: &[u8], usage: wgpu::BufferUsages| {
+            let mut contents = bytes.to_vec();
+            contents.resize(contents.len().max(16).div_ceil(256) * 256, 0);
+            d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: &contents, usage })
+        };
+        let draws = buffer("gen draws", bytemuck::bytes_of(&Draw::default()), wgpu::BufferUsages::UNIFORM);
+        let masks = buffer("gen masks", bytemuck::bytes_of(&Mask::default()), wgpu::BufferUsages::STORAGE);
+        let edges = buffer("gen edges", &[0u8; 16], wgpu::BufferUsages::STORAGE);
+        let paints = buffer("gen paints", bytemuck::cast_slice(&plan.paints.paints), wgpu::BufferUsages::STORAGE);
+        let stops = buffer("gen stops", bytemuck::cast_slice(&plan.paints.stops), wgpu::BufferUsages::STORAGE);
+        let bg0 = d.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gen frame"),
+            layout: &self.bgl0,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &draws,
+                        offset: 0,
+                        size: std::num::NonZeroU64::new(std::mem::size_of::<Draw>() as u64),
+                    }),
+                },
+                wgpu::BindGroupEntry { binding: 1, resource: masks.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: edges.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: paints.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: stops.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.samp) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&self.samp_repeat) },
+                wgpu::BindGroupEntry { binding: 7, resource: self.globals.as_entire_binding() },
+            ],
+        });
+        let pair = d.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gen backdrop+matte"),
+            layout: &self.bgl2,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.dummy.view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.dummy.view) },
+            ],
+        });
+        let gj = &plan.gens[k];
+        let mut enc = d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("generator now") });
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("generator now"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &gj.target.view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.generator);
+            pass.set_bind_group(0, &bg0, &[0]);
+            pass.set_bind_group(1, &self.dummy.bind, &[]);
+            pass.set_bind_group(2, &pair, &[]);
+            pass.set_bind_group(3, &gj.bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.gpu.queue.submit([enc.finish()]);
+    }
+
+    /// [`Self::generator_texture`] with the key of its picture.
+    fn generator_texture_keyed(
+        &mut self,
+        plan: &mut Plan,
+        p: &Program,
+        g: &FrameGraph,
+        key: &str,
+        gen: &m::GeneratorAsset,
+    ) -> (Arc<Tex>, u64) {
+        let el = g.elements.iter().find(|e| &*e.key == key);
+        let num = |name: &str, d: f64| el.and_then(|e| e.props.get(name)).and_then(Value::as_num).unwrap_or(d);
+        let paint_of = |name: &str, fallback: &sr_model::values::Paint| -> Value {
+            el.and_then(|e| e.props.get(name)).cloned().unwrap_or_else(|| crate::value_of_paint(fallback))
+        };
+        let (w, hgt) = ((gen.width as u32).min(self.max_texture), (gen.height as u32).min(self.max_texture));
+        let pa = paint_of("paint", &gen.paint);
+        let pb = paint_of("paint2", &gen.paint2);
+        let tokens = self.tokens.clone();
+        let tok = |t: &str| tokens.get(t).copied();
+        let paint_index = |v: &Value, plan: &mut Plan| -> u32 {
+            match v {
+                Value::PaintRef(id) => {
+                    if let Some(pc) =
+                        p.scene.paints.as_ref().and_then(|ps| ps.children.iter().find(|c| c.id() == Some(id)))
+                    {
+                        if let Some(i) =
+                            plan.paints.gradient(&self.working, pc, g, [0.0, 0.0, w as f64, hgt as f64], &tok)
+                        {
+                            return i;
+                        }
+                    }
+                    plan.paints.solid(&self.working, [0.0; 4])
+                }
+                Value::Color(c) => plan.paints.solid(&self.working, *c),
+                _ => plan.paints.solid(&self.working, [0.0; 4]),
+            }
+        };
+        let (ia, ib) = (paint_index(&pa, plan), paint_index(&pb, plan));
+        let kind = m::GeneratorAssetKind::ALL.iter().position(|k| *k == gen.kind).unwrap_or(0) as u32;
+        // seeded 64-bit hash draws with generator seed
+        let seed = sr_eval::rng::element_seed(p.seed, &gen.id, gen.seed, "generator");
+        let evolution = num("evolution", gen.evolution);
+        let frame = libm::floor(g.time * p.fps.as_f64() + 1e-6) as i64;
+        let grain = (seed as i64)
+            .wrapping_add(frame.wrapping_mul(7919))
+            .wrapping_add((evolution * 1000.0).round_ties_even() as i64 * 104_729) as u64;
+        let mut perm = [[0u32; 4]; 64];
+        for (i, v) in sr_eval::rng::permutation(seed, 0, 256).into_iter().enumerate() {
+            perm[i / 4][i % 4] = v as u32;
+        }
+        let u = Gen {
+            size: [w as f32, hgt as f32],
+            kind,
+            octaves: num("octaves", gen.octaves as f64) as u32,
+            scale: num("scale", gen.scale.get()) as f32,
+            evolution: evolution as f32,
+            contrast: num("contrast", gen.contrast) as f32,
+            angle: num("angle", gen.angle) as f32,
+            seed: seed as u32,
+            paint_a: ia,
+            paint_b: ib,
+            seed_hi: (seed >> 32) as u32,
+            // the grain's seed, then (grid) the line width in pixels as float bits and a flag that it was given
+            grain: {
+                let line_width = num("lineWidth", gen.line_width.map(|v| v.get()).unwrap_or(-1.0));
+                [
+                    grain as u32,
+                    (grain >> 32) as u32,
+                    (line_width.max(0.0) as f32).to_bits(),
+                    u32::from(line_width >= 0.0),
+                ]
+            },
+            perm,
+        };
+        let pd = |i: u32| {
+            let d = plan.paints.paints[i as usize];
+            let stops: Vec<u64> = plan.paints.stops[d.stop_off as usize..(d.stop_off + d.stop_count) as usize]
+                .iter()
+                .flat_map(|s| bytemuck::cast_slice::<_, u32>(&[*s]).iter().map(|x| *x as u64).collect::<Vec<_>>())
+                .collect();
+            h(&[
+                h(bytemuck::cast_slice::<_, u32>(&[d]).iter().map(|x| *x as u64).collect::<Vec<_>>().as_slice()),
+                h(&stops),
+            ])
+        };
+        let hash = h(&[
+            h(bytemuck::cast_slice::<_, u32>(&[u]).iter().map(|x| *x as u64).collect::<Vec<_>>().as_slice()),
+            pd(ia),
+            pd(ib),
+        ]);
+        self.used.insert(format!("gen:{hash}"));
+        if let Some(t) = self.generators.get(&hash) {
+            plan.stats.cache_hits += 1;
+            return (t.clone(), hash);
+        }
+        // from the pool, where an evicted generator texture goes: an animated generator is a new entry
+        // every frame, and takes the texture of the one that left the cache
+        let target = self.pool.get(&self.gpu.device, &self.bgl1, [w, hgt]);
+        let ubuf = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gen"),
+            size: std::mem::size_of::<Gen>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.gpu.queue.write_buffer(&ubuf, 0, bytemuck::bytes_of(&u));
+        let bind = self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gen"),
+            layout: &self.bgl3,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: ubuf.as_entire_binding() }],
+        });
+        self.generators.insert(hash, target.clone());
+        plan.gens.push(GenJob { target: target.clone(), bind });
+        (target, hash)
+    }
+
+    /// The picture of a fractal asset at this frame (SREP 75): every pixel's escape count, computed on the CPU in
+    /// IEEE doubles and fixed point (`sr_eval::fractal`), coloured in display-encoded values and converted to the working
+    /// space. `who` names the node that shows it, for errors.
+    fn fractal_texture(
+        &mut self,
+        plan: &mut Plan,
+        g: &FrameGraph,
+        key: &str,
+        fr: &m::FractalAsset,
+        who: &str,
+    ) -> Option<Arc<Tex>> {
+        let el = g.elements.iter().find(|e| &*e.key == key);
+        let num = |name: &str, d: f64| el.and_then(|e| e.props.get(name)).and_then(Value::as_num).unwrap_or(d);
+        let (w, hgt) = (fr.width as u32, fr.height as u32);
+        if w > self.max_texture || hgt > self.max_texture {
+            plan.stats.errors.push(format!(
+                "{who}: fractal {} is {w} x {hgt}, beyond the device's {} texture limit",
+                fr.id, self.max_texture
+            ));
+            return None;
+        }
+        let julia = match (fr.kind, &fr.julia_x, &fr.julia_y) {
+            (m::FractalAssetKind::Julia, Some(x), Some(y)) => Some([x.clone(), y.clone()]),
+            _ => None,
+        };
+        let spec = sr_eval::fractal::Fractal {
+            julia,
+            width: w,
+            height: hgt,
+            center: [fr.center_x.clone(), fr.center_y.clone()],
+            span: num("span", fr.span.get()),
+            zoom: num("zoom", fr.zoom),
+            rotation: num("rotation", fr.rotation),
+            max_iterations: num("maxIterations", fr.max_iterations as f64).clamp(1.0, 1e8) as u64,
+            bailout: num("bailout", fr.bailout.get()),
+        };
+        let literal = |c: &sr_model::values::Color| -> [f64; 4] {
+            match c {
+                sr_model::values::Color::Rgba(c) => [c.r as f64, c.g as f64, c.b as f64, c.a as f64],
+                sr_model::values::Color::Token(t) => self.tokens.get(t).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]),
+            }
+        };
+        let mut palette = Vec::new();
+        for tok in fr.palette.split_whitespace() {
+            match <sr_model::values::Color as sr_model::parse::ParseValue>::parse_value(tok) {
+                Ok(c) => palette.push(literal(&c)),
+                Err(_) => {
+                    plan.stats.errors.push(format!("{who}: fractal {} palette: {tok:?} is not a colour", fr.id));
+                    return None;
+                }
+            }
+        }
+        let inside = match el.and_then(|e| e.props.get("insideColor")) {
+            Some(Value::Color(c)) => *c,
+            _ => literal(&fr.inside_color),
+        };
+        let colouring = sr_eval::fractal::Colouring {
+            smooth: fr.color_mode == m::ColorMode::Smooth,
+            palette,
+            scale: num("paletteScale", fr.palette_scale.get()),
+            offset: num("paletteOffset", fr.palette_offset),
+            inside,
+            bailout: spec.bailout,
+        };
+        let hash = {
+            let mut f = Fnv(0xcbf2_9ce4_8422_2325);
+            f.str(&format!("{spec:?}"));
+            f.str(&format!("{colouring:?}"));
+            f.u64(u64::from(self.working.linear));
+            f.0
+        };
+        self.used.insert(format!("fractal:{hash}"));
+        if let Some(t) = self.fractals.get(&hash) {
+            plan.stats.cache_hits += 1;
+            return Some(t.clone());
+        }
+        let escapes = match sr_eval::fractal::escapes(&spec) {
+            Ok(e) => e,
+            Err(e) => {
+                plan.stats.errors.push(format!("{who}: {e}"));
+                return None;
+            }
+        };
+        let working = &self.working;
+        let px: Vec<[f32; 4]> = escapes
+            .iter()
+            .map(|e| {
+                let c = working.from_literal(colouring.colour(*e));
+                // premultiplied, as every source texture
+                [(c[0] * c[3]) as f32, (c[1] * c[3]) as f32, (c[2] * c[3]) as f32, c[3] as f32]
+            })
+            .collect();
+        let d = resources::Decoded { levels: vec![(w, hgt, px)], note: None };
+        let t = Arc::new(resources::upload(&self.gpu.device, &self.gpu.queue, &self.bgl1, &d, "fractal"));
+        self.fractals.insert(hash, t.clone());
+        Some(t)
+    }
+
+    // ---------------------------------------------------------- planning
+
+    fn masks_of(&self, plan: &mut Plan, n: &FrameNode, bx: [f64; 2], extra_clip: Option<[f64; 2]>) -> (u32, u32) {
+        let off = plan.masks.len() as u32;
+        if self.bare.contains(&n.id) {
+            return (off, 0);
+        }
+        let children: Vec<&dyn Element> = sr_model::element::children(&*n.elem);
+        let mut k = 0usize;
+        for c in children {
+            if c.element_name() != "mask" {
+                continue;
+            }
+            let Some(mk) = c.as_any().downcast_ref::<m::Mask>() else { continue };
+            let key = format!("{}/mask[{k}]", n.id);
+            k += 1;
+            let part = n.parts.iter().find(|p| *p.key == key);
+            let pv = |name: &str| part.and_then(|p| p.props.get(name));
+            let len = |name: &str, d: sr_model::values::Length, extent: f64| -> f64 {
+                match pv(name) {
+                    Some(Value::Len(l)) => l.resolve(extent, bx[0], bx[1]),
+                    Some(Value::Num(x)) => *x,
+                    _ => d.resolve(extent, bx[0], bx[1]),
+                }
+            };
+            let num = |name: &str, d: f64| pv(name).and_then(Value::as_num).unwrap_or(d);
+            let size = n.size.unwrap_or(bx);
+            let (x, y) = (len("x", mk.x, size[0]), len("y", mk.y, size[1]));
+            let w = mk.width.map(|l| len("width", l, size[0])).unwrap_or(size[0]);
+            let hh = mk.height.map(|l| len("height", l, size[1])).unwrap_or(size[1]);
+            let mode = m::MaskMode::ALL.iter().position(|v| *v == mk.mode).unwrap_or(0) as u32;
+            let mut mask = Mask {
+                rect: [x as f32, y as f32, w as f32, hh as f32],
+                kind: 0,
+                mode,
+                invert: mk.invert as u32,
+                fill_rule: (mk.fill_rule == m::FillRule::Evenodd) as u32,
+                feather: num("feather", mk.feather.get()) as f32,
+                expansion: num("expansion", mk.expansion) as f32,
+                radius: num("radius", mk.radius.get()) as f32,
+                opacity: num("opacity", mk.opacity.get()) as f32,
+                ..Default::default()
+            };
+            let polygon: Option<Vec<Vec<[f64; 2]>>> = match mk.r#type {
+                m::MaskKind::Rect => None,
+                m::MaskKind::Ellipse => {
+                    mask.kind = 1;
+                    None
+                }
+                m::MaskKind::RoundedRect => {
+                    mask.kind = 2;
+                    None
+                }
+                m::MaskKind::Polygon | m::MaskKind::Star => {
+                    // vertices on the ellipse inscribed in the box, from the top,
+                    // clockwise; a star's inner vertices on that ellipse scaled by `innerRadius` (0.5)
+                    let pts = mk.points.max(3) as usize;
+                    let (cx, cy, rx, ry) = (x + w / 2.0, y + hh / 2.0, w / 2.0, hh / 2.0);
+                    let inner = mk.inner_radius.map(|v| v.get()).unwrap_or(0.5);
+                    let star = mk.r#type == m::MaskKind::Star;
+                    let count = if star { pts * 2 } else { pts };
+                    Some(vec![(0..count)
+                        .map(|i| {
+                            let a = -std::f64::consts::FRAC_PI_2 + i as f64 * std::f64::consts::TAU / count as f64;
+                            let k = if star && i % 2 == 1 { inner } else { 1.0 };
+                            [cx + k * rx * libm::cos(a), cy + k * ry * libm::sin(a)]
+                        })
+                        .collect()])
+                }
+                m::MaskKind::Path => {
+                    let d = match pv("path") {
+                        Some(Value::Str(s)) => s.to_string(),
+                        _ => mk.path.clone().unwrap_or_default(),
+                    };
+                    sr_eval::path::flatten(&d, 0.25).ok().map(|subs| {
+                        subs.into_iter().map(|s| s.into_iter().map(|q| [q[0] + x, q[1] + y]).collect()).collect()
+                    })
+                }
+            };
+            if let Some(polys) = polygon {
+                mask.kind = 3;
+                mask.edge_off = plan.edges.len() as u32;
+                for poly in polys {
+                    for i in 0..poly.len() {
+                        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+                        plan.edges.push([a[0] as f32, a[1] as f32, b[0] as f32, b[1] as f32]);
+                    }
+                }
+                mask.edge_count = plan.edges.len() as u32 - mask.edge_off;
+            }
+            plan.masks.push(mask);
+        }
+        if let Some([w, hh]) = extra_clip {
+            // the clip box intersects whatever the masks produced
+            plan.masks.push(Mask {
+                rect: [0.0, 0.0, w as f32, hh as f32],
+                mode: 0,
+                opacity: 1.0,
+                ..Default::default()
+            });
+        }
+        (off, plan.masks.len() as u32 - off)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_quad(
+        &self,
+        plan: &mut Plan,
+        space: &Space,
+        world: &Affine,
+        three_d: Option<([f64; 3], [f64; 2])>,
+        local: [f64; 4],
+        uv: [f64; 4],
+        proj: &glam::Mat4,
+    ) -> ([u32; 4], u32) {
+        let xf = space.xform.then(world);
+        // grow the quad by about a pixel so the shader can antialias its edges
+        let [a, b, c, d, _, _] = xf.0;
+        let persp = if three_d.is_some() { 3.0 } else { 1.5 };
+        let mx = persp / (a * a + b * b).sqrt().max(1e-9);
+        let my = persp / (c * c + d * d).sqrt().max(1e-9);
+        let (du, dv) = (
+            (uv[2] - uv[0]) / (local[2] - local[0]).abs().max(1e-12),
+            (uv[3] - uv[1]) / (local[3] - local[1]).abs().max(1e-12),
+        );
+        let (sx, sy) = ((local[2] - local[0]).signum(), (local[3] - local[1]).signum());
+        let lx = [local[0] - mx * sx, local[1] - my * sy, local[2] + mx * sx, local[3] + my * sy];
+        let ux = [uv[0] - du * mx, uv[1] - dv * my, uv[2] + du * mx, uv[3] + dv * my];
+        let corners = [[lx[0], lx[1]], [lx[2], lx[1]], [lx[2], lx[3]], [lx[0], lx[3]]];
+        let uvs = [[ux[0], ux[1]], [ux[2], ux[1]], [ux[2], ux[3]], [ux[0], ux[3]]];
+        let mut clips = [[0f32; 4]; 4];
+        let mut pix = [[0f64; 2]; 4];
+        for i in 0..4 {
+            let p = xf.apply(corners[i]);
+            match three_d {
+                None => {
+                    clips[i] = to_clip(p, space.size);
+                    pix[i] = p;
+                }
+                Some((three, anchor)) => {
+                    (clips[i], pix[i]) = project_25(p, three, xf.apply(anchor), proj, space.size);
+                }
+            }
+        }
+        let first = plan.verts.len() as u32;
+        for i in [0usize, 1, 2, 0, 2, 3] {
+            plan.verts.push(Vertex {
+                clip: clips[i],
+                uv: uvs[i].map(|v| v as f32),
+                local: corners[i].map(|v| v as f32),
+            });
+        }
+        let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        for q in pix {
+            b = [b[0].min(q[0]), b[1].min(q[1]), b[2].max(q[0]), b[3].max(q[1])];
+        }
+        let clamp = |v: f64, hi: u32| v.clamp(0.0, hi as f64) as u32;
+        let bounds = [
+            clamp(b[0].floor() - 1.0, space.size[0]),
+            clamp(b[1].floor() - 1.0, space.size[1]),
+            clamp(b[2].ceil() + 1.0, space.size[0]),
+            clamp(b[3].ceil() + 1.0, space.size[1]),
+        ];
+        (bounds, first)
+    }
+
+    /// State of one node that affects its own pixels, with its transform
+    /// relative to the target space. Opacity is the node's own; ancestors
+    /// contribute theirs through their own hashes.
+    /// A quad covering the whole target whose local and texture coordinates
+    /// extend those of the rectangle `local` → `uv` under `world`.
+    fn push_full(
+        &self,
+        plan: &mut Plan,
+        space: &Space,
+        world: &Affine,
+        local: [f64; 4],
+        uv: [f64; 4],
+    ) -> ([u32; 4], u32) {
+        let inv = space.xform.then(world).inverse().unwrap_or(Affine::IDENTITY);
+        let (w, hh) = (space.size[0] as f64, space.size[1] as f64);
+        let px = [[0.0, 0.0], [w, 0.0], [w, hh], [0.0, hh]];
+        let first = plan.verts.len() as u32;
+        for i in [0usize, 1, 2, 0, 2, 3] {
+            let l = inv.apply(px[i]);
+            let u = [
+                uv[0] + (l[0] - local[0]) / (local[2] - local[0]) * (uv[2] - uv[0]),
+                uv[1] + (l[1] - local[1]) / (local[3] - local[1]) * (uv[3] - uv[1]),
+            ];
+            plan.verts.push(Vertex {
+                clip: to_clip(px[i], space.size),
+                uv: u.map(|v| v as f32),
+                local: l.map(|v| v as f32),
+            });
+        }
+        ([0, 0, space.size[0], space.size[1]], first)
+    }
+
+    /// Where a texture of `tex` texels drawn over the next frame-space quad (`push_frame`) lands texel for pixel: see
+    /// [`aligned_texels`]. Never for a quad placed in 2.5D.
+    fn frame_texels(&self, space: &Space, tex: [u32; 2]) -> Option<([f64; 4], [f64; 2])> {
+        let r = self.frame_rect.unwrap_or([0.0, 0.0, space.size[0] as f64, space.size[1] as f64]);
+        self.frame_three.is_none().then(|| aligned_texels(&Affine::IDENTITY, r, [0.0, 0.0, 1.0, 1.0], tex)).flatten()
+    }
+
+    /// A quad covering the target 1:1 (frame-space offscreens), with local
+    /// coordinates in the space of `world` so masks apply.
+    fn push_frame(&mut self, plan: &mut Plan, space: &Space, world: &Affine) -> ([u32; 4], u32) {
+        let inv = space.xform.then(world).inverse().unwrap_or(Affine::IDENTITY);
+        let (w, hh) = (space.size[0] as f64, space.size[1] as f64);
+        let r = self.frame_rect.take().unwrap_or([0.0, 0.0, w, hh]);
+        let px = [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]];
+        let uvs = [[0.0f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let first = plan.verts.len() as u32;
+        // a 2.5D node's offscreen is a flat sheet in target pixels, turned and projected about the node's pivot
+        let three = self.frame_three.take().map(|(t, anchor, proj)| (t, space.xform.then(world).apply(anchor), proj));
+        let mut clips = [[0f32; 4]; 4];
+        let mut pix = px;
+        for i in 0..4 {
+            clips[i] = to_clip(px[i], space.size);
+            if let Some((t, a, proj)) = &three {
+                (clips[i], pix[i]) = project_25(px[i], *t, *a, proj, space.size);
+            }
+        }
+        for i in [0usize, 1, 2, 0, 2, 3] {
+            let l = inv.apply(px[i]);
+            plan.verts.push(Vertex { clip: clips[i], uv: uvs[i], local: l.map(|v| v as f32) });
+        }
+        if three.is_some() {
+            let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+            for q in pix {
+                b = [b[0].min(q[0]), b[1].min(q[1]), b[2].max(q[0]), b[3].max(q[1])];
+            }
+            let clamp = |v: f64, hi: u32| v.clamp(0.0, hi as f64) as u32;
+            return (
+                [
+                    clamp(b[0].floor() - 1.0, space.size[0]),
+                    clamp(b[1].floor() - 1.0, space.size[1]),
+                    clamp(b[2].ceil() + 1.0, space.size[0]),
+                    clamp(b[3].ceil() + 1.0, space.size[1]),
+                ],
+                first,
+            );
+        }
+        let b = [
+            r[0].max(0.0) as u32,
+            r[1].max(0.0) as u32,
+            (r[2].ceil() as u32).min(space.size[0]),
+            (r[3].ceil() as u32).min(space.size[1]),
+        ];
+        (b, first)
+    }
+
+    fn asset_time_hash(ctx: &Ctx, n: &FrameNode) -> u64 {
+        if !n.asset.as_deref().is_some_and(|a| ctx.timed.contains(a)) {
+            return 1;
+        }
+        // Baked volumes use composition time even when a parent's local clock is
+        // frozen. Other 3D clips use local time; include both clocks so isolated
+        // ancestors cannot retain a previous cache frame.
+        if sr_eval::draws_in_3d(n.kind) {
+            h(&[hf(n.local_time), hf(ctx.g.time)])
+        } else {
+            n.source_time.map(hf).unwrap_or(1)
+        }
+    }
+
+    fn node_hash(ctx: &Ctx, n: &FrameNode, rel: &Affine) -> u64 {
+        let props = if n.props.0.is_empty() && n.parts.is_empty() { 0 } else { props_hash(&n.props, &n.parts) };
+        let asset = n.asset.as_deref();
+        let timed = Self::asset_time_hash(ctx, n);
+        let generated = match asset.filter(|a| ctx.generated.contains(*a)) {
+            Some(a) => Self::element_state(ctx, a),
+            None => 0,
+        };
+        let hash = h(&[
+            Self::effects_state(ctx, n),
+            sr_eval::rng::hash_str(&n.id),
+            Arc::as_ptr(&n.elem) as u64,
+            affine_hash(rel),
+            hf(n.opacity),
+            timed,
+            generated,
+            n.draw as u64,
+            n.three_d.map(|t| h(&t.map(hf))).unwrap_or(2),
+            // the camera projects 3D objects and 2.5D layers: a still one looks different when it moves,
+            // and a cached isolated group (mask, clip, matte, effects) holding it must redraw
+            if sr_eval::draws_in_3d(n.kind) || n.three_d.is_some() { ctx.cam } else { 0 },
+            n.content.map(|c| h(&[h(&c.dest.map(hf)), h(&c.uv.map(hf))])).unwrap_or(3),
+            n.size.map(|s| h(&s.map(hf))).unwrap_or(4),
+            props,
+            n.soft.as_ref().map(|s| h(&s.offsets.iter().flat_map(|o| o.map(hf)).collect::<Vec<u64>>())).unwrap_or(5),
+            // simulated content changes without the node's own attributes changing
+            n.sim_image.as_ref().map(|s| s.key).unwrap_or(6),
+            n.sim_volume.as_ref().map(|s| s.key).unwrap_or(8),
+            n.particles3d.as_ref().map(|s| s.key).unwrap_or(9),
+            n.fracture.as_ref().map(|s| s.key).unwrap_or(11),
+            n.sim_ocean.as_ref().map(|s| s.key).unwrap_or(10),
+            n.particles
+                .as_ref()
+                .map(|p| {
+                    h(&p.pos.iter().chain(&p.vel).flat_map(|q| q.map(|v| v.to_bits() as u64)).collect::<Vec<u64>>())
+                })
+                .unwrap_or(7),
+            // a connector's path follows its ends, which may move while it stays put
+            n.connector
+                .as_ref()
+                .map(|c| h(&c.path.iter().flat_map(|q| q.map(hf)).chain(c.bounds.map(hf)).collect::<Vec<u64>>()))
+                .unwrap_or(12),
+        ]);
+        // the cells of an object that a simulation cuts change without an attribute of the node changing: a group that holds it and is
+        // kept between frames must be drawn again after a cut. Nodes without them hash as they did.
+        match n.voxels.as_deref() {
+            None => hash,
+            Some(v) => {
+                let mut words = vec![hash, v.enabled as u64, v.revision, v.grid.lineage()];
+                for piece in &v.pieces {
+                    words.extend([piece.body as u64, piece.enabled as u64, piece.revision, piece.grid.lineage()]);
+                    words.extend(piece.pose3.iter().map(|c| c.to_bits()));
+                }
+                h(&words)
+            }
+        }
+    }
+
+    /// Hash of a node and its subtree (and mattes) in a target space.
+    fn subtree_hash(ctx: &Ctx, i: usize, to_space: &Affine) -> u64 {
+        let n = &ctx.g.nodes[i];
+        let rel = to_space.then(&n.world);
+        let mut words = vec![Self::node_hash(ctx, n, &rel)];
+        if let Some(mt) = n.matte {
+            words.push(Self::subtree_hash(ctx, mt as usize, to_space));
+            words.push(hf(ctx.g.nodes[mt as usize].world_opacity));
+        }
+        for &c in &ctx.kids[i] {
+            words.push(Self::subtree_hash(ctx, c, to_space));
+        }
+        h(&words)
+    }
+
+    /// Hash of an isolated node's content: its children, not its own transform or opacity.
+    /// The state of the node's effects: their animated values, and the time for effects that
+    /// change with it (shaders see `iTime`). Without it a node whose only change is in an effect
+    /// (an animated shader parameter) kept its cached pixels from an earlier frame.
+    fn effects_state(ctx: &Ctx, n: &FrameNode) -> u64 {
+        let ids = render_fx::effect_ids(&*n.elem);
+        if ids.is_empty() {
+            return 8;
+        }
+        let mut words = Vec::with_capacity(ids.len() * 2 + 1);
+        let mut timed = false;
+        for id in &ids {
+            let Some(e) = render_fx::find_effect(ctx.p, n.doc, id) else { continue };
+            let key = ctx.p.doc_key(n.doc, id);
+            if e.r#type.as_str() == "posterize-time" {
+                // it shows the node as it was at the start of its step: the step is its time
+                let a = Attrs { e: e as &dyn Element, props: render_fx::element_props(ctx.g, &key) };
+                words.push(hf(render_fx::posterized(ctx.g.time, &a)));
+            } else {
+                timed |= render_fx::TIME_VARYING.contains(&e.r#type.as_str());
+            }
+            let props = render_fx::element_props(ctx.g, &key).map(|p| props_hash(p, &[])).unwrap_or(9);
+            words.extend([sr_eval::rng::hash_str(&key), props]);
+        }
+        if timed {
+            words.push(hf(ctx.g.time));
+        }
+        h(&words)
+    }
+
+    /// The asset element with id `id` in the main document, else the asset of an include that the asset key `id`
+    /// names (`ns/id`, see [`Program::doc_key`]).
+    fn asset_element<'p>(p: &'p Program, id: &str) -> Option<&'p dyn Element> {
+        let find = |scene: &'p m::Scene, id: &str| {
+            let assets = scene.assets.as_ref()?;
+            sr_model::element::children(assets).into_iter().find(|a| a.element_id() == Some(id))
+        };
+        find(&p.scene, id).or_else(|| {
+            let (doc, own) = p.assets.get(id).filter(|(doc, _)| *doc > 0)?;
+            find(p.doc_scene(*doc)?, own)
+        })
+    }
+
+    /// Hash of an element's animated descendants (`id/…` keys) and intrinsic time dependence.
+    fn element_state(ctx: &Ctx, id: &str) -> u64 {
+        let mut words: Vec<u64> = ctx
+            .el
+            .iter()
+            .filter(|(k, _)| &***k == id || (k.starts_with(id) && k[id.len()..].starts_with('/')))
+            .map(|(k, v)| h(&[sr_eval::rng::hash_str(k), *v]))
+            .collect();
+        if let Some(transform) = Self::light_transform_hash(ctx, id) {
+            words.push(transform);
+        }
+        if Self::asset_element(ctx.p, id)
+            .and_then(|a| a.as_any().downcast_ref::<m::GeneratorAsset>())
+            .is_some_and(|a| a.kind == m::GeneratorAssetKind::FilmGrain)
+        {
+            // Match generator_texture: grain changes by composition frame even without keys.
+            words.push(hf(libm::floor(ctx.g.time * ctx.p.fps.as_f64() + 1e-6)));
+        }
+        words.sort_unstable();
+        h(&words)
+    }
+
+    /// The nodes that node `n`'s effects read: their `source`, and a shader's `<param>` samplers.
+    fn source_nodes(ctx: &Ctx, n: &FrameNode) -> Vec<usize> {
+        let mut out = Vec::new();
+        for id in render_fx::effect_ids(&*n.elem) {
+            let Some(e) = render_fx::find_effect(ctx.p, n.doc, &id) else { continue };
+            let a = Attrs { e: e as &dyn Element, props: render_fx::effect_props(ctx.p, ctx.g, n.doc, &id) };
+            // a dependency for any type that is given a source, whether or not it reads it
+            let mut names: Vec<String> = crate::vector::quiet(|| a.str("source")).into_iter().collect();
+            if e.r#type.as_str() == "shader" {
+                names.extend(crate::shader::param_map(e as &dyn Element).into_values());
+            }
+            // the nodes of the effect's document (in an include, `ns/id`)
+            for name in names {
+                let key = ctx.p.doc_key(n.doc, name.trim());
+                out.extend(ctx.g.nodes.iter().position(|s| *s.id == *key));
+            }
+        }
+        out
+    }
+
+    /// Hash of what node `i`, its subtree and its mattes use from outside the subtree: the
+    /// animated elements outside the composition (the paints they fill and stroke with, generator
+    /// assets, and the paints and lights of their effects) and the nodes their effects read, as
+    /// they are in the space `to_space`. A node's cached content depends on these and on nothing
+    /// else outside its own subtree.
+    fn used_hash(ctx: &Ctx, i: usize, to_space: &Affine) -> u64 {
+        let mut ids = std::collections::BTreeSet::new();
+        let mut stack = vec![i];
+        let mut read = std::collections::BTreeSet::new();
+        let mut words = Vec::new();
+        while let Some(k) = stack.pop() {
+            let n = &ctx.g.nodes[k];
+            if sr_eval::draws_in_3d(n.kind) {
+                if let Some(AttrValue::Str(id)) = n.elem.get_attr("material") {
+                    // the material of the node's own document, keyed as its animated values are
+                    ids.insert(Arc::from(&*ctx.p.doc_key(n.doc, &id)));
+                }
+                // Every document light contributes to the shared 3D pass, including ambient
+                // and environment lights. Plain 2D subtrees do not depend on them.
+                ids.extend(render_three::doc_lights(ctx.p).iter().map(|l| Arc::from(l.id.as_str())));
+            }
+            for j in Self::source_nodes(ctx, n) {
+                if read.insert(j) {
+                    words.push(Self::subtree_hash(ctx, j, to_space));
+                    stack.push(j);
+                }
+            }
+            paint_refs(&n.props, &mut ids);
+            // static references: the node's attributes and parts (spans, masks), and the asset it draws
+            for name in PAINT_ATTRS {
+                if let Some(AttrValue::Paint(sr_model::values::Paint::Ref(r))) = n.elem.get_attr(name) {
+                    ids.insert(Arc::from(r.0.as_str()));
+                }
+            }
+            for c in sr_model::element::children(&*n.elem) {
+                static_paint_refs(c, &mut ids);
+            }
+            if let Some(a) = n.asset.as_deref().and_then(|a| Self::asset_element(ctx.p, a)) {
+                static_paint_refs(a, &mut ids);
+            }
+            for part in &n.parts {
+                paint_refs(&part.props, &mut ids);
+            }
+            if let Some(a) = n.asset.as_deref().filter(|a| ctx.generated.contains(*a)) {
+                ids.insert(Arc::from(a));
+            }
+            for id in render_fx::effect_ids(&*n.elem) {
+                if let Some(p) = render_fx::effect_props(ctx.p, ctx.g, n.doc, &id) {
+                    paint_refs(p, &mut ids);
+                }
+                if let Some(e) = render_fx::find_effect(ctx.p, n.doc, &id) {
+                    let e: &dyn Element = e;
+                    for name in ["lights", "paint", "source"] {
+                        match e.get_attr(name) {
+                            Some(AttrValue::Tokens(t)) => ids.extend(t.into_iter().map(Arc::from)),
+                            Some(AttrValue::Str(s)) => {
+                                ids.insert(Arc::from(s.trim_start_matches("url(#").trim_end_matches(')')));
+                            }
+                            Some(AttrValue::Paint(sr_model::values::Paint::Ref(r))) => {
+                                ids.insert(Arc::from(r.0.as_str()));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            if let Some(mt) = n.matte {
+                stack.push(mt as usize);
+            }
+            stack.extend(ctx.kids[k].iter().copied());
+        }
+        // An asset's evaluated paint can name another animated element even when its
+        // static paint is a colour. Follow these references transitively, with a visited
+        // set so a reference cycle cannot loop forever or invalidate unrelated caches.
+        let mut pending: Vec<_> = ids.iter().cloned().collect();
+        while let Some(id) = pending.pop() {
+            let mut refs = std::collections::BTreeSet::new();
+            for state in &ctx.g.elements {
+                let key = &*state.key;
+                if key == &*id || (key.starts_with(&*id) && key[id.len()..].starts_with('/')) {
+                    paint_refs(&state.props, &mut refs);
+                }
+            }
+            for reference in refs {
+                if ids.insert(reference.clone()) {
+                    pending.push(reference);
+                }
+            }
+        }
+        words.extend(ids.iter().map(|id| h(&[sr_eval::rng::hash_str(id), Self::element_state(ctx, id)])));
+        h(&words)
+    }
+
+    /// `used_hash` and the camera: what a node's cached effect result depends on outside its
+    /// own subtree.
+    fn deps_hash(ctx: &Ctx, i: usize, to_space: &Affine) -> u64 {
+        h(&[Self::used_hash(ctx, i, to_space), ctx.cam])
+    }
+
+    /// Hash of how node `i` looks, apart from where it is: everything its drawing depends on
+    /// except its own transform (its children are hashed relative to it). Equal hashes at two
+    /// times mean one drawing, moved, is the other. `None` when its transform cannot be inverted.
+    fn appearance_hash(ctx: &Ctx, i: usize) -> Option<u64> {
+        const WHERE: &[&str] = &[
+            "x",
+            "y",
+            "z",
+            "anchorX",
+            "anchorY",
+            "anchor",
+            "rotation",
+            "scaleX",
+            "scaleY",
+            "scale",
+            "skewX",
+            "skewY",
+            "skew",
+            "zDepth",
+            "rotationX",
+            "rotationY",
+        ];
+        let n = &ctx.g.nodes[i];
+        let local = n.world.inverse()?;
+        let mut f = Fnv(0xcbf2_9ce4_8422_2325);
+        for (k, v) in n.props.0.iter().filter(|(k, _)| !WHERE.contains(&&**k)) {
+            f.str(k);
+            f.value(v);
+        }
+        // a motion path moves the node; its other parts (masks, spans) change how it looks
+        for p in n.parts.iter().filter(|p| p.element != "motionPath") {
+            f.str(&p.key);
+            for (k, v) in &p.props.0 {
+                f.str(k);
+                f.value(v);
+            }
+        }
+        let mut words = vec![
+            f.0,
+            Self::effects_state(ctx, n),
+            Self::deps_hash(ctx, i, &local),
+            sr_eval::rng::hash_str(&n.id),
+            Arc::as_ptr(&n.elem) as u64,
+            hf(n.world_opacity),
+            Self::asset_time_hash(ctx, n),
+            n.draw as u64,
+            n.content.map(|c| h(&[h(&c.dest.map(hf)), h(&c.uv.map(hf))])).unwrap_or(3),
+            n.size.map(|s| h(&s.map(hf))).unwrap_or(4),
+            n.sim_image.as_ref().map(|s| s.key).unwrap_or(6),
+            n.sim_volume.as_ref().map(|s| s.key).unwrap_or(8),
+            n.particles3d.as_ref().map(|s| s.key).unwrap_or(9),
+            n.fracture.as_ref().map(|s| s.key).unwrap_or(11),
+            n.particles
+                .as_ref()
+                .map(|p| h(&p.pos.iter().flat_map(|q| q.map(|v| v.to_bits() as u64)).collect::<Vec<u64>>()))
+                .unwrap_or(7),
+            n.soft.as_ref().map(|s| h(&s.offsets.iter().flat_map(|o| o.map(hf)).collect::<Vec<u64>>())).unwrap_or(5),
+        ];
+        for &c in &ctx.kids[i] {
+            words.push(Self::subtree_hash(ctx, c, &local));
+        }
+        Some(h(&words))
+    }
+
+    fn content_hash(ctx: &Ctx, i: usize, to_space: &Affine) -> u64 {
+        let n = &ctx.g.nodes[i];
+        let mut words = vec![
+            sr_eval::rng::hash_str(&n.id),
+            Arc::as_ptr(&n.elem) as u64,
+            n.size.map(|s| h(&s.map(hf))).unwrap_or(4),
+            Self::used_hash(ctx, i, to_space),
+        ];
+        if n.kind == "viewport3D" {
+            // its picture also shows its animated background (SREP 74)
+            words.push(props_hash(&n.props, &n.parts));
+        }
+        for &c in &ctx.kids[i] {
+            words.push(Self::subtree_hash(ctx, c, to_space));
+        }
+        h(&words)
+    }
+
+    /// The blend mode node `n` draws with now: normal while it is drawn bare or as a motion-blur
+    /// sample.
+    fn blend_of(&self, n: &FrameNode) -> u32 {
+        if self.bare.contains(&n.id) || self.unblended.as_ref() == Some(&n.id) {
+            return 0;
+        }
+        match blend_index(&*n.elem) {
+            // SREP 72: a normal blend in the space `edgeBlend` names; the other space than the frame's needs the backdrop
+            0 => match (edge_blend_encoded(&*n.elem, self.working.linear), self.working.linear) {
+                (true, true) => BLEND_OVER_ENCODED,
+                (false, false) => BLEND_OVER_LINEAR,
+                _ => 0,
+            },
+            b => b,
+        }
+    }
+
+    /// Whether a zero-opacity leaf can be skipped without changing any pixel.
+    fn cullable(n: &FrameNode, blend: u32) -> bool {
+        let e: &dyn Element = &*n.elem;
+        matches!(n.kind, "shape" | "layer")
+            && blend == 0
+            && n.source_time.is_none()
+            && n.matte.is_none()
+            && !n.is_matte
+            && n.three_d.is_none()
+            && !n.clip
+            && !sr_model::element::children(e).iter().any(|c| c.element_name() == "mask")
+            && !matches!(e.get_attr("effects"), Some(AttrValue::Tokens(t)) if !t.is_empty())
+            && n.props.get(render_access::CONTRAST_INK).is_none()
+    }
+
+    /// Whether node `n` draws its children into an offscreen of its own, composited as one picture. `count_effects` is
+    /// false when the node is drawn bare (into an effect chain's offscreen): the chain then applies its effects and
+    /// its 2.5D placement.
+    fn isolated(&self, n: &FrameNode, has_kids: bool, count_effects: bool) -> bool {
+        Self::isolated_flat(n, has_kids, count_effects) || (count_effects && self.placed_container(n, has_kids))
+    }
+
+    /// Whether `n` is a container placed in 2.5D as one picture: one with children and a `threeD` of its own (not one
+    /// a 360 render floats).
+    pub(super) fn placed_container(&self, n: &FrameNode, has_kids: bool) -> bool {
+        has_kids && n.three_d.is_some() && !self.floated.contains(&n.id)
+    }
+
+    /// [`Self::isolated`] for what a node needs in its own plane: everything but a 2.5D placement. A container placed
+    /// in 2.5D for no other reason draws its children flat onto a sheet covering what they draw, not into its box (as
+    /// an effect chain on it does), so that they are not clipped to it.
+    fn isolated_flat(n: &FrameNode, has_kids: bool, count_effects: bool) -> bool {
+        // a viewport3D always draws its picture: its own 3D scene over its background, in its width × height (SREP 74)
+        if n.kind == "viewport3D" {
+            return true;
+        }
+        if !has_kids {
+            return false;
+        }
+        let e: &dyn Element = &*n.elem;
+        if matches!(n.kind, "instance" | "include") {
+            return true;
+        }
+        let masked = sr_model::element::children(e).iter().any(|c| c.element_name() == "mask");
+        let effects = matches!(e.get_attr("effects"), Some(AttrValue::Tokens(t)) if !t.is_empty());
+        matches!(e.get_attr("isolate"), Some(AttrValue::Bool(true)))
+            || (effects && count_effects)
+            || masked
+            || n.clip
+            || n.matte.is_some()
+            || blend_index(e) != 0
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_cmd(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        i: usize,
+        space: &Space,
+        mut d: Draw,
+        local: [f64; 4],
+        uv: [f64; 4],
+        world: &Affine,
+        srctex: Arc<Tex>,
+        cmds: &mut Vec<Cmd>,
+        hash: u64,
+        frame_space: bool,
+    ) {
+        self.flush_vec(plan, cmds);
+        let n = &ctx.g.nodes[i];
+        if let Some(Value::Num(ink)) = n.props.get(render_access::CONTRAST_INK) {
+            d.flags |= flag::CONTRAST_INK;
+            d.color[0] = *ink as f32;
+        }
+        // a node drawn bare (into an effect chain's offscreen) is flat: its 2.5D placement is applied when the result
+        // composites
+        let three = n.three_d.filter(|_| !self.bare.contains(&n.id)).map(|t| (t, n.anchor));
+        // stencil modes act on the whole target: outside the layer the backdrop is cut away
+        let stencil = matches!(d.blend, 29 | 30) && three.is_none();
+        // a texture whose texels land 1:1 on whole pixels of the target is copied texel for texel (see `aligned_texels`)
+        let copyable = matches!(d.src_kind, src::TEXTURE | src::BICUBIC | src::MITCHELL);
+        let tex_size = self.src_size.take().unwrap_or(srctex.size);
+        let aligned = if !copyable {
+            None
+        } else if frame_space {
+            self.frame_texels(space, tex_size)
+        } else if three.is_none() && !stencil {
+            aligned_texels(&space.xform.then(world), local, uv, tex_size)
+        } else {
+            None
+        };
+        let (bounds, first_vertex) = if frame_space {
+            self.push_frame(plan, space, world)
+        } else if stencil {
+            self.push_full(plan, space, world, local, uv)
+        } else {
+            self.push_quad(plan, space, world, three, local, uv, &self.proj25(ctx.g, ctx.p, space))
+        };
+        let mut matte = None;
+        if let Some(mt) = n.matte.filter(|_| !self.bare.contains(&n.id)) {
+            matte = Some(self.matte(plan, ctx, mt as usize, space));
+            d.flags |= flag::MATTE;
+            d.matte_mode = match n.elem.get_attr("matteMode") {
+                Some(AttrValue::Str(s)) => m::MatteMode::ALL.iter().position(|v| v.as_str() == s).unwrap_or(0) as u32,
+                _ => 0,
+            };
+        }
+        d.target_size = [space.size[0] as f32, space.size[1] as f32];
+        if !frame_space {
+            d.box_rect = local.map(|v| v as f32);
+            d.flags |= flag::EDGE;
+        }
+        if let Some((pixels, texel)) = aligned {
+            // the content's edges are on pixel edges: coverage is whole, and the shader reads texels (`aligned_texel`)
+            d.flags = (d.flags & !flag::EDGE) | flag::ALIGNED;
+            d.uv_rect = pixels.map(|v| v as f32);
+            d.box_rect = [texel[0] as f32, texel[1] as f32, 0.0, 0.0];
+        }
+        let backdrop = (d.blend >= 2 && !fixed_function_blend(d.blend)).then_some(bounds);
+        plan.draws.push(d);
+        cmds.push(Cmd {
+            draw: (plan.draws.len() - 1) as u32,
+            first_vertex,
+            count: 6,
+            src: srctex,
+            backdrop,
+            matte,
+            hash,
+            pre: None,
+            raster: None,
+        });
+    }
+
+    fn matte(&mut self, plan: &mut Plan, ctx: &Ctx, mt: usize, space: &Space) -> Arc<Tex> {
+        let hash = h(&[
+            Self::subtree_hash(ctx, mt, &space.xform),
+            Self::used_hash(ctx, mt, &space.xform),
+            hf(ctx.g.nodes[mt].world_opacity),
+            space.size[0] as u64,
+            space.size[1] as u64,
+            0x6d61,
+        ]);
+        let key = format!("matte:{}:{}x{}", ctx.g.nodes[mt].id, space.size[0], space.size[1]);
+        self.used.insert(key.clone());
+        if let Some((hh, t)) = self.subtree.get(&key) {
+            if *hh == hash {
+                plan.stats.cache_hits += 1;
+                return t.clone();
+            }
+        }
+        let target = match self.subtree.get(&key) {
+            Some((_, t)) if t.size == space.size && Arc::strong_count(t) <= 2 => t.clone(),
+            _ => Arc::new(resources::create_as(&self.gpu.device, &self.bgl1, self.format, space.size, 1, "matte")),
+        };
+        let mut cmds = Vec::new();
+        self.emit(plan, ctx, mt, space, 1.0, &mut cmds, true, 0);
+        self.flush_vec(plan, &mut cmds);
+        plan.jobs.push(Job::draws(target.clone(), true, cmds, false));
+        self.subtree.insert(key, (hash, target.clone()));
+        target
+    }
+
+    /// Emits draw commands for node `i` and its subtree into `cmds`.
+    #[allow(clippy::too_many_arguments)]
+    fn emit(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        i: usize,
+        space: &Space,
+        iso_op: f64,
+        cmds: &mut Vec<Cmd>,
+        force: bool,
+        root_hash: u64,
+    ) {
+        let (g, kids) = (ctx.g, ctx.kids);
+        let n = &g.nodes[i];
+        if !n.draw && !force {
+            return;
+        }
+        let op = if iso_op > 0.0 { n.world_opacity / iso_op } else { 0.0 };
+        if self.special(plan, ctx, i, space, iso_op, cmds, root_hash) {
+            return;
+        }
+        let bare = self.bare.contains(&n.id);
+        let blend = self.blend_of(n);
+        let seed = sr_eval::rng::hash_str(&n.seed_id) as u32;
+        let has_kids = !kids[i].is_empty();
+        if self.isolated(n, has_kids, !bare) {
+            // fully transparent: nothing to draw, and rendering the content now would cache an empty
+            // offscreen (children draw at world opacity / container opacity) under a hash that
+            // leaves out the container's own opacity, so a later fade-in would never show it
+            if n.world_opacity <= 0.0 {
+                return;
+            }
+            let sized = n
+                .size
+                .filter(|s| s[0] >= 1.0 && s[1] >= 1.0 && s[0] <= 8192.0 && s[1] <= 8192.0)
+                .filter(|_| Self::isolated_flat(n, has_kids, !bare));
+            // placed in 2.5D as one picture: with no box (or none that is its own), the offscreen is a sheet in the
+            // target's space over what the children draw, beyond the target too, which can come into view once placed
+            let placed = !bare && self.placed_container(n, has_kids);
+            let sheet = if placed && sized.is_none() {
+                // nothing of it within reach of the target
+                let Some(r) = self.sheet_rect(ctx, i, space) else { return };
+                Some(r)
+            } else {
+                None
+            };
+            let (inner, quad_local) = match (sized, sheet) {
+                (Some([w, hh]), _) => {
+                    let size = [w.ceil() as u32, hh.ceil() as u32];
+                    let inv = n.world.inverse().unwrap_or(Affine::IDENTITY);
+                    (Space { xform: inv, size, unit: 1.0 }, [0.0, 0.0, size[0] as f64, size[1] as f64])
+                }
+                (None, Some(r)) => (
+                    Space {
+                        xform: Affine([1.0, 0.0, 0.0, 1.0, -r[0], -r[1]]).then(&space.xform),
+                        size: [(r[2] - r[0]) as u32, (r[3] - r[1]) as u32],
+                        unit: space.unit,
+                    },
+                    r,
+                ),
+                // no box: the offscreen shares the target's space and covers it 1:1
+                (None, None) => (*space, [0.0, 0.0, space.size[0] as f64, space.size[1] as f64]),
+            };
+            // `threeD` nodes inside are placed within the picture, which depends on how the picture is placed
+            let plane = placed.then(|| self.plane_of(ctx, i, space));
+            let mut hash = h(&[Self::content_hash(ctx, i, &inner.xform), inner.size[0] as u64, inner.size[1] as u64]);
+            if let Some(pl) = plane.as_ref().filter(|_| Self::places_inside(ctx, i)) {
+                hash = h(&[hash, pl.hash]);
+            }
+            let key = format!("iso:{}:{}x{}", n.id, inner.size[0], inner.size[1]);
+            self.used.insert(key.clone());
+            let tex = match self.subtree.get(&key) {
+                Some((hh, t)) if *hh == hash => {
+                    plan.stats.cache_hits += 1;
+                    t.clone()
+                }
+                _ => {
+                    let target = match self.subtree.get(&key) {
+                        Some((_, t)) if Arc::strong_count(t) <= 2 => t.clone(),
+                        _ => Arc::new(resources::create_as(
+                            &self.gpu.device,
+                            &self.bgl1,
+                            self.format,
+                            inner.size,
+                            1,
+                            "isolated",
+                        )),
+                    };
+                    let mut inner_cmds = Vec::new();
+                    if n.kind == "viewport3D" {
+                        self.viewport_background(plan, ctx, i, &inner, &mut inner_cmds);
+                    }
+                    let depth = self.planes.len();
+                    self.planes.extend(plane);
+                    for c in Self::depth_sorted(g, &kids[i]) {
+                        self.emit(plan, ctx, c, &inner, n.world_opacity, &mut inner_cmds, false, 0);
+                    }
+                    self.flush_vec(plan, &mut inner_cmds);
+                    self.planes.truncate(depth);
+                    plan.jobs.push(Job::draws(target.clone(), true, inner_cmds, false));
+                    self.subtree.insert(key, (hash, target.clone()));
+                    target
+                }
+            };
+            let hash_cmd = h(&[root_hash, hash, affine_hash(&space.xform.then(&n.world)), hf(op), 1]);
+            if let Some(r) = sheet {
+                // the sheet composites through the camera about the container's pivot, as an effect chain's result
+                // does (a sized container is placed by `draw_cmd`, as a quad of its box)
+                self.composite(plan, ctx, i, space, op, tex, r, cmds, hash_cmd);
+                return;
+            }
+            let clip = if n.clip { n.size } else { None };
+            let mask_box = n.size.unwrap_or(space.extent());
+            let (mask_off, mask_count) = self.masks_of(plan, n, mask_box, clip);
+            let d = Draw {
+                opacity: op as f32,
+                blend,
+                src_kind: src::TEXTURE,
+                mask_off,
+                mask_count,
+                seed,
+                uv_rect: [0.0, 0.0, 1.0, 1.0],
+                ..Default::default()
+            };
+            self.draw_cmd(
+                plan,
+                ctx,
+                i,
+                space,
+                d,
+                quad_local,
+                [0.0, 0.0, 1.0, 1.0],
+                &n.world,
+                tex,
+                cmds,
+                hash_cmd,
+                sized.is_none(),
+            );
+            return;
+        }
+        // A fully transparent plain leaf adds exactly nothing under normal blend; skip
+        // building its vector scene. Conservative: leaves of kind shape/layer only, no media time,
+        // no blend, matte, mask, clip, effects, 3D or contrast probe.
+        if n.world_opacity == 0.0 && !has_kids && Self::cullable(n, blend) {
+            plan.stats.culled += 1;
+            return;
+        }
+        let probe = self.text_probe_start(plan, ctx, i, space, cmds, root_hash);
+        self.dispatch_kind(plan, ctx, i, space, op, blend, seed, cmds, root_hash, iso_op);
+        if let Some(at) = probe {
+            self.text_probe_end(plan, ctx, i, space, cmds, at);
+        }
+        for c in Self::depth_sorted(g, &kids[i]) {
+            self.emit(plan, ctx, c, space, iso_op, cmds, false, root_hash);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_kind(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        i: usize,
+        space: &Space,
+        op: f64,
+        blend: u32,
+        seed: u32,
+        cmds: &mut Vec<Cmd>,
+        root_hash: u64,
+        iso_op: f64,
+    ) {
+        let g = ctx.g;
+        let n = &g.nodes[i];
+        match n.kind {
+            "layer" => {
+                if let Some(content) = n.content {
+                    let clock = std::time::Instant::now();
+                    if let Some(built) = self.vector_layer_scene(plan, ctx, n, space, content) {
+                        match built {
+                            Ok((mut scene, bitmaps)) => {
+                                let size = n
+                                    .size
+                                    .unwrap_or([content.dest[2] - content.dest[0], content.dest[3] - content.dest[1]]);
+                                let tol = 0.05 / Xf(space.xform.then(&n.world).0).max_scale().max(1e-6);
+                                let ds = crate::vector::deformers(n, g, size);
+                                crate::vector::deform_scene(&mut scene, &ds, tol);
+                                plan.stats.vector_seconds += clock.elapsed().as_secs_f64();
+                                for b in bitmaps.iter().filter(|b| b.below) {
+                                    self.draw_bitmap(plan, ctx, i, space, op, blend, seed, cmds, root_hash, b);
+                                }
+                                self.emit_vector(plan, ctx, i, space, op, blend, seed, cmds, root_hash, scene);
+                                for (radius, part) in std::mem::take(&mut self.pending_blur) {
+                                    self.blurred_part(plan, ctx, i, space, op, cmds, root_hash, radius, part);
+                                }
+                                // colour bitmap glyphs and map tiles as textured quads
+                                for b in bitmaps.iter().filter(|b| !b.below) {
+                                    self.draw_bitmap(plan, ctx, i, space, op, blend, seed, cmds, root_hash, b);
+                                }
+                            }
+                            Err(e) => plan.stats.errors.push(format!("{}: {e}", n.id)),
+                        }
+                    } else if let Some(tex) = self.layer_source(plan, ctx.p, g, n) {
+                        let bx = n.size.unwrap_or([content.dest[2], content.dest[3]]);
+                        let (mask_off, mask_count) = self.masks_of(plan, n, bx, None);
+                        let base_hash = h(&[
+                            root_hash,
+                            Self::node_hash(ctx, n, &space.xform.then(&n.world)),
+                            hf(op),
+                            Arc::as_ptr(&tex) as u64,
+                        ]);
+                        if let Some((bdest, buv)) = content.blur_fill {
+                            let reduce = (tex.size[0].max(tex.size[1]) as f64 / bx[0].max(bx[1]).max(1.0)).max(1.0);
+                            let lod = (libm::log2(reduce) + 5.0) as f32;
+                            let d = Draw {
+                                opacity: op as f32,
+                                blend,
+                                src_kind: src::TEXTURE_LOD,
+                                lod,
+                                mask_off,
+                                mask_count,
+                                seed,
+                                uv_rect: buv.map(|v| v as f32),
+                                ..Default::default()
+                            };
+                            self.draw_cmd(
+                                plan,
+                                ctx,
+                                i,
+                                space,
+                                d,
+                                bdest,
+                                buv,
+                                &n.world,
+                                tex.clone(),
+                                cmds,
+                                h(&[base_hash, 7]),
+                                false,
+                            );
+                        }
+                        let d = Draw {
+                            opacity: op as f32,
+                            blend,
+                            src_kind: match n.elem.get_attr("resample") {
+                                Some(AttrValue::Str(s)) if s == "bicubic" => src::BICUBIC,
+                                Some(AttrValue::Str(s)) if s == "mitchell" => src::MITCHELL,
+                                _ => src::TEXTURE,
+                            },
+                            mask_off,
+                            mask_count,
+                            seed,
+                            uv_rect: content.uv.map(|v| v as f32),
+                            ..Default::default()
+                        };
+                        self.draw_cmd(
+                            plan,
+                            ctx,
+                            i,
+                            space,
+                            d,
+                            content.dest,
+                            content.uv,
+                            &n.world,
+                            tex,
+                            cmds,
+                            base_hash,
+                            false,
+                        );
+                        let bx = n.size.unwrap_or([content.dest[2], content.dest[3]]);
+                        let ds = crate::vector::deformers(n, g, bx);
+                        if !ds.is_empty() && n.three_d.is_none() {
+                            Self::meshify(plan, cmds, space, &n.world, content.dest, content.uv, &ds);
+                        }
+                    }
+                }
+            }
+            "shape" => {
+                let clock = std::time::Instant::now();
+                let scale = Xf(space.xform.then(&n.world).0).max_scale().max(1e-6);
+                let tol = 0.05 / scale;
+                let built = {
+                    let (p, g) = (ctx.p, ctx.g);
+                    let mut pf = |v: &Value, b: [f64; 4]| self.vector_paint(plan, p, g, v, b, &n.id);
+                    crate::vector::shape_scene(n, &mut pf, tol)
+                };
+                match built {
+                    Ok(mut scene) => {
+                        let size = n.size.unwrap_or([0.0, 0.0]);
+                        let ds = crate::vector::deformers(n, g, size);
+                        crate::vector::deform_scene(&mut scene, &ds, tol);
+                        plan.stats.vector_seconds += clock.elapsed().as_secs_f64();
+                        self.emit_vector(plan, ctx, i, space, op, blend, seed, cmds, root_hash, scene);
+                        self.pattern_fills(plan, ctx, i, space, op, blend, seed, cmds, root_hash);
+                    }
+                    Err(e) => plan.stats.errors.push(format!("{}: {e}", n.id)),
+                }
+            }
+            "connector" => {
+                let clock = std::time::Instant::now();
+                let scale = Xf(space.xform.then(&n.world).0).max_scale().max(1e-6);
+                let tol = 0.05 / scale;
+                let scene = {
+                    let (p, g) = (ctx.p, ctx.g);
+                    let mut pf = |v: &Value, b: [f64; 4]| self.vector_paint(plan, p, g, v, b, &n.id);
+                    crate::vector::connector_scene(n, &mut pf, tol)
+                };
+                plan.stats.vector_seconds += clock.elapsed().as_secs_f64();
+                if !scene.cmds.is_empty() {
+                    self.emit_vector(plan, ctx, i, space, op, blend, seed, cmds, root_hash, scene);
+                }
+            }
+            "particleEmitter" | "flock" => self.emit_particles(plan, ctx, i, space, op, cmds, root_hash),
+            "fluid" | "slime" | "erosion" | "program" => {
+                self.emit_sim_image(plan, ctx, i, space, op, blend, seed, cmds, root_hash)
+            }
+            "compute" => self.emit_compute(plan, ctx, i, space, op, blend, seed, cmds, root_hash),
+            kind if sr_eval::draws_in_3d(kind) => self.three_run(plan, ctx, i, space, iso_op, cmds, root_hash),
+            "adjustment" => self.adjust(plan, ctx, i, space, op, cmds, root_hash),
+            _ => {}
+        }
+        let _ = iso_op;
+    }
+
+    /// Resolves a paint value for vector content over `box_rect` (x, y, w, h, node-local).
+    fn vector_paint(
+        &self,
+        plan: &mut Plan,
+        p: &Program,
+        g: &FrameGraph,
+        v: &Value,
+        box_rect: [f64; 4],
+        who: &str,
+    ) -> Option<sr_vector::Paint> {
+        use sr_vector::Paint;
+        match v {
+            Value::Color(c) => (c[3] > 0.0).then_some(Paint::Solid { rgba: *c, srgb: false }),
+            Value::Str(s) if s.starts_with("token:") => {
+                self.tokens.get(&s[6..]).map(|c| Paint::Solid { rgba: *c, srgb: false })
+            }
+            Value::PaintRef(id) => {
+                let pc = p.scene.paints.as_ref().and_then(|ps| ps.children.iter().find(|c| c.id() == Some(id)))?;
+                if matches!(pc, m::PaintsChild::Pattern(_)) {
+                    plan.stats.unsupported.push(format!("{who}: pattern paint on vector content"));
+                    return None;
+                }
+                let tokens = &self.tokens;
+                let tok = |t: &str| tokens.get(t).copied();
+                plan.paints
+                    .gradient(&self.working, pc, g, box_rect, &tok)
+                    .map(|index| Paint::External { index, to_local: Xf::IDENTITY })
+            }
+            _ => None,
+        }
+    }
+
+    /// Scene of a layer whose asset is vector content (vector, SVG, Lottie), in node-local space.
+    fn vector_layer_scene(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        n: &FrameNode,
+        space: &Space,
+        content: sr_eval::layout::Content,
+    ) -> Option<Result<(Scene, Vec<sr_text::Bitmap>), String>> {
+        let key = n.asset.as_deref()?;
+        let (a, doc) = self.asset(ctx.p, key)?;
+        let base = ctx.p.base_dirs.get(doc).cloned().unwrap_or_default();
+        let (aw, ah) = match a {
+            AssetsChild::Vector(v) => (v.width as f64, v.height as f64),
+            AssetsChild::Lottie(l) => (l.width as f64, l.height as f64),
+            AssetsChild::Text(x) => (x.width as f64, x.height as f64),
+            AssetsChild::Chart(x) => (x.width as f64, x.height as f64),
+            AssetsChild::Map(x) => (x.width as f64, x.height as f64),
+            AssetsChild::Audiogram(x) => (x.width as f64, x.height as f64),
+            AssetsChild::Code(x) => (x.width as f64, x.height as f64),
+            AssetsChild::Formula(x) => (x.width as f64, x.height as f64),
+            _ => return None,
+        };
+        let [x0, y0, x1, y1] = content.dest;
+        let [u0, v0, u1, v1] = content.uv;
+        let (du, dv) = ((u1 - u0).abs().max(1e-9) * (u1 - u0).signum(), (v1 - v0).abs().max(1e-9) * (v1 - v0).signum());
+        let (sx, sy) = ((x1 - x0) / (du * aw), (y1 - y0) / (dv * ah));
+        let to_local = Xf([sx, 0.0, 0.0, sy, x0 - u0 * aw * sx, y0 - v0 * ah * sy]);
+        let scale = Xf(space.xform.then(&n.world).0).max_scale().max(1e-6) * to_local.max_scale().max(1e-9);
+        let tol = 0.05 / scale;
+        let read = |src: &str| -> Result<Vec<u8>, String> {
+            match sr_model::assets::resolve(src, &base) {
+                sr_model::assets::Resolved::Local(path) => {
+                    std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))
+                }
+                _ => Err(format!("{src}: only local files are supported")),
+            }
+        };
+        let mut bitmaps = Vec::new();
+        let scene = match a {
+            AssetsChild::Text(_)
+            | AssetsChild::Chart(_)
+            | AssetsChild::Map(_)
+            | AssetsChild::Audiogram(_)
+            | AssetsChild::Code(_)
+            | AssetsChild::Formula(_) => {
+                let mut tc = std::mem::take(&mut self.text);
+                let mut unsupported = Vec::new();
+                let (p, g) = (ctx.p, ctx.g);
+                let tokens = self.tokens.clone();
+                let r = {
+                    let mut pf = |val: &Value, b: [f64; 4]| self.vector_paint(plan, p, g, val, b, &n.id);
+                    let mut cx = crate::text::Cx {
+                        p,
+                        g,
+                        n,
+                        base: base.clone(),
+                        tol: tol / to_local.max_scale().max(1e-9),
+                        paint: &mut pf,
+                        tokens: &tokens,
+                        unsupported: &mut unsupported,
+                    };
+                    crate::text::asset_drawing(&mut tc, &mut cx, key, a)
+                };
+                self.text = tc;
+                for u in unsupported {
+                    if !plan.stats.unsupported.contains(&u) {
+                        plan.stats.unsupported.push(u);
+                    }
+                }
+                match r? {
+                    Ok(d) => {
+                        bitmaps = d
+                            .bitmaps
+                            .iter()
+                            .map(|b| sr_text::Bitmap { xf: to_local.mul(&b.xf), ..b.clone() })
+                            .collect();
+                        self.pending_blur = d
+                            .blurred
+                            .iter()
+                            .map(|(r, sc)| (*r * to_local.max_scale(), sc.transformed(&to_local)))
+                            .collect();
+                        d.scene
+                    }
+                    Err(e) => return Some(Err(e)),
+                }
+            }
+            AssetsChild::Vector(v) => {
+                if v.shape.as_str() == "svg" {
+                    let Some(src) = v.src.clone() else { return Some(Err("shape=\"svg\" needs @src".into())) };
+                    let bucket = libm::floor(libm::log2(tol) * 2.0) as i32;
+                    let ck = (key.to_string(), bucket);
+                    if !self.svgs.contains_key(&ck) {
+                        let tol_b = libm::exp2(bucket as f64 / 2.0);
+                        let r = read(&src).and_then(|b| sr_vector::svg::load(&b, tol_b)).map(Arc::new);
+                        self.svgs.retain(|k, _| k.0 != key);
+                        self.svgs.insert(ck.clone(), r);
+                    }
+                    match &self.svgs[&ck] {
+                        Ok(svg) => {
+                            for sk in &svg.skipped {
+                                plan.stats.unsupported.push(format!("{}: SVG {sk}", n.id));
+                            }
+                            let fit = Xf::scale(aw / svg.size[0].max(1e-9), ah / svg.size[1].max(1e-9));
+                            svg.scene.transformed(&fit)
+                        }
+                        Err(e) => return Some(Err(e.clone())),
+                    }
+                } else {
+                    // the asset key: an include's own vector is `ns/id` (Program::doc_key)
+                    let el = ctx.g.elements.iter().find(|e| *e.key == *key).map(|e| &e.props);
+                    let attrs = crate::vector::Attrs { e: v, props: el };
+                    let (p, g) = (ctx.p, ctx.g);
+                    let mut pf = |val: &Value, b: [f64; 4]| self.vector_paint(plan, p, g, val, b, &n.id);
+                    match crate::vector::vector_asset_scene(&attrs, &mut pf, tol / to_local.max_scale().max(1e-9)) {
+                        Ok(s) => s,
+                        Err(e) => return Some(Err(e)),
+                    }
+                }
+            }
+            AssetsChild::Lottie(l) => {
+                if !self.lotties.contains_key(key) {
+                    let slots: Vec<(String, String)> =
+                        l.slots.iter().map(|s| (s.id.clone(), s.value.clone())).collect();
+                    let r = read(&l.src)
+                        .and_then(|b| sr_vector::lottie::Lottie::parse(&b, l.animation.as_deref(), &slots))
+                        .map(Arc::new);
+                    self.lotties.insert(key.to_string(), r);
+                }
+                match &self.lotties[key] {
+                    Ok(lot) => {
+                        for sk in &lot.skipped {
+                            plan.stats.unsupported.push(format!("{}: Lottie {sk}", n.id));
+                        }
+                        let seg = l.segment.as_deref().and_then(|s| lot.segment(s));
+                        let t = n.source_time.unwrap_or(n.local_time);
+                        let fit = Xf::scale(aw / lot.size[0].max(1e-9), ah / lot.size[1].max(1e-9));
+                        lot.render(lot.frame_at(t, seg), tol / (to_local.max_scale() * fit.max_scale()).max(1e-9))
+                            .transformed(&fit)
+                    }
+                    Err(e) => return Some(Err(e.clone())),
+                }
+            }
+            _ => return None,
+        };
+        let mut out = scene.transformed(&to_local);
+        // cover and crop placements clip to the destination
+        let full = u0.min(u1) <= 1e-9 && v0.min(v1) <= 1e-9 && u0.max(u1) >= 1.0 - 1e-9 && v0.max(v1) >= 1.0 - 1e-9;
+        if !full {
+            let clip = sr_vector::shapes::rect(x0.min(x1), y0.min(y1), (x1 - x0).abs(), (y1 - y0).abs(), [0.0; 4])
+                .flatten(tol);
+            let mut wrapped = Scene::default();
+            wrapped.cmds.push(sr_vector::Cmd::Push { mask_init: 0.0 });
+            wrapped.extend(out);
+            wrapped.cmds.push(sr_vector::Cmd::Mask {
+                polys: clip,
+                rule: sr_vector::FillRule::NonZero,
+                op: sr_vector::MaskOp::Add,
+                opacity: 1.0,
+                invert: false,
+            });
+            wrapped.cmds.push(sr_vector::Cmd::Pop { opacity: 1.0 });
+            out = wrapped;
+        }
+        Some(Ok((out, bitmaps)))
+    }
+
+    /// Texture of a bitmap glyph (decoded once).
+    /// Draws a drawing's bitmap (a colour glyph or a map tile) as a textured quad in node space.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_bitmap(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        i: usize,
+        space: &Space,
+        op: f64,
+        blend: u32,
+        seed: u32,
+        cmds: &mut Vec<Cmd>,
+        root_hash: u64,
+        b: &sr_text::Bitmap,
+    ) {
+        let Some(tex) = self.glyph_texture(b) else { return };
+        let n = &ctx.g.nodes[i];
+        let world = n.world.then(&Affine(b.xf.0));
+        let d = Draw {
+            opacity: (op * b.opacity) as f32,
+            blend,
+            src_kind: src::TEXTURE,
+            seed,
+            uv_rect: b.uv.map(|v| v as f32),
+            ..Default::default()
+        };
+        let [x, y, w, hh] = b.rect;
+        let hash = h(&[
+            root_hash,
+            b.key,
+            affine_hash(&space.xform.then(&world)),
+            hf(op * b.opacity),
+            hf(b.uv[0]),
+            hf(b.uv[1]),
+            hf(b.uv[2]),
+            hf(b.uv[3]),
+        ]);
+        self.draw_cmd(plan, ctx, i, space, d, [x, y, x + w, y + hh], b.uv, &world, tex, cmds, hash, false);
+    }
+
+    fn glyph_texture(&mut self, b: &sr_text::Bitmap) -> Option<Arc<Tex>> {
+        self.used.insert(format!("glyph:{}", b.key));
+        if let Some(t) = self.glyph_tex.get(&b.key) {
+            return t.clone();
+        }
+        let t = resources::decode_image_bytes(&b.png, &self.working, self.max_texture)
+            .ok()
+            .map(|d| Arc::new(resources::upload(&self.gpu.device, &self.gpu.queue, &self.bgl1, &d, "glyph")));
+        self.glyph_tex.insert(b.key, t.clone());
+        t
+    }
+
+    /// Draws a node's local-space vector scene: batched into the target when
+    /// simple, otherwise rasterised at on-screen scale and composited.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_vector(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        i: usize,
+        space: &Space,
+        op: f64,
+        blend: u32,
+        seed: u32,
+        cmds: &mut Vec<Cmd>,
+        root_hash: u64,
+        scene: Scene,
+    ) {
+        let n = &ctx.g.nodes[i];
+        let e: &dyn Element = &*n.elem;
+        let masked = sr_model::element::children(e).iter().any(|c| c.element_name() == "mask");
+        let ta = space.xform.then(&n.world);
+        let content = h(&[
+            Self::node_hash(ctx, n, &ta),
+            hf(op),
+            hf(n.local_time),
+            hf(n.source_time.unwrap_or(0.0)),
+            ctx.elements,
+        ]);
+        let simple = blend == 0
+            && n.matte.is_none()
+            && !n.is_matte
+            && n.three_d.is_none()
+            && !masked
+            && !n.clip
+            && n.props.get(render_access::CONTRAST_INK).is_none();
+        if simple {
+            let mut s = scene.transformed(&Xf(ta.0));
+            if op < 1.0 {
+                let mut w = Scene::default();
+                w.cmds.push(sr_vector::Cmd::Push { mask_init: 1.0 });
+                w.extend(s);
+                w.cmds.push(sr_vector::Cmd::Pop { opacity: op });
+                s = w;
+            }
+            let key = cmds as *const Vec<Cmd> as usize;
+            match plan.vbatches.iter_mut().find(|b| b.key == key) {
+                Some(b) => {
+                    b.scene.extend(s);
+                    b.hash = h(&[b.hash, content]);
+                }
+                None => plan.vbatches.push(VBatch {
+                    key,
+                    space: *space,
+                    scene: s,
+                    hash: h(&[content, space.size[0] as u64, space.size[1] as u64]),
+                    first: n.id.to_string(),
+                }),
+            }
+            return;
+        }
+        let b = scene.bounds();
+        if b.is_empty() {
+            return;
+        }
+        let max = self.max_texture.max(64) as f64;
+        let mut s = Xf(ta.0).max_scale().max(1e-6);
+        let span = (b.0[2] - b.0[0]).max(b.0[3] - b.0[1]).max(1e-9);
+        if span * s + 2.0 > max {
+            s = (max - 2.0) / span;
+        }
+        let (x0, y0) = (b.0[0] - 1.0 / s, b.0[1] - 1.0 / s);
+        let tw = (((b.0[2] - b.0[0]) * s).ceil() as u32 + 2).max(1);
+        let th = (((b.0[3] - b.0[1]) * s).ceil() as u32 + 2).max(1);
+        let to_tex = Xf::scale(s, s).mul(&Xf::translate(-x0, -y0));
+        let local = [x0, y0, x0 + tw as f64 / s, y0 + th as f64 / s];
+        let key = format!("vec:{}:{tw}x{th}", n.id);
+        let hash = h(&[content, tw as u64, th as u64, hf(s)]);
+        let (tex, raster) =
+            self.vector_target(plan, key, hash, [tw, th], &n.id, "vector", || scene.transformed(&to_tex));
+        if raster.is_some() {
+            self.src_size = Some([tw, th]);
+        }
+        let bx = n.size.unwrap_or([local[2] - local[0], local[3] - local[1]]);
+        let (mask_off, mask_count) = self.masks_of(plan, n, bx, if n.clip { n.size } else { None });
+        let d = Draw {
+            opacity: op as f32,
+            blend,
+            src_kind: src::TEXTURE,
+            mask_off,
+            mask_count,
+            seed,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            ..Default::default()
+        };
+        self.draw_cmd(
+            plan,
+            ctx,
+            i,
+            space,
+            d,
+            local,
+            [0.0, 0.0, 1.0, 1.0],
+            &n.world,
+            tex,
+            cmds,
+            h(&[root_hash, hash]),
+            false,
+        );
+        if raster.is_some() {
+            cmds.last_mut().expect("draw_cmd pushes a command").raster = raster;
+        }
+    }
+
+    /// The raster target of a vector scene, by its cache `key` and content `hash`: last frame's texture when the hash
+    /// is unchanged; else the scene is encoded and either rasterised before the frame's draws into a texture kept
+    /// across frames (while the kept vector targets fit `vector_cache_budget`), or made transient: a placeholder
+    /// texture and the index of a `Plan::lazy` raster that execution records just before the batch that draws it.
+    #[allow(clippy::too_many_arguments)]
+    fn vector_target(
+        &mut self,
+        plan: &mut Plan,
+        key: String,
+        hash: u64,
+        size: [u32; 2],
+        name: &str,
+        label: &'static str,
+        scene: impl FnOnce() -> Scene,
+    ) -> (Arc<Tex>, Option<u32>) {
+        self.used.insert(key.clone());
+        let kept = match self.subtree.get(&key) {
+            Some((hh, t)) if *hh == hash => {
+                plan.stats.cache_hits += 1;
+                return (t.clone(), None);
+            }
+            Some(_) => true,
+            None => false,
+        };
+        let bytes = target_bytes(size, self.format);
+        let budget = self.vector_cache_budget.unwrap_or(2 * self.frame_bytes);
+        let cache = kept || self.vector_cached_bytes.saturating_add(bytes) <= budget;
+        let clock = std::time::Instant::now();
+        let enc = sr_vector::tile::encode_cached(&scene(), size, &mut self.tiles);
+        if enc.flattened_layers > 0 {
+            plan.stats.unsupported.push(format!(
+                "{name}: vector layers nested deeper than {} were flattened",
+                sr_vector::tile::MAX_DEPTH
+            ));
+        }
+        let out = if cache {
+            let target = match self.subtree.get(&key) {
+                Some((_, t)) if Arc::strong_count(t) <= 2 => t.clone(),
+                _ => Arc::new(resources::create_as(&self.gpu.device, &self.bgl1, self.format, size, 1, label)),
+            };
+            if !kept {
+                self.vector_cached_bytes += bytes;
+            }
+            plan.rasters.push(RasterJob::new(enc, target.clone(), &mut plan.paints, &self.working));
+            self.subtree.insert(key, (hash, target.clone()));
+            (target, None)
+        } else {
+            plan.lazy.push(RasterJob::new(enc, self.dummy.clone(), &mut plan.paints, &self.working));
+            plan.stats.vector_targets_transient += 1;
+            (self.dummy.clone(), Some((plan.lazy.len() - 1) as u32))
+        };
+        plan.stats.vector_seconds += clock.elapsed().as_secs_f64();
+        out
+    }
+
+    /// Burned-in captions over everything, in frame space.
+    fn burn_captions(&mut self, plan: &mut Plan, ctx: &Ctx, space: &Space, cmds: &mut Vec<Cmd>) {
+        if ctx.p.scene.captions.is_none() || self.captions_off {
+            return;
+        }
+        let ink = ctx.g.elements.iter().find(|e| &*e.key == render_access::CONTRAST_INK).and_then(|e| {
+            match e.props.get(render_access::CONTRAST_INK) {
+                Some(Value::Num(v)) => Some(*v),
+                _ => None,
+            }
+        });
+        if ink.is_some() {
+            self.flush_vec(plan, cmds);
+        }
+        let at_ink = cmds.len();
+        let probe = self.contrast_probe.then(|| {
+            self.contrast_batch_split = true;
+            self.flush_vec(plan, cmds);
+            cmds.len()
+        });
+        let bounds = self.burn_captions_inner(plan, ctx, space, cmds);
+        if let Some(ink) = ink {
+            self.flush_vec(plan, cmds);
+            for cmd in &mut cmds[at_ink..] {
+                let d = &mut plan.draws[cmd.draw as usize];
+                d.flags |= flag::CONTRAST_INK;
+                d.color[0] = ink as f32;
+                cmd.hash = h(&[cmd.hash, ink.to_bits(), 0x1ac]);
+            }
+        }
+        if let (Some(at), Some(b)) = (probe, bounds) {
+            self.flush_vec(plan, cmds);
+            self.attach_probe(plan, space, cmds, at, ContrastTarget::Captions, b);
+        }
+    }
+
+    fn burn_captions_inner(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        space: &Space,
+        cmds: &mut Vec<Cmd>,
+    ) -> Option<[f64; 4]> {
+        let clock = std::time::Instant::now();
+        let mut tc = std::mem::take(&mut self.text);
+        let mut errors = Vec::new();
+        let only = self.burn_captions.clone();
+        let tokens = self.tokens.clone();
+        let built = {
+            let (p, g) = (ctx.p, ctx.g);
+            let mut pf = |v: &Value, b: [f64; 4]| self.vector_paint(plan, p, g, v, b, "captions");
+            crate::text::caption_scene(&mut tc, p, g, &mut pf, &tokens, only.as_deref(), &mut errors)
+        };
+        self.text = tc;
+        for e in errors {
+            if !plan.stats.errors.contains(&e) {
+                plan.stats.errors.push(e);
+            }
+        }
+        let (scene, hsh) = built?;
+        // the scene is in document coordinates; the target may be a scaled one (a draft tier)
+        let scene = scene.transformed(&Xf(space.xform.0));
+        let b = scene.bounds().0;
+        plan.stats.vector_seconds += clock.elapsed().as_secs_f64();
+        let key = cmds as *const Vec<Cmd> as usize;
+        match plan.vbatches.iter_mut().find(|b| b.key == key) {
+            Some(b) => {
+                b.scene.extend(scene);
+                b.hash = h(&[b.hash, hsh]);
+            }
+            None => plan.vbatches.push(VBatch {
+                key,
+                space: *space,
+                scene,
+                hash: h(&[hsh, space.size[0] as u64, space.size[1] as u64]),
+                first: "captions".into(),
+            }),
+        }
+        Some(b)
+    }
+
+    /// Rasterises the pending simple-vector batch of `cmds` and draws it.
+    fn flush_vec(&mut self, plan: &mut Plan, cmds: &mut Vec<Cmd>) {
+        let key = cmds as *const Vec<Cmd> as usize;
+        let Some(pos) = plan.vbatches.iter().position(|b| b.key == key) else { return };
+        let b = plan.vbatches.remove(pos);
+        let VBatch { space, scene, hash, first, .. } = b;
+        let size = space.size;
+        let ck = format!("vbatch:{first}:{}x{}", size[0], size[1]);
+        let (tex, raster) = self.vector_target(plan, ck, hash, size, &first, "vector batch", || scene);
+        // the batch's raster is the target's size and covers it 1:1: a texel copy (`aligned_texels`)
+        let aligned = self.frame_texels(&space, size);
+        let (_, first_vertex) = self.push_frame(plan, &space, &Affine::IDENTITY);
+        let mut d = Draw {
+            opacity: 1.0,
+            blend: 0,
+            src_kind: src::TEXTURE,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            target_size: [size[0] as f32, size[1] as f32],
+            ..Default::default()
+        };
+        if let Some((pixels, texel)) = aligned {
+            d.flags = flag::ALIGNED;
+            d.uv_rect = pixels.map(|v| v as f32);
+            d.box_rect = [texel[0] as f32, texel[1] as f32, 0.0, 0.0];
+        }
+        plan.draws.push(d);
+        cmds.push(Cmd {
+            draw: (plan.draws.len() - 1) as u32,
+            first_vertex,
+            count: 6,
+            src: tex,
+            backdrop: None,
+            matte: None,
+            hash,
+            pre: None,
+            raster,
+        });
+    }
+
+    /// Replaces the last command's quad with a deformed grid mesh.
+    fn meshify(
+        plan: &mut Plan,
+        cmds: &mut [Cmd],
+        space: &Space,
+        world: &Affine,
+        local: [f64; 4],
+        uv: [f64; 4],
+        ds: &[sr_vector::deform::Deformer],
+    ) {
+        let Some(c) = cmds.last_mut() else { return };
+        // a deformed layer no longer lands texel for pixel: back to sampling with analytic edges, as draw_cmd set them
+        let d = &mut plan.draws[c.draw as usize];
+        if d.flags & flag::ALIGNED != 0 {
+            d.flags = (d.flags & !flag::ALIGNED) | flag::EDGE;
+            d.box_rect = local.map(|v| v as f32);
+            d.uv_rect = uv.map(|v| v as f32);
+        }
+        let (pos, uvs, idx) =
+            sr_vector::deform::grid([local[0], local[1], local[2] - local[0], local[3] - local[1]], 32, 32);
+        let m = space.xform.then(world);
+        let first = plan.verts.len() as u32;
+        let moved: Vec<[f64; 2]> = pos
+            .iter()
+            .map(|&q| {
+                let d = sr_vector::deform::apply_all(ds, q);
+                m.apply([d.x, d.y])
+            })
+            .collect();
+        let mut bb = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        for &k in &idx {
+            let k = k as usize;
+            let t = moved[k];
+            bb = [bb[0].min(t[0]), bb[1].min(t[1]), bb[2].max(t[0]), bb[3].max(t[1])];
+            let u = uvs[k];
+            plan.verts.push(Vertex {
+                clip: to_clip(t, space.size),
+                uv: [(uv[0] + u.x * (uv[2] - uv[0])) as f32, (uv[1] + u.y * (uv[3] - uv[1])) as f32],
+                local: [pos[k].x as f32, pos[k].y as f32],
+            });
+        }
+        c.first_vertex = first;
+        c.count = idx.len() as u32;
+        if c.backdrop.is_some() {
+            let (w, hh) = (space.size[0] as f64, space.size[1] as f64);
+            let x0 = bb[0].floor().clamp(0.0, w) as u32;
+            let y0 = bb[1].floor().clamp(0.0, hh) as u32;
+            let x1 = bb[2].ceil().clamp(0.0, w) as u32;
+            let y1 = bb[3].ceil().clamp(0.0, hh) as u32;
+            c.backdrop = Some([x0, y0, x1, y1]);
+        }
+    }
+
+    fn depth_sorted(g: &FrameGraph, kids: &[usize]) -> Vec<usize> {
+        let mut out = kids.to_vec();
+        let mut i = 0;
+        while i < out.len() {
+            if g.nodes[out[i]].three_d.is_none() {
+                i += 1;
+                continue;
+            }
+            let mut j = i;
+            while j < out.len() && g.nodes[out[j]].three_d.is_some() {
+                j += 1;
+            }
+            out[i..j].sort_by(|a, b| {
+                let za = g.nodes[*a].three_d.unwrap()[0];
+                let zb = g.nodes[*b].three_d.unwrap()[0];
+                zb.partial_cmp(&za).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            i = j;
+        }
+        out
+    }
+
+    // ---------------------------------------------------------- frame
+
+    /// The project background. Normally it goes beneath the composition last, so `behind`, `subtract`, stencils
+    /// and silhouettes act on layers only. A node with an edge-space override needs the visible background first.
+    fn background(&mut self, plan: &mut Plan, ctx: &Ctx, space: &Space, cmds: &mut Vec<Cmd>) {
+        let g = ctx.g;
+        // a visible procedural sky that no 3D pass draws takes the background's place (SREP 71)
+        let sky = self.sky_background(ctx, space);
+        let hash = {
+            let mut f = Fnv(0xcbf2_9ce4_8422_2325);
+            f.value(&g.background);
+            h(&[f.0, hf(g.size[0]), hf(g.size[1]), elements_hash(&g.elements), sky.as_ref().map_or(0, |s| s.1)])
+        };
+        // the document's frame, in document units (the space may draw it at another scale)
+        let sky = sky.map(|s| s.0);
+        self.fill_paint(plan, ctx, space, &g.background, g.size, &Affine::IDENTITY, BLEND_UNDER, hash, sky, cmds);
+    }
+
+    /// The background of viewport3D node `i` (SREP 74 §4), filling its picture before its 3D scene draws.
+    fn viewport_background(&mut self, plan: &mut Plan, ctx: &Ctx, i: usize, space: &Space, cmds: &mut Vec<Cmd>) {
+        let n = &ctx.g.nodes[i];
+        let attrs = Attrs { e: &*n.elem, props: Some(&n.props) };
+        let value = match attrs.paint("background") {
+            Some(Value::Str(s)) if s.starts_with("token:") => {
+                Value::Color(self.tokens.get(&s[6..]).copied().unwrap_or([0.0; 4]))
+            }
+            Some(v) => v,
+            None => return,
+        };
+        if matches!(value, Value::Color(c) if c[3] <= 0.0) {
+            // the default, transparent: the picture starts empty
+            return;
+        }
+        let size = n.size.unwrap_or(ctx.g.size);
+        let hash = {
+            let mut f = Fnv(0xcbf2_9ce4_8422_2325);
+            f.value(&value);
+            h(&[
+                f.0,
+                hf(size[0]),
+                hf(size[1]),
+                affine_hash(&space.xform.then(&n.world)),
+                elements_hash(&ctx.g.elements),
+            ])
+        };
+        self.fill_paint(plan, ctx, space, &value, size, &n.world, 0, hash, None, cmds);
+    }
+
+    /// Fills the rectangle (0, 0)–`size` of the frame `world` maps into `space` with the paint `value` (a colour or a
+    /// paint reference), or with `texture` when one is given (a procedural sky, SREP 71), blended with `blend`.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_paint(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        space: &Space,
+        value: &Value,
+        size: [f64; 2],
+        world: &Affine,
+        blend: u32,
+        hash: u64,
+        texture: Option<Arc<resources::Tex>>,
+        cmds: &mut Vec<Cmd>,
+    ) {
+        let g = ctx.g;
+        let (w, hh) = (size[0], size[1]);
+        let tokens = self.tokens.clone();
+        let tok = |t: &str| tokens.get(t).copied();
+        let (kind, paint, tex) = match value {
+            Value::Color(c) => (src::PAINT, plan.paints.solid(&self.working, *c), self.dummy.clone()),
+            Value::PaintRef(id) => {
+                match ctx.p.scene.paints.as_ref().and_then(|ps| ps.children.iter().find(|c| c.id() == Some(id))) {
+                    Some(m::PaintsChild::Pattern(pt)) => {
+                        let asset = ctx
+                            .p
+                            .scene
+                            .assets
+                            .as_ref()
+                            .and_then(|a| a.children.iter().find(|c| c.id() == Some(pt.asset.as_str())));
+                        match asset {
+                            Some(AssetsChild::Image(img)) => {
+                                let path = match sr_model::assets::resolve(&img.src, &ctx.p.base_dirs[0]) {
+                                    sr_model::assets::Resolved::Local(p) => Some(p),
+                                    _ => None,
+                                };
+                                match path.and_then(|p| {
+                                    self.image(
+                                        p,
+                                        img.color_space,
+                                        img.transfer,
+                                        img.alpha,
+                                        img.color_profile == sr_model::model::ColorProfile::Embedded,
+                                    )
+                                }) {
+                                    Some(t) => (
+                                        src::PATTERN,
+                                        plan.paints.pattern(pt, g, [img.width as f64, img.height as f64]),
+                                        t,
+                                    ),
+                                    None => {
+                                        (src::PAINT, plan.paints.solid(&self.working, [0.0; 4]), self.dummy.clone())
+                                    }
+                                }
+                            }
+                            _ => (src::PAINT, plan.paints.solid(&self.working, [0.0; 4]), self.dummy.clone()),
+                        }
+                    }
+                    Some(pc) => match plan.paints.gradient(&self.working, pc, g, [0.0, 0.0, w, hh], &tok) {
+                        Some(i) => (src::PAINT, i, self.dummy.clone()),
+                        None => (src::PAINT, plan.paints.solid(&self.working, [0.0; 4]), self.dummy.clone()),
+                    },
+                    None => (src::PAINT, plan.paints.solid(&self.working, [0.0; 4]), self.dummy.clone()),
+                }
+            }
+            _ => (src::PAINT, plan.paints.solid(&self.working, [0.0, 0.0, 0.0, 1.0]), self.dummy.clone()),
+        };
+        let (kind, tex) = match texture {
+            Some(t) => (src::TEXTURE, t),
+            None => (kind, tex),
+        };
+        let (_, first_vertex) =
+            self.push_quad(plan, space, world, None, [0.0, 0.0, w, hh], [0.0, 0.0, 1.0, 1.0], &glam::Mat4::IDENTITY);
+        plan.draws.push(Draw {
+            opacity: 1.0,
+            src_kind: kind,
+            paint,
+            target_size: [space.size[0] as f32, space.size[1] as f32],
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            blend,
+            ..Default::default()
+        });
+        cmds.push(Cmd {
+            draw: (plan.draws.len() - 1) as u32,
+            first_vertex,
+            count: 6,
+            src: tex,
+            backdrop: None,
+            matte: None,
+            hash,
+            pre: None,
+            raster: None,
+        });
+    }
+
+    /// Renders one FrameGraph into the frame texture.
+    pub fn render(&mut self, g: &FrameGraph, p: &Program) -> Frame {
+        self.render_with(g, p, None)
+    }
+
+    /// Renders a frame; `provider` evaluates the scene at other times for
+    /// motion blur and time effects (without it they draw unblurred and are reported).
+    ///
+    /// Scenes whose shaders keep persistent ISF buffers replay the frames before `g.frame`
+    /// (from the latest checkpoint) when it does not follow the previous render, so their
+    /// feedback is the same whichever frame is rendered first.
+    /// Offscreen textures held for reuse between frames.
+    pub fn pooled_textures(&self) -> usize {
+        self.pool.held()
+    }
+
+    /// Decoded pictures held for reuse: images, sequence and video frames, glyph and tile bitmaps.
+    pub fn cached_textures(&self) -> usize {
+        self.images.values().flatten().count() + self.video_frames.len() + self.glyph_tex.values().flatten().count()
+    }
+
+    /// Texels of the pooled offscreen textures.
+    pub fn pooled_texels(&self) -> u64 {
+        self.pool.held_texels()
+    }
+
+    /// The offscreens kept between frames for isolated nodes (`iso:` and the node's id), effect chains (`fx:`) and
+    /// mattes (`matte:`), with their sizes, in key order.
+    pub fn cached_offscreens(&self) -> Vec<(String, [u32; 2])> {
+        let mut out: Vec<(String, [u32; 2])> = self.subtree.iter().map(|(k, (_, t))| (k.clone(), t.size)).collect();
+        out.sort();
+        out
+    }
+
+    pub fn render_with(
+        &mut self,
+        g: &FrameGraph,
+        p: &Program,
+        mut provider: Option<&mut dyn FnMut(f64) -> FrameGraph>,
+    ) -> Frame {
+        self.tiles.next_frame();
+        let persistent =
+            *self.persistent_isf.get_or_insert_with(|| crate::shader::has_persistent(p, &Self::base_dir(p)));
+        let fps = {
+            let f = &p.scene.project.fps;
+            (f.num as f64 / f.den.max(1) as f64).max(1e-6)
+        };
+        let interval = fps.round().max(1.0) as i64;
+        let (mut replayed, mut replay_draws, mut replay_fx) = (0usize, 0usize, 0usize);
+        let (mut hits, mut misses) = (0usize, 0usize);
+        // stateful effects that are all inside an `iterate` start from zero at every frame (SREP 67): nothing to replay
+        let persistent = persistent && {
+            let base = Self::base_dir(p);
+            let (ids, _) = self.persistent_ids.get_or_insert_with(|| {
+                let ids = crate::shader::persistent_effects(p, &base);
+                let local = node_local_replay(p, &ids);
+                (ids, local)
+            });
+            carries_state(p, g, ids)
+        };
+        if persistent && self.last_frame != Some(g.frame) && self.last_frame != Some(g.frame - 1) {
+            if let Some(pv) = provider.as_mut() {
+                let base = Self::base_dir(p);
+                let (ids, local) = self.persistent_ids.get_or_insert_with(|| {
+                    let ids = crate::shader::persistent_effects(p, &base);
+                    let local = node_local_replay(p, &ids);
+                    (ids, local)
+                });
+                let (ids, local) = (ids.clone(), *local);
+                let mut start = self.fx.restore(g.frame - 1);
+                // a state saved on disk, by this process or another, nearer than the one in memory
+                if let Some(store) = self.store(p) {
+                    let nearest = (g.frame - 1).div_euclid(interval) * interval;
+                    let found =
+                        (start..=nearest).rev().step_by(interval as usize).find_map(|f| Some((f, store.load(f)?)));
+                    match found {
+                        Some((f, pairs)) => {
+                            self.install_states(f, pairs);
+                            start = f + 1;
+                            hits += 1;
+                        }
+                        None => misses += 1,
+                    }
+                }
+                for k in start..g.frame {
+                    let gk = pv(k as f64 / fps);
+                    // SREP 68: a stateful pair's state depends on its node alone, so the frames before a seek draw only
+                    // the nodes of stateful effects (with their subtrees and ancestors), not the whole scene
+                    let gk = if local { only_stateful(p, &gk, &ids) } else { gk };
+                    let f = self.render_graph(&gk, p, Some(&mut **pv));
+                    self.fx.checkpoint(k, interval);
+                    self.save_states(p, k, interval);
+                    replayed += 1;
+                    replay_draws += f.stats.draws;
+                    replay_fx += f.stats.fx_passes;
+                }
+            }
+        }
+        self.fx.iterations.clear();
+        let mut out = self.render_graph(g, p, provider);
+        out.stats.iterate_steps = std::mem::take(&mut self.fx.iterations)
+            .into_iter()
+            .map(|(who, n)| (who, n.load(std::sync::atomic::Ordering::Relaxed)))
+            .collect();
+        out.stats.replayed_frames = replayed;
+        out.stats.replay_draws = replay_draws;
+        out.stats.replay_fx_passes = replay_fx;
+        out.stats.checkpoint_hits = hits;
+        out.stats.checkpoint_misses = misses;
+        self.last_frame = Some(g.frame);
+        if persistent {
+            self.fx.checkpoint(g.frame, interval);
+            self.save_states(p, g.frame, interval);
+        }
+        out
+    }
+
+    /// Sets (or clears) the directory of SREP 68 checkpoints on disk; `SR_CHECKPOINT_DIR` sets it by default.
+    pub fn set_checkpoint_dir(&mut self, dir: Option<std::path::PathBuf>) {
+        self.checkpoint_dir = dir;
+        self.checkpoint_store = None;
+    }
+
+    /// The checkpoint store of document `p`, when a directory is set and it opens (a failure is reported once).
+    fn store(&mut self, p: &Program) -> Option<&crate::checkpoints::Store> {
+        let dir = self.checkpoint_dir.clone()?;
+        let store = self.checkpoint_store.get_or_insert_with(|| {
+            crate::checkpoints::Store::new(&dir, p).map_err(|e| format!("{}: {e}", dir.display()))
+        });
+        store.as_ref().ok()
+    }
+
+    /// Saves the states of the stateful effects after frame `frame` when it is a checkpoint frame and not saved yet.
+    fn save_states(&mut self, p: &Program, frame: i64, interval: i64) {
+        if frame % interval.max(1) != 0 || self.store(p).is_none_or(|s| s.has(frame)) {
+            return;
+        }
+        let mut pairs: Vec<crate::checkpoints::PairState> = Vec::new();
+        let mut entries: Vec<_> = self.fx.feedback.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        for (key, fb) in entries {
+            let mut targets: Vec<_> = fb.targets.iter().map(|(n, t)| (n.clone(), t.size, self.read(t))).collect();
+            targets.sort_by(|a, b| a.0.cmp(&b.0));
+            pairs.push(crate::checkpoints::PairState { key, frame: fb.frame, steps: fb.steps, targets });
+        }
+        if let Some(store) = self.store(p) {
+            // a checkpoint is an optimisation: a write that fails leaves the next seek to replay
+            let _ = store.save(frame, &pairs);
+        }
+    }
+
+    /// Makes the states loaded from a checkpoint of frame `frame` the current ones.
+    fn install_states(&mut self, frame: i64, pairs: Vec<crate::checkpoints::PairState>) {
+        let mut feedback = HashMap::new();
+        for s in pairs {
+            let targets = s
+                .targets
+                .into_iter()
+                .map(|(name, size, px)| {
+                    let t = Arc::new(resources::create_as(
+                        &self.gpu.device,
+                        &self.bgl1,
+                        self.format,
+                        size,
+                        1,
+                        "checkpoint",
+                    ));
+                    (name, self.fx.upload_texels(t, &px))
+                })
+                .collect();
+            feedback.insert(s.key, crate::shader::Feedback { frame: s.frame, targets, steps: s.steps });
+        }
+        self.fx.install(frame, feedback);
+    }
+
+    fn render_graph(
+        &mut self,
+        g: &FrameGraph,
+        p: &Program,
+        provider: Option<&mut dyn FnMut(f64) -> FrameGraph>,
+    ) -> Frame {
+        self.contrast_batch_split = false;
+        self.tier = Tier::of(self.quality.unwrap_or(p.scene.project.quality));
+        // SREP 72: a supersampled frame renders n times larger, as by a render scale, and is filtered down at the end
+        let ss = if self.view_override.is_none() && p.scene.scene360.is_none() {
+            p.scene.project.supersample.clamp(1, 4) as u32
+        } else {
+            1
+        };
+        let out_size = g.size.map(|v| v * self.tier.scale);
+        let dimensions = if self.view_override.is_none() {
+            p.scene.scene360.as_ref().map(|s| [s.width as f64, s.height as f64])
+        } else {
+            None
+        }
+        .unwrap_or(out_size.map(|v| v * ss as f64));
+        let size = match crate::output::frame_size(dimensions, &self.gpu.device.limits()) {
+            Ok(size) => size,
+            Err(error) => {
+                self.prefix = None;
+                self.prev_root.clear();
+                self.frame = None;
+                let texture = Arc::new(resources::create_as(
+                    &self.gpu.device,
+                    &self.bgl1,
+                    self.format,
+                    [1, 1],
+                    1,
+                    "invalid frame",
+                ));
+                return Frame { texture, stats: RenderStats { errors: vec![error], ..Default::default() } };
+            }
+        };
+        if self.view_override.is_none() && p.scene.scene360.is_some() {
+            return self.render_360(g, p, provider);
+        }
+        self.tier = Tier::of(self.quality.unwrap_or(p.scene.project.quality));
+        self.tier.scale *= ss as f64;
+        let created_before = self.pool.created;
+        let released_before = self.pool.released;
+        let subs = provider.map(|pv| SubFrames {
+            provider: std::cell::RefCell::new(pv),
+            cache: Default::default(),
+            seconds: Default::default(),
+        });
+        let scale = self.tier.scale;
+        let mut plan = Plan::default();
+        if let Some(e) = &self.precision_error {
+            plan.stats.errors.push(e.to_string());
+        }
+        // a simulation that could not run leaves the frame without something that was asked for
+        for failure in &g.failures {
+            if !plan.stats.errors.contains(failure) {
+                plan.stats.errors.push(failure.clone());
+            }
+        }
+        plan.stats.sim_rigid_seconds = g.sim_seconds.rigid;
+        plan.stats.sim_ocean_seconds = g.sim_seconds.ocean;
+        plan.stats.sim_smoke_seconds = g.sim_seconds.smoke;
+        plan.stats.sim_particles_seconds = g.sim_seconds.particles;
+        self.used.clear();
+        // what is kept of a voxels object that the frame no longer has goes with it
+        {
+            let ids: std::collections::HashSet<&str> = g.nodes.iter().map(|n| &*n.id).collect();
+            self.voxel_surfaces.retain(|(id, _), _| ids.contains(&**id));
+        }
+        let mut kids: Vec<Vec<usize>> = vec![Vec::new(); g.nodes.len()];
+        let mut roots = Vec::new();
+        for (i, n) in g.nodes.iter().enumerate() {
+            match n.parent {
+                Some(pi) => kids[pi as usize].push(i),
+                None => roots.push(i),
+            }
+        }
+        let frame = match &self.frame {
+            Some(f) if f.size == size => f.clone(),
+            _ => Arc::new(resources::create_as(&self.gpu.device, &self.bgl1, self.format, size, 1, "frame")),
+        };
+        self.frame = Some(frame.clone());
+        self.frame_bytes = target_bytes(size, self.format);
+        self.vector_cached_bytes = self
+            .subtree
+            .iter()
+            .filter(|(k, _)| vector_key(k))
+            .map(|(_, (_, t))| target_bytes(t.size, t.tex.format()))
+            .sum();
+        // FrameGraph is public: callers may supply links that did not pass compilation.
+        // Reject cycles before any recursive matte hashing or drawing, and clear old pixels.
+        let mattes: Vec<_> = g.nodes.iter().map(|n| n.matte.map(|m| m as usize)).collect();
+        let cycles = sr_model::rules::cyclic_mattes(&kids, &mattes);
+        if !cycles.is_empty() {
+            plan.stats.errors.extend(cycles.iter().map(|&i| {
+                format!("{}: matte dependencies form a cycle through mattes or contained children", g.nodes[i].id)
+            }));
+            self.prefix = None;
+            self.prev_root.clear();
+            plan.jobs.push(Job::draws(frame.clone(), true, Vec::new(), true));
+            return Frame { texture: frame, stats: self.execute(plan, 0, None, &[]) };
+        }
+        let mut timed = std::collections::HashSet::new();
+        let mut generated = std::collections::HashSet::new();
+        for key in p.assets.keys() {
+            match self.asset(p, key).map(|a| a.0) {
+                // their pixels follow their animated attributes, not the clock (SREP 75 for fractals)
+                Some(AssetsChild::Generator(_) | AssetsChild::Fractal(_)) => {
+                    generated.insert(key.to_string());
+                }
+                Some(AssetsChild::Image(_)) | None => {}
+                Some(AssetsChild::Volume(v)) if v.first.is_none() && v.format.as_str() != "srvseq" => {}
+                Some(_) => {
+                    timed.insert(key.to_string());
+                }
+            }
+        }
+        // The camera view and post-processing affect every projected draw, including cached groups.
+        let cam_hash = {
+            let (cv, extras, _) = self.camera3(g, p, [g.size[0] as f32, g.size[1] as f32]);
+            h(&[h(&cv.view_proj().to_cols_array().map(|v| v.to_bits() as u64)), extras.hash()])
+        };
+        let elements = h(&[elements_hash(&g.elements), cam_hash]);
+        let el = element_hashes(&g.elements);
+        let ctx = Ctx {
+            g,
+            p,
+            kids: &kids,
+            timed: &timed,
+            generated: &generated,
+            elements,
+            el: &el,
+            cam: cam_hash,
+            sub: subs.as_ref().map(|s| s as &dyn SubSource),
+        };
+        for m in &g.problems {
+            // failures are already errors
+            if !g.failures.contains(m) && !plan.stats.unsupported.contains(m) {
+                plan.stats.unsupported.push(m.clone());
+            }
+        }
+        // the document's coordinates at the tier's scale
+        let space = Space { xform: Affine::scale(scale, scale), size, unit: scale };
+        let mut cmds = Vec::new();
+        // An edge-space override must mix against the visible background in its chosen space.
+        // Keep the established background-last path for documents without an override.
+        let background_first =
+            g.nodes.iter().any(|n| n.draw && matches!(self.blend_of(n), BLEND_OVER_ENCODED | BLEND_OVER_LINEAR));
+        if background_first {
+            self.background(&mut plan, &ctx, &space, &mut cmds);
+        }
+        for r in Self::depth_sorted(g, &roots) {
+            let rh = h(&[Self::subtree_hash(&ctx, r, &Affine::IDENTITY), hf(g.nodes[r].world_opacity), cam_hash]);
+            self.emit(&mut plan, &ctx, r, &space, 1.0, &mut cmds, false, rh);
+        }
+        self.burn_captions(&mut plan, &ctx, &space, &mut cmds);
+        self.flush_vec(&mut plan, &mut cmds);
+        if !background_first {
+            self.background(&mut plan, &ctx, &space, &mut cmds);
+        }
+        // contrast probes measure against what ends up behind the text: the background too
+        let probe_bg = if plan.probes.is_empty() {
+            None
+        } else {
+            let bg = self.temp(&mut plan, size);
+            let mut bcmds = Vec::new();
+            self.background(&mut plan, &ctx, &space, &mut bcmds);
+            plan.jobs.push(Job::draws(bg.clone(), true, bcmds, false));
+            Some(bg)
+        };
+        if let Some(s) = &subs {
+            plan.stats.subframes = s.count();
+            plan.stats.subframe_seconds = s.seconds.get();
+        }
+        // root prefix reuse
+        let hashes: Vec<u64> = cmds.iter().enumerate().map(|(k, c)| h(&[c.hash, k as u64])).collect();
+        if self.contrast_probe {
+            // probed text needs its backdrop copied, so nothing is restored from the prefix snapshot
+            self.prefix = None;
+        }
+        let restore = match &self.prefix {
+            Some(pf)
+                if pf.tex.size == size
+                    && hashes.len() >= pf.hashes.len()
+                    && hashes[..pf.hashes.len()] == pf.hashes[..] =>
+            {
+                pf.hashes.len()
+            }
+            _ => 0,
+        };
+        let stable = hashes.iter().zip(&self.prev_root).take_while(|(a, b)| a == b).count();
+        let snapshot_at = (stable > restore).then_some(stable);
+        if stable == 0 {
+            self.prefix = None;
+        }
+        self.prev_root = hashes.clone();
+        plan.jobs.push(Job::draws(frame.clone(), true, cmds, true));
+        let shown = if ss > 1 {
+            match crate::output::frame_size(out_size, &self.gpu.device.limits()) {
+                Ok(target) => Some(self.supersample_down(&mut plan, p, &frame, ss, target)),
+                Err(error) => {
+                    plan.stats.errors.push(error);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        // colour finishing (looks, exposure, tone mapping) applies to the frame as shown: after the supersample
+        // filter, which keeps scene-linear values over 1 for the tone mapper
+        self.finishing(&mut plan, p, shown.as_ref().unwrap_or(&frame));
+        plan.post_into = shown.clone();
+        plan.stats.unsupported.sort();
+        plan.stats.unsupported.dedup();
+        let probes = std::mem::take(&mut plan.probes);
+        let mut stats = self.execute(plan, restore, snapshot_at, &hashes);
+        for (id, rect, snap) in probes {
+            if let Some(ratio) = self.measure_contrast(&snap, probe_bg.as_deref(), &frame, rect) {
+                stats.contrast.push((id, ratio));
+            } else {
+                // Equal colours do not establish that the text is absent. The delivery
+                // fallback measures rendered coverage with contrasting probe inks.
+                stats.contrast_unprobed.push(id);
+            }
+            self.pool.put(snap);
+        }
+        // evict cache entries unused for CACHE_KEEP frames (a posterized group leaves its children's
+        // entries unused between steps); evicted offscreens go back to the pool rather than being
+        // destroyed now, while the GPU may still be reading them
+        let now = self.cache_frame;
+        self.cache_frame += 1;
+        for k in self.used.drain() {
+            self.last_used.insert(k, now);
+        }
+        self.last_used.retain(|_, at| now - *at < CACHE_KEEP);
+        let live = &self.last_used;
+        let mut evicted = Vec::new();
+        self.motion_cache.retain(|_, cached| {
+            if now - cached.used < CACHE_KEEP {
+                true
+            } else {
+                evicted.push(cached.texture.clone());
+                false
+            }
+        });
+        self.subtree.retain(|k, (_, t)| {
+            let keep = live.contains_key(k);
+            if !keep {
+                evicted.push(t.clone());
+            }
+            keep
+        });
+        self.generators.retain(|k, t| {
+            let keep = live.contains_key(&format!("gen:{k}"));
+            if !keep {
+                evicted.push(t.clone());
+            }
+            keep
+        });
+        self.fractals.retain(|k, _| live.contains_key(&format!("fractal:{k}")));
+        // decoded images (with their mip levels) and remembered failures, like every other picture cache
+        self.images.retain(|k, _| live.contains_key(&format!("image:{k}")));
+        self.video_frames.retain(|k, _| live.contains_key(&format!("video:{k}")));
+        self.video_previous.retain(|k, _| live.contains_key(&format!("video-previous:{k}")));
+        // colour glyphs and raster map tiles: a map that pans or zooms shows new tiles every frame
+        self.glyph_tex.retain(|k, _| live.contains_key(&format!("glyph:{k}")));
+        for t in evicted {
+            self.pool.put(t);
+        }
+        self.pool.trim();
+        stats.textures_created = self.pool.created - created_before;
+        stats.textures_released = self.pool.released - released_before;
+        stats.voxel_states = self.voxel_surfaces.len();
+        Frame { texture: shown.unwrap_or(frame), stats }
+    }
+
+    /// Plans the filter of a supersampled `frame` (`n` samples per output pixel) down to `size` (SREP 72 §4), after
+    /// everything drawn into it, and returns the texture it lands in.
+    fn supersample_down(&mut self, plan: &mut Plan, p: &Program, frame: &Arc<Tex>, n: u32, size: [u32; 2]) -> Arc<Tex> {
+        let target = match &self.ss_frame {
+            Some(t) if t.size == size => t.clone(),
+            _ => {
+                Arc::new(resources::create_as(&self.gpu.device, &self.bgl1, self.format, size, 1, "supersampled frame"))
+            }
+        };
+        self.ss_frame = Some(target.clone());
+        let lanczos = p.scene.project.supersample_filter == m::SupersampleFilter::Lanczos3;
+        let mut b = self.builder(plan);
+        b.supersample_down(frame, n, lanczos, size);
+        let (mut passes, temps) = (std::mem::take(&mut b.passes), std::mem::take(&mut b.temps));
+        if let Some(last) = passes.last_mut() {
+            last.out = target.clone();
+        }
+        plan.fx_temps.extend(temps);
+        if !passes.is_empty() {
+            plan.jobs.push(Job {
+                target: passes[0].out.clone(),
+                clear: false,
+                cmds: Vec::new(),
+                root: false,
+                fx: passes,
+                flow: None,
+                draw: false,
+                parts: None,
+            });
+        }
+        target
+    }
+
+    /// Writes `data` into a grow-only buffer, reallocating (at least doubling) when it does not
+    /// fit. Returns whether it was reallocated, in which case bind groups over it must be rebuilt.
+    /// The write is queued, so it is ordered after the frames already submitted.
+    fn upload<T: bytemuck::Pod + Default>(
+        &self,
+        slot: &mut Option<GrowBuf>,
+        data: &[T],
+        label: &str,
+        usage: wgpu::BufferUsages,
+    ) -> bool {
+        let one = [T::default()];
+        let bytes: &[u8] = if data.is_empty() { bytemuck::cast_slice(&one) } else { bytemuck::cast_slice(data) };
+        let need = bytes.len() as u64;
+        let realloc = slot.as_ref().is_none_or(|b| b.cap < need);
+        if realloc {
+            let cap = need.max(slot.as_ref().map_or(0, |b| b.cap * 2)).div_ceil(256) * 256;
+            let buf = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: cap,
+                usage: usage | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            *slot = Some(GrowBuf { buf, cap });
+        }
+        self.gpu.queue.write_buffer(&slot.as_ref().expect("allocated").buf, 0, bytes);
+        realloc
+    }
+
+    /// The queue submission of the last frame, to wait on without draining later work.
+    pub fn last_submission(&self) -> Option<wgpu::SubmissionIndex> {
+        self.last_submit.clone()
+    }
+
+    fn copy(enc: &mut wgpu::CommandEncoder, from: &Tex, to: &Tex, rect: [u32; 4]) {
+        let (w, hh) = (rect[2].saturating_sub(rect[0]), rect[3].saturating_sub(rect[1]));
+        if w == 0 || hh == 0 {
+            return;
+        }
+        let o = wgpu::Origin3d { x: rect[0], y: rect[1], z: 0 };
+        enc.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &from.tex,
+                mip_level: 0,
+                origin: o,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo { texture: &to.tex, mip_level: 0, origin: o, aspect: wgpu::TextureAspect::All },
+            wgpu::Extent3d { width: w, height: hh, depth_or_array_layers: 1 },
+        );
+    }
+
+    /// Reuse coverage only after identical geometry has occurred in another frame.
+    /// Keys compare every input bit; at most 64 candidates and 32 MiB of R32F images
+    /// survive, so animated geometry cannot accumulate a texture per frame.
+    fn prepare_mask_coverage(&mut self, plan: &mut Plan) -> HashMap<u32, (wgpu::TextureView, bool)> {
+        let mut out = HashMap::new();
+        let now = self.cache_frame;
+        self.mask_coverage.retain(|_, e| now.saturating_sub(e.last_used) <= CACHE_KEEP);
+        if self.mask_coverage_budget == 0 || self.gpu.scalar_target != wgpu::TextureFormat::R32Float {
+            return out;
+        }
+        for job in &plan.jobs {
+            for c in &job.cmds {
+                let draw = &plan.draws[c.draw as usize];
+                // The matte binding holds coverage; all other cases retain general shading.
+                if draw.blend != 0
+                    || c.backdrop.is_some()
+                    || c.matte.is_some()
+                    || draw.flags & flag::MATTE != 0
+                    || draw.mask_count != 1
+                    || c.count != 6
+                {
+                    continue;
+                }
+                let Some(mask) = plan.masks.get(draw.mask_off as usize) else {
+                    continue;
+                };
+                if mask.kind != 1 || mask.feather <= 0.0 {
+                    continue;
+                }
+                let bytes = u64::from(job.target.size[0]) * u64::from(job.target.size[1]) * 4;
+                if bytes > self.mask_coverage_budget {
+                    continue;
+                }
+                let mut key = bytemuck::bytes_of(&job.target.size).to_vec();
+                key.extend_from_slice(bytemuck::bytes_of(mask));
+                key.extend_from_slice(bytemuck::cast_slice(
+                    &plan.verts[c.first_vertex as usize..(c.first_vertex + c.count) as usize],
+                ));
+                let previous = self.mask_coverage.get(&key).map(|e| (e.last_used, e.view.clone()));
+                if let Some((_, Some(view))) = previous {
+                    self.mask_coverage.get_mut(&key).expect("existing coverage").last_used = now;
+                    out.insert(c.draw, (view, false));
+                    plan.stats.cache_hits += 1;
+                    continue;
+                }
+                if !self.mask_coverage.contains_key(&key) {
+                    if self.mask_coverage.len() >= 64 {
+                        let oldest = self
+                            .mask_coverage
+                            .iter()
+                            .filter(|(_, e)| e.last_used != now)
+                            .min_by_key(|(_, e)| e.last_used)
+                            .map(|(k, _)| k.clone());
+                        let Some(k) = oldest else {
+                            continue;
+                        };
+                        self.mask_coverage.remove(&k);
+                    }
+                    self.mask_coverage.insert(key, MaskCoverage { last_used: now, bytes: 0, view: None });
+                    continue;
+                }
+                let e = self.mask_coverage.get_mut(&key).expect("existing candidate");
+                let previous_frame = e.last_used != now;
+                e.last_used = now;
+                if !previous_frame {
+                    continue;
+                }
+                while self.mask_coverage.values().map(|e| e.bytes).sum::<u64>() + bytes > self.mask_coverage_budget {
+                    let oldest = self
+                        .mask_coverage
+                        .iter()
+                        .filter(|(_, e)| e.last_used != now && e.bytes != 0)
+                        .min_by_key(|(_, e)| e.last_used)
+                        .map(|(k, _)| k.clone());
+                    let Some(k) = oldest else {
+                        break;
+                    };
+                    self.mask_coverage.remove(&k);
+                }
+                if self.mask_coverage.values().map(|e| e.bytes).sum::<u64>() + bytes > self.mask_coverage_budget {
+                    continue;
+                }
+                let texture = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("cached mask coverage"),
+                    size: wgpu::Extent3d {
+                        width: job.target.size[0],
+                        height: job.target.size[1],
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::R32Float,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                self.mask_coverage.insert(key, MaskCoverage { last_used: now, bytes, view: Some(view.clone()) });
+                out.insert(c.draw, (view, true));
+            }
+        }
+        if !out.is_empty() && self.mask_coverage_pipelines.is_none() {
+            let d = &self.gpu.device;
+            let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("mask coverage"),
+                source: wgpu::ShaderSource::Wgsl(
+                    concat!(include_str!("common.wgsl"), include_str!("d24.wgsl"), include_str!("shaders.wgsl")).into(),
+                ),
+            });
+            let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[Some(&self.bgl0), Some(&self.bgl1), Some(&self.bgl2), Some(&self.bgl3)],
+                immediate_size: 0,
+            });
+            self.mask_coverage_pipelines = Some((
+                compositor_pipeline(d, &module, &layout, self.format, "fs_mask_coverage", None, false, true),
+                compositor_pipeline(
+                    d,
+                    &module,
+                    &layout,
+                    self.format,
+                    "fs_cached_mask",
+                    Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    false,
+                    false,
+                ),
+            ));
+        }
+        out
+    }
+
+    fn execute(&mut self, mut plan: Plan, restore: usize, snapshot_at: Option<usize>, hashes: &[u64]) -> RenderStats {
+        let d = self.gpu.device.clone();
+        // Each draw binds one aligned record, making all its parameters uniform
+        // across fragments without changing the draw's geometry or arithmetic.
+        let (draw_bytes, draw_stride) = pack_draw_uniforms(&plan.draws, d.limits().min_uniform_buffer_offset_alignment);
+        // the frame's buffers persist across frames; the bind group only when none grew
+        let (bg0, verts, paints, stops) = {
+            let (mut draws, mut masks, mut edges, mut paints, mut stops, mut verts, old) = match self.frame_bufs.take()
+            {
+                Some(f) => (
+                    Some(f.draws),
+                    Some(f.masks),
+                    Some(f.edges),
+                    Some(f.paints),
+                    Some(f.stops),
+                    Some(f.verts),
+                    Some(f.bg0),
+                ),
+                None => (None, None, None, None, None, None, None),
+            };
+            let mut grew = self.upload(&mut draws, &draw_bytes, "draws", wgpu::BufferUsages::UNIFORM);
+            grew |= self.upload(&mut masks, &plan.masks, "masks", wgpu::BufferUsages::STORAGE);
+            grew |= self.upload(&mut edges, &plan.edges, "edges", wgpu::BufferUsages::STORAGE);
+            grew |= self.upload(&mut paints, &plan.paints.paints, "paints", wgpu::BufferUsages::STORAGE);
+            grew |= self.upload(&mut stops, &plan.paints.stops, "stops", wgpu::BufferUsages::STORAGE);
+            self.upload(&mut verts, &plan.verts, "vertices", wgpu::BufferUsages::VERTEX);
+            let (draws, masks, edges, paints, stops, verts) = (
+                draws.expect("allocated"),
+                masks.expect("allocated"),
+                edges.expect("allocated"),
+                paints.expect("allocated"),
+                stops.expect("allocated"),
+                verts.expect("allocated"),
+            );
+            let bg0 = match old {
+                Some(bg) if !grew => bg,
+                _ => d.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("frame"),
+                    layout: &self.bgl0,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &draws.buf,
+                                offset: 0,
+                                size: std::num::NonZeroU64::new(std::mem::size_of::<Draw>() as u64),
+                            }),
+                        },
+                        wgpu::BindGroupEntry { binding: 1, resource: masks.buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: edges.buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 3, resource: paints.buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 4, resource: stops.buf.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.samp) },
+                        wgpu::BindGroupEntry {
+                            binding: 6,
+                            resource: wgpu::BindingResource::Sampler(&self.samp_repeat),
+                        },
+                        wgpu::BindGroupEntry { binding: 7, resource: self.globals.as_entire_binding() },
+                    ],
+                }),
+            };
+            let (vbuf, pbuf, sbuf) = (verts.buf.clone(), paints.buf.clone(), stops.buf.clone());
+            self.frame_bufs = Some(FrameBufs { draws, masks, edges, paints, stops, verts, bg0: bg0.clone() });
+            (bg0, vbuf, pbuf, sbuf)
+        };
+        let bgl2 = self.bgl2.clone();
+        let pair = |a: &wgpu::TextureView, b: &wgpu::TextureView| {
+            d.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("backdrop+matte"),
+                layout: &bgl2,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(a) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(b) },
+                ],
+            })
+        };
+        let dummy_pair = pair(&self.dummy.view, &self.dummy.view);
+        // one bind group per (backdrop, matte) texture pair per frame, not one per draw
+        let mut pairs: HashMap<(usize, usize), wgpu::BindGroup> = HashMap::new();
+        let dummy_gen = {
+            let ub = d.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: std::mem::size_of::<Gen>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM,
+                mapped_at_creation: false,
+            });
+            d.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &self.bgl3,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: ub.as_entire_binding() }],
+            })
+        };
+        let mut enc = d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+        // GPU time: a begin/end pair per effect pass, and for the frame when the device can
+        // write timestamps between passes
+        self.last_timer = None;
+        if let Some(eng) = self.three.as_mut() {
+            eng.time_gpu = self.time_gpu && self.gpu.timestamps;
+            eng.pt_timers.clear();
+            eng.raster_timers.clear();
+        }
+        if self.time_gpu && self.gpu.timestamps {
+            let passes: usize = plan
+                .jobs
+                .iter()
+                .map(|j| {
+                    j.fx.len() + j.cmds.iter().filter_map(|c| c.pre.as_ref()).map(|p| p.passes.len()).sum::<usize>()
+                })
+                .sum::<usize>()
+                + plan.post.len();
+            let mut t = fx::Timer::new(&d, passes as u32 + 1);
+            if d.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) {
+                if let Some(a) = t.pair() {
+                    enc.write_timestamp(&t.set, a);
+                    t.frame = Some(a);
+                }
+            }
+            self.fx.timer = Some(t);
+        }
+        fn clear_pass<'e>(enc: &'e mut wgpu::CommandEncoder, t: &'e Tex, clear: bool) -> wgpu::RenderPass<'e> {
+            enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &t.view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: if clear { wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT) } else { wgpu::LoadOp::Load },
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            })
+        }
+        for rj in &plan.rasters {
+            self.raster.record(&d, &mut enc, rj, &paints, &stops, &self.globals);
+            plan.stats.targets += 1;
+        }
+        for gj in &plan.gens {
+            let mut pass = clear_pass(&mut enc, &gj.target, true);
+            pass.set_pipeline(&self.generator);
+            pass.set_bind_group(0, &bg0, &[0]);
+            pass.set_bind_group(1, &self.dummy.bind, &[]);
+            pass.set_bind_group(2, &dummy_pair, &[]);
+            pass.set_bind_group(3, &gj.bind, &[]);
+            pass.draw(0..3, 0..1);
+            plan.stats.targets += 1;
+        }
+        let coverage = self.prepare_mask_coverage(&mut plan);
+        // Transient vector rasters: how many of each size are still to be drawn (a released target goes back to the pool
+        // while another will want it, or when it is the size of a target it draws into, which the next frame wants too).
+        let mut lazy = std::mem::take(&mut plan.lazy);
+        let mut wanted: HashMap<[u32; 2], usize> = HashMap::new();
+        for rj in &lazy {
+            *wanted.entry(rj.size()).or_default() += 1;
+        }
+        let kept = self.vector_cached_bytes;
+        let mut live = 0u64;
+        let mut unsubmitted = 0u64;
+        plan.stats.peak_vector_target_bytes = kept;
+        for job in &plan.jobs {
+            for c in &job.cmds {
+                let Some((view, true)) = coverage.get(&c.draw) else {
+                    continue;
+                };
+                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("mask coverage"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.mask_coverage_pipelines.as_ref().expect("coverage pipelines").0);
+                pass.set_vertex_buffer(0, verts.slice(..));
+                pass.set_bind_group(0, &bg0, &[c.draw * draw_stride]);
+                pass.set_bind_group(1, &self.dummy.bind, &[]);
+                pass.set_bind_group(2, &dummy_pair, &[]);
+                pass.set_bind_group(3, &dummy_gen, &[]);
+                pass.draw(c.first_vertex..c.first_vertex + c.count, c.draw..c.draw + 1);
+                plan.stats.targets += 1;
+            }
+        }
+        let mut jobs = std::mem::take(&mut plan.jobs);
+        let mut scratch: HashMap<[u32; 2], Arc<Tex>> = HashMap::new();
+        for job in &mut jobs {
+            if let Some((a, b, slot)) = &job.flow {
+                // the flow engine submits its own work: flush what is recorded so far first
+                let done = std::mem::replace(
+                    &mut enc,
+                    d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") }),
+                );
+                self.gpu.queue.submit([done.finish()]);
+                let f = self.video.flow(a, b);
+                let _ = slot.set(f.create_view(&Default::default()));
+            }
+            if !job.fx.is_empty() {
+                plan.stats.fx_passes += self.fx.record(&mut enc, &job.fx);
+            }
+            if let Some(pj) = &job.parts {
+                let g = &self.gpu;
+                let eng = self.particles.get_or_insert_with(|| {
+                    Box::new(crate::particles::ParticleEngine::new_as(g.device.clone(), &g.queue, self.format))
+                });
+                eng.record(&mut enc, pj, &job.target.view, job.target.size);
+            }
+            if !job.draw {
+                continue;
+            }
+            plan.stats.targets += 1;
+            let mut clear = job.clear;
+            let mut i = 0;
+            if job.root && restore > 0 {
+                if let Some(pf) = &self.prefix {
+                    Self::copy(&mut enc, &pf.tex, &job.target, [0, 0, job.target.size[0], job.target.size[1]]);
+                    i = restore.min(job.cmds.len());
+                    clear = false;
+                    plan.stats.prefix_restored = i;
+                }
+            }
+            if job.cmds.is_empty() || i >= job.cmds.len() {
+                drop(clear_pass(&mut enc, &job.target, clear));
+            }
+            while i < job.cmds.len() {
+                if job.root && snapshot_at == Some(i) {
+                    self.snapshot(&mut enc, &job.target, &hashes[..i]);
+                }
+                if let Some(pre) = &job.cmds[i].pre {
+                    if clear {
+                        drop(clear_pass(&mut enc, &job.target, true));
+                        clear = false;
+                    }
+                    Self::copy(&mut enc, &job.target, &pre.snapshot, [0, 0, job.target.size[0], job.target.size[1]]);
+                    plan.stats.fx_passes += self.fx.record(&mut enc, &pre.passes);
+                    if let (Some(three), Some(eng)) = (&pre.three, self.three.as_mut()) {
+                        eng.stats = Default::default();
+                        let key = self.contrast_three_cache.as_ref().and_then(|_| three.0.contrast_cache_key());
+                        let cached = key.as_ref().and_then(|k| self.contrast_three_cache.as_mut()?.get(k));
+                        if let Some(cached) = cached {
+                            Self::copy(&mut enc, &cached, &three.1, [0, 0, three.1.size[0], three.1.size[1]]);
+                            plan.stats.cache_hits += 1;
+                        } else {
+                            match eng.render(&mut enc, &three.0, Some(&pre.snapshot.view), &three.1.view) {
+                                Err(error) => plan.stats.errors.push(error),
+                                Ok(()) => {
+                                    if let (Some(key), Some(cache)) = (key, self.contrast_three_cache.as_mut()) {
+                                        for old in cache.insert(key, three.1.clone()) {
+                                            self.pool.put(old);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        plan.stats.pt_assemble_seconds += eng.stats.pt_assemble_seconds;
+                        plan.stats.pt_bvh_seconds += eng.stats.pt_bvh_seconds;
+                        plan.stats.pt_pack_seconds += eng.stats.pt_pack_seconds;
+                    }
+                }
+                let j = compositor_batch_end(job.cmds.len(), i, snapshot_at.filter(|_| job.root), |k| {
+                    let c = &job.cmds[k];
+                    // a transient raster starts its own batch, so one is alive at a time
+                    (c.backdrop, c.pre.is_some(), c.raster.is_some())
+                });
+                // rasterise this batch's transient vector targets just before it draws them
+                let mut checked_out = Vec::new();
+                for (k, c) in job.cmds[i..j].iter_mut().enumerate() {
+                    let Some(r) = c.raster else { continue };
+                    let rj = &mut lazy[r as usize];
+                    let created = self.pool.created;
+                    let t = self.pool.get(&d, &self.bgl1, rj.size());
+                    let bytes = target_bytes(t.size, t.tex.format());
+                    if self.pool.created != created {
+                        unsubmitted += bytes;
+                    }
+                    rj.target = t.clone();
+                    self.raster.record(&d, &mut enc, rj, &paints, &stops, &self.globals);
+                    unsubmitted += rj.buffer_bytes();
+                    rj.target = self.dummy.clone();
+                    plan.stats.targets += 1;
+                    c.src = t;
+                    live += bytes;
+                    checked_out.push(i + k);
+                }
+                plan.stats.peak_vector_target_bytes = plan.stats.peak_vector_target_bytes.max(kept + live);
+                // Disjoint backdrop reads see the same pixels before this batch
+                // as immediately before their draw. Copy them first, then keep
+                // every draw in its original order within one render pass.
+                // An adjustment layer's snapshot already holds the full target as it is right
+                // before its draw (a pre command always starts its batch): read that as the backdrop.
+                let tsize = job.target.size;
+                // Same condition as the bind-group arm below: an unmatted command with a target-sized snapshot.
+                fn pre_back_of<S: PartialEq>(c: &Cmd, size: S, f: impl Fn(&Tex) -> S) -> Option<&Arc<Tex>> {
+                    if c.matte.is_some() {
+                        return None;
+                    }
+                    c.pre.as_ref().map(|p| &p.snapshot).filter(|t| f(t) == size)
+                }
+                let pre_back = |c: &Cmd| pre_back_of(c, tsize, |t| t.size).is_some();
+                for b in job.cmds[i..j].iter().filter(|c| !pre_back(c)).filter_map(|c| c.backdrop) {
+                    if clear {
+                        drop(clear_pass(&mut enc, &job.target, true));
+                        clear = false;
+                    }
+                    let s = scratch
+                        .entry(job.target.size)
+                        .or_insert_with(|| self.pool.get(&d, &self.bgl1, job.target.size))
+                        .clone();
+                    Self::copy(&mut enc, &job.target, &s, b);
+                    plan.stats.backdrop_copies += 1;
+                }
+                let groups: Vec<Option<wgpu::BindGroup>> = job.cmds[i..j]
+                    .iter()
+                    .map(|c| match (&c.backdrop, &c.matte) {
+                        (Some(_), None) if pre_back(c) => {
+                            let t = pre_back_of(c, tsize, |t| t.size).expect("checked by pre_back");
+                            Some(
+                                pairs
+                                    .entry((Arc::as_ptr(t) as usize, 0))
+                                    .or_insert_with(|| pair(&t.view, &self.dummy.view))
+                                    .clone(),
+                            )
+                        }
+                        (None, None) if coverage.contains_key(&c.draw) => {
+                            Some(pair(&self.dummy.view, &coverage[&c.draw].0))
+                        }
+                        (None, None) => None,
+                        (bd, mt) => {
+                            let (bk, back) = match bd {
+                                Some(_) => {
+                                    let s = &scratch[&job.target.size];
+                                    (Arc::as_ptr(s) as usize, &s.view)
+                                }
+                                None => (0, &self.dummy.view),
+                            };
+                            let (mk, mv) = match mt {
+                                Some(t) => (Arc::as_ptr(t) as usize, &t.view),
+                                None => (0, &self.dummy.view),
+                            };
+                            Some(pairs.entry((bk, mk)).or_insert_with(|| pair(back, mv)).clone())
+                        }
+                    })
+                    .collect();
+                {
+                    let mut pass = clear_pass(&mut enc, &job.target, clear);
+                    pass.set_vertex_buffer(0, verts.slice(..));
+                    pass.set_bind_group(0, &bg0, &[0]);
+                    pass.set_bind_group(3, &dummy_gen, &[]);
+                    for (k, c) in job.cmds[i..j].iter().enumerate() {
+                        let draw = &plan.draws[c.draw as usize];
+                        let ellipse = draw.mask_count == 1
+                            && plan.masks.get(draw.mask_off as usize).is_some_and(|m| m.kind == 1 && m.feather > 0.0);
+                        let variant = if ellipse {
+                            4
+                        } else if draw.mask_count == 0
+                            && draw.blend != 1
+                            && (draw.flags == flag::EDGE || draw.flags == flag::ALIGNED)
+                            && draw.src_kind == src::TEXTURE
+                        {
+                            3
+                        } else if draw.flags != 0 || draw.mask_count != 0 || draw.blend == 1 {
+                            0
+                        } else if draw.src_kind == src::TEXTURE {
+                            1
+                        } else if draw.src_kind == src::SOLID
+                            || (draw.src_kind == src::PAINT
+                                && plan.paints.paints.get(draw.paint as usize).is_some_and(|p| p.kind == 0))
+                        {
+                            2
+                        } else {
+                            0
+                        };
+                        pass.set_pipeline(if coverage.contains_key(&c.draw) {
+                            &self.mask_coverage_pipelines.as_ref().expect("coverage pipelines").1
+                        } else if c.backdrop.is_some() {
+                            &self.blend[ellipse as usize]
+                        } else if draw.blend == BLEND_UNDER {
+                            &self.under[variant]
+                        } else if fixed_function_blend(draw.blend) {
+                            &self.additive[variant]
+                        } else {
+                            &self.over[variant]
+                        });
+                        pass.set_bind_group(0, &bg0, &[c.draw * draw_stride]);
+                        pass.set_bind_group(1, &c.src.bind, &[]);
+                        pass.set_bind_group(2, groups[k].as_ref().unwrap_or(&dummy_pair), &[]);
+                        pass.draw(c.first_vertex..c.first_vertex + c.count, c.draw..c.draw + 1);
+                        plan.stats.draws += 1;
+                    }
+                }
+                // the batch is recorded (the encoder holds what it reads): release its transient targets
+                for k in checked_out {
+                    let t = std::mem::replace(&mut job.cmds[k].src, self.dummy.clone());
+                    let bytes = target_bytes(t.size, t.tex.format());
+                    live -= bytes;
+                    let left = wanted.get_mut(&t.size).map(|n| {
+                        *n -= 1;
+                        *n
+                    });
+                    if left.unwrap_or(0) > 0 || t.size == job.target.size {
+                        self.pool.put(t);
+                    } else {
+                        // freed once the GPU is done with it
+                        unsubmitted += bytes;
+                    }
+                }
+                if unsubmitted > self.transient_submit_bytes {
+                    let done = std::mem::replace(
+                        &mut enc,
+                        d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") }),
+                    );
+                    self.gpu.queue.submit([done.finish()]);
+                    self.gpu.wait();
+                    plan.stats.mid_frame_submits += 1;
+                    unsubmitted = 0;
+                }
+                clear = false;
+                i = j;
+            }
+            if job.root && snapshot_at == Some(job.cmds.len()) {
+                self.snapshot(&mut enc, &job.target, &hashes[..job.cmds.len()]);
+            }
+        }
+        if !plan.post.is_empty() {
+            plan.stats.fx_passes += self.fx.record(&mut enc, &plan.post);
+            let into = plan.post_into.as_ref().or_else(|| jobs.iter().find(|j| j.root).map(|j| &j.target));
+            if let (Some(out), Some(into)) = (&plan.post_out, into) {
+                Self::copy(&mut enc, out, into, [0, 0, into.size[0], into.size[1]]);
+            }
+        }
+        if let Some(t) = self.fx.timer.take() {
+            if let Some(a) = t.frame {
+                enc.write_timestamp(&t.set, a + 1);
+            }
+            t.resolve(&mut enc);
+            self.last_timer = Some(t);
+        }
+        self.last_submit = Some(self.gpu.queue.submit([enc.finish()]));
+        for (_, t) in scratch {
+            self.pool.put(t);
+        }
+        drop(jobs);
+        plan.post.clear();
+        plan.post_out = None;
+        plan.post_into = None;
+        for t in std::mem::take(&mut plan.fx_temps) {
+            self.pool.put(t);
+        }
+        plan.stats
+    }
+
+    fn snapshot(&mut self, enc: &mut wgpu::CommandEncoder, target: &Tex, prefix: &[u64]) {
+        let tex = match self.prefix.take() {
+            Some(p) if p.tex.size == target.size => p.tex,
+            _ => Arc::new(resources::create_as(&self.gpu.device, &self.bgl1, self.format, target.size, 1, "prefix")),
+        };
+        Self::copy(enc, target, &tex, [0, 0, target.size[0], target.size[1]]);
+        self.prefix = Some(Prefix { hashes: prefix.to_vec(), tex });
+    }
+
+    /// Reads a texture back as premultiplied RGBA f32 in the working representation.
+    pub fn read(&self, t: &Tex) -> Vec<[f32; 4]> {
+        let (w, hh) = (t.size[0], t.size[1]);
+        let (format, bytes) = (t.tex.format(), resources::texel_bytes(t.tex.format()));
+        let row = (w * bytes).div_ceil(256) * 256;
+        let buf = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: (row * hh) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = self.gpu.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &t.tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(hh) },
+            },
+            wgpu::Extent3d { width: w, height: hh, depth_or_array_layers: 1 },
+        );
+        self.gpu.queue.submit([enc.finish()]);
+        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        self.gpu.wait();
+        let data = buf.slice(..).get_mapped_range().expect("mapped");
+        let mut out = Vec::with_capacity((w * hh) as usize);
+        for y in 0..hh {
+            let line = &data[(y * row) as usize..(y * row + w * bytes) as usize];
+            for px in line.chunks_exact(bytes as usize) {
+                out.push(resources::texel(format, px));
+            }
+        }
+        out
+    }
+
+    /// Display-referred 8-bit sRGB RGBA (straight alpha) of a frame.
+    pub fn to_srgb8(&self, px: &[[f32; 4]]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(px.len() * 4);
+        for p in px {
+            let a = p[3].clamp(0.0, 1.0) as f64;
+            let c = if a > 0.0 { [p[0] as f64 / a, p[1] as f64 / a, p[2] as f64 / a] } else { [0.0; 3] };
+            let d = self.working.to_display_srgb(c);
+            out.extend(d.map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8));
+            out.push((a * 255.0).round() as u8);
+        }
+        out
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Ctx<'a> {
+    g: &'a FrameGraph,
+    p: &'a Program,
+    kids: &'a [Vec<usize>],
+    /// Asset keys whose pixels depend on source time.
+    timed: &'a std::collections::HashSet<String>,
+    /// Generator asset keys (their parameters live in `elements`).
+    generated: &'a std::collections::HashSet<String>,
+    /// Hash of all animated paint and generator values.
+    elements: u64,
+    /// Hash of each animated element outside the composition, by key.
+    el: &'a HashMap<Arc<str>, u64>,
+    /// Hash of the camera, which projects every 2.5D and 3D draw.
+    cam: u64,
+    /// The scene at other times (motion blur, time effects), when a provider was given.
+    sub: Option<&'a dyn SubSource>,
+}
+
+impl<'a> Ctx<'a> {
+    /// The same context over the scene at another time.
+    fn at<'b>(&self, sg: &'b SubGraph) -> Ctx<'b>
+    where
+        'a: 'b,
+    {
+        Ctx {
+            g: &sg.g,
+            p: self.p,
+            kids: &sg.kids,
+            timed: self.timed,
+            generated: self.generated,
+            elements: sg.elements,
+            el: &sg.el,
+            cam: self.cam,
+            sub: self.sub,
+        }
+    }
+}
+
+/// Source of sub-frame graphs.
+pub(crate) trait SubSource {
+    fn at(&self, t: f64) -> Arc<SubGraph>;
+    fn count(&self) -> usize;
+}
+
+/// A sub-frame FrameGraph with its child lists and id index.
+pub(crate) struct SubGraph {
+    g: FrameGraph,
+    kids: Vec<Vec<usize>>,
+    index: HashMap<Arc<str>, usize>,
+    elements: u64,
+    el: HashMap<Arc<str>, u64>,
+}
+
+/// Evaluates and caches the scene at other times during one frame.
+pub(crate) struct SubFrames<'a> {
+    provider: std::cell::RefCell<&'a mut dyn FnMut(f64) -> FrameGraph>,
+    cache: std::cell::RefCell<HashMap<u64, Arc<SubGraph>>>,
+    /// Seconds spent in the provider.
+    seconds: std::cell::Cell<f64>,
+}
+
+impl SubSource for SubFrames<'_> {
+    fn count(&self) -> usize {
+        self.cache.borrow().len()
+    }
+    fn at(&self, t: f64) -> Arc<SubGraph> {
+        let key = (t * 1e6).round() as i64 as u64;
+        if let Some(s) = self.cache.borrow().get(&key) {
+            return s.clone();
+        }
+        let started = std::time::Instant::now();
+        let g = (self.provider.borrow_mut())(t);
+        self.seconds.set(self.seconds.get() + started.elapsed().as_secs_f64());
+        let mut kids = vec![Vec::new(); g.nodes.len()];
+        let mut index = HashMap::new();
+        for (i, n) in g.nodes.iter().enumerate() {
+            if let Some(pi) = n.parent {
+                kids[pi as usize].push(i);
+            }
+            index.insert(n.id.clone(), i);
+        }
+        let elements = elements_hash(&g.elements);
+        let el = element_hashes(&g.elements);
+        let s = Arc::new(SubGraph { g, kids, index, elements, el });
+        self.cache.borrow_mut().insert(key, s.clone());
+        s
+    }
+}
+
+fn compositor_batch_end(
+    len: usize,
+    start: usize,
+    snapshot: Option<usize>,
+    info: impl Fn(usize) -> (Option<[u32; 4]>, bool, bool),
+) -> usize {
+    let mut end = start + 1;
+    while end < len && Some(end) != snapshot {
+        let (backdrop, pre, raster) = info(end);
+        if pre || raster {
+            break;
+        }
+        if let Some(b) = backdrop {
+            // Bound the pairwise checks for scenes with thousands of tiny,
+            // mutually disjoint draws. Normal-only runs remain unrestricted.
+            if end - start >= 64 {
+                break;
+            }
+            // Backdrop rectangles conservatively contain all pixels written by
+            // their draw. Normal draws have no recorded bounds, so treat them
+            // as barriers to subsequent backdrop reads.
+            let independent = (start..end)
+                .all(|i| info(i).0.is_some_and(|a| a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1]));
+            if !independent {
+                break;
+            }
+        }
+        end += 1;
+    }
+    end
+}
+
+// Frame indices intentionally differ: reuse is based on complete decoded content,
+// never a hash that could alias different samples.
+fn same_video_pixels(a: &sr_media::VideoFrame, b: &sr_media::VideoFrame) -> bool {
+    a.width == b.width
+        && a.height == b.height
+        && a.layout == b.layout
+        && a.planes.len() == b.planes.len()
+        && a.planes.iter().zip(&b.planes).all(|(a, b)| a.width == b.width && a.height == b.height && a.data == b.data)
+}
+
+fn pack_draw_uniforms(draws: &[Draw], alignment: u32) -> (Vec<u8>, u32) {
+    let size = std::mem::size_of::<Draw>();
+    let stride = (size as u32).div_ceil(alignment) * alignment;
+    // Generators and empty jobs still bind the frame group, so keep a dummy record.
+    let mut bytes = vec![0; draws.len().max(1) * stride as usize];
+    for (draw, record) in draws.iter().zip(bytes.chunks_exact_mut(stride as usize)) {
+        record[..size].copy_from_slice(bytemuck::bytes_of(draw));
+    }
+    (bytes, stride)
+}
+
+/// A point `p` of the target (pixels, in the plane z = 0) placed in 2.5D: turned about `pivot` by `rotationX` then
+/// `rotationY`, moved to depth `zDepth`, and seen through the frame camera `proj`. Returns the clip coordinates (with
+/// the true w, so the rasteriser clips what lies behind the eye) and the pixel it lands on.
+fn project_25(
+    p: [f64; 2],
+    [z, rx, ry]: [f64; 3],
+    pivot: [f64; 2],
+    proj: &glam::Mat4,
+    size: [u32; 2],
+) -> ([f32; 4], [f64; 2]) {
+    let (mut vx, mut vy, mut vz) = (p[0] - pivot[0], p[1] - pivot[1], 0.0);
+    // rotationX > 0 turns the top edge away (+z), rotationY > 0 the right edge
+    let (sx, cx) = (libm::sin(rx.to_radians()), libm::cos(rx.to_radians()));
+    let ny = vy * cx + vz * sx;
+    vz = -vy * sx + vz * cx;
+    vy = ny;
+    let (sy, cy) = (libm::sin(ry.to_radians()), libm::cos(ry.to_radians()));
+    let nx = vx * cy - vz * sy;
+    vz = vx * sy + vz * cy;
+    vx = nx;
+    let (px, py, pz) = (pivot[0] + vx, pivot[1] + vy, z + vz);
+    // through the frame camera (target px → frame → clip → target clip)
+    let c = *proj * glam::Vec4::new(px as f32, py as f32, pz as f32, 1.0);
+    let wv = c.w.max(1e-3);
+    let (w, hh) = (size[0] as f64, size[1] as f64);
+    ([c.x, c.y, 0.0, c.w], [((c.x / wv) as f64 * 0.5 + 0.5) * w, (0.5 - (c.y / wv) as f64 * 0.5) * hh])
+}
+
+/// Whether the frames before a seek may draw only the nodes of the stateful effects (SREP 68, Semantics 2): not when a
+/// stateful effect names another node in a `<param>` (it may read that node as an input), which then needs the scene.
+fn node_local_replay(p: &Program, ids: &std::collections::HashSet<String>) -> bool {
+    // a `<param>` names a node of the effect's own document (in an include, `ns/id`)
+    let names_a_node = |doc: u16, v: &str| {
+        let key = p.doc_key(doc, v);
+        p.nodes.iter().any(|n| *n.id == *key)
+    };
+    !(0..=p.includes.len() as u16).any(|doc| {
+        let Some(fx) = p.doc_scene(doc).and_then(|s| s.effects.as_ref()) else { return false };
+        fx.effects.iter().filter(|e| ids.contains(&*p.doc_key(doc, &e.id))).any(|e| {
+            sr_model::element::children(e as &dyn Element)
+                .into_iter()
+                .filter(|c| c.element_name() == "param")
+                .any(|c| matches!(c.get_attr("value"), Some(AttrValue::Str(v)) if names_a_node(doc, &v)))
+        })
+    })
+}
+
+/// Whether node `n` has one of the stateful effects `ids` (keys of [`crate::shader::persistent_effects`]).
+fn stateful_node(p: &Program, n: &FrameNode, ids: &std::collections::HashSet<String>) -> bool {
+    render_fx::effect_ids(&*n.elem).iter().any(|id| ids.contains(&*p.doc_key(n.doc, id)))
+}
+
+/// Whether a node of `g` has a stateful effect outside any `iterate`: then its state carries from frame to frame.
+fn carries_state(p: &Program, g: &FrameGraph, ids: &std::collections::HashSet<String>) -> bool {
+    g.nodes.iter().any(|n| {
+        let stateful = stateful_node(p, n, ids);
+        let mut k = n.parent;
+        let mut iterated = false;
+        while let Some(j) = k {
+            if g.nodes[j as usize].kind == "iterate" {
+                iterated = true;
+                break;
+            }
+            k = g.nodes[j as usize].parent;
+        }
+        stateful && !iterated
+    })
+}
+
+/// `g` with every node hidden except the nodes of stateful effects, their subtrees and their ancestors (a matte source
+/// keeps its own flag: it is drawn when its user is).
+fn only_stateful(p: &Program, g: &FrameGraph, ids: &std::collections::HashSet<String>) -> FrameGraph {
+    let stateful: Vec<bool> = g.nodes.iter().map(|n| stateful_node(p, n, ids)).collect();
+    let mut keep = vec![false; g.nodes.len()];
+    for i in 0..g.nodes.len() {
+        // in a stateful node's subtree
+        let mut k = Some(i as u32);
+        while let Some(j) = k {
+            if stateful[j as usize] {
+                keep[i] = true;
+                break;
+            }
+            k = g.nodes[j as usize].parent;
+        }
+        // an ancestor of a stateful node
+        if stateful[i] {
+            let mut k = g.nodes[i].parent;
+            while let Some(j) = k {
+                keep[j as usize] = true;
+                k = g.nodes[j as usize].parent;
+            }
+        }
+    }
+    let mut out = g.clone();
+    for (n, keep) in out.nodes.iter_mut().zip(keep) {
+        if !keep && !n.is_matte {
+            n.draw = false;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod draw_uniform_tests {
+    use super::*;
+
+    #[test]
+    fn mask_coverage_budget_counts_all_images_used_in_the_current_frame() {
+        let gpu = match crate::gpu::test_gpu() {
+            Ok(gpu) => gpu,
+            Err(error) => {
+                assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "{error}");
+                return;
+            }
+        };
+        let cache_supported = gpu.scalar_target == wgpu::TextureFormat::R32Float;
+        let document = sr_model::load_str(
+            r#"<scene version="1.1"><project width="32" height="32" fps="10" duration="1"/><composition/></scene>"#,
+            &sr_model::LoadOptions::default(),
+        )
+        .unwrap();
+        let evaluator = sr_eval::Evaluator::new(&document, &sr_eval::EvalOptions::default()).unwrap();
+        let mut renderer = Renderer::new(gpu.clone(), evaluator.program());
+        renderer.mask_coverage_budget = 2 * 32 * 32 * 4;
+        let target = Arc::new(resources::create(&gpu.device, &renderer.bgl1, [32, 32], 1, "coverage budget test"));
+        let mut plan = Plan { verts: vec![Vertex::default(); 6], ..Default::default() };
+        let mut commands = Vec::new();
+        for i in 0..80 {
+            plan.masks.push(Mask { kind: 1, feather: 2.0, rect: [i as f32, 0.0, 20.0, 20.0], ..Default::default() });
+            plan.draws.push(Draw { mask_count: 1, mask_off: i, ..Default::default() });
+            commands.push(Cmd {
+                draw: i,
+                first_vertex: 0,
+                count: 6,
+                src: target.clone(),
+                backdrop: None,
+                matte: None,
+                hash: 0,
+                pre: None,
+                raster: None,
+            });
+        }
+        plan.jobs.push(Job::draws(target, true, commands, true));
+        assert!(renderer.prepare_mask_coverage(&mut plan).is_empty());
+        renderer.cache_frame += 1;
+        let prepared = renderer.prepare_mask_coverage(&mut plan);
+        if !cache_supported {
+            assert!(prepared.is_empty());
+            assert!(renderer.mask_coverage.is_empty());
+            return;
+        }
+        assert_eq!(prepared.len(), 2, "in-flight images must also fit the cache budget");
+        assert!(renderer.mask_coverage.len() <= 64);
+        assert!(renderer.mask_coverage.values().map(|e| e.bytes).sum::<u64>() <= renderer.mask_coverage_budget);
+        drop(prepared);
+        renderer.cache_frame += 1;
+        plan.masks[0].opacity = 0.75;
+        plan.masks[1].feather = 3.0;
+        let changed = renderer.prepare_mask_coverage(&mut plan);
+        assert!(!changed.contains_key(&0), "changed opacity must invalidate coverage");
+        assert!(!changed.contains_key(&1), "changed feather must invalidate coverage");
+        drop(changed);
+        renderer.cache_frame += 1;
+        plan.verts[0].local[0] = 1.0;
+        assert!(renderer.prepare_mask_coverage(&mut plan).is_empty(), "changed geometry must invalidate every draw");
+        renderer.cache_frame += CACHE_KEEP + 1;
+        renderer.prepare_mask_coverage(&mut Plan::default());
+        assert!(renderer.mask_coverage.is_empty(), "unused candidates and images must expire");
+        renderer.gpu.scalar_target = wgpu::TextureFormat::R16Float;
+        assert!(renderer.prepare_mask_coverage(&mut plan).is_empty(), "never cache at reduced precision");
+        assert!(renderer.mask_coverage.is_empty());
+    }
+
+    #[test]
+    fn cached_mask_coverage_preserves_pixels_across_opacity_and_geometry_changes() {
+        let gpu = match crate::gpu::test_gpu() {
+            Ok(gpu) => gpu,
+            Err(error) => {
+                assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "{error}");
+                return;
+            }
+        };
+        let cache_supported = gpu.scalar_target == wgpu::TextureFormat::R32Float;
+        let document = sr_model::load_str(r##"<scene version="1.1">
+            <project width="127" height="97" fps="10" duration="3" background="#173546"/>
+            <assets><generator id="g" kind="checkerboard" width="96" height="80" scale="7" paint="#CA459180" paint2="#439AE0"/></assets>
+            <composition><layer id="a" asset="g" x="9.3" y="3.7" rotation="17">
+              <mask type="ellipse" x="1.2" y="0.7" width="88.1" height="73.7" feather="3.17" expansion="0.23" invert="true" opacity="0.81"/>
+              <animate property="opacity"><key time="0" value="0.2"/><key time="3" value="0.9"/></animate>
+              <animate property="rotation"><key time="0" value="17"/><key time="1" value="17"/><key time="2" value="32"/></animate>
+            </layer></composition></scene>"##, &sr_model::LoadOptions::default()).unwrap();
+        let evaluator = sr_eval::Evaluator::new(&document, &sr_eval::EvalOptions::default()).unwrap();
+        let mut cached = Renderer::new(gpu.clone(), evaluator.program());
+        let mut reference = Renderer::new(gpu, evaluator.program());
+        reference.mask_coverage_budget = 0;
+        for time in [0.0, 0.1, 0.2, 1.5, 1.6, 0.3] {
+            let graph = evaluator.evaluate(time);
+            let a = cached.render(&graph, evaluator.program());
+            let a = cached.read(&a.texture);
+            let b = reference.render(&graph, evaluator.program());
+            let b = reference.read(&b.texture);
+            assert_eq!(a, b, "coverage cache at {time}");
+            if time == 0.2 {
+                assert_eq!(
+                    cached.mask_coverage.values().filter(|e| e.view.is_some()).count(),
+                    usize::from(cache_supported),
+                    "stable coverage should be cached only at full precision"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compositor_batches_disjoint_backdrops_without_crossing_dependencies() {
+        let a = Some([0, 0, 10, 10]);
+        let b = Some([10, 0, 20, 10]);
+        let overlap = Some([5, 5, 15, 15]);
+        let c = Some([0, 10, 10, 20]);
+        let batch = |items: &[(Option<[u32; 4]>, bool)], snapshot| {
+            compositor_batch_end(items.len(), 0, snapshot, |i| (items[i].0, items[i].1, false))
+        };
+        assert_eq!(batch(&[(a, false), (b, false), (c, false)], None), 3);
+        assert_eq!(batch(&[(a, false), (b, false), (overlap, false)], None), 2);
+        // A normal draw may overlap any later backdrop: keep the existing barrier.
+        assert_eq!(batch(&[(None, false), (b, false)], None), 1);
+        assert_eq!(batch(&[(a, false), (None, false), (b, false)], None), 2);
+        assert_eq!(batch(&[(a, false), (b, true)], None), 1);
+        assert_eq!(batch(&[(a, false), (b, false), (c, false)], Some(2)), 2);
+        assert_eq!(batch(&[(None, false), (None, false)], None), 2);
+        // a transient vector raster starts a batch of its own, like an adjustment layer
+        let lazy = |items: &[bool]| compositor_batch_end(items.len(), 0, None, |i| (None, false, items[i]));
+        assert_eq!(lazy(&[true, false, false]), 3);
+        assert_eq!(lazy(&[true, false, true, false]), 2);
+        assert_eq!(lazy(&[false, true]), 1);
+    }
+
+    #[test]
+    fn compositor_dependency_checks_stay_bounded_for_many_disjoint_draws() {
+        let count = 1_000;
+        let reads = std::cell::Cell::new(0);
+        let mut start = 0;
+        while start < count {
+            let end = compositor_batch_end(count, start, None, |i| {
+                reads.set(reads.get() + 1);
+                let x = i as u32 * 4;
+                (Some([x, 0, x + 2, 2]), false, false)
+            });
+            assert!(end > start && end <= count);
+            start = end;
+        }
+        assert!(reads.get() < 64 * count, "{} dependency reads for {count} draws", reads.get());
+    }
+
+    #[test]
+    fn draw_uniform_records_respect_device_alignment_and_keep_all_fields() {
+        let draws = [
+            Draw { color: [0.1, 0.2, 0.3, 0.4], opacity: 0.75, mask_off: 7, blend: 5, ..Default::default() },
+            Draw { box_rect: [-3.0, 4.0, 9.0, 8.0], seed: u32::MAX, flags: 8, ..Default::default() },
+        ];
+        let size = std::mem::size_of::<Draw>();
+        for alignment in [16, 64, 256, 512] {
+            let (bytes, stride) = pack_draw_uniforms(&draws, alignment);
+            assert_eq!(stride % alignment, 0);
+            assert!(stride as usize >= size);
+            assert_eq!(bytes.len(), 2 * stride as usize);
+            for (index, draw) in draws.iter().enumerate() {
+                let at = index * stride as usize;
+                assert_eq!(&bytes[at..at + size], bytemuck::bytes_of(draw));
+                assert!(bytes[at + size..at + stride as usize].iter().all(|b| *b == 0));
+            }
+            let (empty, empty_stride) = pack_draw_uniforms(&[], alignment);
+            assert_eq!(empty_stride, stride);
+            assert_eq!(empty.len(), stride as usize);
+            assert!(empty.iter().all(|b| *b == 0));
+        }
+    }
+}

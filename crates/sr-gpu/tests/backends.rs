@@ -1,0 +1,235 @@
+//! Backend parity: the OpenGL backend (how WSL2 reaches its GPU, through Mesa's D3D12
+//! driver) must draw what the native backend draws. Each test renders on the native
+//! adapter and on a GL adapter and skips when the machine lacks one of them.
+
+mod common;
+
+use common::*;
+use sr_gpu::gpu::GpuOptions;
+use sr_gpu::Gpu;
+
+fn on(backends: wgpu::Backends) -> Option<Gpu> {
+    match Gpu::with_options(&GpuOptions { backends, adapter: None }) {
+        Ok(g) => Some(g),
+        Err(e) => {
+            eprintln!("skipping: no {backends:?} adapter ({e})");
+            None
+        }
+    }
+}
+
+fn gl() -> Option<Gpu> {
+    on(wgpu::Backends::GL)
+}
+
+fn native() -> Option<Gpu> {
+    on(wgpu::Backends::PRIMARY)
+}
+
+/// Peak signal-to-noise ratio of two linear RGBA frames, in dB (colour and alpha, clamped to [0, 1]).
+fn psnr(a: &Rendered, b: &Rendered) -> f64 {
+    assert_eq!(a.size, b.size);
+    let mut se = 0.0f64;
+    for (p, q) in a.px.iter().zip(&b.px) {
+        for c in 0..4 {
+            let d = (p[c].clamp(0.0, 1.0) - q[c].clamp(0.0, 1.0)) as f64;
+            se += d * d;
+        }
+    }
+    let mse = se / (a.px.len() * 4) as f64;
+    if mse == 0.0 {
+        f64::INFINITY
+    } else {
+        10.0 * (1.0 / mse).log10()
+    }
+}
+
+fn pattern_scene() -> sr_model::Document {
+    doc(
+        r##"width="64" height="64" background="#00000000""##,
+        r#"<paints><pattern id="pat" asset="wide" tileWidth="16" tileHeight="8"/></paints>"#,
+        r#"<shape id="c" shape="rect" x="0" y="0" width="64" height="64" fill="url(#pat)"/>"#,
+    )
+}
+
+#[test]
+fn gl_draws_pattern_paints() {
+    // a pattern samples its tile with a repeating sampler, which GL cannot pair with the
+    // clamping one on the same texture binding, so the texture is bound a second time for it
+    let Some(g) = gl() else { return };
+    let r = render_times_on(g, &pattern_scene(), &[0.0]).expect("GL renders");
+    // the tile (left half red, right half blue) repeats every 16 px across and 8 px down
+    let (red, blue) = ([1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]);
+    for y in (4..64).step_by(8) {
+        for x in (4..64).step_by(8) {
+            assert_px(&r, x, y, if x % 16 < 8 { red } else { blue }, 0.05);
+        }
+    }
+}
+
+#[test]
+fn gl_matches_the_native_backend_on_pattern_paints() {
+    let (Some(g), Some(n)) = (gl(), native()) else { return };
+    let d = pattern_scene();
+    let (a, b) = (render_times_on(g, &d, &[0.0]).unwrap(), render_times_on(n, &d, &[0.0]).unwrap());
+    let db = psnr(&a, &b);
+    assert!(db >= 40.0, "GL vs native: {db:.1} dB");
+}
+
+#[test]
+fn gl_matches_the_native_backend_on_a_mixed_scene() {
+    // particles, additive and screen blending, a gradient, blur and grade effects, an
+    // adjustment layer and a feathered mask, animated so evaluation differs per frame
+    let xml = format!(
+        r##"<scene version="1.1"><project width="96" height="64" fps="10" duration="2" background="#101820"/>{ASSETS}
+<paints><linearGradient id="g" x1="0" y1="0" x2="1" y2="0"><stop offset="0" color="#FF6A1A"/><stop offset="1" color="#1A6AFF"/></linearGradient></paints>
+<composition>
+<layer id="img" asset="wide" x="8" y="8" scaleX="4" scaleY="4" effects="soft"/>
+<shape id="bar" shape="rect" x="0" y="40" width="96" height="16" fill="url(#g)" blend="screen">
+  <mask type="ellipse" x="10" y="0" width="76" height="16" feather="4"/>
+</shape>
+<particleEmitter id="p" x="48" y="32" emitterShape="point" rate="0" lifetime="2" speed="30" spread="360"
+                 size="4" color="#FFFFFF" shape="disc" blend="add" seed="7"><burst time="0" count="30"/></particleEmitter>
+<shape id="dot" shape="ellipse" x="70" y="6" width="16" height="16" fill="#FFFFFF" blend="add">
+  <animate property="x"><key time="0" value="70"/><key time="1" value="10"/></animate>
+</shape>
+<adjustment id="finish" effects="grade"/>
+</composition>
+<effects><effect id="soft" type="blur" radius="2"/><effect id="grade" type="color-grade" saturation="1.2" contrast="1.1"/></effects>
+</scene>"##
+    );
+    let opts = sr_model::LoadOptions { verify_assets: true, base_dir: Some(fixtures()) };
+    let d = sr_model::load_str(&xml, &opts).unwrap_or_else(|e| panic!("{e:?}"));
+    let (Some(g), Some(n)) = (gl(), native()) else { return };
+    let ts = [0.0, 0.3, 0.6];
+    let (a, b) = (render_times_on(g, &d, &ts).unwrap(), render_times_on(n, &d, &ts).unwrap());
+    let db = psnr(&a, &b);
+    assert!(db >= 40.0, "GL vs native: {db:.1} dB");
+}
+
+/// Renders `d` at `t` on `gpu`, with a sub-frame provider.
+fn render_doc_on(gpu: &Gpu, d: &sr_model::Document, t: f64) -> Option<Shot> {
+    let ev = sr_eval::Evaluator::new(d, &sr_eval::EvalOptions::default()).ok()?;
+    let mut r = sr_gpu::Renderer::new(gpu.clone(), ev.program());
+    let g = ev.evaluate(t);
+    let mut sub = |st: f64| ev.evaluate(st);
+    let f = r.render_with(&g, ev.program(), Some(&mut sub));
+    Some(Shot { px: r.read(&f.texture), size: f.texture.size, stats: f.stats })
+}
+
+fn valid_corpus() -> Vec<std::path::PathBuf> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus/valid");
+    let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
+    files.retain(|p| p.to_string_lossy().ends_with(".scene.xml"));
+    files.sort();
+    files
+}
+
+fn corpus_batch(index: usize, count: usize) -> Vec<std::path::PathBuf> {
+    assert!(count > 0 && index < count);
+    valid_corpus().into_iter().enumerate().filter_map(|(i, path)| (i % count == index).then_some(path)).collect()
+}
+
+#[test]
+fn corpus_batches_cover_every_document_exactly_once() {
+    let mut selected = Vec::new();
+    for index in 0..32 {
+        selected.extend(corpus_batch(index, 32));
+    }
+    selected.sort();
+    assert_eq!(selected, valid_corpus());
+}
+
+fn compare_corpus_batch(index: usize) {
+    let _ = compare_corpus(corpus_batch(index, 32), false);
+}
+
+#[test]
+fn conformance_corpus_contains_comparable_frames() {
+    let mut paths = valid_corpus();
+    // Find a witness cheaply; the batches still check every document in full.
+    paths.sort_by_key(|path| path.metadata().map(|m| m.len()).unwrap_or(u64::MAX));
+    if let Some(compared) = compare_corpus(paths, true) {
+        assert!(compared > 0, "no corpus document rendered");
+    }
+}
+
+fn compare_corpus(paths: Vec<std::path::PathBuf>, stop_after_first: bool) -> Option<usize> {
+    // every valid corpus document that loads here (remote assets may not), at its start and
+    // its middle
+    let (Some(g), Some(n)) = (gl(), native()) else { return None };
+    let (mut compared, mut failures, mut declared) = (0, Vec::new(), Vec::new());
+    'documents: for path in paths {
+        let doc = match sr_model::load_file(&path, &sr_model::LoadOptions::default()) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("skipping {}: {e:?}", path.display());
+                continue;
+            }
+        };
+        for t in [0.0, doc.duration() / 2.0] {
+            let (Some(a), Some(b)) = (render_doc_on(&g, &doc, t), render_doc_on(&n, &doc, t)) else { continue };
+            // what GL cannot draw it must say (so --strict fails); such frames are not compared
+            let gaps: Vec<&String> = a.stats.unsupported.iter().filter(|m| !b.stats.unsupported.contains(m)).collect();
+            if !gaps.is_empty() {
+                declared.push(format!("{}: {gaps:?}", path.file_name().unwrap().to_string_lossy()));
+                continue;
+            }
+            compared += 1;
+            let db = common::psnr(&a.px, &b.px);
+            if db < 40.0 {
+                failures.push(format!("{} at {t:.2} s: {db:.1} dB", path.file_name().unwrap().to_string_lossy()));
+            }
+            if stop_after_first {
+                break 'documents;
+            }
+        }
+    }
+    for d in &declared {
+        eprintln!("declared GL gap, not compared: {d}");
+    }
+    assert!(failures.is_empty(), "GL vs native:\n{}", failures.join("\n"));
+    Some(compared)
+}
+
+// Each batch is a real libtest case, so CI can distribute the complete corpus across workers.
+macro_rules! corpus_tests {
+    ($($name:ident: $index:literal),* $(,)?) => {
+        $(#[test] fn $name() { compare_corpus_batch($index); })*
+    };
+}
+
+corpus_tests! {
+    gl_matches_native_corpus_batch_00: 0,
+    gl_matches_native_corpus_batch_01: 1,
+    gl_matches_native_corpus_batch_02: 2,
+    gl_matches_native_corpus_batch_03: 3,
+    gl_matches_native_corpus_batch_04: 4,
+    gl_matches_native_corpus_batch_05: 5,
+    gl_matches_native_corpus_batch_06: 6,
+    gl_matches_native_corpus_batch_07: 7,
+    gl_matches_native_corpus_batch_08: 8,
+    gl_matches_native_corpus_batch_09: 9,
+    gl_matches_native_corpus_batch_10: 10,
+    gl_matches_native_corpus_batch_11: 11,
+    gl_matches_native_corpus_batch_12: 12,
+    gl_matches_native_corpus_batch_13: 13,
+    gl_matches_native_corpus_batch_14: 14,
+    gl_matches_native_corpus_batch_15: 15,
+    gl_matches_native_corpus_batch_16: 16,
+    gl_matches_native_corpus_batch_17: 17,
+    gl_matches_native_corpus_batch_18: 18,
+    gl_matches_native_corpus_batch_19: 19,
+    gl_matches_native_corpus_batch_20: 20,
+    gl_matches_native_corpus_batch_21: 21,
+    gl_matches_native_corpus_batch_22: 22,
+    gl_matches_native_corpus_batch_23: 23,
+    gl_matches_native_corpus_batch_24: 24,
+    gl_matches_native_corpus_batch_25: 25,
+    gl_matches_native_corpus_batch_26: 26,
+    gl_matches_native_corpus_batch_27: 27,
+    gl_matches_native_corpus_batch_28: 28,
+    gl_matches_native_corpus_batch_29: 29,
+    gl_matches_native_corpus_batch_30: 30,
+    gl_matches_native_corpus_batch_31: 31,
+}

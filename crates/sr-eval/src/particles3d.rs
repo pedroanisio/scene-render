@@ -1,0 +1,984 @@
+//! World-space particle simulation bound to scene clocks, poses and fields.
+
+use crate::{
+    program::Program,
+    sim::{num, text, FieldSrc, Graphs, PhysicsRt},
+    FrameGraph, FrameNode,
+};
+use glam::DVec3;
+use sr_model::element::children;
+use sr_sim::particles3d::{self as sim, Birth, Driver, Emission, Error, Hit};
+use std::{collections::HashMap, sync::Arc};
+
+#[derive(Debug, Clone)]
+pub struct SimParticles3D {
+    pub frame: sim::Frame,
+    pub key: u64,
+    pub size_curve: crate::curve::Ease,
+    pub color_curve: crate::curve::Ease,
+}
+
+mod colliders;
+
+/// The speed, in metres a second, under which an ejecta particle that has hit the ground is at rest on it.
+const REST_SPEED: f64 = 0.5;
+
+/// The ejecta of the crater that `crater` names (the effective id of its owner): `count`
+/// particles, launched at `angle` degrees above the tangent plane, spread by `spread`.
+struct CraterBurst {
+    crater: Arc<str>,
+    count: usize,
+    angle: f64,
+    spread: f64,
+    /// The particles of the impact, once it is known, in order of birth in emitter time.
+    ejecta: Option<Arc<Vec<Birth>>>,
+    /// Kilograms per cubic metre of the target whose crater it is, once the impact is known: what a
+    /// particle's mass is the volume of.
+    density: f64,
+}
+
+thread_local! {
+    static GAS_QUERIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Gas queries made by 3D particle evaluation on the calling thread so far. A frame whose particle state was
+/// already simulated makes none.
+#[doc(hidden)]
+pub fn gas_queries_on_this_thread() -> u64 {
+    GAS_QUERIES.with(std::cell::Cell::get)
+}
+
+/// The smoke that drags an emitter's particles, and the gas of the steps it has asked for lately.
+struct GasRt {
+    /// Effective id of the smoke volume's object.
+    id: Arc<str>,
+    window: Vec<(u64, Arc<sr_sim::pyro::Gas>)>,
+}
+
+/// Everything the gas queries of one canonical particle step need, built once for all the particles that ask
+/// in it: the volume's matrix at the step's start, the smoke's clock there and the smoke steps that cover the
+/// step.
+struct GasAt {
+    /// Emitter time of the step's start, and the smoke's source time there and how fast it runs.
+    t0: f64,
+    source0: f64,
+    rate: f64,
+    dt: f64,
+    world: glam::DMat4,
+    inverse: glam::DMat4,
+    snapshots: Vec<(u64, Arc<sr_sim::pyro::Gas>)>,
+}
+
+struct Runtime {
+    /// The ocean the particles fall into, if one lists the emitter.
+    splash: Option<crate::splash::Emitter>,
+    gas: Option<GasRt>,
+    seed: u64,
+    /// How far above the surface the ejecta of a crater are born: the largest collision radius.
+    lift: f64,
+    crater_bursts: Vec<CraterBurst>,
+    /// What lies on the ground of the crater whose ejecta these are, when it has an angle of repose, and the beds of it.
+    debris: Option<(crate::debris::Config, crate::debris::State)>,
+    colliders: colliders::Colliders,
+    emitter: sim::Emitter,
+    names: Option<Vec<String>>,
+    size_curve: crate::curve::Ease,
+    color_curve: crate::curve::Ease,
+}
+#[derive(Default)]
+pub(crate) struct Sims {
+    runtimes: HashMap<Arc<str>, Result<Runtime, String>>,
+}
+
+fn config(n: &FrameNode) -> &sr_model::model::Particles3D {
+    let sr_model::model::Node::Particles3D(e) = &*n.elem else { unreachable!("particles3D node") };
+    e
+}
+/// The water the particles of emitter `id` fall into and how they are told to the ocean, if an ocean lists it: the
+/// ocean's rest level and domain at its pose when the emitter starts, which is a function of the document.
+fn fall_setup(
+    p: &Program,
+    graphs: &mut Graphs<'_>,
+    id: &Arc<str>,
+    node: u32,
+) -> Result<Option<(sim::Water, crate::splash::Emitter)>, String> {
+    let listed: Vec<usize> = p
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| {
+            o.name == "ocean" && text(&*o.elem, "splash").is_some_and(|l| l.split_whitespace().any(|s| s == &**id))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let [ocean] = listed.as_slice() else {
+        return if listed.is_empty() {
+            Ok(None)
+        } else {
+            Err(format!("{id} falls into {} oceans: it belongs to one", listed.len()))
+        };
+    };
+    let ocean_index = *ocean;
+    let ocean = &p.nodes[ocean_index];
+    let own = &p.nodes[node as usize];
+    let identity = |index: u32| crate::sim::composition_clock(p, index, p.nodes[index as usize].start);
+    if !identity(node) || !identity(ocean_index as u32) {
+        return Err(format!("{id} and the ocean it falls into need the composition clock"));
+    }
+    let start = own.start + num(&*own.elem, "emissionStart", 0.);
+    let frame = graphs.at(start);
+    let i = frame
+        .nodes
+        .iter()
+        .position(|o| o.id == ocean.id)
+        .ok_or("the ocean it falls into is not in the frame when it starts")?;
+    let world = crate::sim3d::world3(&frame, i, 0);
+    let columns = [world.x_axis, world.y_axis, world.z_axis].map(|c| c.truncate());
+    if columns.iter().any(|c| (c.length() - 1.).abs() > 1e-9) || !world.is_finite() {
+        return Err("an ocean that takes particles must have no scale".into());
+    }
+    let e = &*ocean.elem;
+    let (width, depth, cell) = (num(e, "width", 64.), num(e, "depth", 64.), num(e, "cellSize", 1.));
+    let level = num(e, "waterLevel", 0.);
+    let origin = world.transform_point3(glam::DVec3::new(0., level, 0.));
+    let water = sim::Water {
+        origin: origin.to_array(),
+        // scene y points down in the ocean's own axes: the water is where y is greater, so out of it is up
+        normal: (-columns[1]).to_array(),
+        axes: [columns[0].to_array(), columns[2].to_array()],
+        extent: [[-width / 2., width / 2.], [-depth / 2., depth / 2.]],
+    };
+    let emitter = crate::splash::Emitter {
+        channel: node,
+        start,
+        dt: num(&*own.elem, "dt", 1. / 60.),
+        ocean: crate::splash::Ocean {
+            id: ocean.id.clone(),
+            origin: [-width / 2., -depth / 2.],
+            cell_size: cell,
+            cells: [(width / cell).round() as usize, (depth / cell).round() as usize],
+            dt: num(e, "dt", 1. / 60.),
+            start: ocean.start,
+            density: crate::ocean::WaterAttrs::of(e).density,
+            to_local: world.inverse(),
+        },
+    };
+    Ok(Some((water, emitter)))
+}
+
+fn build(
+    p: &Program,
+    node: u32,
+    n: &FrameNode,
+    fall: Option<(sim::Water, crate::splash::Emitter)>,
+) -> Result<Runtime, String> {
+    let e = config(n);
+    let number = |k: &str, d: f64| num(e, k, d);
+    let vec = |k: &str| ["X", "Y", "Z"].map(|a| number(&format!("{k}{a}"), 0.));
+    let bytes =
+        |k, d| (number(k, d) as usize).checked_mul(1 << 20).ok_or_else(|| "particle memory overflow".to_string());
+    let shape = match text(e, "emitterShape").as_deref() {
+        Some("box") => sim::Shape::Box {
+            size: [number("emitterWidth", 1.), number("emitterHeight", 1.), number("emitterDepth", 1.)],
+        },
+        Some("sphere") => sim::Shape::Sphere { radius: number("emitterRadius", 1.) },
+        Some("mesh") => {
+            let ns = p.nodes[node as usize]
+                .doc
+                .checked_sub(1)
+                .and_then(|d| p.includes.get(d as usize))
+                .map(|d| &*d.0)
+                .unwrap_or("");
+            let id = text(e, "emitterMesh").ok_or("mesh emitter needs emitterMesh")?;
+            let key = crate::sim::asset_key(&p.assets, ns, &id);
+            let max = bytes("meshMemoryMiB", 128.)?;
+            let (points, triangles) = crate::sim3d::mesh_asset_triangles(p, &key, max)?;
+            sim::Shape::Mesh(Arc::new(sim::mesh::Mesh::new(&points, &triangles, max).map_err(|e| e.to_string())?))
+        }
+        _ => sim::Shape::Point,
+    };
+    let bursts = children(e)
+        .into_iter()
+        .filter(|c| c.element_name() == "burst" && text(*c, "crater").is_none())
+        .map(|c| sim::Burst {
+            time: num(c, "time", 0.),
+            count: num(c, "count", 0.) as u64,
+            repeat: num(c, "repeat", 0.) as u64,
+            interval: num(c, "interval", 1.),
+        })
+        .collect();
+    // the ejecta of a crater that has a mantle come to rest in it: they are the ground there, not particles
+    let mantle =
+        children(e).into_iter().filter(|c| c.element_name() == "burst").filter_map(|c| text(c, "crater")).any(|id| {
+            p.nodes.iter().find(|o| *o.id == *id).is_some_and(|o| {
+                children(&*o.elem)
+                    .into_iter()
+                    .any(|c| c.element_name() == "crater" && text(c, "mantle").as_deref() == Some("true"))
+            })
+        });
+    // the crater that gives what settles an angle of repose: one for an emitter, since what settles is not told apart
+    let mut reposed: Vec<(Arc<str>, f64)> = Vec::new();
+    for id in children(e).into_iter().filter(|c| c.element_name() == "burst").filter_map(|c| text(c, "crater")) {
+        let repose = p.nodes.iter().find(|o| *o.id == *id).and_then(|o| {
+            children(&*o.elem)
+                .into_iter()
+                .filter(|c| c.element_name() == "crater")
+                .find_map(|c| text(c, "repose").and_then(|r| r.trim().parse::<f64>().ok()))
+        });
+        if let Some(repose) = repose {
+            if !reposed.iter().any(|(known, _)| **known == *id) {
+                reposed.push((Arc::from(id.as_str()), repose));
+            }
+        }
+    }
+    if reposed.len() > 1 {
+        return Err(
+            "an emitter deposits the ejecta that settle on one crater with an angle of repose: it names several".into(),
+        );
+    }
+    let debris = reposed.pop().map(|(crater, repose)| (crate::debris::Config { crater, repose }, Default::default()));
+    let rest_speed = REST_SPEED * p.scene.physics.as_ref().map_or(100.0, |ph| ph.pixels_per_meter.get());
+    let spec = sim::Spec {
+        seed: e.seed,
+        start: number("emissionStart", 0.),
+        end: e.emission_end.map(|_| number("emissionEnd", 0.)),
+        step: number("dt", 1. / 60.),
+        lifetime: number("lifetime", 2.),
+        lifetime_variance: number("lifetimeVariance", 0.),
+        velocity: vec("velocity"),
+        rotation: vec("rotation0"),
+        rotation_variance: vec("rotationVariance"),
+        angular_velocity: vec("angularVelocity"),
+        angular_velocity_variance: vec("angularVelocityVariance"),
+        scale_variance: number("scaleVariance", 0.),
+        direction: [number("directionX", 0.), number("directionY", -1.), number("directionZ", 0.)],
+        speed: number("speed", 0.),
+        speed_variance: number("speedVariance", 0.),
+        spread: number("spread", 0.),
+        gravity: vec("gravity"),
+        drag: number("drag", 0.),
+        radius: number("collisionRadius", 0.5),
+        collision_tolerance: number("collisionTolerance", 0.001),
+        restitution: number("bounce", 0.5),
+        friction: number("friction", 0.),
+        shape,
+        bursts,
+        max_particles: number("maxParticles", 10000.) as usize,
+        max_events: number("maxEvents", 16384.) as usize,
+        max_bytes: bytes("maxMemoryMiB", 256.)?,
+        checkpoint_bytes: bytes("checkpointMemoryMiB", 64.)?,
+        water: fall.as_ref().map(|(water, _)| *water),
+        settle: (mantle || debris.is_some()).then_some(rest_speed),
+        max_work: number("maxWork", 100000000.) as u64,
+    };
+    let crater_bursts = children(e)
+        .into_iter()
+        .filter(|c| c.element_name() == "burst")
+        .filter_map(|c| {
+            Some(CraterBurst {
+                crater: text(c, "crater")?.into(),
+                count: num(c, "count", 0.) as usize,
+                angle: num(c, "angle", 45.),
+                spread: num(c, "angleSpread", 15.),
+                ejecta: None,
+                density: 0.,
+            })
+        })
+        .collect();
+    let lift = (number("collisionRadius", 0.5) * (1. + number("scaleVariance", 0.))
+        + number("collisionTolerance", 0.001))
+    .max(0.);
+    Ok(Runtime {
+        splash: fall.map(|(_, emitter)| emitter),
+        gas: text(e, "gas").map(|id| GasRt { id: id.as_str().into(), window: Vec::new() }),
+        seed: e.seed,
+        lift,
+        crater_bursts,
+        debris,
+        colliders: colliders::build(p, n, bytes("meshMemoryMiB", 128.)?)?,
+        emitter: sim::Emitter::new(spec).map_err(|e| e.to_string())?,
+        names: crate::sim::field_names(e),
+        size_curve: crate::sim::curve_of(e, "sizeCurve"),
+        color_curve: crate::sim::curve_of(e, "colorCurve"),
+    })
+}
+
+struct SceneDriver<'a, 'b> {
+    p: &'a Program,
+    node: u32,
+    id: Arc<str>,
+    at: f64,
+    graphs: &'a mut Graphs<'b>,
+    fields: &'a FieldSrc,
+    names: Option<&'a [String]>,
+    physics: Option<&'a mut PhysicsRt>,
+    frames: Vec<(u64, Arc<FrameGraph>)>,
+    colliders: &'a mut colliders::Colliders,
+    sweeps: Vec<(u64, u64, Vec<sim::collider::Collider>)>,
+    step_origin: f64,
+    step: f64,
+    seed: u64,
+    lift: f64,
+    bursts: &'a mut [CraterBurst],
+    /// The smoke that drags the particles, with the emitter's drag as the coupling.
+    gas: Option<(&'a mut GasRt, &'a mut crate::pyro::Sims, f64)>,
+    /// The gas context of the last few canonical steps asked about, by step index; none where the volume is
+    /// not in the frame.
+    gas_at: Vec<(i64, Option<GasAt>)>,
+    /// The ocean the particles fall into, the log that tells it, and the scene units a metre.
+    splash: Option<(&'a crate::splash::Emitter, &'a crate::splash::Log, f64)>,
+    /// The crater that what settles on the ground is deposited on, and the log it is told to.
+    settled: Option<(&'a crate::debris::Config, &'a crate::splash::Log)>,
+    /// What the rigid world said when it could not answer, to fail the step that asked rather than go on without it.
+    fault: Option<String>,
+}
+impl SceneDriver<'_, '_> {
+    fn frame(&mut self, time: f64) -> Arc<FrameGraph> {
+        let key = time.to_bits();
+        if let Some((_, f)) = self.frames.iter().find(|(k, _)| *k == key) {
+            return f.clone();
+        }
+        let (t, clocks) =
+            crate::sim::source_sample(self.p, self.node, time + self.p.nodes[self.node as usize].start, self.at);
+        let mut f = if clocks.is_empty() {
+            self.graphs.at(t)
+        } else {
+            Arc::new(crate::eval::evaluate_with_clocks(self.p, t, &clocks))
+        };
+        if let Some(ph) = self.physics.as_deref_mut() {
+            let before = f.problems.len();
+            crate::sim::apply_physics(self.p, ph, Arc::make_mut(&mut f), self.graphs, self.fields, t);
+            // a rigid world that could not answer must not be read as one that stood still
+            if f.problems.len() > before && self.fault.is_none() {
+                self.fault = Some(f.problems[before..].join("; "));
+            }
+        }
+        if self.frames.len() >= 8 {
+            self.frames.remove(0);
+        }
+        self.frames.push((key, f.clone()));
+        f
+    }
+
+    /// The gas of the smoke's step `step`: from the window of those asked for lately, or simulated now.
+    fn gas_step(
+        &mut self,
+        frame: &Arc<FrameGraph>,
+        i: usize,
+        step: u64,
+        keep: usize,
+    ) -> Result<Arc<sr_sim::pyro::Gas>, Error> {
+        let Some((gas, pyro, _)) = self.gas.as_mut() else { return Err(Error::Driver("no gas".into())) };
+        if let Some((_, found)) = gas.window.iter().find(|(k, _)| *k == step) {
+            return Ok(found.clone());
+        }
+        let step_gas = pyro
+            .gas(self.p, frame, i, step, &mut *self.graphs, self.fields, self.physics.as_deref_mut())
+            .map_err(|e| Error::Driver(format!("gas {}: {e}", gas.id)))?;
+        let (fresh, held) = (step_gas.gas, step_gas.held);
+        // the fields in use and the states kept for them are charged to the smoke's memory allowance, and
+        // exceeding it is an error
+        let clock = crate::pyro::gas_clock(&frame.nodes[i]).map_err(Error::Driver)?;
+        let fields = (gas.window.len() + 1).saturating_mul(fresh.bytes());
+        if fields.saturating_add(held) > clock.max_bytes {
+            return Err(Error::Driver(format!(
+                "gas {}: {} velocity fields of {} bytes and {held} bytes of kept states exceed its maxMemoryMiB",
+                gas.id,
+                gas.window.len() + 1,
+                fresh.bytes()
+            )));
+        }
+        gas.window.push((step, fresh.clone()));
+        while gas.window.len() > keep {
+            let oldest = (0..gas.window.len()).min_by_key(|&k| gas.window[k].0).expect("a window");
+            gas.window.remove(oldest);
+        }
+        Ok(fresh)
+    }
+
+    /// The context of the canonical step that emitter time `time` belongs to, as an index into `gas_at`. It is a
+    /// function of the time alone: the volume's matrix and the smoke's clock are read at the step's start, so
+    /// the answer does not depend on which particle asks or in what order.
+    fn gas_context(&mut self, time: f64) -> Result<usize, Error> {
+        let index = ((time - self.step_origin) / self.step + 1e-9).floor() as i64;
+        if let Some(found) = self.gas_at.iter().position(|(k, _)| *k == index) {
+            return Ok(found);
+        }
+        let Some(id) = self.gas.as_ref().map(|(gas, _, _)| gas.id.clone()) else {
+            return Err(Error::Driver("no gas".into()));
+        };
+        let t0 = self.step_origin + index as f64 * self.step;
+        let frame = self.frame(t0);
+        let built = match frame.nodes.iter().position(|n| n.id == id) {
+            None => None,
+            Some(i) => {
+                let n = &frame.nodes[i];
+                let clock = crate::pyro::gas_clock(n).map_err(Error::Driver)?;
+                let rate = crate::pyro::value(&*n.elem, Some(&n.props), "animationSpeed", 1.0);
+                let source0 =
+                    n.local_time * rate + crate::pyro::value(&*n.elem, Some(&n.props), "animationOffset", 0.0);
+                let world = crate::sim3d::world3(&frame, i, 0);
+                let inverse = world.inverse();
+                if !(source0.is_finite() && world.is_finite() && inverse.is_finite()) {
+                    return Err(Error::Driver(format!("gas {id}: the volume's time or transform is not usable")));
+                }
+                // the smoke steps that cover the particle step, from the one at or before its start to the one
+                // after its end
+                let first = (source0.max(0.0) / clock.dt + 1e-9).floor() as u64;
+                let last = (((source0 + rate * self.step).max(0.0) / clock.dt - 1e-9).ceil() as u64).max(first);
+                let keep = (last - first + 1) as usize + 2;
+                let mut snapshots = Vec::new();
+                for k in first..=last {
+                    snapshots.push((k, self.gas_step(&frame, i, k, keep)?));
+                }
+                Some(GasAt { t0, source0, rate, dt: clock.dt, world, inverse, snapshots })
+            }
+        };
+        if self.gas_at.len() >= 4 {
+            self.gas_at.remove(0);
+        }
+        self.gas_at.push((index, built));
+        Ok(self.gas_at.len() - 1)
+    }
+
+    /// The velocity, in the world's axes, of the gas at a world position at emitter time `time`: the linear
+    /// interpolation in time of the two smoke steps around the instant, each sampled in the volume's own axes.
+    /// A volume that is not in the frame is no gas.
+    fn gas_velocity(&mut self, time: f64, position: [f64; 3]) -> Result<[f64; 3], Error> {
+        GAS_QUERIES.with(|count| count.set(count.get() + 1));
+        let slot = self.gas_context(time)?;
+        let Some(at) = self.gas_at[slot].1.as_ref() else { return Ok([0.0; 3]) };
+        let ratio = (at.source0 + at.rate * (time - at.t0)).max(0.0) / at.dt;
+        let nearest = ratio.round();
+        let first =
+            if (ratio - nearest).abs() <= f64::EPSILON * 4.0 * ratio.max(1.0) { nearest } else { ratio.floor() };
+        let weight = (ratio - first).clamp(0.0, 1.0);
+        let k = first as u64;
+        let found = |k: u64| at.snapshots.iter().find(|(s, _)| *s == k).map(|(_, g)| g.clone());
+        // a time a rounding past the step the snapshots were taken for asks for its own
+        let (a, b) = match (found(k), found(k + 1)) {
+            (Some(a), Some(b)) => (a, Some(b)),
+            (Some(a), None) if weight <= 1e-12 => (a, None),
+            _ => {
+                let frame = self.frame(at.t0);
+                let id = self.gas.as_ref().map(|(g, _, _)| g.id.clone()).expect("a gas");
+                let i = frame
+                    .nodes
+                    .iter()
+                    .position(|n| n.id == id)
+                    .ok_or_else(|| Error::Driver("the smoke is gone".into()))?;
+                let a = self.gas_step(&frame, i, k, 8)?;
+                (a, if weight > 1e-12 { Some(self.gas_step(&frame, i, k + 1, 8)?) } else { None })
+            }
+        };
+        let at = self.gas_at[slot].1.as_ref().expect("the context is still there");
+        let point = at.inverse.transform_point3(DVec3::from(position)).to_array();
+        let mut u = a.velocity_at(point);
+        if let Some(next) = b {
+            let later = next.velocity_at(point);
+            u = std::array::from_fn(|c| (1.0 - weight) * u[c] + weight * later[c]);
+        }
+        Ok(at.world.transform_vector3(DVec3::from(u)).to_array())
+    }
+
+    /// The emitter's time at which the source clock reads `t`, for the clocks an emitter can
+    /// have here: affine ones that run forward.
+    /// What came to rest on the ground of the crater in fixed step `step`: where, in the plane of the crater, and the volume
+    /// of its target that each particle stands for, in the owner's object units cubed. The ground is as it is at the end of
+    /// the step.
+    fn settle(
+        &mut self,
+        config: &crate::debris::Config,
+        step: u64,
+        list: &[sim::Absorbed],
+    ) -> Result<Vec<crate::debris::Settled>, Error> {
+        let ground: Vec<&sim::Absorbed> = list.iter().filter(|a| a.ground).collect();
+        if ground.is_empty() {
+            return Ok(Vec::new());
+        }
+        let frame = self.frame(self.step_origin + (step + 1) as f64 * self.step);
+        let i =
+            frame.nodes.iter().position(|n| n.id == config.crater).ok_or_else(|| {
+                Error::Driver(format!("{} is not in the frame where ejecta settle on it", config.crater))
+            })?;
+        let impact = frame.nodes[i]
+            .crater_impact
+            .clone()
+            .ok_or_else(|| Error::Driver(format!("ejecta settled on {} before its crater was known", config.crater)))?;
+        let to_object = crate::sim3d::world3(&frame, i, 0).inverse();
+        let kernel = crate::crater::ground_kernel(&impact).map_err(Error::Driver)?;
+        let (u, v) = kernel.plane_basis();
+        let (u, v) = (DVec3::from(u), DVec3::from(v));
+        let centre = DVec3::from(impact.spec.center);
+        let cubic = impact.units.powi(3);
+        Ok(ground
+            .into_iter()
+            .map(|a| {
+                let at = to_object.transform_point3(DVec3::from(a.position)) - centre;
+                crate::debris::Settled {
+                    id: a.id,
+                    plane: [at.dot(u), at.dot(v)],
+                    volume: a.mass / impact.cause.target_density * cubic,
+                }
+            })
+            .collect())
+    }
+
+    fn emitter_time(&self, t: f64) -> Result<f64, Error> {
+        let start = self.p.nodes[self.node as usize].start;
+        let (f0, clocks) = crate::sim::source_sample(self.p, self.node, start, self.at);
+        if clocks.is_empty() {
+            return Ok(t - start);
+        }
+        let slope = crate::sim::source_sample(self.p, self.node, start + 1., self.at).0 - f0;
+        if !(slope.is_finite() && slope > 0.) {
+            return Err(Error::Driver("the ejecta of a crater need an emitter clock that runs forward".into()));
+        }
+        Ok((t - f0) / slope)
+    }
+
+    /// The cells that the cut of the impact `grown` threw, as particles: one for each, born at the impact, where its cell was and with the velocity the cut gave it.
+    fn thrown_cells(
+        &mut self,
+        k: usize,
+        grown: &crate::crater::ImpactCrater,
+        thrown: &crate::voxel_cut::ThrownCells,
+    ) -> Result<Vec<Birth>, Error> {
+        let owner = self.bursts[k].crater.clone();
+        let cause = &grown.cause;
+        let frame = self.frame(self.emitter_time(cause.time)?);
+        let i =
+            frame.nodes.iter().position(|n| n.id == owner).ok_or_else(|| {
+                Error::Driver(format!("the owner of crater ejecta, {owner}, is missing at the impact"))
+            })?;
+        // the cells are in the owner's frame (metres): to the object's units and then to the scene by the owner's matrix at the impact
+        let world = crate::sim3d::world3(&frame, i, 0);
+        let time = self.emitter_time(cause.time)?;
+        Ok(thrown
+            .cells
+            .iter()
+            .map(|cell| Birth {
+                time,
+                position: world.transform_point3(DVec3::from(cell.position.map(|c| c * grown.units))).to_array(),
+                velocity: world.transform_vector3(DVec3::from(cell.velocity.map(|v| v * grown.units))).to_array(),
+                mass: thrown.mass,
+            })
+            .collect())
+    }
+
+    /// The particles that the impact `grown` throws out for burst `k`, in order of birth.
+    fn ejecta(&mut self, k: usize, grown: &crate::crater::ImpactCrater) -> Result<Vec<Birth>, Error> {
+        let cause = grown.cause;
+        self.bursts[k].density = cause.target_density;
+        let (owner, count, angle, spread) = {
+            let b = &self.bursts[k];
+            (b.crater.clone(), b.count, b.angle, b.spread)
+        };
+        let frame = self.frame(self.emitter_time(cause.time)?);
+        let i =
+            frame.nodes.iter().position(|n| n.id == owner).ok_or_else(|| {
+                Error::Driver(format!("the owner of crater ejecta, {owner}, is missing at the impact"))
+            })?;
+        // the crater is the owner's: where it hit and its axis follow the owner's pose at the impact
+        let world = crate::sim3d::world3(&frame, i, 0);
+        let normal = world.transform_vector3(DVec3::from(grown.spec.outward));
+        // The contact point lies inside the surface, by as far as the body went on before the contact was
+        // found (up to a rigid step of its motion): the launches start from the nearest point of the surface.
+        let point = world.transform_point3(DVec3::from(cause.surface_point));
+        let unit_normal = normal.normalize_or_zero();
+        // ... and from where the surface is when each is launched: the crater has grown by then, and its
+        // rim has risen over the places that were level, where a particle left at the old height would be
+        // buried under the surface and pushed down by it. Each starts clear of the surface by the radius it
+        // collides with.
+        let element = children(&*frame.nodes[i].elem)
+            .into_iter()
+            .find(|c| c.element_name() == "crater")
+            .ok_or_else(|| Error::Driver(format!("{owner} has no crater")))?;
+        let to_object = world.inverse();
+        let metres = cause.pixels_per_meter;
+        let list = sr_sim::cratering::ejecta::ejecta(&sr_sim::cratering::ejecta::Spec {
+            material: cause.material,
+            body_radius: (3. * cause.impactor.mass / (4. * std::f64::consts::PI * cause.impactor.density)).cbrt(),
+            body_density: cause.impactor.density,
+            target_density: cause.target_density,
+            impact_speed: cause.speed,
+            velocity_direction: cause.velocity,
+            normal: normal.to_array(),
+            crater_volume: cause.law.volume,
+            crater_radius: cause.law.radius,
+            crater_duration: cause.law.duration,
+            particles: count,
+            seed: crate::rng::hash(&[self.seed, k as u64, 0xe1ec7a]),
+            angle,
+            angle_spread: spread,
+        })
+        .map_err(Error::Driver)?;
+        list.iter()
+            .map(|e| {
+                let level = point + DVec3::from(e.position.map(|c| c * metres));
+                let age = crate::crater::ImpactCrater { age: e.time, ..grown.clone() };
+                let deformation = crate::crater::from_impact(element, &age).map_err(Error::Driver)?;
+                let on_surface = deformation
+                    .kernel
+                    .map(to_object.transform_point3(level).to_array(), deformation.progress)
+                    .map_err(Error::Driver)?
+                    .position;
+                let position = world.transform_point3(DVec3::from(on_surface)) + unit_normal * self.lift;
+                Ok(Birth {
+                    time: self.emitter_time(cause.time + e.time)?,
+                    position: position.to_array(),
+                    velocity: e.velocity.map(|v| v * metres),
+                    mass: e.mass,
+                })
+            })
+            .collect()
+    }
+}
+impl Driver for SceneDriver<'_, '_> {
+    fn emission(&mut self, time: f64) -> Result<Emission, Error> {
+        let f = self.frame(time);
+        let Some(i) = f.nodes.iter().position(|n| n.id == self.id) else {
+            return Ok(Emission { enabled: false, ..Default::default() });
+        };
+        let n = &f.nodes[i];
+        let e = &*n.elem;
+        let v = |k, d| n.props.get(k).and_then(crate::Value::as_num).unwrap_or_else(|| num(e, k, d));
+        Ok(Emission {
+            transform: sr_volume::Transform::new(crate::sim3d::world3(&f, i, 0).to_cols_array())
+                .map_err(|e| Error::Driver(e.to_string()))?,
+            rate: v("rate", 10.),
+            inherited_velocity: [v("inheritedVelocityX", 0.), v("inheritedVelocityY", 0.), v("inheritedVelocityZ", 0.)],
+            enabled: true,
+        })
+    }
+    fn acceleration(&mut self, time: f64, position: [f64; 3], velocity: [f64; 3]) -> Result<[f64; 3], Error> {
+        let mut a = [0.; 3];
+        if !(self.fields.is_empty() || self.names.is_some_and(|n| n.is_empty())) {
+            let frame = self.frame(time);
+            let fields = match self.names {
+                Some(n) => self.fields.named(n, frame.time, Some(&frame)),
+                None => self.fields.at(frame.time, Some(&frame)),
+            };
+            a = sr_sim::fields::total3_for(&fields, position, velocity, frame.time, true);
+        }
+        // the gas drags the particle with the emitter's own coefficient: with the drag on the particle's
+        // velocity the integrator already has, an acceleration of k u makes p'' = k (u - v)
+        let drag = self.gas.as_ref().map_or(0., |(_, _, drag)| *drag);
+        if drag > 0. {
+            let u = self.gas_velocity(time, position)?;
+            for k in 0..3 {
+                a[k] += drag * u[k];
+            }
+        }
+        Ok(a)
+    }
+    fn absorbed(&mut self, step: u64, list: &[sim::Absorbed]) -> Result<(), Error> {
+        // the last thing a fixed step asks before it is kept
+        if let Some(fault) = self.fault.take() {
+            return Err(Error::Driver(fault));
+        }
+        if let Some((config, log)) = self.settled {
+            // told for every step, the empty ones too: the deposit is a fold over all of them
+            let settled = self.settle(config, step, list)?;
+            log.put_settled(self.node, step, &settled).map_err(Error::Driver)?;
+        }
+        let Some((emitter, log, pixels_per_meter)) = self.splash else { return Ok(()) };
+        // what they are made of: the target of the crater that threw them
+        let density = self.bursts.iter().map(|b| b.density).find(|d| *d > 0.);
+        let entries = match (list.iter().all(|a| a.ground), density) {
+            (true, _) => Vec::new(),
+            (false, Some(solid)) => crate::splash::aggregate(
+                list,
+                emitter,
+                self.p.nodes[self.node as usize].start,
+                pixels_per_meter,
+                solid,
+                emitter.ocean.density,
+            ),
+            (false, None) => {
+                return Err(Error::Driver("particles fell into the water before their crater was known".into()))
+            }
+        };
+        log.put(emitter.channel, step, &entries).map_err(Error::Driver)?;
+        Ok(())
+    }
+    fn births(&mut self, lo: f64, hi: f64) -> Result<Vec<Birth>, Error> {
+        let mut born = Vec::new();
+        for k in 0..self.bursts.len() {
+            if self.bursts[k].ejecta.is_none() {
+                // The impact is known from the first frame after it; before that nothing is thrown out.
+                let frame = self.frame(hi);
+                let Some(node) = frame.nodes.iter().find(|n| n.id == self.bursts[k].crater) else { continue };
+                let Some(grown) = node.crater_impact.clone() else { continue };
+                // the crater of an object of cells throws the cells that its cut took out, not particles that the law samples
+                let list = match node.voxels.as_ref() {
+                    Some(cells) => match cells.thrown.clone() {
+                        Some(thrown) => self.thrown_cells(k, &grown, &thrown)?,
+                        None => continue,
+                    },
+                    None => self.ejecta(k, &grown)?,
+                };
+                self.bursts[k].ejecta = Some(Arc::new(list));
+            }
+            let Some(list) = self.bursts[k].ejecta.clone() else { continue };
+            let first = lo == self.step_origin;
+            let from = list.partition_point(|b| if first { b.time < lo } else { b.time <= lo });
+            let to = list.partition_point(|b| b.time <= hi);
+            born.extend_from_slice(&list[from.min(to)..to]);
+        }
+        Ok(born)
+    }
+    fn sweep(&mut self, time: f64, dt: f64, from: [f64; 3], to: [f64; 3], radius: f64) -> Result<Option<Hit>, Error> {
+        if self.colliders.is_empty() {
+            return Ok(None);
+        }
+        // All contact refinements in one fixed step use the same linear
+        // boundary motion. Resampling an accelerating crater after each impact
+        // changes that motion and creates an endless sequence of tiny impacts.
+        let offset = (time - self.step_origin) / self.step;
+        let rounded = offset.round();
+        let offset = if (offset - rounded).abs() <= (8. * f64::EPSILON * offset.abs().max(1.)).min(1e-6) {
+            rounded
+        } else {
+            offset
+        };
+        let index = offset.floor();
+        let start = self.step_origin + index * self.step;
+        let key = (start.to_bits(), self.step.to_bits());
+        if !self.sweeps.iter().any(|(t, d, _)| (*t, *d) == key) {
+            // One interval owns geometry at a time. Keeping eight historical
+            // deformations or scales would multiply the collider memory budget.
+            self.sweeps.clear();
+            let current = self.frame(start);
+            let next = self.frame(start + self.step);
+            let colliders = colliders::sample(self.colliders, &current, &next, start, self.step)?;
+            self.sweeps.push((key.0, key.1, colliders));
+        }
+        let colliders = &self.sweeps.iter().find(|(t, d, _)| (*t, *d) == key).expect("sweep cache").2;
+        let mut earliest: Option<Hit> = None;
+        for collider in colliders {
+            if let Some(hit) = collider.sweep(time, dt, from, to, radius)? {
+                if earliest.as_ref().is_none_or(|h| hit.fraction < h.fraction) {
+                    earliest = Some(hit);
+                }
+            }
+        }
+        Ok(earliest)
+    }
+}
+impl Sims {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn apply(
+        &mut self,
+        p: &Program,
+        g: &mut FrameGraph,
+        graphs: &mut Graphs<'_>,
+        fields: &FieldSrc,
+        mut physics: Option<&mut PhysicsRt>,
+        pyro: &mut crate::pyro::Sims,
+        splash: &crate::splash::Log,
+    ) {
+        // an ocean that loads the rigid bodies is run before the particles and pulls them as it needs them
+        let grouped = physics.as_deref().is_some_and(|ph| ph.group.is_some());
+        for i in 0..g.nodes.len() {
+            if g.nodes[i].kind != "particles3D" {
+                continue;
+            }
+            let id = g.nodes[i].id.clone();
+            let Some(node) = p.nodes.iter().position(|n| n.id == id).map(|n| n as u32) else {
+                continue;
+            };
+            let result = self.run(
+                p,
+                g.time,
+                &g.nodes[i],
+                node,
+                None,
+                !grouped,
+                graphs,
+                fields,
+                physics.as_deref_mut(),
+                pyro,
+                splash,
+            );
+            match result {
+                Ok(f) => {
+                    self.deposit(&id, node, g, &f, splash);
+                    g.nodes[i].particles3d = Some(f);
+                }
+                Err(e) => g.fail(format!("{id}: {e}")),
+            }
+        }
+    }
+
+    /// Puts on the ground of the crater that emitter `id` deposits on what has settled by the time of `f`, the particles it
+    /// has computed: the deposit is in the crater's frame node, where whatever reads the crater after the particles sees it.
+    fn deposit(
+        &mut self,
+        id: &Arc<str>,
+        node: u32,
+        g: &mut FrameGraph,
+        f: &Arc<SimParticles3D>,
+        splash: &crate::splash::Log,
+    ) {
+        let Some(Ok(rt)) = self.runtimes.get_mut(id) else { return };
+        let Some((config, state)) = rt.debris.as_mut() else { return };
+        let Some(k) = g.nodes.iter().position(|n| n.id == config.crater) else { return };
+        let Some(impact) = g.nodes[k].crater_impact.clone() else { return };
+        let spec = rt.emitter.spec();
+        let steps = ((f.frame.time - spec.start) / spec.step).round().max(0.) as u64;
+        match state.deposit(&impact, config.repose, steps, &|step| splash.settled(node, step)) {
+            Ok(deposit) if deposit.volume() > 0. => {
+                let grown = crate::crater::ImpactCrater { deposit: Some(deposit), ..(*impact).clone() };
+                g.nodes[k].crater_impact = Some(Arc::new(grown));
+            }
+            Ok(_) => {}
+            Err(error) => g.fail(format!("{id}: {error}")),
+        }
+    }
+
+    /// Computes the emitters that fall into ocean `ocean` as far as its canonical step `step` needs, for an ocean
+    /// that asks for a step the frame has not got to: the particles of a rigid world that the water loads are
+    /// computed a step at a time with the ocean, each needing only what the ocean has already written.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn advance(
+        &mut self,
+        p: &Program,
+        g: &FrameGraph,
+        graphs: &mut Graphs<'_>,
+        fields: &FieldSrc,
+        mut physics: Option<&mut PhysicsRt>,
+        pyro: &mut crate::pyro::Sims,
+        splash: &crate::splash::Log,
+        ocean: &str,
+        step: u64,
+    ) -> Result<(), String> {
+        // the emitters the ocean lists, whether or not they are in this frame: one that has left the composition by
+        // now still threw what fell before it did
+        let listed: Vec<Arc<str>> = p
+            .nodes
+            .iter()
+            .filter(|o| o.name == "ocean" && &*o.id == ocean)
+            .filter_map(|o| text(&*o.elem, "splash"))
+            .flat_map(|l| l.split_whitespace().map(Arc::from).collect::<Vec<Arc<str>>>())
+            .collect();
+        for id in listed {
+            let Some(node) = p.nodes.iter().position(|o| o.id == id).map(|o| o as u32) else {
+                return Err(format!("ocean {ocean} lists {id} in splash and there is no such emitter"));
+            };
+            let own = &p.nodes[node as usize];
+            let n = match g.nodes.iter().find(|n| n.id == id) {
+                Some(n) => n.clone(),
+                None => {
+                    // not in this frame: the node as it is when it starts
+                    let frame = graphs.at(own.start + num(&*own.elem, "emissionStart", 0.));
+                    frame.nodes.iter().find(|n| n.id == id).cloned().ok_or_else(|| {
+                        format!("{id}, which falls into ocean {ocean}, is not in the composition when it starts")
+                    })?
+                }
+            };
+            let emitter = match self.runtime(p, graphs, &n, node, splash) {
+                Ok(rt) => rt.splash.clone(),
+                Err(error) => return Err(error.clone()),
+            };
+            let emitter = emitter.ok_or_else(|| format!("{id} falls into no ocean"))?;
+            let until = emitter.needed_for(step, own.start);
+            self.run(p, g.time, &n, node, Some(until), false, graphs, fields, physics.as_deref_mut(), pyro, splash)?;
+        }
+        Ok(())
+    }
+
+    /// The runtime of the emitter, built if it is not, and made known to the ocean it falls into.
+    fn runtime(
+        &mut self,
+        p: &Program,
+        graphs: &mut Graphs<'_>,
+        n: &FrameNode,
+        node: u32,
+        splash: &crate::splash::Log,
+    ) -> &mut Result<Runtime, String> {
+        let id = n.id.clone();
+        if !crate::sim::linear_emitter_clock(p, node) {
+            self.runtimes.remove(&id);
+        }
+        // the ocean the particles fall into is taken at its pose when the emitter starts, once, with the
+        // runtime
+        let fall = if self.runtimes.contains_key(&id) { Ok(None) } else { fall_setup(p, graphs, &id, node) };
+        let rt = self.runtimes.entry(id).or_insert_with(|| fall.and_then(|fall| build(p, node, n, fall)));
+        if let Ok(rt) = rt {
+            if let Some(emitter) = &rt.splash {
+                splash.register(emitter);
+            }
+        }
+        rt
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &mut self,
+        p: &Program,
+        at: f64,
+        n: &FrameNode,
+        node: u32,
+        local_time: Option<f64>,
+        look_ahead: bool,
+        graphs: &mut Graphs<'_>,
+        fields: &FieldSrc,
+        physics: Option<&mut PhysicsRt>,
+        pyro: &mut crate::pyro::Sims,
+        splash: &crate::splash::Log,
+    ) -> Result<Arc<SimParticles3D>, String> {
+        let id = n.id.clone();
+        let rt = self.runtime(p, graphs, n, node, splash).as_mut().map_err(|e| e.clone())?;
+        let local_time = local_time.unwrap_or(n.local_time);
+        let mut d = SceneDriver {
+            p,
+            node,
+            id: id.clone(),
+            at,
+            graphs,
+            fields,
+            names: rt.names.as_deref(),
+            physics,
+            frames: Vec::new(),
+            colliders: &mut rt.colliders,
+            sweeps: Vec::new(),
+            step_origin: num(&*n.elem, "emissionStart", 0.),
+            step: num(&*n.elem, "dt", 1. / 60.),
+            seed: rt.seed,
+            lift: rt.lift,
+            bursts: &mut rt.crater_bursts,
+            gas: rt.gas.as_mut().map(|gas| (gas, &mut *pyro, rt.emitter.spec().drag)),
+            gas_at: Vec::new(),
+            splash: rt
+                .splash
+                .as_ref()
+                .map(|e| (e, splash, p.scene.physics.as_ref().map_or(100.0, |ph| ph.pixels_per_meter.get()))),
+            settled: rt.debris.as_ref().map(|(config, _)| (config, splash)),
+            fault: None,
+        };
+        // an ocean that runs after the particles reads what falls until the end of its step, which is later than
+        // this frame; one that runs before them asks for what it needs as it goes
+        if let (true, Some(emitter)) = (look_ahead, &rt.splash) {
+            let until = emitter.needed_until(at, p.nodes[node as usize].start);
+            if until > local_time {
+                rt.emitter.at(until, &mut d).map_err(|e| e.to_string())?;
+            }
+        }
+        let frame = rt.emitter.at(local_time, &mut d).map_err(|e| e.to_string())?.clone();
+        if let Some(fault) = d.fault.take() {
+            return Err(fault);
+        }
+        let mut key = crate::rng::hash(&[frame.time.to_bits(), frame.emitted, frame.dropped]);
+        for p in &frame.particles {
+            key = crate::rng::hash(&[key, p.id, p.birth.to_bits(), p.lifetime.to_bits(), p.scale.to_bits()]);
+            if p.mass != 0. {
+                key = crate::rng::hash(&[key, p.mass.to_bits(), 1]);
+            }
+            for v in p.position.iter().chain(&p.velocity).chain(p.basis.iter().flatten()).chain(&p.angular_velocity) {
+                key = crate::rng::hash(&[key, v.to_bits(), 0]);
+            }
+        }
+        Ok(Arc::new(SimParticles3D { frame, key, size_curve: rt.size_curve, color_curve: rt.color_curve }))
+    }
+}

@@ -1,0 +1,50 @@
+name: Renderer test environment
+description: Install and record the Linux renderer test dependencies
+inputs:
+  runtime:
+    description: Install renderer runtime dependencies when this job executes checks
+    default: 'true'
+  cache-profile:
+    description: Cargo profile directory to preserve in full (debug or release)
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+    - uses: Swatinem/rust-cache@v2
+      if: inputs.cache-profile == ''
+      with:
+        prefix-key: v1-source-times
+        cache-directories: .cache/ci-source-times.json
+        cache-on-failure: 'true'
+        cache-workspace-crates: 'true'
+    # Preserve linked executables and their fingerprints together. The standard
+    # Rust cache prunes these, forcing unchanged targets to compile/link again.
+    - uses: Swatinem/rust-cache@v2
+      if: inputs.cache-profile != ''
+      with:
+        prefix-key: v1-registry
+        cache-targets: 'false'
+    - shell: bash
+      id: compiler
+      if: inputs.cache-profile != ''
+      run: echo "identity=$(rustc -Vv | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v4
+      if: inputs.cache-profile != ''
+      with:
+        path: |
+          target/${{ inputs.cache-profile }}
+          .cache/ci-source-times.json
+        key: cargo-build-v1-${{ inputs.cache-profile }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.identity }}-${{ hashFiles('**/Cargo.toml', 'Cargo.lock', '.cargo/**') }}-${{ github.sha }}
+        restore-keys: |
+          cargo-build-v1-${{ inputs.cache-profile }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.identity }}-${{ hashFiles('**/Cargo.toml', 'Cargo.lock', '.cargo/**') }}-
+          cargo-build-v1-${{ inputs.cache-profile }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.identity }}-
+    - shell: bash
+      run: python3 tools/ci_source_times.py
+    - uses: ./.github/actions/runtime
+      if: inputs.runtime == 'true'
+      with:
+        evidence: 'true'
+        heic: 'true'

@@ -1,0 +1,1691 @@
+{
+  "invalid": {
+    "a01-missing-file.scene.xml": [
+      "A01"
+    ],
+    "a02-generated-cache.scene.xml": [
+      "A02"
+    ],
+    "a02-hash-mismatch.scene.xml": [
+      "A02"
+    ],
+    "a04-sequence-frames.scene.xml": [
+      "A04"
+    ],
+    "bedresponse-value.scene.xml": [
+      "S06"
+    ],
+    "bh1-version-1.0.scene.xml": [
+      "BH1"
+    ],
+    "bh1-version.scene.xml": [
+      "BH1"
+    ],
+    "bh2-two-holes.scene.xml": [
+      "BH2"
+    ],
+    "bh3-disk-target.scene.xml": [
+      "BH3"
+    ],
+    "bh4-inside-isco.scene.xml": [
+      "BH4"
+    ],
+    "bh4-outer-not-beyond-inner.scene.xml": [
+      "BH4"
+    ],
+    "bh5-geodesics-1-without-hole.scene.xml": [
+      "BH5"
+    ],
+    "bh5-geodesics-padded-without-hole.scene.xml": [
+      "BH5"
+    ],
+    "bh5-geodesics-without-hole.scene.xml": [
+      "BH5"
+    ],
+    "bh5-viewport-camera-sees-no-hole.scene.xml": [
+      "BH5",
+      "V15"
+    ],
+    "bh6-fluid.scene.xml": [
+      "BH6"
+    ],
+    "bh6-geodesics-1-other-object.scene.xml": [
+      "BH6"
+    ],
+    "bh6-other-object.scene.xml": [
+      "BH6"
+    ],
+    "bh6-particles.scene.xml": [
+      "BH6"
+    ],
+    "bh6-viewport-camera-sees-its-objects.scene.xml": [
+      "BH5",
+      "BH6",
+      "V15"
+    ],
+    "bh6-viewport-objects-isolated.scene.xml": [
+      "V15"
+    ],
+    "bh7-geodesics-1-inside-photon-sphere.scene.xml": [
+      "BH7"
+    ],
+    "bh7-inside-photon-sphere.scene.xml": [
+      "BH7"
+    ],
+    "bh8-geodesics-1-and-true.scene.xml": [
+      "BH8"
+    ],
+    "bh8-per-viewport.scene.xml": [
+      "BH5",
+      "BH8",
+      "V15"
+    ],
+    "bh8-two-cameras.scene.xml": [
+      "BH8"
+    ],
+    "c1.scene.xml": [
+      "C1"
+    ],
+    "c10.scene.xml": [
+      "C10"
+    ],
+    "c11.scene.xml": [
+      "C11"
+    ],
+    "c12.scene.xml": [
+      "C12"
+    ],
+    "c13-exponent.scene.xml": [
+      "C13"
+    ],
+    "c13.scene.xml": [
+      "C13"
+    ],
+    "c14.scene.xml": [
+      "C14"
+    ],
+    "c15-loop-plus-2.scene.xml": [
+      "C15"
+    ],
+    "c15-reverse-1.scene.xml": [
+      "C15"
+    ],
+    "c15-reverse-padded-true.scene.xml": [
+      "C15"
+    ],
+    "c15.scene.xml": [
+      "C15"
+    ],
+    "c16.scene.xml": [
+      "C16"
+    ],
+    "c17-points-count.scene.xml": [
+      "C17"
+    ],
+    "c17.scene.xml": [
+      "C17"
+    ],
+    "c18.scene.xml": [
+      "C18"
+    ],
+    "c19.scene.xml": [
+      "C19"
+    ],
+    "c2.scene.xml": [
+      "C2"
+    ],
+    "c20.scene.xml": [
+      "C20"
+    ],
+    "c21.scene.xml": [
+      "C21"
+    ],
+    "c22.scene.xml": [
+      "C22"
+    ],
+    "c23.scene.xml": [
+      "C23"
+    ],
+    "c24.scene.xml": [
+      "C24"
+    ],
+    "c25.scene.xml": [
+      "C25"
+    ],
+    "c26.scene.xml": [
+      "C26"
+    ],
+    "c27.scene.xml": [
+      "C27"
+    ],
+    "c28.scene.xml": [
+      "C28"
+    ],
+    "c29.scene.xml": [
+      "C29"
+    ],
+    "c3.scene.xml": [
+      "C3"
+    ],
+    "c30.scene.xml": [
+      "C30"
+    ],
+    "c31.scene.xml": [
+      "C31"
+    ],
+    "c32.scene.xml": [
+      "C32"
+    ],
+    "c33.scene.xml": [
+      "C33"
+    ],
+    "c34.scene.xml": [
+      "C34"
+    ],
+    "c35.scene.xml": [
+      "C35"
+    ],
+    "c36.scene.xml": [
+      "C36"
+    ],
+    "c37-offset-plus-0.2-after-0.5.scene.xml": [
+      "C37"
+    ],
+    "c37.scene.xml": [
+      "C37"
+    ],
+    "c38-exponent.scene.xml": [
+      "C38"
+    ],
+    "c38-time-plus-0.25-after-0.5.scene.xml": [
+      "C38"
+    ],
+    "c38.scene.xml": [
+      "C38"
+    ],
+    "c39.scene.xml": [
+      "C39"
+    ],
+    "c4.scene.xml": [
+      "C4"
+    ],
+    "c40.scene.xml": [
+      "C40"
+    ],
+    "c41.scene.xml": [
+      "C41"
+    ],
+    "c42.scene.xml": [
+      "C42"
+    ],
+    "c43-alpha-1.scene.xml": [
+      "C43"
+    ],
+    "c43-alpha-padded-true.scene.xml": [
+      "C43"
+    ],
+    "c43.scene.xml": [
+      "C43"
+    ],
+    "c44.scene.xml": [
+      "C44"
+    ],
+    "c45.scene.xml": [
+      "C45"
+    ],
+    "c46.scene.xml": [
+      "C46"
+    ],
+    "c47.scene.xml": [
+      "C47"
+    ],
+    "c48.scene.xml": [
+      "C48"
+    ],
+    "c5.scene.xml": [
+      "C5"
+    ],
+    "c50.scene.xml": [
+      "C50"
+    ],
+    "c51.scene.xml": [
+      "C51"
+    ],
+    "c52.scene.xml": [
+      "C52"
+    ],
+    "c53-domain-plus-3-then-plus-1.scene.xml": [
+      "C53"
+    ],
+    "c53.scene.xml": [
+      "C53"
+    ],
+    "c54.scene.xml": [
+      "C54"
+    ],
+    "c55.scene.xml": [
+      "C55"
+    ],
+    "c56.scene.xml": [
+      "C56"
+    ],
+    "c57.scene.xml": [
+      "C57"
+    ],
+    "c58.scene.xml": [
+      "C58"
+    ],
+    "c59-luma.scene.xml": [
+      "C59"
+    ],
+    "c59.scene.xml": [
+      "C59"
+    ],
+    "c6.scene.xml": [
+      "C6"
+    ],
+    "c60.scene.xml": [
+      "C60"
+    ],
+    "c61.scene.xml": [
+      "C61"
+    ],
+    "c62.scene.xml": [
+      "C62"
+    ],
+    "c63.scene.xml": [
+      "C63"
+    ],
+    "c64.scene.xml": [
+      "C64"
+    ],
+    "c65.scene.xml": [
+      "C65"
+    ],
+    "c66.scene.xml": [
+      "C66"
+    ],
+    "c67.scene.xml": [
+      "C67",
+      "R52"
+    ],
+    "c68.scene.xml": [
+      "C68"
+    ],
+    "c69.scene.xml": [
+      "C69"
+    ],
+    "c7.scene.xml": [
+      "C7"
+    ],
+    "c70-font-file.scene.xml": [
+      "C70"
+    ],
+    "c71-unpinned-asset.scene.xml": [
+      "C71"
+    ],
+    "c72-host-family.scene.xml": [
+      "C72"
+    ],
+    "c73-host-fallback.scene.xml": [
+      "C73"
+    ],
+    "c74.scene.xml": [
+      "C74"
+    ],
+    "c75.scene.xml": [
+      "C75"
+    ],
+    "c76.scene.xml": [
+      "C76"
+    ],
+    "c77.scene.xml": [
+      "C77"
+    ],
+    "c78.scene.xml": [
+      "C78"
+    ],
+    "c79.scene.xml": [
+      "C79"
+    ],
+    "c8.scene.xml": [
+      "C8"
+    ],
+    "c80-from-plus-2.scene.xml": [
+      "C80"
+    ],
+    "c80.scene.xml": [
+      "C80"
+    ],
+    "c9.scene.xml": [
+      "C9"
+    ],
+    "cmp13-two-tonemaps.scene.xml": [
+      "CMP13"
+    ],
+    "crt1.scene.xml": [
+      "CRT1"
+    ],
+    "crt10-bulking-without-source.scene.xml": [
+      "CRT10",
+      "CRT11"
+    ],
+    "crt10-mantle-without-source.scene.xml": [
+      "CRT10"
+    ],
+    "crt10-repose-without-source.scene.xml": [
+      "CRT10"
+    ],
+    "crt11-bulking-range.scene.xml": [
+      "S06"
+    ],
+    "crt11-bulking-with-mantle-0.scene.xml": [
+      "CRT11"
+    ],
+    "crt11-bulking-without-mantle.scene.xml": [
+      "CRT11"
+    ],
+    "crt12-repose-range.scene.xml": [
+      "S06"
+    ],
+    "crt12-repose-with-mantle-1.scene.xml": [
+      "CRT12"
+    ],
+    "crt12-repose-with-mantle.scene.xml": [
+      "CRT12"
+    ],
+    "crt13-mantle.scene.xml": [
+      "CRT13",
+      "W09"
+    ],
+    "crt14-curve.scene.xml": [
+      "CRT14",
+      "W09"
+    ],
+    "crt15-no-source.scene.xml": [
+      "CRT15",
+      "W09"
+    ],
+    "crt16-count.scene.xml": [
+      "CRT16",
+      "W09"
+    ],
+    "crt16-no-count.scene.xml": [
+      "CRT16"
+    ],
+    "crt17-angle.scene.xml": [
+      "CRT17",
+      "W09"
+    ],
+    "crt2.scene.xml": [
+      "CRT2"
+    ],
+    "crt3.scene.xml": [
+      "CRT3"
+    ],
+    "crt4-envelope.scene.xml": [
+      "CRT4"
+    ],
+    "crt4.scene.xml": [
+      "CRT4"
+    ],
+    "crt5.scene.xml": [
+      "CRT5"
+    ],
+    "crt6.scene.xml": [
+      "CRT6"
+    ],
+    "crt7-material.scene.xml": [
+      "CRT7"
+    ],
+    "crt7-orphan.scene.xml": [
+      "CRT7"
+    ],
+    "crt8-self.scene.xml": [
+      "CRT8"
+    ],
+    "crt8-static.scene.xml": [
+      "CRT8"
+    ],
+    "crt9-capture-without-source.scene.xml": [
+      "CRT9"
+    ],
+    "frc1-julia-without-c.scene.xml": [
+      "FRC1"
+    ],
+    "frc1-mandelbrot-with-c.scene.xml": [
+      "FRC1"
+    ],
+    "frx1.scene.xml": [
+      "FRX1"
+    ],
+    "frx10-pieces.scene.xml": [
+      "FRX10",
+      "W09"
+    ],
+    "frx11-infinite.scene.xml": [
+      "FRX11",
+      "W09"
+    ],
+    "frx11-no-partition.scene.xml": [
+      "FRX11",
+      "W09"
+    ],
+    "frx11-planes.scene.xml": [
+      "FRX11",
+      "W09"
+    ],
+    "frx11-zero-normal.scene.xml": [
+      "FRX11",
+      "W09"
+    ],
+    "frx12-labels.scene.xml": [
+      "FRX12",
+      "W09"
+    ],
+    "frx13-no-strength.scene.xml": [
+      "FRX13",
+      "W09"
+    ],
+    "frx13-strength-alone.scene.xml": [
+      "FRX13",
+      "W09"
+    ],
+    "frx14-static.scene.xml": [
+      "FRX14",
+      "W09"
+    ],
+    "frx15-source.scene.xml": [
+      "FRX15",
+      "W09"
+    ],
+    "frx2.scene.xml": [
+      "FRX2"
+    ],
+    "frx3.scene.xml": [
+      "FRX3"
+    ],
+    "frx4.scene.xml": [
+      "FRX4",
+      "W01"
+    ],
+    "frx5-source-self.scene.xml": [
+      "FRX5"
+    ],
+    "frx5-source-static.scene.xml": [
+      "FRX5"
+    ],
+    "frx6-push.scene.xml": [
+      "FRX6"
+    ],
+    "frx6-timed.scene.xml": [
+      "FRX6"
+    ],
+    "frx7-orphan.scene.xml": [
+      "FRX7"
+    ],
+    "frx8-interior.scene.xml": [
+      "FRX8",
+      "W09"
+    ],
+    "frx9-partition.scene.xml": [
+      "FRX9"
+    ],
+    "geo1.scene.xml": [
+      "GEO1"
+    ],
+    "geo2-tile-size-plus-48.scene.xml": [
+      "GEO2"
+    ],
+    "geo2.scene.xml": [
+      "GEO2"
+    ],
+    "geo3.scene.xml": [
+      "GEO3"
+    ],
+    "gm-element-id.scene.xml": [
+      "R21"
+    ],
+    "gm-malformed-dots.scene.xml": [
+      "R21"
+    ],
+    "gm-malformed-empty.scene.xml": [
+      "R21"
+    ],
+    "gm-malformed-kind.scene.xml": [
+      "R21"
+    ],
+    "gm-malformed-letters.scene.xml": [
+      "R21"
+    ],
+    "gm-no-grid.scene.xml": [
+      "R21"
+    ],
+    "gm-too-many-digits.scene.xml": [
+      "R21"
+    ],
+    "itr1-check-every.scene.xml": [
+      "ITR1"
+    ],
+    "itr2-nested.scene.xml": [
+      "ITR2"
+    ],
+    "mov1.scene.xml": [
+      "MOV1"
+    ],
+    "mov2.scene.xml": [
+      "MOV2"
+    ],
+    "msq1.scene.xml": [
+      "MSQ1"
+    ],
+    "msq2.scene.xml": [
+      "MSQ2",
+      "A04"
+    ],
+    "msq3.scene.xml": [
+      "MSQ3"
+    ],
+    "msq4.scene.xml": [
+      "MSQ4"
+    ],
+    "mtx1-basecolormap.scene.xml": [
+      "MTX1-baseColorMap"
+    ],
+    "mtx1-displacementmap.scene.xml": [
+      "MTX1-displacementMap"
+    ],
+    "mtx1-emissivemap.scene.xml": [
+      "MTX1-emissiveMap"
+    ],
+    "mtx1-metallicroughnessmap.scene.xml": [
+      "MTX1-metallicRoughnessMap"
+    ],
+    "mtx1-normalmap.scene.xml": [
+      "MTX1-normalMap"
+    ],
+    "mtx1-occlusionmap.scene.xml": [
+      "MTX1-occlusionMap"
+    ],
+    "ocean-density-zero.scene.xml": [
+      "S06"
+    ],
+    "ocean-order.scene.xml": [
+      "S06"
+    ],
+    "ocn1.scene.xml": [
+      "OCN1"
+    ],
+    "ocn10-derived.scene.xml": [
+      "OCN10"
+    ],
+    "ocn11-static.scene.xml": [
+      "OCN11"
+    ],
+    "ocn11-unlisted.scene.xml": [
+      "OCN11"
+    ],
+    "ocn12-twice.scene.xml": [
+      "OCN12"
+    ],
+    "ocn13-splash.scene.xml": [
+      "OCN13"
+    ],
+    "ocn14-foam-radius.scene.xml": [
+      "OCN14"
+    ],
+    "ocn2.scene.xml": [
+      "OCN2"
+    ],
+    "ocn3-wavelength-plus-0.5.scene.xml": [
+      "OCN3"
+    ],
+    "ocn3.scene.xml": [
+      "OCN3"
+    ],
+    "ocn4.scene.xml": [
+      "OCN4"
+    ],
+    "ocn5-end-plus-0.5-before-start-plus-1.scene.xml": [
+      "OCN5"
+    ],
+    "ocn5.scene.xml": [
+      "OCN5"
+    ],
+    "ocn6.scene.xml": [
+      "OCN6"
+    ],
+    "ocn7-text-tracking.scene.xml": [
+      "OCN7"
+    ],
+    "ocn7.scene.xml": [
+      "OCN7"
+    ],
+    "ocn8-coupling.scene.xml": [
+      "OCN8"
+    ],
+    "ocn9-drag.scene.xml": [
+      "OCN9"
+    ],
+    "openvdb-format.scene.xml": [
+      "S06"
+    ],
+    "out1-odd-h264-frame.scene.xml": [
+      "OUT1"
+    ],
+    "p3d1.scene.xml": [
+      "P3D1"
+    ],
+    "p3d10-angle.scene.xml": [
+      "P3D10"
+    ],
+    "p3d11-gas.scene.xml": [
+      "P3D11"
+    ],
+    "p3d2.scene.xml": [
+      "P3D2"
+    ],
+    "p3d3.scene.xml": [
+      "P3D3"
+    ],
+    "p3d4.scene.xml": [
+      "P3D4"
+    ],
+    "p3d5.scene.xml": [
+      "P3D5"
+    ],
+    "p3d6.scene.xml": [
+      "P3D6"
+    ],
+    "p3d7-derived.scene.xml": [
+      "P3D7"
+    ],
+    "p3d7-time.scene.xml": [
+      "P3D3",
+      "P3D7"
+    ],
+    "p3d8-authored.scene.xml": [
+      "P3D8"
+    ],
+    "p3d9-orphan.scene.xml": [
+      "P3D9"
+    ],
+    "par1-missing.scene.xml": [
+      "PAR1"
+    ],
+    "par1-other-shape.scene.xml": [
+      "PAR1"
+    ],
+    "par1-two.scene.xml": [
+      "PAR1"
+    ],
+    "par2-crossed.scene.xml": [
+      "PAR2"
+    ],
+    "par2-missing.scene.xml": [
+      "PAR2"
+    ],
+    "par2-other-primitive.scene.xml": [
+      "PAR2"
+    ],
+    "pen1.scene.xml": [
+      "PEN1"
+    ],
+    "pen2.scene.xml": [
+      "PEN2"
+    ],
+    "prg1-param-twice.scene.xml": [
+      "PRG1"
+    ],
+    "prg10-program-hash.scene.xml": [
+      "PRG10"
+    ],
+    "prg10-program-missing.scene.xml": [
+      "PRG10"
+    ],
+    "prg2-over-node-program.scene.xml": [
+      "C18",
+      "PRG2"
+    ],
+    "prg3-step-size.scene.xml": [
+      "PRG3"
+    ],
+    "pyc1-derived.scene.xml": [
+      "PYC1"
+    ],
+    "pyc2-orphan.scene.xml": [
+      "PYC2"
+    ],
+    "pyc3-time.scene.xml": [
+      "PYC3"
+    ],
+    "pyc4-authored.scene.xml": [
+      "PYC4"
+    ],
+    "pyc5-closed.scene.xml": [
+      "PYC5"
+    ],
+    "pyc6-outside.scene.xml": [
+      "PYC6"
+    ],
+    "pyro-advection.scene.xml": [
+      "S06"
+    ],
+    "pyro-blast-gamma.scene.xml": [
+      "S06"
+    ],
+    "pyro-solver.scene.xml": [
+      "S06"
+    ],
+    "pyro1.scene.xml": [
+      "PYRO1"
+    ],
+    "pyro10-follow-0.scene.xml": [
+      "PYRO10"
+    ],
+    "pyro10-orphan.scene.xml": [
+      "PYRO10"
+    ],
+    "pyro11-margin-plus-4.scene.xml": [
+      "PYRO11"
+    ],
+    "pyro11-margin.scene.xml": [
+      "PYRO11"
+    ],
+    "pyro2-end-inf.scene.xml": [
+      "PYRO2",
+      "W01"
+    ],
+    "pyro2.scene.xml": [
+      "PYRO2"
+    ],
+    "pyro3.scene.xml": [
+      "PYRO3"
+    ],
+    "pyro4-scale-x-plus-0.scene.xml": [
+      "PYRO4"
+    ],
+    "pyro4.scene.xml": [
+      "PYRO4"
+    ],
+    "pyro5.scene.xml": [
+      "PYRO5"
+    ],
+    "pyro6.scene.xml": [
+      "PYRO6"
+    ],
+    "pyro7.scene.xml": [
+      "PYRO7"
+    ],
+    "pyro8.scene.xml": [
+      "PYRO8"
+    ],
+    "pyro9-closed.scene.xml": [
+      "PYRO9"
+    ],
+    "pyro9-follow-padded-true-closed.scene.xml": [
+      "PYRO9"
+    ],
+    "r1.scene.xml": [
+      "R1"
+    ],
+    "r10-any-node.scene.xml": [
+      "R10"
+    ],
+    "r10.scene.xml": [
+      "R10"
+    ],
+    "r11.scene.xml": [
+      "R11"
+    ],
+    "r12.scene.xml": [
+      "R12"
+    ],
+    "r13.scene.xml": [
+      "R13"
+    ],
+    "r14.scene.xml": [
+      "R14"
+    ],
+    "r15-has-audio-0.scene.xml": [
+      "R15"
+    ],
+    "r15-video-without-audio.scene.xml": [
+      "R15"
+    ],
+    "r15.scene.xml": [
+      "R15"
+    ],
+    "r16.scene.xml": [
+      "R16"
+    ],
+    "r17.scene.xml": [
+      "R17"
+    ],
+    "r18.scene.xml": [
+      "R18"
+    ],
+    "r19.scene.xml": [
+      "R19"
+    ],
+    "r2.scene.xml": [
+      "R2"
+    ],
+    "r20.scene.xml": [
+      "R20"
+    ],
+    "r21-key.scene.xml": [
+      "R21"
+    ],
+    "r21.scene.xml": [
+      "R21"
+    ],
+    "r22-style.scene.xml": [
+      "R22"
+    ],
+    "r22.scene.xml": [
+      "R22"
+    ],
+    "r23.scene.xml": [
+      "R23"
+    ],
+    "r24-activeColor.scene.xml": [
+      "R24-activeColor"
+    ],
+    "r24-background.scene.xml": [
+      "R24-background"
+    ],
+    "r24-color.scene.xml": [
+      "R24-color"
+    ],
+    "r24-fill.scene.xml": [
+      "R24-fill"
+    ],
+    "r24-highlight.scene.xml": [
+      "R24-highlight"
+    ],
+    "r24-paint.scene.xml": [
+      "R24-paint"
+    ],
+    "r24-stroke.scene.xml": [
+      "R24-stroke"
+    ],
+    "r24-strokeColor.scene.xml": [
+      "R24-strokeColor"
+    ],
+    "r25-activeColor.scene.xml": [
+      "R25-activeColor"
+    ],
+    "r25-background.scene.xml": [
+      "R25-background"
+    ],
+    "r25-color.scene.xml": [
+      "R25-color"
+    ],
+    "r25-fill.scene.xml": [
+      "R25-fill"
+    ],
+    "r25-highlight.scene.xml": [
+      "R25-highlight"
+    ],
+    "r25-paint.scene.xml": [
+      "R25-paint"
+    ],
+    "r25-stroke.scene.xml": [
+      "R25-stroke"
+    ],
+    "r25-strokeColor.scene.xml": [
+      "R25-strokeColor"
+    ],
+    "r26.scene.xml": [
+      "R26"
+    ],
+    "r27.scene.xml": [
+      "R27"
+    ],
+    "r28.scene.xml": [
+      "R28"
+    ],
+    "r29.scene.xml": [
+      "R29"
+    ],
+    "r3.scene.xml": [
+      "R3"
+    ],
+    "r30-colorEnd.scene.xml": [
+      "R30-colorEnd"
+    ],
+    "r30-colorHigh.scene.xml": [
+      "R30-colorHigh"
+    ],
+    "r30-colorLow.scene.xml": [
+      "R30-colorLow"
+    ],
+    "r30-headFill.scene.xml": [
+      "R30-headFill"
+    ],
+    "r30-noData.scene.xml": [
+      "R30-noData"
+    ],
+    "r30-outline.scene.xml": [
+      "R30-outline"
+    ],
+    "r30-paint2.scene.xml": [
+      "R30-paint2"
+    ],
+    "r31-attenuationColor.scene.xml": [
+      "R31-attenuationColor"
+    ],
+    "r31-baseColor.scene.xml": [
+      "R31-baseColor"
+    ],
+    "r31-colorEnd.scene.xml": [
+      "R31-colorEnd"
+    ],
+    "r31-colorHigh.scene.xml": [
+      "R31-colorHigh"
+    ],
+    "r31-colorLow.scene.xml": [
+      "R31-colorLow"
+    ],
+    "r31-emissive.scene.xml": [
+      "R31-emissive"
+    ],
+    "r31-foreground.scene.xml": [
+      "R31-foreground"
+    ],
+    "r31-headFill.scene.xml": [
+      "R31-headFill"
+    ],
+    "r31-keyColor.scene.xml": [
+      "R31-keyColor"
+    ],
+    "r31-noData.scene.xml": [
+      "R31-noData"
+    ],
+    "r31-outline.scene.xml": [
+      "R31-outline"
+    ],
+    "r31-paint2.scene.xml": [
+      "R31-paint2"
+    ],
+    "r31-shadowColor.scene.xml": [
+      "R31-shadowColor"
+    ],
+    "r31-sheenColor.scene.xml": [
+      "R31-sheenColor"
+    ],
+    "r31-specularColor.scene.xml": [
+      "R31-specularColor"
+    ],
+    "r32.scene.xml": [
+      "R32"
+    ],
+    "r33.scene.xml": [
+      "R33"
+    ],
+    "r34.scene.xml": [
+      "R34"
+    ],
+    "r35.scene.xml": [
+      "R35"
+    ],
+    "r36.scene.xml": [
+      "R36"
+    ],
+    "r37.scene.xml": [
+      "R37"
+    ],
+    "r38.scene.xml": [
+      "R38"
+    ],
+    "r39-bus.scene.xml": [
+      "R39"
+    ],
+    "r39.scene.xml": [
+      "R39"
+    ],
+    "r4.scene.xml": [
+      "R4"
+    ],
+    "r40.scene.xml": [
+      "R40"
+    ],
+    "r41.scene.xml": [
+      "R41"
+    ],
+    "r42.scene.xml": [
+      "R42"
+    ],
+    "r43.scene.xml": [
+      "R43"
+    ],
+    "r44.scene.xml": [
+      "R44"
+    ],
+    "r47.scene.xml": [
+      "R47"
+    ],
+    "r48-from-threed-1.scene.xml": [
+      "R48-from"
+    ],
+    "r48-from-threed-padded-true.scene.xml": [
+      "R48-from"
+    ],
+    "r48-from.scene.xml": [
+      "R48-from"
+    ],
+    "r48-to-threed-1.scene.xml": [
+      "R48-to"
+    ],
+    "r48-to.scene.xml": [
+      "R48-to"
+    ],
+    "r49.scene.xml": [
+      "R49"
+    ],
+    "r5.scene.xml": [
+      "R5"
+    ],
+    "r50.scene.xml": [
+      "R50"
+    ],
+    "r51.scene.xml": [
+      "R51",
+      "R52"
+    ],
+    "r52.scene.xml": [
+      "R52"
+    ],
+    "r53-empty-list.scene.xml": [
+      "S06",
+      "R53"
+    ],
+    "r54-audiogram-source.scene.xml": [
+      "R54"
+    ],
+    "r6-duplicate.scene.xml": [
+      "R6"
+    ],
+    "r6.scene.xml": [
+      "R6"
+    ],
+    "r7.scene.xml": [
+      "R7"
+    ],
+    "r8.scene.xml": [
+      "R8"
+    ],
+    "r9.scene.xml": [
+      "R9"
+    ],
+    "s01-root.scene.xml": [
+      "S01"
+    ],
+    "s02-out-of-order.scene.xml": [
+      "S02"
+    ],
+    "s02-unknown-element.scene.xml": [
+      "S02"
+    ],
+    "s03-empty-animate.scene.xml": [
+      "S03"
+    ],
+    "s03-missing-child.scene.xml": [
+      "S03"
+    ],
+    "s04-unknown-attribute.scene.xml": [
+      "S04"
+    ],
+    "s05-missing-attribute.scene.xml": [
+      "S05"
+    ],
+    "s06-bound.scene.xml": [
+      "S06"
+    ],
+    "s06-colour.scene.xml": [
+      "S06"
+    ],
+    "s06-decimal-exponent.scene.xml": [
+      "S06"
+    ],
+    "s06-double.scene.xml": [
+      "S06"
+    ],
+    "s06-enum.scene.xml": [
+      "S06"
+    ],
+    "s06-idrefs-empty.scene.xml": [
+      "S06",
+      "R53"
+    ],
+    "s06-integer.scene.xml": [
+      "S06"
+    ],
+    "s06-latitude.scene.xml": [
+      "S06"
+    ],
+    "s06-length.scene.xml": [
+      "S06"
+    ],
+    "s06-pattern-fps.scene.xml": [
+      "S06"
+    ],
+    "s07-text.scene.xml": [
+      "S07"
+    ],
+    "s09-crater-id.scene.xml": [
+      "S09"
+    ],
+    "s09-duplicate-id.scene.xml": [
+      "S09"
+    ],
+    "s10-dangling-idref.scene.xml": [
+      "S10",
+      "R54"
+    ],
+    "sky1-not-dome.scene.xml": [
+      "SKY1"
+    ],
+    "sky2-environment.scene.xml": [
+      "SKY2"
+    ],
+    "solid-colliders-blob.scene.xml": [
+      "P3D6",
+      "PYRO8"
+    ],
+    "solid-colliders-boil.scene.xml": [
+      "P3D6",
+      "PYRO8"
+    ],
+    "solid-colliders-tracking.scene.xml": [
+      "P3D6",
+      "PYRO8"
+    ],
+    "srt1-low-high.scene.xml": [
+      "SRT1"
+    ],
+    "srt1-low-plus-1-above-high-plus-0.5.scene.xml": [
+      "SRT1"
+    ],
+    "stp1-build-program.scene.xml": [
+      "STP1"
+    ],
+    "stp1-not-a-shader.scene.xml": [
+      "STP1"
+    ],
+    "txt2.scene.xml": [
+      "TXT2"
+    ],
+    "v1-sections.scene.xml": [
+      "V1"
+    ],
+    "v10.scene.xml": [
+      "V10"
+    ],
+    "v11.scene.xml": [
+      "V11"
+    ],
+    "v12-program.scene.xml": [
+      "V12"
+    ],
+    "v13-iterate.scene.xml": [
+      "V13"
+    ],
+    "v14-heightfield.scene.xml": [
+      "V14"
+    ],
+    "v14-path.scene.xml": [
+      "V14"
+    ],
+    "v15-viewport.scene.xml": [
+      "V15"
+    ],
+    "v16-fractal.scene.xml": [
+      "V16"
+    ],
+    "v2-outputs.scene.xml": [
+      "V2"
+    ],
+    "v3-elements.scene.xml": [
+      "V3"
+    ],
+    "v4-assets.scene.xml": [
+      "V4"
+    ],
+    "v5-elements.scene.xml": [
+      "V5"
+    ],
+    "v5-joint.scene.xml": [
+      "V5"
+    ],
+    "v5-morph.scene.xml": [
+      "V5"
+    ],
+    "v5-stroke-text.scene.xml": [
+      "V5"
+    ],
+    "v6-elements.scene.xml": [
+      "V6"
+    ],
+    "v7-primitives.scene.xml": [
+      "V7"
+    ],
+    "v8-volumes.scene.xml": [
+      "V8"
+    ],
+    "v9.scene.xml": [
+      "V9"
+    ],
+    "vol-light-grid-cell.scene.xml": [
+      "S06"
+    ],
+    "vol-light-grid-directions.scene.xml": [
+      "S06"
+    ],
+    "vol-light-grid-memory.scene.xml": [
+      "S06"
+    ],
+    "vol-lighting-enum.scene.xml": [
+      "S06"
+    ],
+    "vol-scatter-bounces-fraction.scene.xml": [
+      "S06"
+    ],
+    "vol-scatter-bounces-range.scene.xml": [
+      "S06"
+    ],
+    "vol1.scene.xml": [
+      "VOL1"
+    ],
+    "vol10.scene.xml": [
+      "VOL10"
+    ],
+    "vol2.scene.xml": [
+      "VOL2"
+    ],
+    "vol3.scene.xml": [
+      "VOL3"
+    ],
+    "vol4.scene.xml": [
+      "VOL4"
+    ],
+    "vol5-blackbody-padded-1.scene.xml": [
+      "VOL5"
+    ],
+    "vol5-blackbody-padded-true.scene.xml": [
+      "VOL5"
+    ],
+    "vol5-two-pyros.scene.xml": [
+      "VOL1"
+    ],
+    "vol5.scene.xml": [
+      "VOL5"
+    ],
+    "vol6.scene.xml": [
+      "VOL6"
+    ],
+    "vol7.scene.xml": [
+      "VOL7"
+    ],
+    "vol8.scene.xml": [
+      "VOL8"
+    ],
+    "vol9.scene.xml": [
+      "VOL9"
+    ],
+    "vox1-version.scene.xml": [
+      "VOX1"
+    ],
+    "vox10-mass.scene.xml": [
+      "VOX10",
+      "W09"
+    ],
+    "vox10-no-density.scene.xml": [
+      "VOX10",
+      "W09"
+    ],
+    "vox11-slots.scene.xml": [
+      "VOX11",
+      "W09"
+    ],
+    "vox12-anchor.scene.xml": [
+      "VOX12",
+      "W09"
+    ],
+    "vox13-scale.scene.xml": [
+      "VOX13",
+      "W09"
+    ],
+    "vox14-both.scene.xml": [
+      "VOX14",
+      "W09"
+    ],
+    "vox15-fracture-box.scene.xml": [
+      "VOX15",
+      "W09"
+    ],
+    "vox15-mesh-collider.scene.xml": [
+      "VOX15",
+      "W09"
+    ],
+    "vox2-both-sources.scene.xml": [
+      "VOX2"
+    ],
+    "vox2-cellsize-with-src.scene.xml": [
+      "VOX2"
+    ],
+    "vox2-grid-of-vox.scene.xml": [
+      "VOX2"
+    ],
+    "vox2-model-of-mesh.scene.xml": [
+      "VOX2"
+    ],
+    "vox2-model-of-srvol.scene.xml": [
+      "VOX2"
+    ],
+    "vox2-no-source.scene.xml": [
+      "VOX2"
+    ],
+    "vox3-frommesh.scene.xml": [
+      "VOX3"
+    ],
+    "vox4-asset.scene.xml": [
+      "VOX4"
+    ],
+    "vox4-no-asset.scene.xml": [
+      "VOX4"
+    ],
+    "vox5-orphan.scene.xml": [
+      "VOX5"
+    ],
+    "vox5-surface-memory-orphan.scene.xml": [
+      "VOX5"
+    ],
+    "vox6-palette.scene.xml": [
+      "VOX6"
+    ],
+    "vox7-exclusion.scene.xml": [
+      "VOX7"
+    ],
+    "vox8-shape.scene.xml": [
+      "VOX8"
+    ],
+    "vox9-density.scene.xml": [
+      "VOX9"
+    ],
+    "vp1-camera-outside.scene.xml": [
+      "VP1"
+    ],
+    "vp3-body.scene.xml": [
+      "VP3"
+    ],
+    "whitewater-checkpoint-range.scene.xml": [
+      "S06"
+    ],
+    "whitewater-foam-albedo-range.scene.xml": [
+      "S06"
+    ],
+    "whitewater-foam-mode.scene.xml": [
+      "S06"
+    ]
+  },
+  "valid": {
+    "advected-volume.scene.xml": [],
+    "baked-volume.scene.xml": [],
+    "black-hole-disk-at-isco.scene.xml": [],
+    "black-hole-geodesics-1.scene.xml": [],
+    "black-hole-geodesics-padded.scene.xml": [],
+    "black-hole-version-1.6.scene.xml": [],
+    "black-hole-without-disk.scene.xml": [],
+    "black-hole.scene.xml": [],
+    "c13-min-size-plus-0.5.scene.xml": [],
+    "c14-letter-spacing-plus-0.5.scene.xml": [],
+    "c15-loop-00.scene.xml": [],
+    "c15-loop-padded-0.scene.xml": [],
+    "c15-loop-plus-0.scene.xml": [],
+    "c15-reverse-0.scene.xml": [],
+    "c15-reverse-padded-false.scene.xml": [],
+    "c15-speed-exponent.scene.xml": [],
+    "c15-speed-plus-1.scene.xml": [],
+    "c43-alpha-0.scene.xml": [],
+    "c44-start-plus-0.5.scene.xml": [],
+    "c52-end-plus-1.scene.xml": [],
+    "c54-start-plus-0.scene.xml": [],
+    "c56-from-plus-0.5.scene.xml": [],
+    "c80-from-plus-0.scene.xml": [],
+    "c80-step-01.scene.xml": [],
+    "c80-step-plus-1.scene.xml": [],
+    "connector-points.scene.xml": [],
+    "connector.scene.xml": [],
+    "crater-capture.scene.xml": [],
+    "crater-impact-influence-large.scene.xml": [],
+    "crater-impact-influence-small.scene.xml": [],
+    "crater-impact.scene.xml": [],
+    "crater-mantle-0-repose.scene.xml": [],
+    "crater-mantle-1-bulking.scene.xml": [],
+    "crater-mantle-bulking.scene.xml": [],
+    "crater-mantle-version-1.6.scene.xml": [],
+    "crater-mantle.scene.xml": [],
+    "crater-repose.scene.xml": [],
+    "crater-version-1.6.scene.xml": [],
+    "crater.scene.xml": [],
+    "ejecta-crater.scene.xml": [],
+    "flock-upright.scene.xml": [],
+    "fractal.scene.xml": [],
+    "fracture-contact-tuned.scene.xml": [],
+    "fracture-contact-version-1.6.scene.xml": [],
+    "fracture-contact.scene.xml": [],
+    "fracture-version-1.6.scene.xml": [],
+    "fracture.scene.xml": [],
+    "geo2-tile-size-064.scene.xml": [],
+    "geo2-tile-size-plus-64.scene.xml": [],
+    "globe-relief-version-1.6.scene.xml": [],
+    "globe-relief.scene.xml": [],
+    "gm-bar.scene.xml": [],
+    "gm-end.scene.xml": [],
+    "gm-explicit.scene.xml": [],
+    "gm-key.scene.xml": [],
+    "gm-leading-zeros.scene.xml": [],
+    "gm-name-without-grid.scene.xml": [],
+    "gm-poster.scene.xml": [],
+    "gm-start.scene.xml": [],
+    "itr1-check-every-plus-1.scene.xml": [],
+    "joint.scene.xml": [],
+    "kitchen-sink.scene.xml": [],
+    "mesh-sequence-version-1.6.scene.xml": [],
+    "mesh-sequence.scene.xml": [],
+    "metal-without-environment.scene.xml": [],
+    "minimal.scene.xml": [],
+    "model-select.scene.xml": [],
+    "morph.scene.xml": [],
+    "object3d-off-camera.scene.xml": [],
+    "ocean-buoyancy.scene.xml": [],
+    "ocean-colliders.scene.xml": [],
+    "ocean-density-version-1.6.scene.xml": [],
+    "ocean-density.scene.xml": [],
+    "ocean-depth-filtered-drag.scene.xml": [],
+    "ocean-entry.scene.xml": [],
+    "ocean-full.scene.xml": [],
+    "ocean-hydrostatic.scene.xml": [],
+    "ocean-order2.scene.xml": [],
+    "ocean-splash.scene.xml": [],
+    "ocean-version-1.6.scene.xml": [],
+    "ocean.scene.xml": [],
+    "ocn14-foam-radius-plus-1.scene.xml": [],
+    "ocn3-cell-size-plus-0.5.scene.xml": [],
+    "openvdb-sequence.scene.xml": [],
+    "openvdb.scene.xml": [],
+    "p3d10-angle-plus-1.scene.xml": [],
+    "p3d3-lifetime-plus-1.scene.xml": [],
+    "parametric.scene.xml": [],
+    "particles3d-gas.scene.xml": [],
+    "particles3d-version-1.6.scene.xml": [],
+    "particles3d.scene.xml": [],
+    "pdf-region.scene.xml": [],
+    "physics-internal-edges.scene.xml": [],
+    "pinned-fonts.scene.xml": [],
+    "prec1-f32-3d.scene.xml": [],
+    "programs.scene.xml": [],
+    "pyc6-x-plus-1.scene.xml": [],
+    "pyro-blast-gas.scene.xml": [],
+    "pyro-blast.scene.xml": [],
+    "pyro-colliders.scene.xml": [],
+    "pyro-crater-push.scene.xml": [],
+    "pyro-crater.scene.xml": [],
+    "pyro-fields.scene.xml": [],
+    "pyro-follow-margin-plus-2.scene.xml": [],
+    "pyro-follow-padded-1.scene.xml": [],
+    "pyro-follow-version-1.6.scene.xml": [],
+    "pyro-follow.scene.xml": [],
+    "pyro-maccormack.scene.xml": [],
+    "pyro-mesh.scene.xml": [],
+    "pyro-multigrid.scene.xml": [],
+    "pyro.scene.xml": [],
+    "pyro1-voxel-size-plus-0.5.scene.xml": [],
+    "pyro11-voxel-size-plus-1.scene.xml": [],
+    "pyro2-end-plus-1.scene.xml": [],
+    "r15-has-audio-padded-1.scene.xml": [],
+    "r15-has-audio-padded-true.scene.xml": [],
+    "r48-threed-0.scene.xml": [],
+    "repeat-points-neutral-steps.scene.xml": [],
+    "repeat-points.scene.xml": [],
+    "solid-colliders.scene.xml": [],
+    "srep71-subsurface-sky-maps.scene.xml": [],
+    "srt1-low-plus-0.5.scene.xml": [],
+    "stroke-text.scene.xml": [],
+    "text3d-tracking.scene.xml": [],
+    "thermal-volume.scene.xml": [],
+    "version-1.0.scene.xml": [],
+    "version-1.6-parametric-beside-crater.scene.xml": [],
+    "viewport3d.scene.xml": [],
+    "vol4-bounds-max-z-plus-1.scene.xml": [],
+    "vol5-blackbody-0.scene.xml": [],
+    "volume-light-grid.scene.xml": [],
+    "volume-scatter-bounces-version-1.6.scene.xml": [],
+    "volume-scatter-bounces-zero.scene.xml": [],
+    "volume-scatter-bounces.scene.xml": [],
+    "volume-sequence.scene.xml": [],
+    "volume-version-1.6.scene.xml": [],
+    "volume.scene.xml": [],
+    "voxel-crater-signed-scale.scene.xml": [],
+    "voxels-from-mesh.scene.xml": [],
+    "voxels-srvol-format.scene.xml": [],
+    "voxels-srvol.scene.xml": [],
+    "voxels-surface-memory.scene.xml": [],
+    "voxels-version-1.6.scene.xml": [],
+    "voxels.scene.xml": [],
+    "whitewater-checkpoint.scene.xml": [],
+    "whitewater-foam-albedo.scene.xml": []
+  },
+  "warnings": {
+    "a03-remote.scene.xml": [
+      "A03"
+    ],
+    "a04-sequence-hold.scene.xml": [
+      "A04"
+    ],
+    "frx11-planes-plus-1.scene.xml": [
+      "W09"
+    ],
+    "inert-i16-streak-flock.scene.xml": [
+      "INERT-I16"
+    ],
+    "ocn3-wavelength-inf.scene.xml": [
+      "W01"
+    ],
+    "ocn5-whitewater-end-inf.scene.xml": [
+      "W01"
+    ],
+    "ocn5-whitewater-start-inf.scene.xml": [
+      "W01"
+    ],
+    "p3d3-direction-x-inf.scene.xml": [
+      "W01"
+    ],
+    "solid-colliders-boil-inf.scene.xml": [
+      "W01"
+    ],
+    "voxel-body.scene.xml": [
+      "W09"
+    ],
+    "voxel-crater-version-1.6.scene.xml": [
+      "W09"
+    ],
+    "voxel-crater.scene.xml": [
+      "W09"
+    ],
+    "voxel-ejecta.scene.xml": [
+      "W09"
+    ],
+    "voxel-fracture-labels.scene.xml": [
+      "W09"
+    ],
+    "voxel-fracture-planes.scene.xml": [
+      "W09"
+    ],
+    "voxel-fracture-stress.scene.xml": [
+      "W09"
+    ],
+    "voxel-fracture-version-1.6.scene.xml": [
+      "W09"
+    ],
+    "voxel-fracture.scene.xml": [
+      "W09"
+    ],
+    "w01-non-finite.scene.xml": [
+      "W01"
+    ],
+    "w02-open-face.scene.xml": [
+      "W02"
+    ],
+    "w03-marker-named-like-generated.scene.xml": [
+      "W03"
+    ],
+    "w04-poster-dangling.scene.xml": [
+      "W04"
+    ],
+    "w04-poster-element-id.scene.xml": [
+      "W04"
+    ],
+    "w04-poster-no-grid.scene.xml": [
+      "W04"
+    ],
+    "w05-lights-geodesics-1.scene.xml": [
+      "W05"
+    ],
+    "w05-lights.scene.xml": [
+      "W05"
+    ],
+    "w06-foam-material.scene.xml": [
+      "W06"
+    ],
+    "w07-foam-raster.scene.xml": [
+      "W07"
+    ],
+    "w08-foam-unlit.scene.xml": [
+      "W08"
+    ],
+    "w09-voxel-cells-small.scene.xml": [
+      "W09"
+    ],
+    "w10-scatter-black-albedo.scene.xml": [
+      "W10"
+    ],
+    "w11-geodesics-0.scene.xml": [
+      "W11"
+    ],
+    "w11-geodesics-false.scene.xml": [
+      "W11"
+    ],
+    "w11-no-lens.scene.xml": [
+      "W11"
+    ],
+    "w12-denoise-1.scene.xml": [
+      "W12"
+    ],
+    "w12-denoise.scene.xml": [
+      "W12"
+    ]
+  }
+}

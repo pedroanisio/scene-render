@@ -1,0 +1,527 @@
+//! Verification of the files a document references.
+//!
+//! Every attribute of type `xs:anyURI` that names an input (all of them
+//! except `output/@path`, `still/@path` and `destination/@uri`, and `output/@report`) must resolve
+//! to an existing file. Where the document declares a digest — `@sha256` for
+//! `@src`, `@cacheSha256` for `@cache` — the file's SHA-256 must match it,
+//! which is what makes renders of generated media and transcriptions
+//! reproducible. Image, mesh and volume sequences expand and check every declared frame.
+//!
+//! Codes: `A01` missing file, `A02` digest mismatch, `A03` remote input not
+//! verified offline, `A04` missing sequence frames, `A05` unreadable file,
+//! `A06` physics cache absent (recomputed at render time), `A07` declared
+//! image dimensions differ from the local source file.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use rayon::prelude::*;
+use roxmltree::{Document, Node};
+use sha2::{Digest, Sha256};
+
+use crate::diag::{element_path, Diagnostic, Loc, Severity};
+use crate::xsd::{root_builtin, Builtin, COMPLEX_TYPES};
+
+/// Frames beyond this count are not checked individually.
+const MAX_SEQUENCE_FRAMES: i128 = 1_000_000;
+
+/// Widest frame-number placeholder accepted (`%0Nd` or a run of `#`).
+pub const MAX_FRAME_DIGITS: usize = 64;
+
+/// Names of input-file attributes, derived from the schema: every `xs:anyURI`
+/// attribute except the output-side `path` and `uri`. (`output/@report` is an output too: see [`is_output_side`].)
+pub fn input_uri_attributes() -> &'static BTreeSet<&'static str> {
+    static S: OnceLock<BTreeSet<&'static str>> = OnceLock::new();
+    S.get_or_init(|| {
+        COMPLEX_TYPES
+            .iter()
+            .flat_map(|c| c.attrs.iter())
+            .filter(|a| root_builtin(a.ty) == Some(Builtin::AnyUri))
+            .map(|a| a.name)
+            .filter(|n| !matches!(*n, "path" | "uri"))
+            .collect()
+    })
+}
+
+/// Where a URI points.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolved {
+    /// A local file.
+    Local(PathBuf),
+    /// A remote resource with the given scheme.
+    Remote(String),
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (
+                b.get(i + 1).and_then(|c| (*c as char).to_digit(16)),
+                b.get(i + 2).and_then(|c| (*c as char).to_digit(16)),
+            ) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Resolves a URI reference against the document directory.
+pub fn resolve(uri: &str, base_dir: &Path) -> Resolved {
+    let uri = uri.trim();
+    if let Some(rest) = uri.strip_prefix("file://") {
+        let p = rest.strip_prefix("localhost").unwrap_or(rest);
+        return Resolved::Local(PathBuf::from(percent_decode(p)));
+    }
+    if let Some((scheme, _)) = uri.split_once(':') {
+        let is_scheme = scheme.len() >= 2
+            && scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+        if is_scheme {
+            if scheme.eq_ignore_ascii_case("file") {
+                return Resolved::Local(PathBuf::from(percent_decode(&uri[5..])));
+            }
+            return Resolved::Remote(scheme.to_ascii_lowercase());
+        }
+    }
+    let path = PathBuf::from(percent_decode(uri));
+    if path.is_absolute() {
+        Resolved::Local(path)
+    } else {
+        Resolved::Local(base_dir.join(path))
+    }
+}
+
+/// SHA-256 of a file, streamed.
+pub fn sha256_file(path: &Path) -> std::io::Result<[u8; 32]> {
+    let mut f = std::fs::File::open(path)?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Ok(h.finalize().into())
+}
+
+fn hex(d: &[u8; 32]) -> String {
+    d.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Expands an image-sequence pattern (`name_%04d.png`, `name_%d.png` or
+/// `name_####.png`) for one frame number. `None` when the pattern has no
+/// placeholder or one wider than [`MAX_FRAME_DIGITS`].
+pub fn sequence_frame(pattern: &str, frame: i64) -> Option<String> {
+    if let Some(start) = pattern.find('%') {
+        let rest = &pattern[start + 1..];
+        let spec_len = rest.find('d')?;
+        let spec = &rest[..spec_len];
+        if !spec.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let digits = spec.trim_start_matches('0');
+        let width: usize = if digits.is_empty() { 0 } else { digits.parse().ok()? };
+        if width > MAX_FRAME_DIGITS {
+            return None;
+        }
+        let num = format_frame(frame, width);
+        return Some(format!("{}{}{}", &pattern[..start], num, &rest[spec_len + 1..]));
+    }
+    let start = pattern.find('#')?;
+    let width = pattern[start..].bytes().take_while(|b| *b == b'#').count();
+    if width > MAX_FRAME_DIGITS {
+        return None;
+    }
+    Some(format!("{}{}{}", &pattern[..start], format_frame(frame, width), &pattern[start + width..]))
+}
+
+fn format_frame(frame: i64, width: usize) -> String {
+    if frame < 0 {
+        format!("-{:0width$}", frame.unsigned_abs(), width = width.saturating_sub(1))
+    } else {
+        format!("{frame:0width$}")
+    }
+}
+
+struct Check<'a, 'i> {
+    node: Node<'a, 'i>,
+    attr: &'static str,
+    value: &'a str,
+    path: PathBuf,
+    expected: Option<[u8; 32]>,
+    hash_attr: &'static str,
+    missing: Severity,
+    missing_code: &'static str,
+}
+
+fn attr_loc(n: Node, attr: &str) -> Loc {
+    n.attributes()
+        .find(|a| a.name() == attr && a.namespace().is_none())
+        .map(|a| Loc::at(a.range().start))
+        .unwrap_or_else(|| Loc::of(n))
+}
+
+fn parse_digest(s: &str) -> Option<[u8; 32]> {
+    <crate::values::Sha256 as crate::parse::ParseValue>::parse_value(s).ok().map(|d| d.0)
+}
+
+/// Whether `attr` of an element named `element` names a file the render writes rather than one it reads:
+/// `output/@report`, where a render report goes (SREP 18). Any other element's `report` is an input as usual.
+pub fn is_output_side(element: &str, attr: &str) -> bool {
+    (element, attr) == ("output", "report")
+}
+
+/// Whether `value` of `element/@attr` names something of the document rather than a file: a material map that begins
+/// with `#` reads the generator or image asset with that id (SREP 71, rule MTX1).
+pub fn is_document_reference(element: &str, attr: &str, value: &str) -> bool {
+    // generated elements of some types report their XSD type's name
+    matches!(element, "material" | "materialType")
+        && crate::rules::MATERIAL_MAP_RULES.iter().any(|(a, _)| *a == attr)
+        && value.trim_start().starts_with('#')
+}
+
+/// Verifies every input file of `doc`, resolving relative references
+/// against `base_dir`, and appends diagnostics.
+pub fn verify(doc: &Document<'_>, base_dir: &Path, out: &mut Vec<Diagnostic>) {
+    let uri_attrs = input_uri_attributes();
+    let mut checks: Vec<Check> = Vec::new();
+    let mut remote: Vec<(Node, &'static str, String)> = Vec::new();
+    for n in doc.root_element().descendants().filter(|n| n.is_element()) {
+        let name = n.tag_name().name();
+        let numbered = matches!(name, "imageSequence" | "meshSequence")
+            || (name == "volume" && (n.has_attribute("first") || n.has_attribute("last")));
+        if numbered {
+            sequence(n, base_dir, out);
+        }
+        for &attr in uri_attrs {
+            if (numbered && attr == "src") || is_output_side(name, attr) {
+                continue;
+            }
+            // a renderer never reads a pdf asset's source, only its pinned cache (SREP 17 §1.2); the resolve step
+            // checks the source against @sha256
+            if name == "pdf" && attr == "src" {
+                continue;
+            }
+            let Some(value) = n.attribute(attr) else { continue };
+            if is_document_reference(name, attr, value) {
+                continue;
+            }
+            if name == "volume" && n.attribute("format") == Some("srvseq") && attr == "src" {
+                match resolve(value, base_dir) {
+                    Resolved::Local(path) => {
+                        let result = (|| -> Result<(), sr_volume::Error> {
+                            let limits = sr_volume::bake::BakeLimits::default();
+                            let bake = sr_volume::bake::BakedSequence::open(&path, n.attribute("sha256"), limits)?;
+                            let mut seen = BTreeSet::new();
+                            for frame in bake.frames() {
+                                if seen.insert(frame.sha256()) {
+                                    frame.read(bake.directory(), limits.frame)?;
+                                }
+                            }
+                            Ok(())
+                        })();
+                        if let Err(e) = result {
+                            out.push(Diagnostic::error(
+                                "A05",
+                                format!("volume bake {}: {e}", path.display()),
+                                attr_loc(n, attr),
+                                element_path(n),
+                            ));
+                        }
+                    }
+                    Resolved::Remote(scheme) => remote.push((n, attr, scheme)),
+                }
+                continue;
+            }
+            let (expected, hash_attr) = match attr {
+                "src" => (n.attribute("sha256").and_then(parse_digest), "sha256"),
+                "cache" => (n.attribute("cacheSha256").and_then(parse_digest), "cacheSha256"),
+                _ => (None, ""),
+            };
+            let (missing, missing_code) = match (name, attr) {
+                ("physics", "cache") => (Severity::Warning, "A06"),
+                // a program's module is checked under its own code (SREP 66, PRG10)
+                ("program", "src") => (Severity::Error, "PRG10"),
+                (_, "proxy") => (Severity::Warning, "A01"),
+                _ => (Severity::Error, "A01"),
+            };
+            match resolve(value, base_dir) {
+                Resolved::Local(path) => {
+                    checks.push(Check { node: n, attr, value, path, expected, hash_attr, missing, missing_code })
+                }
+                Resolved::Remote(scheme) => remote.push((n, attr, scheme)),
+            }
+        }
+    }
+
+    for (n, attr, scheme) in remote {
+        out.push(Diagnostic::warning(
+            "A03",
+            format!("@{attr} of <{}> is a {scheme} URI and was not verified offline", n.tag_name().name()),
+            attr_loc(n, attr),
+            element_path(n),
+        ));
+    }
+
+    // Hash each distinct file once, in parallel.
+    let to_hash: BTreeSet<&PathBuf> = checks.iter().filter(|c| c.expected.is_some()).map(|c| &c.path).collect();
+    let digests: HashMap<&PathBuf, std::io::Result<[u8; 32]>> =
+        to_hash.into_par_iter().map(|p| (p, sha256_file(p))).collect::<Vec<_>>().into_iter().collect();
+
+    // Probe each original image once, without decoding its pixels. Proxies intentionally
+    // have different dimensions; formats delegated to FFmpeg at render time may not have
+    // a native reader, so an unavailable probe does not invalidate an otherwise usable asset.
+    let images: BTreeSet<&PathBuf> =
+        checks.iter().filter(|c| c.node.tag_name().name() == "image" && c.attr == "src").map(|c| &c.path).collect();
+    let sizes: HashMap<&PathBuf, Option<(u32, u32)>> = images
+        .into_par_iter()
+        .map(|p| {
+            let size = image::ImageReader::open(p)
+                .and_then(|r| r.with_guessed_format())
+                .ok()
+                .and_then(|r| r.into_decoder().ok())
+                .map(|mut decoder| {
+                    use image::metadata::Orientation;
+                    use image::ImageDecoder;
+                    let (w, h) = decoder.dimensions();
+                    match decoder.orientation().unwrap_or(Orientation::NoTransforms) {
+                        Orientation::Rotate90
+                        | Orientation::Rotate270
+                        | Orientation::Rotate90FlipH
+                        | Orientation::Rotate270FlipH => (h, w),
+                        _ => (w, h),
+                    }
+                });
+            (p, size)
+        })
+        .collect();
+
+    for c in &checks {
+        let ename = c.node.tag_name().name();
+        // a program's module that cannot be read or does not match its digest is PRG10 (SREP 66)
+        let module = ename == "program" && c.attr == "src";
+        let unreadable = if module { "PRG10" } else { "A05" };
+        let loc = attr_loc(c.node, c.attr);
+        let path = element_path(c.node);
+        let shown = format!("{:?}", c.value);
+        let meta = std::fs::metadata(&c.path);
+        match meta {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let msg = if c.missing_code == "A06" {
+                    format!("physics cache {shown} does not exist; the simulation will be recomputed")
+                } else {
+                    format!("@{} of <{ename}>: file {shown} does not exist (resolved to {})", c.attr, c.path.display())
+                };
+                let resolvable = matches!(ename, "generated" | "captionTrack" | "tiles") && c.attr == "cache";
+                out.push(Diagnostic {
+                    severity: c.missing,
+                    code: c.missing_code.into(),
+                    message: msg,
+                    loc,
+                    path,
+                    help: resolvable.then(|| "run `scene-render resolve` to make the cache and pin its digest".into()),
+                    measured: None,
+                });
+                continue;
+            }
+            Err(e) => {
+                out.push(Diagnostic::error(
+                    unreadable,
+                    format!("@{} of <{ename}>: cannot read {shown}: {e}", c.attr),
+                    loc,
+                    path,
+                ));
+                continue;
+            }
+            Ok(m) if m.is_dir() => {
+                out.push(Diagnostic::error(
+                    unreadable,
+                    format!("@{} of <{ename}>: {shown} is a directory, not a file", c.attr),
+                    loc,
+                    path,
+                ));
+                continue;
+            }
+            Ok(_) => {}
+        }
+        if ename == "image" && c.attr == "src" {
+            if let Some(Some((w, h))) = sizes.get(&c.path) {
+                let declared = |name| c.node.attribute(name).and_then(|s| s.trim().parse::<u64>().ok());
+                if let (Some(dw), Some(dh)) = (declared("width"), declared("height")) {
+                    if (dw, dh) != (*w as u64, *h as u64) {
+                        out.push(Diagnostic::warning(
+                            "A07",
+                            format!("image {shown} declares {dw}x{dh}, but the file is {w}x{h} (resolved to {})", c.path.display()),
+                            attr_loc(c.node, "width"),
+                            path.clone(),
+                        ).with_help("set width and height to the source image dimensions; use the layer's boxWidth, boxHeight and fit to size it in the scene"));
+                    }
+                }
+            }
+        }
+        let Some(expected) = c.expected else { continue };
+        match &digests[&c.path] {
+            Ok(actual) if *actual == expected => {}
+            Ok(actual) => out.push(
+                Diagnostic::error(
+                    if module { "PRG10" } else { "A02" },
+                    format!(
+                        "{shown} does not match @{} of <{ename}>: expected {}, found {}",
+                        c.hash_attr,
+                        hex(&expected),
+                        hex(actual)
+                    ),
+                    attr_loc(c.node, c.hash_attr),
+                    path,
+                )
+                .with_help(if matches!(ename, "generated" | "captionTrack" | "tiles") {
+                    "run `scene-render resolve` to make the cache and pin its digest"
+                } else {
+                    "the file changed since the digest was recorded; regenerate it or update the digest"
+                }),
+            ),
+            Err(e) => out.push(Diagnostic::error(unreadable, format!("cannot read {shown}: {e}"), loc, path)),
+        }
+    }
+}
+
+fn sequence(n: Node, base_dir: &Path, out: &mut Vec<Diagnostic>) {
+    let kind = if n.has_tag_name("volume") {
+        "volume"
+    } else if n.has_tag_name("meshSequence") {
+        "mesh"
+    } else {
+        "image"
+    };
+    let Some(src) = n.attribute("src") else { return };
+    let int = |k: &str| {
+        n.attribute(k).and_then(|v| crate::xsd::parse_xsd_integer(v.trim())).and_then(|v| i64::try_from(v).ok())
+    };
+    let (Some(first), Some(last)) = (int("first"), int("last")) else { return };
+    let step = int("step").unwrap_or(1).max(1);
+    let loc = attr_loc(n, "src");
+    let path = element_path(n);
+    if last < first {
+        out.push(Diagnostic::error(
+            "A04",
+            format!("{kind} sequence runs from frame {first} to {last}; last precedes first"),
+            loc,
+            path,
+        ));
+        return;
+    }
+    if sequence_frame(src, first).is_none() {
+        out.push(Diagnostic::error(
+            "A04",
+            format!(
+                "{kind} sequence src {src:?} has no frame placeholder (%0Nd, %d or ####) of at most \
+                 {MAX_FRAME_DIGITS} digits"
+            ),
+            loc,
+            path,
+        ));
+        return;
+    }
+    let (first_w, step_w) = (first as i128, step as i128);
+    let count = (last as i128 - first_w) / step_w + 1;
+    if count > MAX_SEQUENCE_FRAMES {
+        out.push(Diagnostic::warning(
+            "A04",
+            format!("{kind} sequence has {count} frames; frames were not checked individually"),
+            loc,
+            path,
+        ));
+        return;
+    }
+    let frames: Vec<i64> = (0..count).map(|i| (first_w + i * step_w) as i64).collect();
+    let missing: Vec<i64> = frames
+        .par_iter()
+        .filter(|f| match resolve(&sequence_frame(src, **f).unwrap_or_default(), base_dir) {
+            Resolved::Local(p) => !p.is_file(),
+            Resolved::Remote(_) => false,
+        })
+        .copied()
+        .collect();
+    if let Some(Resolved::Remote(scheme)) = sequence_frame(src, first).map(|f| resolve(&f, base_dir)) {
+        out.push(Diagnostic::warning(
+            "A03",
+            format!("{kind} sequence is a {scheme} URI and was not verified offline"),
+            loc,
+            path,
+        ));
+        return;
+    }
+    if missing.is_empty() {
+        return;
+    }
+    let mut runs: BTreeMap<i64, i64> = BTreeMap::new();
+    let mut prev: Option<i64> = None;
+    let mut start = 0;
+    for &f in &missing {
+        match prev {
+            Some(p) if p.checked_add(step) == Some(f) => {}
+            _ => start = f,
+        }
+        runs.insert(start, f);
+        prev = Some(f);
+    }
+    let shown: Vec<String> =
+        runs.iter().take(5).map(|(a, b)| if a == b { a.to_string() } else { format!("{a}–{b}") }).collect();
+    let more = if runs.len() > 5 { ", …" } else { "" };
+    let policy = n.attribute("missingFrame").unwrap_or("error");
+    let msg = format!("{kind} sequence is missing {} of {count} frames ({}{more})", missing.len(), shown.join(", "));
+    if policy == "error" || (kind != "image" && policy == "hold" && missing.first() == Some(&first)) {
+        out.push(Diagnostic::error("A04", msg, loc, path).with_help(if kind != "image" {
+            "add the frames, use transparent, or use hold with an available first frame"
+        } else {
+            "add the frames or set missingFrame to hold, black or transparent"
+        }));
+    } else {
+        out.push(Diagnostic::warning("A04", format!("{msg}; missingFrame=\"{policy}\" applies"), loc, path));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_patterns() {
+        assert_eq!(sequence_frame("f_%04d.png", 7).unwrap(), "f_0007.png");
+        assert_eq!(sequence_frame("f_%d.png", 12).unwrap(), "f_12.png");
+        assert_eq!(sequence_frame("f_####.exr", 42).unwrap(), "f_0042.exr");
+        assert_eq!(sequence_frame("f_%04d.png", -3).unwrap(), "f_-003.png");
+        assert!(sequence_frame("plain.png", 1).is_none());
+    }
+
+    #[test]
+    fn uri_resolution() {
+        let base = Path::new("/proj");
+        assert_eq!(resolve("media/a%20b.png", base), Resolved::Local(PathBuf::from("/proj/media/a b.png")));
+        assert_eq!(resolve("/abs/x.png", base), Resolved::Local(PathBuf::from("/abs/x.png")));
+        assert_eq!(resolve("file:///abs/x.png", base), Resolved::Local(PathBuf::from("/abs/x.png")));
+        assert_eq!(resolve("https://cdn/x.png", base), Resolved::Remote("https".into()));
+        assert!(input_uri_attributes().contains("src"));
+        assert!(input_uri_attributes().contains("cache"));
+        assert!(!input_uri_attributes().contains("path"));
+    }
+
+    #[test]
+    fn only_output_report_is_an_output_side_report() {
+        assert!(is_output_side("output", "report"), "output/@report names a file the render writes");
+        assert!(!is_output_side("captionTrack", "report"));
+        assert!(!is_output_side("output", "src"));
+    }
+}

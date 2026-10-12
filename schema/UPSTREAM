@@ -1,0 +1,93 @@
+Scene-render schema vendored from sr-core release 1.7.0 (tag schema-1.7.0, commit 95cf9b0a676415a0e7eb2e86505db512576d4e2d).
+Source: https://github.com/pedroanisio/sr-core
+
+Canonical upstream files (SHA-256; the first two as in sr-core's schema/SHA256SUMS at that tag):
+  scene-render.xsd: 5ef91e6ca9a6d860047f2a5347c59fa17423cb99ef7535b7ceaca16619f8ce2c
+  scene-render.sch: 868863e9ea4caf04e7f0bd9873c23ce5f723205714178349a4f385c4778fd368
+  capabilities-1.schema.json: 6cb35c8ec6d37df32c9a0ad12eb33332d2abe4f11ac6000a9311d9891ec2e8b3
+
+scene-render-1.1.xsd, scene-render-1.1.sch and capabilities-1.schema.json are byte-identical to these files. Local
+XML filenames retain 1.1 for tooling compatibility. The native mirror of the Schematron (crates/sr-model/src/rules.rs)
+implements every assert of that file, with the same ids and messages; the corpus (tests/corpus, tools/build_corpus.py)
+has a case for every assert id, and the lxml oracle (tools/oracle.py) agrees with the manifest on every document. The
+one known difference of test: sr-core's OCN7 leaves 'tracking' out of a text collider's shape parameters, which its
+P3D6 and PYRO8 name (SREP 37: tracking changes the collider). The ocean builds its colliders' geometry once, so the
+native OCN7 refuses an animated tracking on an ocean collider, as P3D6 and PYRO8 do; the Schematron accepts that
+document (corpus case ocn7-text-tracking, a native-only rule case). It is an erratum of sr-core's OCN7 for an SREP to
+settle. The warnings W05, W11 and W12 (SREP 76) and the program diagnostics are native only, as the SREPs define them.
+
+Document version 1.7 (sr_model::SCHEMA_VERSION is "1.7") is schema 1.7.0's. It adds no syntax and has no version
+gate: SREP 87's scoping applies to documents of every version, and a 1.7 document validates and renders as the same
+document at 1.6 (crates/sr-model/tests/version_1_7.rs). Document version 1.6 is schema 1.6.0's. A 1.6 document holding
+1.5 content
+validates and renders as the same document at 1.5; the version gates V12 to V16 (SREPs 66 and 69, 67, 70, 74 and 75)
+refuse 1.6 syntax in versions 1.0 to 1.5 (GATES_1_6 in crates/sr-model/tests/version_1_6.rs and
+crates/sr-eval/tests/scene/version_1_6.rs). BH1 (SREP 76), VOX1 (SREP 80) and SREP 40's gates V8, MSQ1, P3D1, OCN1,
+CRT1, FRX1 and GEO1 (SREP 83) refuse only versions 1.0 to 1.2, so these elements are valid at 1.3 and later; SREP 86
+(Process, Active) records this as the exception to SREP 0's versioning rule for blackHole, accretionDisk,
+camera/@geodesics, pyroBlast, voxelAsset and voxel objects.
+
+Implemented here, by SREP (sr-core 1.6.0 and 1.7.0):
+- SREPs 66 and 69: build-time and stepping WebAssembly programs (V12, PRG1 to PRG3, program diagnostics).
+- SREP 67: compute, iterate and tonemap, the effect types error-diffusion and segmented-sort (V13, ITR1, ITR2, CMP13,
+  SRT1).
+- SREP 68: effectType/@stepsPerFrame and @prewarm, and program[@mode='step'] (STP1).
+- SREP 70: parametric paths, surfaces and heightfields (V14, PAR1, PAR2).
+- SREP 71: subsurface materials, the procedural sky of a dome, generator-fed maps (SKY1, SKY2, MTX1-<map attribute>).
+- SREP 72: shader content rectangles, supersampling, edge blending and float32 working textures; the information
+  finding PREC1 for precision="f32" with 3D content (it replaces the engine's E23, sr-core kit case
+  srep-0072-precision-3d-note) and the error PREC10 for a device without float32 blending or filtering. SREP 72's
+  Scope lists object3D, particles3D, ocean, blackHole and accretionDisk as 3D content (blackHole and accretionDisk by
+  SREP 72's erratum of 2026-10-11; SREP 72 is Final).
+- SREP 73: flock/@orientToVelocity and the INERT-I16 diagnostic for streak flocks.
+- SREP 74: viewport3D (V15, VP1, VP3); BH5 to BH8 and W11 look only in the camera's or hole's scope, the viewport3D it
+  is in, else the document outside every viewport3D.
+- SREP 75: the fractal asset (V16, FRC1). The model generator of sr-model gains the builtin xs:decimal, kept as its
+  exact text. libxml2 (the oracle) refuses an xs:decimal of more than 24 digits, so the corpus keeps to 24.
+- SREP 76: blackHole and accretionDisk, camera/@geodesics (BH1 to BH8, every xs:boolean form of geodesics and
+  denoise); the warnings W11 (was W03) and W12 (was W04), W03 and W04 being SREP 57's generated-marker warnings; the
+  geodesic pass divides the disk profile by its exact maximum, (6/7)^(3/2) 7^(-1/4).
+- SREP 77: crater/@mantle, @bulking, @repose, fracture/@source, @minImpulse, @energyFraction, ocean/@density
+  (CRT10 to CRT12, every xs:boolean form of mantle; FRX5 to FRX7).
+- SREP 78: pyro/@follow, @followMargin, @followLoss and pyroBlast (PYRO9 to PYRO11, PYC5, PYC6).
+- SREP 79: medium/@scatterBounces and the whitewater foam attributes (OCN14).
+- SREP 80: voxel assets, voxel objects and bodies, fracture partitions (VOX1 to VOX15, CRT13 to CRT17, FRX8 to FRX15).
+- SREP 81: the SREP 40 annotations and the rule message it takes upstream (documentation only).
+- SREP 82: transition/@audio, the sound of video layers across a transition.
+- SREP 83: SREP 40's version gates admit 1.3 or later; messages say "1.3 or later".
+- SREP 84: C15, C43, R15, R48-from, R48-to, VOL5, C80, GEO2 and PYRO9 to PYRO11 read their xs:boolean attributes by
+  value (normalize-space(@a)='true' or '1', 'false' or '0' for C15's reverse) and their integer attributes whatever
+  their sign, leading zeros or padding; the native mirror uses xs_true, xs_false and xs_number, and W02 reads
+  pyro/@follow the same way.
+- SREP 85: C13, C14, C15, C37, C38, C44, C52, C53, C54, C56, PYRO1, PYRO2, PYRO4, VOL4, P3D3, P3D10, OCN3, OCN5,
+  PYRO11, PYC6, FRX11 and, by its amendment of SREP 67, ITR1 and SRT1 read their xs:double, xs:decimal and integer
+  attributes (and list items) by value, whatever their sign:
+  number(substring(normalize-space(@a),1+number(starts-with(normalize-space(@a),'+')))) for number(@a), and the same
+  with '0' appended for an absent attribute for sum(@a). The native mirror reads them with xs_number (through num());
+  the warning W02 and OCN14's native reading take it too. Exponent forms (1e0): the native validator is normative for
+  them (the SREP's Semantics 4) and xs_number reads them as libxml2 does. INF, -INF and NaN stay NaN, as in XPath,
+  and each native rule compares them as its Schematron test does (OCN3's wavelength, OCN5, P3D3's direction and clay's
+  boil and fingerprints let a NaN through; corpus cases *-inf, valid with W01). One verdict differs from v0.3.2: its
+  native PYRO2 read pyroSource/@end and @start with Rust's parser, which reads INF as infinity, so end="INF" passed
+  there while the Schematron refused it; PYRO2 now refuses it natively too (corpus case pyro2-end-inf).
+- SREP 89: the supersample filter clamps each channel to [0, max(1, M)], M the largest sample of non-zero weight,
+  instead of [0, 1] (SREP 72 Semantics 4 as amended); the XSD's documentation of project/@supersample says so.
+- SREP 87 (schema 1.7.0, by the exception SREP 90 records): an id E that the build-mode program P emits is P.E in the
+  document; inside an output, IDREF and IDREFS tokens, prop and propAtTime ids and the node id of link/@source resolve
+  to the output's own ids first; a bare reference from outside (those positions, and override/@target of a layout, a
+  variant, an instance or an include) resolves when exactly one program emitted the id, with the warning W13, and
+  fails with PRG17 when several did; the bone names of an emitted skeleton's skin weights are its local ids; PRG14
+  covers a repeated id within one output and a namespaced id equal to another id (sr-model program_ids.rs).
+
+SREP 57 generated markers, SREP 59 reference checks and SREP 63 conditional capability entries are implemented. The
+former pending SREPs 16, 17, 18, 19, 21 and 26 are implemented; PDF resolution requires the pdf build feature.
+
+Unverified in this engine:
+- SREP 67: real-GPU carry, because there is no discrete GPU we may use. The two-word 64-bit cells are tested on
+  llvmpipe only, in CI and on the prod VM (raster_effects::srep67_compute). The error-diffusion kernel weights are
+  checked against the SREP's table and against the commonly republished values, not against the original
+  publications, which could not be read from here.
+- SREP 71: the shape-parameter fit s(A) = 1.85 − A + 7|A − 0.8|³ and the profile are as the SREP states them; the
+  SREP checked them against appleseed's implementation, not against Pixar Technical Memo 15-04, and neither was read
+  from here. The subsurface lobe is a curvature pre-integration of the profile (sr_3d::subsurface), checked against a
+  brute-force integral on a sphere and against the SREP's five properties; it is not compared with a random walk.

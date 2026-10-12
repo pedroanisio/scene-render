@@ -1,0 +1,361 @@
+name: ci
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && github.event_name != 'workflow_dispatch' }}
+env:
+  SR_GPU_BACKEND: vulkan
+  CARGO_BUILD_JOBS: 4
+jobs:
+  msrv:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-source-times
+          cache-directories: .cache/ci-source-times.json
+          cache-workspace-crates: true
+      - run: python3 tools/ci_source_times.py
+      - run: cargo check --workspace --all-targets --locked
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+      - run: python3 tools/check_release_hygiene.py --all
+      - run: python3 tools/doc_facts.py --check
+      - run: python3 tools/doc_links.py --exclude README.md
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --features scene-render/pdf -- -D warnings
+      - run: cargo test --workspace --doc --features scene-render/pdf --locked --no-fail-fast
+      - run: python3 -m unittest discover -s tools/tests -v
+        if: always()
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: test-diagnostics
+          path: |
+            target/environment/
+            target/golden-output/
+          if-no-files-found: warn
+  build-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+        with:
+          cache-profile: debug
+          runtime: 'false'
+      - run: python3 tools/ci_tests.py build --features scene-render/pdf
+      - uses: actions/upload-artifact@v6
+        with:
+          name: compiled-tests
+          path: target/ci-tests/tests.tar.zst
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v6
+        with:
+          name: test-manifest
+          path: target/ci-tests/manifest.json
+          if-no-files-found: error
+      # The uploaded archive is outside the Cargo cache and need not occupy disk
+      # while the complete build cache is compressed at the end of the job.
+      - run: rm target/ci-tests/tests.tar.zst
+  tests:
+    needs: [build-tests, build-tools]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/runtime
+        with:
+          heic: 'true'
+          cache-key: ${{ matrix.shard }}
+      - uses: actions/download-artifact@v7
+        with:
+          name: compiled-tests
+          path: target/ci-tests
+      - uses: actions/download-artifact@v7
+        with:
+          name: compiled-linux-tools
+          path: target/release
+      - name: Verify compiled tools
+        run: |
+          test "$(cat target/release/COMMIT)" = "$GITHUB_SHA"
+          (cd target/release && sha256sum -c SHA256SUMS)
+          chmod +x target/release/sr-fuzz
+      - run: tar -I 'zstd -d --long=28' -xf target/ci-tests/tests.tar.zst
+      - run: python3 tools/ci_tests.py run ${{ matrix.shard }} 20 --timings tools/ci-test-durations.json
+      # The same serial input sequence as the 600-second baseline, with a larger fixed budget.
+      - run: target/release/sr-fuzz --iterations 2400000 --partition ${{ matrix.shard }}/20 --report target/ci-results/fuzz-${{ matrix.shard }}.json --out target/ci-results/fuzz-crashes
+        if: success() || failure()
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: test-results-${{ matrix.shard }}
+          path: |
+            target/ci-results/
+            target/environment/
+            target/golden-output/
+          if-no-files-found: error
+  test-coverage:
+    needs: [build-tests, tests]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
+        with:
+          name: test-manifest
+          path: target/ci-tests
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: test-results-*
+          path: target/ci-results
+      - run: python3 tools/ci_tests.py verify 20 --fuzz-iterations 2400000
+  build-tools:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+        with:
+          cache-profile: release
+          runtime: 'false'
+      # the shipped binary carries the PDF resolve step (SREP 17), whose PDF library needs Rust 1.92 or later
+      - name: Check the toolchain for the pdf feature
+        run: |
+          v=$(rustc --version | awk '{print $2}')
+          test "$(printf '%s\n1.92.0\n' "$v" | sort -V | head -1)" = 1.92.0 || { echo "rustc $v is older than 1.92"; exit 1; }
+      - run: cargo build --locked --release -p scene-render -p sr-fuzz --features scene-render/pdf
+      - name: Record compiled tools
+        run: |
+          mkdir -p target/release-artifact
+          cp target/release/scene-render target/release/sr-fuzz target/release-artifact/
+          git rev-parse HEAD > target/release-artifact/COMMIT
+          (cd target/release-artifact && sha256sum scene-render sr-fuzz > SHA256SUMS)
+      - uses: actions/upload-artifact@v6
+        with:
+          name: compiled-linux-tools
+          path: target/release-artifact/
+          if-no-files-found: error
+  package:
+    needs: build-tools
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/runtime
+      - uses: actions/download-artifact@v7
+        with:
+          name: compiled-linux-tools
+          path: target/release
+      - uses: ./.github/actions/package
+      - uses: actions/upload-artifact@v6
+        with:
+          name: linux-release-package
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+  evidence:
+    needs: build-tools
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/runtime
+        with:
+          evidence: 'true'
+          heic: 'true'
+      - uses: actions/download-artifact@v7
+        with:
+          name: compiled-linux-tools
+          path: target/release
+      - name: Verify compiled tools
+        run: |
+          test "$(cat target/release/COMMIT)" = "$GITHUB_SHA"
+          (cd target/release && sha256sum -c SHA256SUMS)
+          chmod +x target/release/scene-render target/release/sr-fuzz
+      - run: python3 tools/evidence.py target/evidence
+      - run: python3 tools/evidence.py target/review --manifest tools/evidence/review.json --clips
+        if: success() || failure()
+      - name: Record validated tools
+        if: success()
+        run: |
+          mkdir -p target/release-artifact
+          cp target/release/scene-render target/release/sr-fuzz target/release-artifact/
+          git rev-parse HEAD > target/release-artifact/COMMIT
+          (cd target/release-artifact && sha256sum scene-render sr-fuzz > SHA256SUMS)
+      - uses: actions/upload-artifact@v6
+        if: success()
+        with:
+          name: validated-linux-tools
+          path: target/release-artifact/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: visual-evidence
+          path: |
+            target/environment/
+            target/evidence/
+            target/review/
+          if-no-files-found: warn
+  performance-gate:
+    needs: build-tools
+    # the renderer before and after this change, benched alternately on the same runner:
+    # a fixture more than 15% slower fails (tools/perf_gate.py)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v7
+        with:
+          name: compiled-linux-tools
+          path: target/release
+      - name: Verify compiled tools
+        run: |
+          test "$(cat target/release/COMMIT)" = "$GITHUB_SHA"
+          (cd target/release && sha256sum -c SHA256SUMS)
+          chmod +x target/release/scene-render
+      - id: base
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ "${{ github.ref_type }}" = tag ] || [ "${{ github.event_name }}" = workflow_dispatch ]; then
+            if git rev-parse HEAD^ >/dev/null 2>&1; then
+              base="$(git rev-parse HEAD^)"
+            fi
+          fi
+          if [ -n "$base" ] && [ "$base" != 0000000000000000000000000000000000000000 ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "sha=$base" >> "$GITHUB_OUTPUT"
+          else
+            echo "no base commit to compare against"
+          fi
+      - if: steps.base.outputs.sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! python3 tools/ci_artifact.py "${{ steps.base.outputs.sha }}" "$RUNNER_TEMP/base/target/release/scene-render"; then
+            git worktree add "$RUNNER_TEMP/base" "${{ steps.base.outputs.sha }}"
+            (cd "$RUNNER_TEMP/base" && cargo build --locked --release -p scene-render --features scene-render/pdf)
+          fi
+      - if: steps.base.outputs.sha
+        run: python3 tools/perf_gate.py "$RUNNER_TEMP/base/target/release/scene-render" target/release/scene-render --json target/perf-gate.json
+      - if: always() && steps.base.outputs.sha
+        uses: actions/upload-artifact@v6
+        with:
+          name: performance-gate
+          path: target/perf-gate.json
+          if-no-files-found: warn
+  performance:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+      - run: cargo test --release --test perf
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: performance-rust-environment
+          path: target/environment/
+          if-no-files-found: warn
+  performance-smoke:
+    needs: build-tools
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/runtime
+      - uses: actions/download-artifact@v7
+        with:
+          name: compiled-linux-tools
+          path: target/release
+      - name: Verify compiled tools
+        run: |
+          test "$(cat target/release/COMMIT)" = "$GITHUB_SHA"
+          (cd target/release && sha256sum -c SHA256SUMS)
+          chmod +x target/release/scene-render target/release/sr-fuzz
+      - run: target/release/scene-render eval tests/corpus/valid/kitchen-sink.scene.xml --bench
+      # smoke run: three transformed, feathered-mask image layers, rendered for a few frames
+      - run: python3 tools/perf_layers.py /tmp/perf_layers && target/release/scene-render render /tmp/perf_layers/perf_layers.scene.xml --bench --frames 0..3
+      # smoke run: four decoded 1080p60 layers, mixed audio, H.264 + AAC
+      - run: python3 tools/perf_video.py /tmp/perf_video --duration 1 && target/release/scene-render encode /tmp/perf_video/perf_video.scene.xml --hw software --end 0.25
+      - run: ffprobe -v error -show_entries stream=codec_name -of csv=p=0 /tmp/perf_video/perf_video.mp4 | grep -qx h264
+      # smoke run: 2,000 stroked shapes with trim paths and a 30-bone skinned rig
+      - run: python3 tools/perf_vector.py /tmp/perf_vector --duration 1 && target/release/scene-render encode /tmp/perf_vector/perf_vector.scene.xml --hw software --end 0.1
+      - run: ffprobe -v error -show_entries stream=codec_name -of csv=p=0 /tmp/perf_vector/perf_vector.mp4 | grep -qx h264
+      # smoke run: animated text layers and a karaoke caption track, H.264
+      - run: python3 tools/perf_text.py /tmp/perf_text --duration 1 && target/release/scene-render encode /tmp/perf_text/perf_text.scene.xml --hw software --end 0.1
+      - run: ffprobe -v error -show_entries stream=codec_name -of csv=p=0 /tmp/perf_text/perf_text.mp4 | grep -qx h264
+      # smoke run: 8 effects, a transition and 16-sample motion blur on two moving layers
+      - run: python3 tools/perf_effects.py /tmp/perf_effects --duration 1 && target/release/scene-render render /tmp/perf_effects/perf_effects.scene.xml --bench --frames 0..4
+      # smoke run: 207,936 triangles, 4 shadowed spot lights, transmission and depth of field at 1080p
+      - run: python3 tools/perf_3d.py /tmp/perf_3d --duration 1 && target/release/scene-render render /tmp/perf_3d/perf_3d.scene.xml --bench --frames 0..4
+      # smoke run: 200 rigid bodies, two soft bodies and three emitters at 1080p
+      - run: python3 tools/perf_physics.py /tmp/perf_physics --duration 2 && target/release/scene-render render /tmp/perf_physics/perf_physics.scene.xml --bench --frames 60..64
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: performance-environment
+          path: |
+            target/environment/
+            /tmp/perf_*/*.scene.xml
+            fuzz-crashes/
+          if-no-files-found: warn
+  oracle:
+    needs: build-tools
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/runtime
+        with:
+          evidence: 'true'
+      - uses: actions/download-artifact@v7
+        with:
+          name: compiled-linux-tools
+          path: target/release
+      - name: Verify compiled tools
+        run: |
+          test "$(cat target/release/COMMIT)" = "$GITHUB_SHA"
+          (cd target/release && sha256sum -c SHA256SUMS)
+          chmod +x target/release/scene-render target/release/sr-fuzz
+      - run: python3 tools/build_corpus.py && git diff --exit-code tests/corpus
+      - run: python3 tools/oracle_diff.py 2000 1
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: oracle-environment
+          path: |
+            target/environment/
+            target/oracle*/
+          if-no-files-found: warn
+  portability:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+          prefix-key: v1-source-times
+          cache-directories: .cache/ci-source-times.json
+          cache-workspace-crates: true
+      - run: python3 tools/ci_source_times.py
+      - run: cargo check --workspace --all-targets --locked
+      - run: cargo test -p sr-model -p sr-eval -p sr-resolve --lib --locked

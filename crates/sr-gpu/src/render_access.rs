@@ -1,0 +1,603 @@
+//! Accessibility measurements in the compositor: the contrast of
+//! burned-in text against the backdrop actually drawn behind it.
+//!
+//! When `contrast_probe` is on, each text layer and the caption burn-in in
+//! the frame's own target get their own draw command, preceded by a copy of
+//! the target (the backdrop). After the frame, the pixels the text changed are
+//! its glyphs: their colour in the frame is the text, and their colour in the
+//! snapshot is the background behind it. Equal colours require a coverage probe:
+//! contrasting inks preserve sampled alpha and establish whether text is visible.
+
+use super::*;
+
+pub(super) const CONTRAST_INK: &str = "__sr_contrast_ink";
+
+/// The texture-space rectangle covering a node, grown by `pad` document pixels and scaled to the quality tier.
+fn node_rect(n: &sr_eval::FrameNode, w: u32, h: u32, scale: f64, pad: f64) -> Option<[u32; 4]> {
+    let [nw, nh] = n.size?;
+    let xform = Affine::scale(scale, scale).then(&n.world);
+    let pts = [[0.0, 0.0], [nw, 0.0], [nw, nh], [0.0, nh]].map(|p| xform.apply(p));
+    let pad = pad * scale;
+    let x0 = (pts.iter().map(|p| p[0]).fold(f64::MAX, f64::min) - pad).floor().clamp(0.0, w as f64);
+    let y0 = (pts.iter().map(|p| p[1]).fold(f64::MAX, f64::min) - pad).floor().clamp(0.0, h as f64);
+    let x1 = (pts.iter().map(|p| p[0]).fold(f64::MIN, f64::max) + pad).ceil().clamp(0.0, w as f64);
+    let y1 = (pts.iter().map(|p| p[1]).fold(f64::MIN, f64::max) + pad).ceil().clamp(0.0, h as f64);
+    (x1 - x0 >= 1.0 && y1 - y0 >= 1.0).then_some([x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32])
+}
+
+impl Renderer {
+    /// Render a frame and measure requested targets that require deferred contrast
+    /// probes. The returned texture remains stable while counterfactuals render.
+    /// Results include only targets reported as unprobed by the main frame.
+    pub fn render_with_deferred_contrasts(
+        &mut self,
+        g: &sr_eval::FrameGraph,
+        p: &sr_eval::Program,
+        targets: &[ContrastTarget],
+        sub: &mut dyn FnMut(f64) -> sr_eval::FrameGraph,
+    ) -> (Frame, Vec<(ContrastTarget, Option<f64>)>) {
+        let previous_cache = self.contrast_three_cache.replace(ContrastThreeCache::default());
+        let probe = std::mem::replace(&mut self.contrast_probe, true);
+        let mut frame = self.render_with(g, p, Some(&mut *sub));
+        let active: Vec<_> = targets.iter().filter(|t| frame.stats.contrast_unprobed.contains(t)).cloned().collect();
+        if active.is_empty()
+            || !frame.stats.errors.is_empty()
+            || self.persistent_isf == Some(true)
+            || p.scene.scene360.is_some()
+        {
+            self.contrast_probe = probe;
+            self.restore_contrast_three_cache(previous_cache);
+            return (frame, Vec::new());
+        }
+        let [w, h] = frame.texture.size;
+        let kept = self.working_texture([w, h]);
+        let mut enc = self.gpu.device.create_command_encoder(&Default::default());
+        Self::copy(&mut enc, &frame.texture, &kept, [0, 0, w, h]);
+        self.gpu.queue.submit([enc.finish()]);
+        frame.texture = kept;
+        let needs_replay = self.contrast_batch_split;
+        // Counterfactuals must not replace the main timeline's subtree cache:
+        // a cache hit can bypass text-probe emission on the following frame.
+        // Two retained references also prevent the offscreen reuse rule (<= 2
+        // owners) from overwriting the saved textures while probing.
+        let saved_subtree = self.subtree.clone();
+        let texture_guard = saved_subtree.clone();
+        let mut saved_ages = self.last_used.clone();
+        let before = self.cache_frame;
+        self.contrast_probe = false;
+        // Inline measurements split vector batches. Comparing that image to an
+        // unsplit counterfactual can mistake rounding differences for glyphs.
+        // Replay the 2D composition in the legacy checker's layout when needed;
+        // the scoped cache still reuses the main frame's 3D shutter samples.
+        let original = if needs_replay {
+            let replay = self.render_with(g, p, Some(&mut *sub));
+            self.read_rect(&replay.texture, [0, 0, w, h])
+        } else {
+            self.read_rect(&frame.texture, [0, 0, w, h])
+        };
+        let ratios = self.contrasts_from_pixels(g, p, &active, sub, [w, h], &original);
+        let elapsed = self.cache_frame - before;
+        for age in saved_ages.values_mut() {
+            *age += elapsed;
+        }
+        self.subtree = saved_subtree;
+        self.last_used = saved_ages;
+        drop(texture_guard);
+        self.contrast_probe = probe;
+        self.restore_contrast_three_cache(previous_cache);
+        (frame, active.into_iter().zip(ratios).collect())
+    }
+
+    fn contrasts_from_pixels(
+        &mut self,
+        g: &sr_eval::FrameGraph,
+        p: &sr_eval::Program,
+        targets: &[ContrastTarget],
+        sub: &mut dyn FnMut(f64) -> sr_eval::FrameGraph,
+        [w, h]: [u32; 2],
+        original: &[[f32; 4]],
+    ) -> Vec<Option<f64>> {
+        targets
+            .iter()
+            .map(|target| {
+                let k = match target {
+                    ContrastTarget::Node(id) => match g.nodes.iter().position(|n| &*n.id == id) {
+                        Some(k) => Some(k),
+                        None => return None,
+                    },
+                    ContrastTarget::Captions => None,
+                };
+                let r = k.and_then(|k| node_rect(&g.nodes[k], w, h, self.tier.scale, 48.0)).unwrap_or([0, 0, w, h]);
+                let [x, y, rw, rh] = r;
+                let mut after = Vec::with_capacity((rw * rh) as usize);
+                for row in y..y + rh {
+                    let start = (row * w + x) as usize;
+                    after.extend_from_slice(&original[start..start + rw as usize]);
+                }
+                self.contrast_without(g, p, target, sub, r, &after)
+            })
+            .collect()
+    }
+
+    /// A counterfactual frame for accessibility measurement. Only the selected text's
+    /// RGB changes; its sampled alpha, transforms, masks and later occluders remain.
+    /// The private property participates in normal cache hashes.
+    pub fn contrast_ink_graph(g: &sr_eval::FrameGraph, target: &ContrastTarget, ink: f64) -> sr_eval::FrameGraph {
+        let mut g = g.clone();
+        if let ContrastTarget::Captions = target {
+            g.elements.retain(|e| &*e.key != CONTRAST_INK);
+            g.elements.push(sr_eval::eval::ElementState {
+                key: CONTRAST_INK.into(),
+                element: "contrastProbe",
+                props: sr_eval::eval::Props(vec![(CONTRAST_INK.into(), Value::Num(ink))]),
+            });
+        } else if let ContrastTarget::Node(id) = target {
+            if let Some(n) = g.nodes.iter_mut().find(|n| &*n.id == id) {
+                n.props.0.retain(|(k, _)| &**k != CONTRAST_INK);
+                n.props.0.push((CONTRAST_INK.into(), Value::Num(ink)));
+            }
+        }
+        g
+    }
+
+    /// Measure the original colours only where two counterfactual inks establish
+    /// visible text coverage. Returns None for fully occluded, transparent or offscreen text.
+    pub fn contrast_of_coverage(
+        &self,
+        before: &[[f32; 4]],
+        after: &[[f32; 4]],
+        dark: &[[f32; 4]],
+        light: &[[f32; 4]],
+    ) -> Option<f64> {
+        let coverage: Vec<f32> = dark
+            .iter()
+            .zip(light)
+            .map(|(a, b)| (a[0] - b[0]).abs() + (a[1] - b[1]).abs() + (a[2] - b[2]).abs())
+            .collect();
+        let top = coverage.iter().copied().fold(0.0f32, f32::max);
+        if top <= 1e-6 {
+            return None;
+        }
+        let (mut foreground, mut background, mut count) = (0.0, 0.0, 0.0);
+        for ((a, b), coverage) in before.iter().zip(after).zip(coverage) {
+            if coverage >= top * 0.5 {
+                background += self.luminance(*a);
+                foreground += self.luminance(*b);
+                count += 1.0;
+            }
+        }
+        if count == 0.0 {
+            return None;
+        }
+        let (a, b) = (foreground / count, background / count);
+        Some((a.max(b) + 0.05) / (a.min(b) + 0.05))
+    }
+    /// Text nodes that may need a contrast measurement. This is a prediction:
+    /// only rendered `contrast_unprobed` observations select deferred checks.
+    pub fn contrast_candidates(&self, g: &sr_eval::FrameGraph, p: &sr_eval::Program) -> Vec<(ContrastTarget, f64)> {
+        g.nodes
+            .iter()
+            .filter(|n| n.draw && self.is_text_layer(p, n))
+            .map(|n| (ContrastTarget::Node(n.id.to_string()), n.world_opacity))
+            .collect()
+    }
+
+    fn is_text_layer(&self, p: &sr_eval::Program, n: &FrameNode) -> bool {
+        n.kind == "layer"
+            && n.asset
+                .as_deref()
+                .and_then(|k| self.asset(p, k))
+                .map(|(a, _)| matches!(a, AssetsChild::Text(_)))
+                .unwrap_or(false)
+    }
+
+    /// The frame's own target: the document's coordinates at the quality tier's scale.
+    fn is_root_space(&self, ctx: &Ctx, space: &Space) -> bool {
+        let s = self.tier.scale;
+        space.xform == Affine::scale(s, s)
+            && space.size == [(ctx.g.size[0] * s).round().max(1.0) as u32, (ctx.g.size[1] * s).round().max(1.0) as u32]
+            && self.view_override.is_none()
+    }
+
+    /// Starts a probe around a text layer drawn in the frame's target.
+    pub(super) fn text_probe_start(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        i: usize,
+        space: &Space,
+        cmds: &mut Vec<Cmd>,
+        root_hash: u64,
+    ) -> Option<usize> {
+        if !self.contrast_probe || !self.is_text_layer(ctx.p, &ctx.g.nodes[i]) || !ctx.g.nodes[i].draw {
+            return None;
+        }
+        // `root_hash` is 0 exactly when emitting into an offscreen (isolated groups, masks,
+        // mattes, effects and transitions all emit with 0; frame roots pass their subtree hash).
+        // An unsized isolated group shares the frame's space, so the space alone cannot tell.
+        if root_hash == 0 || !self.is_root_space(ctx, space) || ctx.g.nodes[i + 1..].iter().any(|n| n.draw) {
+            // Later draws can cover these glyphs. A pre-text snapshot cannot distinguish
+            // their pixels from text, so measure with/without the text in the final frame.
+            // inside an isolated group: the backdrop here is not what the viewer sees
+            let id = ContrastTarget::Node(ctx.g.nodes[i].id.to_string());
+            if !plan.stats.contrast_unprobed.contains(&id) {
+                plan.stats.contrast_unprobed.push(id);
+            }
+            return None;
+        }
+        self.contrast_batch_split = true;
+        self.flush_vec(plan, cmds);
+        Some(cmds.len())
+    }
+
+    /// Finishes a text-layer probe: its commands get a backdrop snapshot.
+    pub(super) fn text_probe_end(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        i: usize,
+        space: &Space,
+        cmds: &mut Vec<Cmd>,
+        at: usize,
+    ) {
+        self.flush_vec(plan, cmds);
+        let n = &ctx.g.nodes[i];
+        let [w, h] = n.size.unwrap_or([0.0, 0.0]);
+        let xf = space.xform.then(&n.world);
+        let pts = [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]].map(|p| xf.apply(p));
+        let b = [
+            pts.iter().map(|p| p[0]).fold(f64::MAX, f64::min),
+            pts.iter().map(|p| p[1]).fold(f64::MAX, f64::min),
+            pts.iter().map(|p| p[0]).fold(f64::MIN, f64::max),
+            pts.iter().map(|p| p[1]).fold(f64::MIN, f64::max),
+        ];
+        let id = ContrastTarget::Node(n.id.to_string());
+        self.attach_probe(plan, space, cmds, at, id, b);
+    }
+
+    /// Gives command `at` a backdrop snapshot and records the probe over `b` (x0, y0, x1, y1).
+    pub(super) fn attach_probe(
+        &mut self,
+        plan: &mut Plan,
+        space: &Space,
+        cmds: &mut [Cmd],
+        at: usize,
+        id: ContrastTarget,
+        b: [f64; 4],
+    ) {
+        let Some(c) = cmds.get_mut(at) else { return };
+        if c.pre.is_some() {
+            return;
+        }
+        let (w, h) = (space.size[0] as f64, space.size[1] as f64);
+        let r = [
+            b[0].floor().clamp(0.0, w),
+            b[1].floor().clamp(0.0, h),
+            b[2].ceil().clamp(0.0, w),
+            b[3].ceil().clamp(0.0, h),
+        ];
+        if r[2] - r[0] < 1.0 || r[3] - r[1] < 1.0 {
+            return;
+        }
+        let snapshot = self.pool.get(&self.gpu.device, &self.bgl1, space.size);
+        c.pre = Some(Box::new(AdjPre { snapshot: snapshot.clone(), passes: Vec::new(), three: None }));
+        plan.probes.push((id, [r[0] as u32, r[1] as u32, (r[2] - r[0]) as u32, (r[3] - r[1]) as u32], snapshot));
+    }
+
+    /// Reads a rectangle (x, y, w, h) of a texture.
+    fn read_rect(&self, t: &Tex, r: [u32; 4]) -> Vec<[f32; 4]> {
+        let [x, y, w, h] = r;
+        let (format, bytes) = (t.tex.format(), resources::texel_bytes(t.tex.format()));
+        let row = (w * bytes).div_ceil(256) * 256;
+        let buf = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("probe"),
+            size: (row * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = self.gpu.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &t.tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.gpu.queue.submit([enc.finish()]);
+        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        self.gpu.wait();
+        let data = buf.slice(..).get_mapped_range().expect("mapped");
+        let mut out = Vec::with_capacity((w * h) as usize);
+        for yy in 0..h {
+            for px in data[(yy * row) as usize..(yy * row + w * bytes) as usize].chunks_exact(bytes as usize) {
+                out.push(resources::texel(format, px));
+            }
+        }
+        out
+    }
+
+    /// WCAG relative luminance of a stored working-space pixel (composited over black). Encoding to
+    /// display sRGB and decoding it again, as WCAG's formula reads, cancels out on the clamped range,
+    /// so the luminance is taken from the clamped linear sRGB directly (no transfer-function pows).
+    fn luminance(&self, p: [f32; 4]) -> f64 {
+        let l = self.working.to_display_linear_srgb([p[0] as f64, p[1] as f64, p[2] as f64]);
+        0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2]
+    }
+
+    /// Contrast ratio of the text a probe covered against the backdrop behind its glyphs; the project
+    /// background `bg`, drawn after everything, goes beneath the snapshot.
+    pub(super) fn measure_contrast(&self, snapshot: &Tex, bg: Option<&Tex>, frame: &Tex, r: [u32; 4]) -> Option<f64> {
+        let mut before = self.read_rect(snapshot, r);
+        if let Some(bg) = bg {
+            for (p, b) in before.iter_mut().zip(self.read_rect(bg, r)) {
+                let k = 1.0 - p[3];
+                *p = [p[0] + b[0] * k, p[1] + b[1] * k, p[2] + b[2] * k, p[3] + b[3] * k];
+            }
+        }
+        let after = self.read_rect(frame, r);
+        self.contrast_of(&before, &after)
+    }
+
+    /// Contrast of the pixels that changed between `before` (backdrop) and `after` (with text).
+    /// Both arrays must be corresponding pixels in this renderer's premultiplied working space.
+    /// Delivery uses this after placing an overlay over the output's picture.
+    pub fn contrast_of(&self, before: &[[f32; 4]], after: &[[f32; 4]]) -> Option<f64> {
+        // Only pixels the text changed can be glyphs. Find them on the stored values first and take the
+        // luminance (two transfer-function pows per channel) of those alone: over a full frame the
+        // luminance of every pixel cost ~24 million pows per measured text and dominated encodes.
+        // Film grain, vignettes and later layers change every pixel a little, so keep the pixels whose raw
+        // change is at least a fifth of the largest: a superset of the glyph interiors selected below.
+        let n = before.len().min(after.len());
+        let raw: Vec<f32> = (0..n)
+            .map(|k| {
+                let (a, b) = (before[k], after[k]);
+                (a[0] - b[0]).abs() + (a[1] - b[1]).abs() + (a[2] - b[2]).abs()
+            })
+            .collect();
+        let top = raw.iter().copied().fold(0.0f32, f32::max);
+        if top <= 1e-6 {
+            return None;
+        }
+        let changed: Vec<usize> = (0..n).filter(|&k| raw[k] >= top * 0.2).collect();
+        let lb: Vec<f64> = changed.iter().map(|&k| self.luminance(before[k])).collect();
+        let la: Vec<f64> = changed.iter().map(|&k| self.luminance(after[k])).collect();
+        let delta: Vec<f64> = lb.iter().zip(&la).map(|(a, b)| (a - b).abs()).collect();
+        let max = delta.iter().copied().fold(0.0, f64::max);
+        if max < 1e-4 {
+            return None;
+        }
+        // glyph interiors: pixels the text changed by at least half the largest change
+        let (mut t, mut bg, mut n) = (0.0, 0.0, 0.0);
+        for k in 0..delta.len() {
+            if delta[k] >= max * 0.5 {
+                t += la[k];
+                bg += lb[k];
+                n += 1.0;
+            }
+        }
+        let (t, bg) = (t / n, bg / n);
+        Some((t.max(bg) + 0.05) / (t.min(bg) + 0.05))
+    }
+
+    /// Contrast of one text layer as the viewer sees it, for text the inline probe cannot reach
+    /// (inside isolated groups, masks, mattes or effects): renders the frame with and without the
+    /// node and measures the pixels it changes — their colour with the node is the text, without
+    /// it the backdrop. When colours are identical, contrasting probe inks establish
+    /// coverage. `None` when no text coverage reaches the delivered frame.
+    pub fn contrast_with_without(
+        &mut self,
+        g: &sr_eval::FrameGraph,
+        p: &sr_eval::Program,
+        target: &ContrastTarget,
+        sub: &mut dyn FnMut(f64) -> sr_eval::FrameGraph,
+    ) -> Option<f64> {
+        let node_id = match target {
+            ContrastTarget::Node(id) => Some(id.as_str()),
+            ContrastTarget::Captions => None,
+        };
+        let k = g.nodes.iter().position(|n| Some(&*n.id) == node_id);
+        let captions = matches!(target, ContrastTarget::Captions);
+        if !captions && k.is_none() {
+            return None;
+        }
+        let previous_cache = self.contrast_three_cache.replace(ContrastThreeCache::default());
+        let probe = std::mem::replace(&mut self.contrast_probe, false);
+        // read each frame back before the next render: frame targets may be pooled
+        let with = self.render_with(g, p, Some(&mut *sub)).texture;
+        let [w, h] = with.size;
+        // read back only around the node (its box in frame space, plus room for glows), not the whole frame
+        let r = k.and_then(|k| node_rect(&g.nodes[k], w, h, self.tier.scale, 48.0)).unwrap_or([0, 0, w, h]);
+        let after = self.read_rect(&with, r);
+        let ratio = self.contrast_without(g, p, target, sub, r, &after);
+        self.contrast_probe = probe;
+        self.restore_contrast_three_cache(previous_cache);
+        ratio
+    }
+
+    /// Measures several texts at one time, sharing the original frame. Counterfactual
+    /// renders still hide only one target each, including in motion-blur samples.
+    /// Results correspond to `targets`; missing or fully hidden text returns `None`.
+    pub fn contrasts_with_without(
+        &mut self,
+        g: &sr_eval::FrameGraph,
+        p: &sr_eval::Program,
+        targets: &[ContrastTarget],
+        sub: &mut dyn FnMut(f64) -> sr_eval::FrameGraph,
+    ) -> Vec<Option<f64>> {
+        if targets.is_empty() {
+            return Vec::new();
+        }
+        if targets.len() == 1 {
+            return vec![self.contrast_with_without(g, p, &targets[0], sub)];
+        }
+        let previous_cache = self.contrast_three_cache.replace(ContrastThreeCache::default());
+        let probe = std::mem::replace(&mut self.contrast_probe, false);
+        let with = self.render_with(g, p, Some(&mut *sub)).texture;
+        let [w, h] = with.size;
+        // One frame bounds the retained readback memory regardless of the number or
+        // overlap of text boxes. Read before rendering counterfactuals: targets are pooled.
+        let original = self.read_rect(&with, [0, 0, w, h]);
+        let ratios = self.contrasts_from_pixels(g, p, targets, sub, [w, h], &original);
+        self.contrast_probe = probe;
+        self.restore_contrast_three_cache(previous_cache);
+        ratios
+    }
+
+    fn restore_contrast_three_cache(&mut self, previous: Option<ContrastThreeCache>) {
+        if let Some(cache) = std::mem::replace(&mut self.contrast_three_cache, previous) {
+            for (_, texture) in cache.entries {
+                self.pool.put(texture);
+            }
+        }
+    }
+
+    /// The counterfactual half of a probe, with the original pixels already retained.
+    #[allow(clippy::too_many_arguments)]
+    fn contrast_without(
+        &mut self,
+        g: &sr_eval::FrameGraph,
+        p: &sr_eval::Program,
+        target: &ContrastTarget,
+        sub: &mut dyn FnMut(f64) -> sr_eval::FrameGraph,
+        r: [u32; 4],
+        after: &[[f32; 4]],
+    ) -> Option<f64> {
+        let node_id = match target {
+            ContrastTarget::Node(id) => Some(id.as_str()),
+            ContrastTarget::Captions => None,
+        };
+        let mut hidden = g.clone();
+        if let Some(n) = hidden.nodes.iter_mut().find(|n| Some(&*n.id) == node_id) {
+            n.draw = false;
+        }
+        let previous_captions_off = self.captions_off;
+        self.captions_off |= matches!(target, ContrastTarget::Captions);
+        let without = {
+            let mut hidden_sub = |t| {
+                let mut graph = sub(t);
+                for n in &mut graph.nodes {
+                    if Some(&*n.id) == node_id {
+                        n.draw = false;
+                    }
+                }
+                graph
+            };
+            self.render_with(&hidden, p, Some(&mut hidden_sub)).texture
+        };
+        let before = self.read_rect(&without, r);
+        self.captions_off = previous_captions_off;
+        self.contrast_of(&before, after).or_else(|| {
+            let mut inks = Vec::new();
+            for ink in [0.0, 1.0] {
+                let graph = Self::contrast_ink_graph(g, target, ink);
+                let mut ink_sub = |t| Self::contrast_ink_graph(&sub(t), target, ink);
+                let frame = self.render_with(&graph, p, Some(&mut ink_sub));
+                inks.push(self.read_rect(&frame.texture, r));
+            }
+            self.contrast_of_coverage(&before, after, &inks[0], &inks[1])
+        })
+    }
+
+    /// Display-referred linear sRGB of each cell of a 48 × 27 grid over a frame (flash analysis).
+    pub fn flash_grid(&mut self, frame: &Tex) -> Vec<[f64; 3]> {
+        let d = self.gpu.device.clone();
+        let (pipe, bgl) = self.grid.get_or_insert_with(|| {
+            let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("flash-grid"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("analysis.wgsl").into()),
+            });
+            let bgl = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("flash-grid"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            });
+            let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("flash-grid"),
+                bind_group_layouts: &[Some(&bgl)],
+                immediate_size: 0,
+            });
+            let pipe = {
+                let _creation = crate::gpu::creation_lock();
+                d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("flash-grid"),
+                    layout: Some(&layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    primitive: Default::default(),
+                    depth_stencil: None,
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs_main"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(resources::FORMAT.into())],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+            (pipe, bgl)
+        });
+        let out = resources::create(&d, &self.bgl1, [48, 27], 1, "flash-grid");
+        let bg = d.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("flash-grid"),
+            layout: bgl,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&frame.view) }],
+        });
+        let mut enc = d.create_command_encoder(&Default::default());
+        {
+            let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("flash-grid"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &out.view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            rp.set_pipeline(pipe);
+            rp.set_bind_group(0, &bg, &[]);
+            rp.draw(0..3, 0..1);
+        }
+        self.gpu.queue.submit([enc.finish()]);
+        self.read(&out)
+            .into_iter()
+            .map(|p| {
+                let d = self.working.to_display_srgb([p[0] as f64, p[1] as f64, p[2] as f64]);
+                d.map(|c| {
+                    let c = c.clamp(0.0, 1.0);
+                    if c <= 0.04045 {
+                        c / 12.92
+                    } else {
+                        ((c + 0.055) / 1.055).powf(2.4)
+                    }
+                })
+            })
+            .collect()
+    }
+}

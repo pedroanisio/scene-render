@@ -1,0 +1,85 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validated-ci:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 310
+    outputs:
+      run-id: ${{ steps.ci.outputs.run-id }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/release_ci.py
+  validation:
+    needs: validated-ci
+    if: needs.validated-ci.outputs.run-id == ''
+    uses: ./.github/workflows/ci.yml
+  linux:
+    needs: [validated-ci, validation]
+    if: ${{ !cancelled() && needs.validated-ci.result == 'success' && (needs.validated-ci.outputs.run-id != '' || needs.validation.result == 'success') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      actions: read
+    env:
+      CARGO_BUILD_JOBS: 2
+      SR_GPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check release version
+        id: version
+        run: |
+          python3 - <<'PY_VERSION'
+          import os, tomllib
+          with open('Cargo.toml', 'rb') as f:
+              version = tomllib.load(f)['workspace']['package']['version']
+          tag = f'v{version}'
+          if os.environ.get('GITHUB_REF_TYPE') == 'tag':
+              assert os.environ['GITHUB_REF_NAME'] == tag, 'tag must match Cargo.toml'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              print(f'tag={tag}', file=f)
+          PY_VERSION
+      - uses: actions/download-artifact@v7
+        with:
+          name: linux-release-package
+          path: dist
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.validated-ci.outputs.run-id || github.run_id }}
+      - name: Verify the validated package
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          package="scene-render-${RELEASE_TAG}-linux-x86_64"
+          (cd dist && sha256sum -c "$package.tar.gz.sha256")
+          test "$(tar -xOf "dist/$package.tar.gz" "$package/COMMIT")" = "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: scene-render-linux-x86_64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+      - name: Publish GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/*.tar.gz dist/*.sha256 \
+            --verify-tag --title "scene-render $RELEASE_TAG" --notes-file RELEASE_NOTES.md

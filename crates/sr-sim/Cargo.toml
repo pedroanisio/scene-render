@@ -1,0 +1,16 @@
+[package]
+name = "sr-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Deterministic simulation for scene-render: Rapier 2D physics, soft bodies, force fields and particles"
+
+[dependencies]
+sr-volume.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+rapier2d-f64 = { version = "0.36", features = ["enhanced-determinism"] }
+rapier3d-f64 = { version = "0.36", features = ["enhanced-determinism"] }
