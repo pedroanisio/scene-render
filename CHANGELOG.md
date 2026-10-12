@@ -14,7 +14,7 @@ This release moves the engine to a new repository, https://github.com/pedroanisi
 - **From 0.5.0, scene-render is licensed under the PolyForm Noncommercial License 1.0.0** (`LICENSE`, unmodified from https://polyformproject.org/licenses/noncommercial/1.0.0, with its required notice in `NOTICE`). Noncommercial use is free. Commercial use needs a separate licence from Pedro Anisio Silva (`COMMERCIAL.md`).
 - **Versions up to 0.4.1 were published under the MIT License.** Copies of those versions keep the MIT terms they were released with.
 - **Contributions** are accepted under the contributor licence agreement in `CONTRIBUTING.md`, so they can be distributed under the noncommercial and the commercial licence.
-- The Cargo `license` field is the SPDX identifier `PolyForm-Noncommercial-1.0.0`. `THIRD-PARTY-NOTICES.md` is unchanged except for its first line: the dependencies keep their own permissive licences.
+- The Cargo `license` field is the SPDX identifier `PolyForm-Noncommercial-1.0.0`. `THIRD-PARTY-NOTICES.md` is unchanged except for its opening licence statement: the dependencies keep their own permissive licences.
 
 ### Repository
 
