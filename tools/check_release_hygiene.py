@@ -147,6 +147,9 @@ def check(paths, base, staged=False):
 
 LEDGER = os.path.join("tools", "evidence", "cinematic-impact.json")
 LEDGER_FIELDS = ("name", "evidence", "validation", "limits")
+# (file, digest) pairs the ledger pins that the working tree no longer holds: the file changed or left the repository
+# after the milestone was recorded. A digest that is in neither the tree nor this list is a drift (rule L4).
+HISTORICAL = os.path.join("tools", "evidence", "historical-digests.json")
 
 
 def _refuse_repeats(pairs):
@@ -185,6 +188,59 @@ def check_ledger(base):
             if m["name"] in names:
                 errors.append(f"{LEDGER}: L3 milestones {names[m['name']]} and {n} have the same name ({label[:60]})")
             names.setdefault(m["name"], n)
+    errors += check_digests(base, data)
+    return errors
+
+
+def ledger_digests(node):
+    """Every (file, digest) of the `*sha256` maps of the ledger, in document order."""
+    found = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key.endswith("sha256") and isinstance(value, dict):
+                found += [(f, d) for f, d in value.items() if isinstance(d, str)]
+            else:
+                found += ledger_digests(value)
+    elif isinstance(node, list):
+        for value in node:
+            found += ledger_digests(value)
+    return found
+
+
+def file_digest(path):
+    import hashlib
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None
+
+
+def check_digests(base, data):
+    """Rule L4: a digest the ledger pins equals the SHA-256 of that file in the tree, or is listed in HISTORICAL with
+    its file. Rule L5: a HISTORICAL entry is still needed: the ledger pins it and the tree's file differs. A pin that
+    nobody checks reads as evidence; this keeps each one either current or declared past."""
+    allowed = set()
+    errors = []
+    path = os.path.join(base, HISTORICAL)
+    if os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                entries = json.load(f, object_pairs_hook=_refuse_repeats)["digests"]
+            allowed = {(e["file"], e["sha256"]) for e in entries}
+        except (ValueError, KeyError, TypeError) as e:
+            return [f"{HISTORICAL}: L1 the list does not parse whole: {e}"]
+    pinned = set(ledger_digests(data))
+    for file, digest in sorted(pinned):
+        current = file_digest(os.path.join(base, file))
+        if current == digest:
+            if (file, digest) in allowed:
+                errors.append(f"{HISTORICAL}: L5 {file} is listed as historical and matches the tree; remove the entry")
+        elif (file, digest) not in allowed:
+            state = "differs from" if current else "is not in"
+            errors.append(f"{LEDGER}: L4 the digest {digest[:12]} of {file} {state} the tree; update the pin, or list it in {HISTORICAL} if it is a past revision's")
+    for file, digest in sorted(allowed - pinned):
+        errors.append(f"{HISTORICAL}: L5 {file} {digest[:12]} is not pinned by the ledger; remove the entry")
     return errors
 
 

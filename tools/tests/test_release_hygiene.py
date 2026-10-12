@@ -5,6 +5,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import hashlib
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -197,6 +198,72 @@ class Ledger(unittest.TestCase):
         repo.write("a.md", "clean\n")
         repo.stage("a.md")
         self.assertEqual(repo.check("--all").returncode, 0)
+
+
+HISTORICAL = "tools/evidence/historical-digests.json"
+SHA_A = hashlib.sha256(b"current\n").hexdigest()
+SHA_OLD = hashlib.sha256(b"an earlier revision\n").hexdigest()
+
+
+class LedgerDigests(unittest.TestCase):
+    """A digest the ledger pins is either the file's digest now (L4) or declared as a past revision's (L5 keeps that list honest)."""
+
+    def check(self, pins, historical=None, files=None, extra=None):
+        import json
+        repo = Repo()
+        repo.write("a.md", "clean\n")
+        repo.stage("a.md")
+        repo.write("src/a.rs", "current\n")
+        for name, text in (files or {}).items():
+            repo.write(name, text)
+        ledger = {"milestones": [dict(milestone("one"), **({"source_sha256": pins} if pins else {}), **(extra or {}))]}
+        repo.write(LEDGER, json.dumps(ledger))
+        if historical is not None:
+            repo.write(HISTORICAL, json.dumps({"digests": [{"file": f, "sha256": d} for f, d in historical]}))
+        return repo.check("--all")
+
+    def test_a_pin_that_equals_the_file_passes(self):
+        r = self.check({"src/a.rs": SHA_A})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_pin_the_file_no_longer_matches_is_refused(self):
+        r = self.check({"src/a.rs": SHA_OLD})
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("L4", r.stdout)
+        self.assertIn("src/a.rs", r.stdout)
+
+    def test_a_pin_of_a_missing_file_is_refused(self):
+        r = self.check({"src/gone.rs": SHA_OLD})
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("L4", r.stdout)
+
+    def test_a_declared_historical_pin_passes(self):
+        r = self.check({"src/a.rs": SHA_OLD}, historical=[("src/a.rs", SHA_OLD)])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_a_historical_entry_does_not_excuse_another_digest_of_the_file(self):
+        r = self.check({"src/a.rs": hashlib.sha256(b"third\n").hexdigest()}, historical=[("src/a.rs", SHA_OLD)])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("L4", r.stdout)
+
+    def test_a_historical_entry_that_matches_the_tree_is_stale(self):
+        r = self.check({"src/a.rs": SHA_A}, historical=[("src/a.rs", SHA_A)])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("L5", r.stdout)
+
+    def test_a_historical_entry_the_ledger_does_not_pin_is_stale(self):
+        r = self.check({"src/a.rs": SHA_A}, historical=[("src/b.rs", SHA_OLD)])
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("L5", r.stdout)
+
+    def test_maps_are_found_at_any_depth(self):
+        r = self.check(None, extra={"nested": [{"x": {"inputs_sha256": {"src/a.rs": SHA_OLD}}}]})
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("L4", r.stdout)
+
+    def test_every_pin_of_this_repository_is_current_or_declared(self):
+        errors = [e for e in hygiene.check_ledger(str(ROOT)) if "L4" in e or "L5" in e]
+        self.assertEqual(errors, [])
 
 
 if __name__ == "__main__":
