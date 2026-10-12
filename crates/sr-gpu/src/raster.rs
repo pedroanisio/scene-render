@@ -445,3 +445,22 @@ mod tests {
         assert!(render(&job).iter().all(|p| *p == [0.0; 4]), "empty jobs clear stale texels");
     }
 }
+
+#[cfg(test)]
+mod wgsl_layout_tests {
+    //! The Rust structs bound to WGSL structs have their layout (`crate::wgsl_layout`).
+    use crate::wgsl_layout::{assert_agree, rust_fields};
+
+    #[test]
+    fn r_cmd_matches_wgsl_r_cmd() {
+        let fields =
+            rust_fields!(super::RCmd; kind, piece_off, piece_count, backdrop, backdrop_val, paint, flags, param);
+        assert_agree(include_str!("raster.wgsl"), "RCmd", std::mem::size_of::<super::RCmd>(), &fields);
+    }
+
+    #[test]
+    fn r_params_matches_wgsl_r_params() {
+        let fields = rust_fields!(super::RParams; tiles_x, tiles_y, width, height, active_count, pad);
+        assert_agree(include_str!("raster.wgsl"), "RParams", std::mem::size_of::<super::RParams>(), &fields);
+    }
+}

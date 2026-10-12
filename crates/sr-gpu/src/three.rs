@@ -3695,3 +3695,45 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
 
 #[cfg(test)]
 mod splat_sort;
+
+#[cfg(test)]
+mod wgsl_layout_tests {
+    //! The Rust structs bound to WGSL structs have their layout (`crate::wgsl_layout`).
+    use crate::wgsl_layout::{assert_agree, rust_fields};
+
+    #[test]
+    fn frame_u_matches_wgsl_frame() {
+        let fields = rust_fields!(super::FrameU; view_proj, view, inv_view_proj, eye, screen, params, params2, dof, post, lens, fx, sh, env_rot, sky);
+        assert_agree(include_str!("three_types.wgsl"), "Frame", std::mem::size_of::<super::FrameU>(), &fields);
+    }
+
+    #[test]
+    fn light_u_matches_wgsl_light() {
+        let fields = rust_fields!(super::LightU; pos, dir, color, spot, size, flags, right);
+        assert_agree(include_str!("three_types.wgsl"), "Light", std::mem::size_of::<super::LightU>(), &fields);
+    }
+
+    #[test]
+    fn material_u_matches_wgsl_material() {
+        let fields = rust_fields!(super::MaterialU; base_color, emissive, p0, p1, p2, p3, attenuation, sheen, specular_color, irid, aniso, uv, finish, sampling, borders, sss, sss_color);
+        assert_agree(include_str!("three.wgsl"), "Material", std::mem::size_of::<super::MaterialU>(), &fields);
+    }
+
+    #[test]
+    fn object_u_matches_wgsl_object() {
+        let fields = rust_fields!(super::ObjectU; model, normal, params, spacing, padding);
+        assert_agree(include_str!("three.wgsl"), "Object", std::mem::size_of::<super::ObjectU>(), &fields);
+    }
+
+    #[test]
+    fn sort_u_matches_wgsl_sort_params() {
+        let fields = rust_fields!(super::SortU; n, blocks, shift, pad, view);
+        assert_agree(include_str!("three_sort.wgsl"), "SortParams", std::mem::size_of::<super::SortU>(), &fields);
+    }
+
+    #[test]
+    fn splat_obj_u_matches_wgsl_splat_object() {
+        let fields = rust_fields!(super::SplatObjU; model, model_inv, params);
+        assert_agree(include_str!("three_splat.wgsl"), "SplatObject", std::mem::size_of::<super::SplatObjU>(), &fields);
+    }
+}

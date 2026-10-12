@@ -2022,3 +2022,33 @@ pub(crate) fn render_cached(
     }
     RenderTiming { pack_seconds, gpu: timer, geometry_uploads }
 }
+
+#[cfg(test)]
+mod wgsl_layout_tests {
+    //! The Rust structs bound to WGSL structs have their layout (`crate::wgsl_layout`).
+    use crate::wgsl_layout::{assert_agree, rust_fields};
+
+    #[test]
+    fn pt_mat_matches_wgsl_mat() {
+        let fields = rust_fields!(super::PtMat; base, params, emissive, extra, maps, texture_params, borders, attenuation, sss, sss_color);
+        assert_agree(include_str!("pathtrace.wgsl"), "Mat", std::mem::size_of::<super::PtMat>(), &fields);
+    }
+
+    #[test]
+    fn pt_node_matches_wgsl_node() {
+        let fields = rust_fields!(super::PtNode; lo, a, hi, b);
+        assert_agree(include_str!("pathtrace.wgsl"), "Node", std::mem::size_of::<super::PtNode>(), &fields);
+    }
+
+    #[test]
+    fn pt_light_matches_wgsl_p_light() {
+        let fields = rust_fields!(super::PtLight; pos, dir, color, spot, size, right);
+        assert_agree(include_str!("pathtrace.wgsl"), "PLight", std::mem::size_of::<super::PtLight>(), &fields);
+    }
+
+    #[test]
+    fn params_matches_wgsl_params() {
+        let fields = rust_fields!(super::Params; cam_to_world, view_proj, inv_view_proj, env_rot, size, cam, env, ambient, misc, out, tile, media, sky);
+        assert_agree(include_str!("pathtrace.wgsl"), "Params", std::mem::size_of::<super::Params>(), &fields);
+    }
+}

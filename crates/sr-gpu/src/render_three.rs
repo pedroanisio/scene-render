@@ -3664,3 +3664,15 @@ mod scope_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod wgsl_layout_tests {
+    //! The Rust structs bound to WGSL structs have their layout (`crate::wgsl_layout`).
+    use crate::wgsl_layout::{assert_agree, rust_fields};
+
+    #[test]
+    fn sphere_u_matches_wgsl_params() {
+        let fields = rust_fields!(super::SphereU; faces, mode, region);
+        assert_agree(include_str!("sphere.wgsl"), "Params", std::mem::size_of::<super::SphereU>(), &fields);
+    }
+}

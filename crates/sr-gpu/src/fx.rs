@@ -3656,3 +3656,15 @@ mod tests {
         assert!((g[255][2] - 0.5).abs() < 1e-6 && (g[255][3] - 0.5).abs() < 1e-6, "premultiplied");
     }
 }
+
+#[cfg(test)]
+mod wgsl_layout_tests {
+    //! The Rust structs bound to WGSL structs have their layout (`crate::wgsl_layout`).
+    use crate::wgsl_layout::{assert_agree, rust_fields};
+
+    #[test]
+    fn params_matches_wgsl_fx() {
+        let fields = rust_fields!(super::Params; v, i, x, ops);
+        assert_agree(include_str!("effects.wgsl"), "Fx", std::mem::size_of::<super::Params>(), &fields);
+    }
+}

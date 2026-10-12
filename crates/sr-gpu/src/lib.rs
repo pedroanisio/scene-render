@@ -57,3 +57,6 @@ pub(crate) fn value_of_paint_tok(p: &sr_model::values::Paint) -> sr_eval::Value 
         other => value_of_paint(other),
     }
 }
+
+#[cfg(test)]
+mod wgsl_layout;

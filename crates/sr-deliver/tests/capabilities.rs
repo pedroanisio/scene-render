@@ -200,3 +200,175 @@ fn a_conditional_capability_requires_every_companion_construct() {
         1
     );
 }
+
+// ---- the vendored JSON Schema of the format (schema/capabilities-1.schema.json) ----
+
+fn schema_json() -> serde_json::Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schema/capabilities-1.schema.json");
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// The `pattern` of a schema string, checked by the engine's own parser. A pattern this table does not know panics,
+/// so a re-vendored schema with a new pattern is looked at, not skipped.
+fn pattern_holds(pattern: &str, value: &str) -> bool {
+    match pattern {
+        // construct
+        r"^[A-Za-z_][A-Za-z0-9_.-]*(/@[A-Za-z_][A-Za-z0-9_.-]*(=[^=\s]+)?)?$" => Construct::parse(value).is_some(),
+        // schema version
+        r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$" => {
+            let parts: Vec<&str> = value.split('.').collect();
+            parts.len() == 3
+                && parts.iter().all(|p| {
+                    !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) && (*p == "0" || !p.starts_with('0'))
+                })
+        }
+        other => panic!("the schema has a pattern this test does not know: {other}"),
+    }
+}
+
+/// Validates `value` against the keywords the schema uses; returns the first violation. A keyword it does not know
+/// panics for the same reason as in `pattern_holds`.
+fn validate(
+    schema: &serde_json::Value,
+    root: &serde_json::Value,
+    value: &serde_json::Value,
+    at: &str,
+) -> Result<(), String> {
+    use serde_json::Value;
+    let obj = schema.as_object().expect("a schema object");
+    for (key, rule) in obj {
+        match key.as_str() {
+            "$schema" | "$id" | "title" | "description" | "$defs" => {}
+            "$ref" => {
+                let name = rule.as_str().unwrap().strip_prefix("#/$defs/").expect("a local $defs reference");
+                validate(&root["$defs"][name], root, value, at)?;
+            }
+            "type" => {
+                let ok = match rule.as_str().unwrap() {
+                    "object" => value.is_object(),
+                    "array" => value.is_array(),
+                    "string" => value.is_string(),
+                    other => panic!("type {other}"),
+                };
+                if !ok {
+                    return Err(format!("{at}: not of type {rule}"));
+                }
+            }
+            "const" if value != rule => return Err(format!("{at}: not {rule}")),
+            "const" => {}
+            "enum" if !rule.as_array().unwrap().contains(value) => return Err(format!("{at}: {value} not in {rule}")),
+            "enum" => {}
+            "minLength" => {
+                if value.as_str().is_some_and(|s| (s.chars().count() as u64) < rule.as_u64().unwrap()) {
+                    return Err(format!("{at}: shorter than {rule}"));
+                }
+            }
+            "minItems" => {
+                if value.as_array().is_some_and(|a| (a.len() as u64) < rule.as_u64().unwrap()) {
+                    return Err(format!("{at}: fewer than {rule} items"));
+                }
+            }
+            "pattern" => {
+                if let Some(s) = value.as_str() {
+                    if !pattern_holds(rule.as_str().unwrap(), s) {
+                        return Err(format!("{at}: {s:?} does not match {rule}"));
+                    }
+                }
+            }
+            "required" => {
+                for name in rule.as_array().unwrap() {
+                    if value.get(name.as_str().unwrap()).is_none() {
+                        return Err(format!("{at}: {name} is required"));
+                    }
+                }
+            }
+            "additionalProperties" => {
+                assert_eq!(rule, &Value::Bool(false), "only additionalProperties: false is used");
+                let known = obj.get("properties").and_then(Value::as_object);
+                for name in value.as_object().into_iter().flat_map(|o| o.keys()) {
+                    if !known.is_some_and(|k| k.contains_key(name)) {
+                        return Err(format!("{at}: {name} is not declared"));
+                    }
+                }
+            }
+            "properties" => {
+                for (name, sub) in rule.as_object().unwrap() {
+                    if let Some(v) = value.get(name) {
+                        validate(sub, root, v, &format!("{at}/{name}"))?;
+                    }
+                }
+            }
+            "items" => {
+                for (i, v) in value.as_array().into_iter().flatten().enumerate() {
+                    validate(rule, root, v, &format!("{at}/{i}"))?;
+                }
+            }
+            other => panic!("the schema uses a keyword this test does not know: {other}"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn the_published_manifest_validates_against_the_vendored_json_schema() {
+    let schema = schema_json();
+    let manifest: serde_json::Value = serde_json::from_str(MANIFEST).unwrap();
+    validate(&schema, &schema, &manifest, "").unwrap();
+}
+
+#[test]
+fn the_json_schema_refuses_what_the_rust_structs_refuse() {
+    let schema = schema_json();
+    let good: serde_json::Value = serde_json::from_str(MANIFEST).unwrap();
+    let mutate = |f: &dyn Fn(&mut serde_json::Value)| {
+        let mut v = good.clone();
+        f(&mut v);
+        v
+    };
+    let cases = [
+        ("a field outside the format", mutate(&|v| v["extra"] = "x".into())),
+        ("an unknown status", mutate(&|v| v["entries"][0]["status"] = "partial".into())),
+        ("a bad construct", mutate(&|v| v["entries"][0]["construct"] = "a b".into())),
+        ("a bad schema version", mutate(&|v| v["schema"] = "1.7".into())),
+        ("an empty when", mutate(&|v| v["entries"][0]["when"] = serde_json::json!([]))),
+        (
+            "a missing entries",
+            mutate(&|v| {
+                v.as_object_mut().unwrap().remove("entries");
+            }),
+        ),
+    ];
+    for (what, doc) in cases {
+        assert!(validate(&schema, &schema, &doc, "").is_err(), "the JSON Schema accepts {what}");
+        // the engine reads the same document or refuses it; it never reads one the schema refuses and reports it whole
+        if let Ok(m) = serde_json::from_value::<Manifest>(doc.clone()) {
+            assert!(
+                what == "a bad construct" || what == "a bad schema version" || what == "an empty when",
+                "the Rust structs accept {what}: {m:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_status_enum_of_the_json_schema_is_the_set_of_rust_statuses() {
+    let schema = schema_json();
+    let declared: std::collections::BTreeSet<String> = schema["properties"]["entries"]["items"]["properties"]["status"]
+        ["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    // an exhaustive match: a new variant does not compile until it is listed here
+    let all = [Status::Exact, Status::Approximate, Status::Reported, Status::Unsupported];
+    for s in all {
+        match s {
+            Status::Exact | Status::Approximate | Status::Reported | Status::Unsupported => {}
+        }
+    }
+    let rust: std::collections::BTreeSet<String> =
+        all.iter().map(|s| serde_json::to_value(s).unwrap().as_str().unwrap().to_string()).collect();
+    assert_eq!(declared, rust);
+    assert_eq!(schema["properties"]["format"]["const"], FORMAT);
+}

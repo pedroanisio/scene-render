@@ -305,3 +305,15 @@ mod tests {
         assert!(src.contains("/ DISK_PROFILE_PEAK"), "profile() divides by it");
     }
 }
+
+#[cfg(test)]
+mod wgsl_layout_tests {
+    //! The Rust structs bound to WGSL structs have their layout (`crate::wgsl_layout`).
+    use crate::wgsl_layout::{assert_agree, rust_fields};
+
+    #[test]
+    fn params_matches_wgsl_params() {
+        let fields = rust_fields!(super::Params; eye, hole, right, down, fwd, dx, dy, dz, size, misc, extra);
+        assert_agree(include_str!("geodesic.wgsl"), "Params", std::mem::size_of::<super::Params>(), &fields);
+    }
+}

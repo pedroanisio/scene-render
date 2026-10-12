@@ -6,7 +6,7 @@ usage: tools/doc_facts.py --check [FILE.md ...]   exit 1 when a marked figure di
        tools/doc_facts.py --list                  print every fact and its value
 
 A document marks a figure as <!-- facts:NAME -->VALUE<!-- /facts -->; the comments do not render. Without file
-arguments, every tracked *.md outside vendor/ is processed. Facts come only from files in the repository, so the
+arguments, every tracked *.md and crates/**/*.rs outside vendor/ is processed. Facts come only from files in the repository, so the
 check needs no build: the vendored schema release (schema/UPSTREAM), the document version (sr-model's
 SCHEMA_VERSION), the Schematron, the conformance corpus manifest, the evaluator's codes and the workspace members.
 """
@@ -52,13 +52,18 @@ def facts():
     codes = re.findall(r'"E(\d{2})"', (ROOT / "crates/sr-eval/src/codes.rs").read_text())
     out["eval-code-max"] = f"E{max(int(c) for c in codes):02d}"
 
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    out["fuzz-iterations"] = re.search(r"sr-fuzz --iterations (\d+) --partition", ci).group(1)
+    matrix = re.search(r"^\s+shard: \[([0-9, ]+)\]", ci, re.M).group(1)
+    out["ci-shards"] = str(len(matrix.split(",")))
+
     members = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["members"]
     out["crates"] = str(len(members))
     return out
 
 
 def tracked_docs():
-    names = subprocess.run(["git", "ls-files", "*.md"], cwd=ROOT, check=True, capture_output=True, text=True).stdout
+    names = subprocess.run(["git", "ls-files", "*.md", "crates/**/*.rs"], cwd=ROOT, check=True, capture_output=True, text=True).stdout
     # a tracked file deleted from the working tree but not yet staged is still listed by git ls-files
     return [ROOT / p for p in names.split() if not p.startswith("vendor/") and (ROOT / p).exists()]
 

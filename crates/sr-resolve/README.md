@@ -11,7 +11,7 @@ document. Rendering never runs it. It makes:
 - `<generated>` media, through providers (see the repository README, "Generated media and transcription");
 - `<captionTrack transcribe="…">` transcriptions;
 - online map tiles for `<tiles url="…">`;
-- with the `pdf` feature (on by default), the page images and text regions of `<pdf>` assets (SREP 17), in
+- with the opt-in `pdf` feature, the page images and text regions of `<pdf>` assets (SREP 17), in
   `src/pdf.rs`.
 
 ## Features

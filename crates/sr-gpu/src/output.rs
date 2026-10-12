@@ -896,3 +896,15 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod wgsl_layout_tests {
+    //! The Rust structs bound to WGSL structs have their layout (`crate::wgsl_layout`).
+    use crate::wgsl_layout::{assert_agree, rust_fields};
+
+    #[test]
+    fn params_matches_wgsl_out() {
+        let fields = rust_fields!(super::Params; to_out, fsize, osize, offset, scale, format, transfer, full_range, linear_light, store_transfer, keep_alpha, kr, kb, words, seed, mode, bg_offset, bg_scale, overlay, base, pad);
+        assert_agree(include_str!("output.wgsl"), "Out", std::mem::size_of::<super::Params>(), &fields);
+    }
+}

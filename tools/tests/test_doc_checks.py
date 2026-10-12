@@ -36,6 +36,27 @@ class DocFactsTests(unittest.TestCase):
             doc.write_text("<!-- facts:no-such-fact -->1<!-- /facts -->\n")
             self.assertEqual(doc_facts.process(doc, self.values, write=False), ["unknown fact 'no-such-fact'"])
 
+    def test_rust_doc_comments_are_checked_too(self):
+        docs = {p.relative_to(ROOT).as_posix() for p in doc_facts.tracked_docs()}
+        self.assertIn("crates/sr-model/src/lib.rs", docs)
+        with tempfile.TemporaryDirectory() as d:
+            src = pathlib.Path(d) / "lib.rs"
+            src.write_text("//! the <!-- facts:sch-patterns -->1<!-- /facts --> patterns\n")
+            self.assertEqual(len(doc_facts.process(src, self.values, write=False)), 1)
+
+    def test_ci_figures_come_from_the_workflow(self):
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn(f"--iterations {self.values['fuzz-iterations']} --partition", ci)
+        self.assertIn(f"{self.values['ci-shards']} --timings", ci.replace("${{ matrix.shard }} ", ""))
+
+    def test_the_figures_that_were_stale_are_marked(self):
+        readme = (ROOT / "README.md").read_text()
+        for name in ("sch-patterns", "rule-v-max", "rule-c-max", "rule-r-max", "corpus-total", "fuzz-iterations",
+                     "ci-shards"):
+            self.assertIn(f"<!-- facts:{name} -->", readme, name)
+        lib = (ROOT / "crates/sr-model/src/lib.rs").read_text()
+        self.assertIn("<!-- facts:sch-patterns -->", lib)
+
     def test_repository_documents_are_current(self):
         self.assertEqual(doc_facts.main(["--check"]), 0)
 

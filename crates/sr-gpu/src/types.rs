@@ -145,3 +145,45 @@ pub struct Vertex {
 pub fn mat3(m: &crate::color::M3) -> [[f32; 4]; 3] {
     [0, 1, 2].map(|c| [m[0][c] as f32, m[1][c] as f32, m[2][c] as f32, 0.0])
 }
+
+#[cfg(test)]
+mod wgsl_layout_tests {
+    //! The Rust structs bound to WGSL structs have their layout (`crate::wgsl_layout`).
+    use crate::wgsl_layout::{assert_agree, rust_fields};
+
+    #[test]
+    fn draw_matches_wgsl_draw() {
+        let fields = rust_fields!(super::Draw; color, uv_rect, box_rect, target_size, opacity, blend, src_kind, matte_mode, mask_off, mask_count, paint, lod, seed, flags);
+        assert_agree(include_str!("shaders.wgsl"), "Draw", std::mem::size_of::<super::Draw>(), &fields);
+    }
+
+    #[test]
+    fn mask_matches_wgsl_mask() {
+        let fields = rust_fields!(super::Mask; rect, kind, mode, invert, fill_rule, edge_off, edge_count, feather, expansion, radius, opacity, pad);
+        assert_agree(include_str!("shaders.wgsl"), "Mask", std::mem::size_of::<super::Mask>(), &fields);
+    }
+
+    #[test]
+    fn paint_desc_matches_wgsl_paint_desc() {
+        let fields = rust_fields!(super::PaintDesc; xform0, xform1, p0, p1, kind, spread, space, stop_off, stop_count, dither, pad);
+        assert_agree(include_str!("common.wgsl"), "PaintDesc", std::mem::size_of::<super::PaintDesc>(), &fields);
+    }
+
+    #[test]
+    fn stop_matches_wgsl_stop() {
+        let fields = rust_fields!(super::Stop; color, offset, midpoint, pad);
+        assert_agree(include_str!("common.wgsl"), "Stop", std::mem::size_of::<super::Stop>(), &fields);
+    }
+
+    #[test]
+    fn globals_matches_wgsl_globals() {
+        let fields = rust_fields!(super::Globals; linear_light, seed, pad, to_srgb, from_srgb);
+        assert_agree(include_str!("common.wgsl"), "Globals", std::mem::size_of::<super::Globals>(), &fields);
+    }
+
+    #[test]
+    fn gen_matches_wgsl_gen() {
+        let fields = rust_fields!(super::Gen; size, kind, octaves, scale, evolution, contrast, angle, seed, paint_a, paint_b, seed_hi, grain, perm);
+        assert_agree(include_str!("shaders.wgsl"), "Gen", std::mem::size_of::<super::Gen>(), &fields);
+    }
+}

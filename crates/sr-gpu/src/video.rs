@@ -637,3 +637,21 @@ fn begin<'e>(enc: &'e mut wgpu::CommandEncoder, view: &'e wgpu::TextureView) -> 
         multiview_mask: None,
     })
 }
+
+#[cfg(test)]
+mod wgsl_layout_tests {
+    //! The Rust structs bound to WGSL structs have their layout (`crate::wgsl_layout`).
+    use crate::wgsl_layout::{assert_agree, rust_fields};
+
+    #[test]
+    fn conv_matches_wgsl_conv() {
+        let fields = rust_fields!(super::Conv; to_working, size_out, coded, chroma_shift, packing, rotation, transfer, alpha_mode, full_range, deep, linear_light, store_transfer, kr, kb, pad);
+        assert_agree(include_str!("video.wgsl"), "Conv", std::mem::size_of::<super::Conv>(), &fields);
+    }
+
+    #[test]
+    fn flow_params_matches_wgsl_flow_params() {
+        let fields = rust_fields!(super::FlowParams; size, grid, coarse, t, iterations);
+        assert_agree(include_str!("flow.wgsl"), "FlowParams", std::mem::size_of::<super::FlowParams>(), &fields);
+    }
+}
