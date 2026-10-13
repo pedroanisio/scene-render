@@ -4093,6 +4093,11 @@ impl Renderer {
             self.fx.checkpoint(g.frame, interval);
             self.save_states(p, g.frame, interval);
         }
+        // an error the device raised outside a scope while drawing (a texture over its limits): the frame is not the
+        // one authored, so it fails as unreadable media does
+        if let Err(e) = self.gpu.take_error() {
+            out.stats.errors.push(e.to_string());
+        }
         out
     }
 

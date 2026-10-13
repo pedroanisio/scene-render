@@ -33,6 +33,10 @@ pub enum GpuError {
         /// What was wrong with the choice.
         why: String,
     },
+    /// The device reported an error outside an error scope (a validation error, or memory it could not allocate):
+    /// the work that raised it was not done.
+    #[error("the GPU device reported an error: {0}")]
+    Uncaptured(String),
 }
 
 /// Which adapters to consider.
@@ -359,6 +363,8 @@ pub struct Gpu {
     /// The single-channel float format the device renders to for depth and blur-size maps
     /// (R32Float where it can, else R16Float).
     pub scalar_target: wgpu::TextureFormat,
+    /// The first error the device reported outside an error scope since it was last taken (see [`Gpu::take_error`]).
+    uncaptured: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 /// What the renderer's shaders need of a device, tried on a minimal pipeline: a fragment shader that reads a runtime-sized
@@ -478,6 +484,14 @@ impl Gpu {
         }))
         .map_err(|e| GpuError::Device(e.to_string()))?;
         probe(&device)?;
+        // wgpu's default handler panics on any error outside a scope, such as a texture over the device's limits that
+        // input asked for; the first one is kept instead and returned at the next checkpoint (`take_error`). The ones
+        // after it are mostly its consequences (objects made from the invalid one), so they are not kept.
+        let uncaptured = Arc::new(std::sync::Mutex::new(None::<String>));
+        let slot = uncaptured.clone();
+        device.on_uncaptured_error(Arc::new(move |e: wgpu::Error| {
+            slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(|| e.to_string());
+        }));
         let timestamps = features.contains(wgpu::Features::TIMESTAMP_QUERY);
         let renderable = |f: wgpu::TextureFormat| {
             adapter.get_texture_format_features(f).allowed_usages.contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
@@ -491,7 +505,25 @@ impl Gpu {
         } else {
             wgpu::TextureFormat::R16Float
         };
-        Ok(Gpu { device: Arc::new(device), queue: Arc::new(queue), info, timestamps, gbuffer_depth, scalar_target })
+        Ok(Gpu {
+            device: Arc::new(device),
+            queue: Arc::new(queue),
+            info,
+            timestamps,
+            gbuffer_depth,
+            scalar_target,
+            uncaptured,
+        })
+    }
+
+    /// The error the device reported outside an error scope since the last call, if any, and clears it. A renderer
+    /// checks after each frame (it is one of the frame's [`errors`](crate::RenderStats::errors)); code that drives
+    /// the device directly checks after its work.
+    pub fn take_error(&self) -> Result<(), GpuError> {
+        match self.uncaptured.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            Some(e) => Err(GpuError::Uncaptured(e)),
+            None => Ok(()),
+        }
     }
 
     /// A new device on the same adapter, for work that needs a device of its own.
