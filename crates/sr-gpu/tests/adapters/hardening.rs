@@ -407,7 +407,10 @@ fn emitters_sharing_a_sprite_id_keep_their_own_textures() {
 #[test]
 fn a_3d_document_on_opengl_reports_how_to_render_it() {
     use sr_gpu::gpu::GpuOptions;
-    let Ok(g) = sr_gpu::Gpu::with_options(&GpuOptions { backends: wgpu::Backends::GL, adapter: None }) else { return };
+    let Ok(g) = sr_gpu::Gpu::with_options(&GpuOptions { backends: wgpu::Backends::GL, adapter: None }) else {
+        eprintln!("skipping: no OpenGL adapter");
+        return;
+    };
     let d = doc_with(
         r##"background="#00000000""##,
         "",
@@ -443,6 +446,7 @@ fn every_kind_the_3d_pass_draws_reaches_the_3d_pass() {
     assert_eq!(covered, kinds, "a kind was added to THREE_D_DRAWN without a case here");
     for (kind, xml) in cases {
         let Ok(g) = sr_gpu::Gpu::with_options(&GpuOptions { backends: wgpu::Backends::GL, adapter: None }) else {
+            eprintln!("skipping: no OpenGL adapter");
             return;
         };
         let xml = format!(

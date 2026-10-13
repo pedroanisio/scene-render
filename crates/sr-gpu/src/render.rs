@@ -5430,6 +5430,7 @@ mod draw_uniform_tests {
             Ok(gpu) => gpu,
             Err(error) => {
                 assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "{error}");
+                eprintln!("skipping GPU test: {error}");
                 return;
             }
         };
@@ -5497,6 +5498,7 @@ mod draw_uniform_tests {
             Ok(gpu) => gpu,
             Err(error) => {
                 assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "{error}");
+                eprintln!("skipping GPU test: {error}");
                 return;
             }
         };

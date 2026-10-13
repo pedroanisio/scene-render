@@ -111,6 +111,7 @@ fn software_scatter_matches_shader_and_stable_reference() {
         Ok(g) => g,
         Err(e) => {
             assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "{e}");
+            eprintln!("skipping GPU test: {e}");
             return;
         }
     };
