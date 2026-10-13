@@ -936,7 +936,7 @@ fn run_delivery(
         // integrated loudness needs at least one 400 ms gating block
         let l = sr_audio::loudness::integrated(&part, sa.mix.rate as f64, &weights);
         report.loudness = (l > -150.0).then_some(l);
-        report.true_peak = Some(sr_audio::loudness::true_peak(&part));
+        report.true_peak = Some(sr_audio::loudness::true_peak(&part, sa.mix.rate as f64));
         let container = output
             .container
             .map(|c| c.as_str().to_string())
@@ -955,7 +955,7 @@ fn run_delivery(
                 &tmp,
             )?;
             if !held.passes.is_empty() {
-                report.true_peak = Some(sr_audio::loudness::true_peak(&part));
+                report.true_peak = Some(sr_audio::loudness::true_peak(&part, sa.mix.rate as f64));
                 let l = sr_audio::loudness::integrated(&part, sa.mix.rate as f64, &weights);
                 report.loudness = (l > -150.0).then_some(l);
             }

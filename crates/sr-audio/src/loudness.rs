@@ -210,17 +210,33 @@ pub fn short_term_in(buf: &Planar, ext: Extent, rate: f64, weights: &[f64], hop:
     block_energies(buf, ext, rate, weights, block, step).into_iter().map(lufs).collect()
 }
 
-/// 4× oversampling interpolator (windowed sinc, 12 taps per phase).
+/// The oversampling factor true peak uses at `rate` Hz: the smallest power
+/// of two from 4 up that brings the signal to 192 kHz or more, the rate
+/// ITU-R BS.1770-4 Annex 2 aims its interpolator at, and at most 64. Rates
+/// of 48 kHz and up keep 4×: the interpolator's error depends on the factor
+/// and on the frequency as a fraction of the rate, not on the rate itself,
+/// so 2× at 96 kHz would read peaks near its band edge lower than 4× does.
+pub fn true_peak_factor(rate: f64) -> usize {
+    let mut f = 4;
+    while f < 64 && rate * (f as f64) < 192_000.0 {
+        f *= 2;
+    }
+    f
+}
+
+/// Oversampling interpolator (windowed sinc, 12 taps per phase), with
+/// [`true_peak_factor`] phases.
 struct Oversampler {
-    phases: [[f64; 12]; 4],
+    phases: Vec<[f64; 12]>,
 }
 
 impl Oversampler {
-    fn new() -> Oversampler {
-        let mut phases = [[0.0; 12]; 4];
+    fn new(rate: f64) -> Oversampler {
+        let factor = true_peak_factor(rate);
+        let mut phases = vec![[0.0; 12]; factor];
         for (p, row) in phases.iter_mut().enumerate() {
             for (k, v) in row.iter_mut().enumerate() {
-                let x = (k as f64 - 5.5) - (p as f64 / 4.0 - 0.5);
+                let x = (k as f64 - 5.5) - (p as f64 / factor as f64 - 0.5);
                 let t = x * std::f64::consts::PI;
                 let sinc = if x.abs() < 1e-9 { 1.0 } else { t.sin() / t };
                 let w = 0.42
@@ -259,14 +275,15 @@ impl Oversampler {
     }
 }
 
-/// True peak in dBTP.
-pub fn true_peak(buf: &Planar) -> f64 {
-    true_peak_in(buf, Extent::of(buf))
+/// True peak in dBTP of a buffer at `rate` Hz, oversampled by
+/// [`true_peak_factor`].
+pub fn true_peak(buf: &Planar, rate: f64) -> f64 {
+    true_peak_in(buf, Extent::of(buf), rate)
 }
 
 /// [`true_peak`] of a buffer that is zero outside `ext`.
-pub fn true_peak_in(buf: &Planar, ext: Extent) -> f64 {
-    let os = Oversampler::new();
+pub fn true_peak_in(buf: &Planar, ext: Extent, rate: f64) -> f64 {
+    let os = Oversampler::new(rate);
     // the maximum is exact whatever the order, and `f64::max` drops a NaN
     // against any partial maximum, as the running maximum did
     let mut m: f64 = 0.0;
@@ -296,7 +313,7 @@ pub fn limit_in(buf: &mut Planar, ext: Extent, rate: f64, ceiling_db: f64, relea
     if ext.is_empty() {
         return;
     }
-    let os = Oversampler::new();
+    let os = Oversampler::new(rate);
     let ceiling = db_to_lin(ceiling_db) * 0.999;
     let look = ((0.0015 * rate) as usize).max(1);
     // required gain per sample, up to the last one the look-ahead of the extent reads
@@ -379,9 +396,84 @@ mod tests {
         // fs/4 sine at 45°: samples reach 0.707·A, the waveform reaches A
         let s = sine(12000.0, 0.5, 1.0, 48000.0, std::f64::consts::FRAC_PI_4);
         let sample_peak = lin_to_db(s.iter().fold(0f32, |m, v| m.max(v.abs())) as f64);
-        let tp = true_peak(&vec![s]);
+        let tp = true_peak(&vec![s], 48000.0);
         assert!((sample_peak + 9.03).abs() < 0.1);
         assert!((tp + 6.02).abs() < 0.3, "true peak {tp}");
+    }
+
+    /// A sine with raised-cosine fades of 50 ms at each end, rounded to f32.
+    fn faded(freq: f64, amp: f64, secs: f64, rate: f64, phase: f64) -> Vec<f32> {
+        let n = (secs * rate) as usize;
+        let ramp = (0.05 * rate) as usize;
+        (0..n)
+            .map(|i| {
+                let edge = i.min(n - 1 - i);
+                let g = if edge < ramp {
+                    0.5 - 0.5 * (std::f64::consts::PI * edge as f64 / ramp as f64).cos()
+                } else {
+                    1.0
+                };
+                (amp * g * (2.0 * std::f64::consts::PI * freq * i as f64 / rate + phase).sin()) as f32
+            })
+            .collect()
+    }
+
+    #[test]
+    fn true_peak_at_44k1_reaches_the_waveform_peak() {
+        // fs/4 at 0.4375π: every crest falls 1/8 of a sample from the nearest
+        // point of a 4× grid, which reads 0.17 dB low; the 192 kHz grid the
+        // standard aims for (8× at 44.1 kHz) lands on it
+        let rate = 44100.0;
+        let s = faded(rate / 4.0, 0.5, 0.25, rate, 0.4375 * std::f64::consts::PI);
+        let tp = true_peak(&vec![s], rate);
+        assert!((tp - lin_to_db(0.5)).abs() < 0.02, "true peak {tp}, waveform peak {}", lin_to_db(0.5));
+    }
+
+    #[test]
+    fn true_peak_factor_reaches_192_khz() {
+        let table = [
+            (8000.0, 32),
+            (32000.0, 8),
+            (44100.0, 8),
+            (48000.0, 4),
+            (88200.0, 4),
+            (96000.0, 4),
+            (192000.0, 4),
+            (384000.0, 4),
+            (1.0, 64),
+            (0.0, 64),
+            (f64::INFINITY, 4),
+            (f64::NAN, 4),
+        ];
+        for (rate, want) in table {
+            assert_eq!(true_peak_factor(rate), want, "{rate} Hz");
+        }
+    }
+
+    #[test]
+    fn true_peak_keeps_4x_at_high_rates() {
+        // 96 kHz, fs/8 with every crest a quarter sample from a sample: on
+        // the 4× grid, while 2× would read 0.17 dB low
+        let rate = 96000.0;
+        let phase = std::f64::consts::FRAC_PI_2 - 2.0 * std::f64::consts::PI * 0.125 * 0.25;
+        let tp = true_peak(&vec![faded(rate / 8.0, 0.5, 0.25, rate, phase)], rate);
+        assert!((tp - lin_to_db(0.5)).abs() < 0.02, "96 kHz true peak {tp}");
+        // 192 kHz, fs/4 at 45°: the samples miss the crest by 3 dB
+        let rate = 192000.0;
+        let tp = true_peak(&vec![faded(rate / 4.0, 0.5, 0.25, rate, std::f64::consts::FRAC_PI_4)], rate);
+        assert!((tp - lin_to_db(0.5)).abs() < 0.02, "192 kHz true peak {tp}");
+    }
+
+    #[test]
+    fn limiter_caps_true_peak_at_44k1() {
+        // the limiter reads the same 8× grid as the meter at 44.1 kHz
+        let rate = 44100.0;
+        let s = faded(rate / 4.0, 1.0, 0.5, rate, 0.4375 * std::f64::consts::PI);
+        let mut b = vec![s.clone(), s];
+        limit(&mut b, rate, -1.0, 0.05);
+        let tp = true_peak(&b, rate);
+        assert!(tp <= -0.95, "{tp}");
+        assert!(tp > -1.5, "{tp}");
     }
 
     #[test]
@@ -389,7 +481,7 @@ mod tests {
         let s = sine(997.0, 1.0, 2.0, 48000.0, 0.3);
         let mut b = vec![s.clone(), s];
         limit(&mut b, 48000.0, -1.0, 0.05);
-        let tp = true_peak(&b);
+        let tp = true_peak(&b, 48000.0);
         assert!(tp <= -0.95, "{tp}");
         assert!(tp > -1.5, "{tp}");
     }
@@ -446,9 +538,9 @@ mod tests {
                 .all(|(x, y)| x.to_bits() == y.to_bits()));
         }
         let full = Extent::full(buf[0].len());
-        assert_eq!(true_peak_in(&buf, ext).to_bits(), true_peak_in(&buf, full).to_bits());
-        assert_eq!(true_peak(&buf).to_bits(), true_peak_in(&buf, full).to_bits());
-        assert!(true_peak(&buf) > -1.0);
+        assert_eq!(true_peak_in(&buf, ext, rate).to_bits(), true_peak_in(&buf, full, rate).to_bits());
+        assert_eq!(true_peak(&buf, rate).to_bits(), true_peak_in(&buf, full, rate).to_bits());
+        assert!(true_peak(&buf, rate) > -1.0);
         let mut a = buf.clone();
         let mut b = buf.clone();
         limit_in(&mut a, ext, rate, -3.0, 0.05);
@@ -457,10 +549,10 @@ mod tests {
         limit(&mut c, rate, -3.0, 0.05);
         assert!(c.iter().flatten().zip(b.iter().flatten()).all(|(x, y)| x.to_bits() == y.to_bits()));
         assert!(a.iter().flatten().zip(b.iter().flatten()).all(|(x, y)| x.to_bits() == y.to_bits()));
-        assert!(true_peak(&a) < -2.9);
+        assert!(true_peak(&a, rate) < -2.9);
         // a silent programme: nothing to do
         let silent = vec![vec![0f32; 48000]; 2];
         assert_eq!(integrated_in(&silent, Extent::EMPTY, rate, &[1.0, 1.0]), -200.0);
-        assert_eq!(true_peak_in(&silent, Extent::EMPTY), lin_to_db(0.0));
+        assert_eq!(true_peak_in(&silent, Extent::EMPTY, rate), lin_to_db(0.0));
     }
 }

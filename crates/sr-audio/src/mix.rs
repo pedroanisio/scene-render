@@ -683,7 +683,7 @@ impl Mix {
             loudness::limit_in(&mut master, master_ext, rate, self.master.true_peak, 0.05);
         }
         let loudness = loudness::integrated_in(&master, master_ext, rate, &weights);
-        let true_peak = loudness::true_peak_in(&master, master_ext);
+        let true_peak = loudness::true_peak_in(&master, master_ext, rate);
         Ok(Mixed {
             master,
             nodes: outputs,

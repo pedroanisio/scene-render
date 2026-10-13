@@ -92,7 +92,7 @@ fn decoded_true_peak(mix: &Planar, rate: u32, layout: Layout, bitrate: u64, tmp:
     let decoded = sr_media::decode_audio(&coded, 0, rate)?;
     let _ = std::fs::remove_file(&wav);
     let _ = std::fs::remove_file(&coded);
-    Ok(loudness::true_peak(&planar(&decoded)))
+    Ok(loudness::true_peak(&planar(&decoded), rate as f64))
 }
 
 /// Holds `ceiling` (dBTP) for the AAC stream of `mix`: measures the decoded true peak of one encode; while it is over,
