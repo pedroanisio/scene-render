@@ -23,7 +23,7 @@ Examples:
   scene-render captions promo.scene.xml --at 1.5,3
   scene-render explain C21
 
-Exit status: 0 valid, 1 invalid (or warnings with --deny-warnings; render/encode: anything\nnot rendered as authored with --strict), 2 usage or I/O error.";
+Exit status: 0 valid, 1 invalid (or warnings with --deny-warnings; render/encode: anything\nnot rendered as authored with --strict), 2 usage, I/O or internal error.";
 
 /// Validate and inspect scene-render 1.1 documents.
 ///
@@ -1118,7 +1118,7 @@ fn eval(
                 t.elapsed().as_secs_f64() * 1e3
             })
             .collect();
-        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        times.sort_by(f64::total_cmp);
         let (nodes, slots, channels, exprs) = ev.stats();
         writeln!(
             out.w,
@@ -1382,7 +1382,7 @@ fn render(
             r.gpu().wait_for(p);
         }
         let sorted = |mut v: Vec<f64>| {
-            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v.sort_by(f64::total_cmp);
             v
         };
         let (times, eval_ms, submit_ms, gpu_ms) = (sorted(times), sorted(eval_ms), sorted(submit_ms), sorted(gpu_ms));
@@ -1467,6 +1467,10 @@ fn render(
                 return Ok(ExitCode::from(1));
             }
             let px = r.read(&frame.texture);
+            if let Err(e) = r.gpu().take_error() {
+                eprintln!("error: frame at {:.3} s: {e}", g.time);
+                return Ok(ExitCode::from(1));
+            }
             if stats {
                 let gpu = r.gpu_times();
                 eprintln!("{}", serde_json::json!({ "frame": g.frame, "stats": &frame.stats, "gpu": gpu }));
@@ -2023,7 +2027,52 @@ fn process_cpu_seconds() -> Option<f64> {
     Some(ticks / 100.0)
 }
 
+/// Exit status of a run that could not complete: a usage or I/O error, or an internal error
+/// (a panic) reported by [`install_panic_hook`].
+const COULD_NOT_RUN: u8 = 2;
+
+/// Report a panic as one `internal error: <message> at <file>:<line>` line; with `RUST_BACKTRACE`
+/// set the previous hook still runs after it, so the standard report and its backtrace follow.
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        eprintln!("{}", internal_error(panic_message(info.payload()), info.location()));
+        if std::env::var_os("RUST_BACKTRACE").is_some_and(|v| v != "0") {
+            previous(info);
+        }
+    }));
+}
+
+fn internal_error(message: &str, at: Option<&std::panic::Location<'_>>) -> String {
+    match at {
+        Some(at) => format!("internal error: {message} at {}:{}", at.file(), at.line()),
+        None => format!("internal error: {message}"),
+    }
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    match (payload.downcast_ref::<&str>(), payload.downcast_ref::<String>()) {
+        (Some(s), _) => s,
+        (_, Some(s)) => s,
+        _ => "no message",
+    }
+}
+
+/// The process exit status of a command's outcome; a panic was already reported by the hook.
+fn exit_code(res: std::thread::Result<std::io::Result<ExitCode>>) -> ExitCode {
+    match res {
+        Ok(Ok(code)) => code,
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Ok(Err(e)) => {
+            eprintln!("error: {e}");
+            ExitCode::from(COULD_NOT_RUN)
+        }
+        Err(_) => ExitCode::from(COULD_NOT_RUN),
+    }
+}
+
 fn main() -> ExitCode {
+    install_panic_hook();
     let cli = Cli::parse();
     if cli.debug_gpu {
         std::env::set_var("SR_GPU_DEBUG", "1");
@@ -2038,7 +2087,8 @@ fn main() -> ExitCode {
         }
     }
     let mut out = Out::new(cli.color);
-    let res = match cli.command {
+    // nothing the closure touches is used after a panic: the process reports it and exits
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || match cli.command {
         Command::Validate { files, format, no_assets, base_dir, deny_warnings, quiet } => {
             validate(&files, format, no_assets, base_dir, deny_warnings, quiet, &mut out)
         }
@@ -2145,14 +2195,40 @@ fn main() -> ExitCode {
             clap_complete::generate(shell, &mut Cli::command(), "scene-render", &mut std::io::stdout());
             Ok(ExitCode::SUCCESS)
         }
-    };
-    match res {
-        Ok(code) => code,
-        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::from(2)
-        }
+    }));
+    exit_code(res)
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_exits_like_a_run_that_could_not_complete() {
+        let res = std::panic::catch_unwind(|| -> std::io::Result<ExitCode> { panic!("cannot continue") });
+        assert_eq!(exit_code(res), ExitCode::from(COULD_NOT_RUN));
+        assert_eq!(COULD_NOT_RUN, 2, "the documented exit status");
+    }
+
+    #[test]
+    fn outcomes_keep_their_exit_status() {
+        assert_eq!(exit_code(Ok(Ok(ExitCode::from(1)))), ExitCode::from(1));
+        let pipe = std::io::Error::from(std::io::ErrorKind::BrokenPipe);
+        assert_eq!(exit_code(Ok(Err(pipe))), ExitCode::SUCCESS);
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(exit_code(Ok(Err(missing))), ExitCode::from(COULD_NOT_RUN));
+    }
+
+    #[test]
+    fn internal_errors_name_the_message_and_its_location() {
+        let payload = std::panic::catch_unwind(|| panic!("index {} out of range", 3)).unwrap_err();
+        let at = std::panic::Location::caller();
+        let line = internal_error(panic_message(&*payload), Some(at));
+        assert_eq!(line, format!("internal error: index 3 out of range at {}:{}", at.file(), at.line()));
+        let payload = std::panic::catch_unwind(|| panic!("fixed")).unwrap_err();
+        assert_eq!(internal_error(panic_message(&*payload), None), "internal error: fixed");
+        let payload = std::panic::catch_unwind(|| std::panic::panic_any(7_u8)).unwrap_err();
+        assert_eq!(panic_message(&*payload), "no message");
     }
 }
 
