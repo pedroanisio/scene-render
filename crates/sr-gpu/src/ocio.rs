@@ -18,7 +18,7 @@ use std::process::Command;
 
 use sr_model::model::{ColorSpace, Transfer};
 
-use crate::color;
+use crate::{color, fx};
 
 /// Lattice size of the table (ACES 2.0 gamut mapping bends sharply near the gamut boundary:
 /// 129³ keeps trilinear lookups within about 0.01 of OCIO's analytic result).
@@ -208,13 +208,19 @@ impl Cube {
         let (mut n1, mut n3) = (0usize, 0usize);
         let (mut range1, mut range3) = ([0.0, 1.0], [0.0, 1.0]);
         let mut rows = Vec::new();
+        // sizes are bounded (2 to the .cube maxima) so the expected row count cannot overflow
+        let size = |nums: &[f64], dims: u32| -> Result<usize, String> {
+            let n = nums.first().filter(|v| v.fract() == 0.0).map_or(0, |&v| v as u64);
+            fx::lut_len(n, dims).map_err(|e| format!("ociobakelut: {e}"))?;
+            Ok(n as usize)
+        };
         for l in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
             let mut it = l.split_whitespace();
             let key = it.next().unwrap_or("");
             let nums: Vec<f64> = it.filter_map(|v| v.parse().ok()).collect();
             match key {
-                "LUT_1D_SIZE" => n1 = nums.first().copied().unwrap_or(0.0) as usize,
-                "LUT_3D_SIZE" => n3 = nums.first().copied().unwrap_or(0.0) as usize,
+                "LUT_1D_SIZE" => n1 = size(&nums, 1)?,
+                "LUT_3D_SIZE" => n3 = size(&nums, 3)?,
                 "LUT_1D_INPUT_RANGE" if nums.len() == 2 => range1 = [nums[0], nums[1]],
                 "LUT_3D_INPUT_RANGE" if nums.len() == 2 => range3 = [nums[0], nums[1]],
                 k if k.parse::<f64>().is_ok() && nums.len() == 2 => {
@@ -227,7 +233,8 @@ impl Cube {
         if n3 == 0 && n1 >= 2 && rows.len() == n1 {
             return Ok(Cube { shaper: rows, range1, n3: 0, table: Vec::new(), range3 });
         }
-        if n3 < 2 || rows.len() != n1 + n3 * n3 * n3 {
+        let want = fx::lut_len(n3 as u64, 3).ok().and_then(|len| len.checked_add(n1));
+        if want != Some(rows.len()) {
             return Err(format!(
                 "ociobakelut: unexpected cube ({} rows for a {n1} shaper and a {n3}³ table)",
                 rows.len()
@@ -312,5 +319,48 @@ mod tests {
         let o = c.lookup(s);
         assert!((o[0] - 0.2).abs() < 1e-6 && (o[2] - 0.8).abs() < 1e-6, "{o:?}");
         assert!(Cube::parse("LUT_3D_SIZE 2\n0 0 0\n").is_err());
+    }
+
+    #[test]
+    fn cube_sizes_are_bounded() {
+        // 3000000³ overflows 64 bits; the others are outside the .cube ranges or not integers
+        for n in ["0", "1", "1.5", "257", "3000000", "1e30", "-2", "nan"] {
+            let e = Cube::parse(&format!("LUT_3D_SIZE {n}\n0 0 0\n")).err().unwrap_or_default();
+            assert!(e.contains("outside 2..=256"), "{n}: {e}");
+        }
+        for n in ["0", "1", "65537", "1e30"] {
+            assert!(Cube::parse(&format!("LUT_1D_SIZE {n}\nLUT_3D_SIZE 2\n0 0 0\n")).is_err(), "{n}");
+        }
+        let rows = "0 0 0\n".repeat(9);
+        assert!(Cube::parse(&format!("LUT_1D_SIZE 2\n{rows}")).is_err(), "neither a shaper nor a table");
+        assert!(Cube::parse(&format!("LUT_1D_SIZE 2\nLUT_3D_SIZE 2\n{rows}")).is_err(), "one row short");
+        assert!(Cube::parse(&format!("LUT_1D_SIZE 1\nLUT_3D_SIZE 2\n{rows}")).is_err());
+    }
+
+    #[test]
+    fn cube_survives_truncation_and_bit_flips() {
+        let mut src = String::from("LUT_1D_SIZE 2\nLUT_1D_INPUT_RANGE 0 0.5\nLUT_3D_SIZE 2\n0 0 0\n1 1 1\n");
+        for k in 0..8 {
+            src += &format!("{} {} {}\n", k & 1, (k >> 1) & 1, k >> 2);
+        }
+        Cube::parse(&src).unwrap();
+        let b = src.as_bytes();
+        let cut = (0..b.len()).map(|n| b[..n].to_vec());
+        let flip = (0..b.len()).flat_map(|i| {
+            [0x01u8, 0x80, 0xFF].map(|m| {
+                let mut v = b.to_vec();
+                v[i] ^= m;
+                v
+            })
+        });
+        for bytes in cut.chain(flip) {
+            if let Ok(c) = Cube::parse(&String::from_utf8_lossy(&bytes)) {
+                assert!(c.n3 == 0 || c.table.len() == c.n3.pow(3));
+                let s = [0.3, 0.6, 0.9].map(|v| c.shape(1, v));
+                if c.n3 > 0 {
+                    c.lookup(s);
+                }
+            }
+        }
     }
 }

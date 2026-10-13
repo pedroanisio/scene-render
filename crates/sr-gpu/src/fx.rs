@@ -1079,6 +1079,24 @@ pub fn check_glsl(src: &str) -> Result<(), String> {
 
 // ------------------------------------------------------------------ LUT files
 
+/// Largest 3D LUT lattice accepted: the Cube LUT specification's ceiling (`LUT_3D_SIZE` 2–256),
+/// which is also the 3D texture size wgpu's downlevel limits guarantee on every backend.
+pub const MAX_LUT_3D_SIZE: u32 = 256;
+
+/// Largest 1D LUT accepted: the Cube LUT specification's ceiling (`LUT_1D_SIZE` 2–65536).
+pub const MAX_LUT_1D_SIZE: u32 = 65536;
+
+/// The entry count of a table `n` entries a side in `dims` dimensions (1 or 3), or why `n` is
+/// not a supported size.
+pub(crate) fn lut_len(n: u64, dims: u32) -> Result<usize, String> {
+    let max = if dims == 3 { MAX_LUT_3D_SIZE } else { MAX_LUT_1D_SIZE };
+    (2..=u64::from(max))
+        .contains(&n)
+        .then(|| n.checked_pow(dims).and_then(|len| usize::try_from(len).ok()))
+        .flatten()
+        .ok_or_else(|| format!("{dims}D LUT size {n} is outside 2..={max}"))
+}
+
 fn bit_scale(d: Option<&str>) -> f32 {
     match d.unwrap_or("32f") {
         "8i" => 255.0,
@@ -1154,8 +1172,19 @@ fn nums(s: &str) -> Vec<f32> {
 pub fn load_lut(path: &Path) -> Result<(u32, Vec<[f32; 3]>), String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    let err = |m: &str| format!("{}: {m}", path.display());
-    let ops: Vec<Op> = match ext.as_str() {
+    parse_lut(&text, &ext, &path.display().to_string())
+}
+
+/// Parses LUT `text` in the format of extension `ext` (lower case) as an n³ table (red fastest);
+/// errors are prefixed with `name`.
+pub fn parse_lut(text: &str, ext: &str, name: &str) -> Result<(u32, Vec<[f32; 3]>), String> {
+    let err = |m: &str| format!("{name}: {m}");
+    let size = |v: Option<&str>, key: &str, dims: u32| -> Result<u32, String> {
+        let n: u32 = v.and_then(|v| v.parse().ok()).ok_or_else(|| err(&format!("bad {key}")))?;
+        lut_len(n.into(), dims).map_err(|e| err(&e))?;
+        Ok(n)
+    };
+    let ops: Vec<Op> = match ext {
         "cube" => {
             let (mut n3, mut n1) = (0u32, 0u32);
             let (mut dmin, mut dmax) = ([0.0f32; 3], [1.0f32; 3]);
@@ -1167,12 +1196,8 @@ pub fn load_lut(path: &Path) -> Result<(u32, Vec<[f32; 3]>), String> {
                 }
                 let mut it = l.split_whitespace();
                 match it.next() {
-                    Some("LUT_3D_SIZE") => {
-                        n3 = it.next().and_then(|v| v.parse().ok()).ok_or_else(|| err("bad LUT_3D_SIZE"))?
-                    }
-                    Some("LUT_1D_SIZE") => {
-                        n1 = it.next().and_then(|v| v.parse().ok()).ok_or_else(|| err("bad LUT_1D_SIZE"))?
-                    }
+                    Some("LUT_3D_SIZE") => n3 = size(it.next(), "LUT_3D_SIZE", 3)?,
+                    Some("LUT_1D_SIZE") => n1 = size(it.next(), "LUT_1D_SIZE", 1)?,
                     Some("DOMAIN_MIN") => {
                         let v = nums(&l[10..]);
                         if v.len() == 3 {
@@ -1201,13 +1226,14 @@ pub fn load_lut(path: &Path) -> Result<(u32, Vec<[f32; 3]>), String> {
             ]);
             let unit = dmin == [0.0; 3] && dmax == [1.0; 3];
             let mut ops = if unit { Vec::new() } else { vec![range] };
-            if n3 > 1 {
-                if rows.len() != (n3 * n3 * n3) as usize {
-                    return Err(err(&format!("expected {} rows, found {}", n3 * n3 * n3, rows.len())));
+            if n3 > 0 {
+                let want = lut_len(n3.into(), 3).map_err(|e| err(&e))?;
+                if rows.len() != want {
+                    return Err(err(&format!("expected {want} rows, found {}", rows.len())));
                 }
                 ops.push(Op::Lut3(n3, rows));
                 ops
-            } else if n1 > 1 {
+            } else if n1 > 0 {
                 if rows.len() != n1 as usize {
                     return Err(err("row count does not match LUT_1D_SIZE"));
                 }
@@ -1232,7 +1258,7 @@ pub fn load_lut(path: &Path) -> Result<(u32, Vec<[f32; 3]>), String> {
                 }
             }
             let n = (rows.len() as f64).cbrt().round() as u32;
-            if n < 2 || (n * n * n) as usize != rows.len() {
+            if lut_len(n.into(), 3).map_err(|e| err(&e))? != rows.len() {
                 return Err(err("row count is not a cube"));
             }
             let max = rows.iter().flat_map(|r| r.iter().copied()).fold(0.0f32, f32::max);
@@ -1249,7 +1275,7 @@ pub fn load_lut(path: &Path) -> Result<(u32, Vec<[f32; 3]>), String> {
             vec![Op::Lut3(n, t)]
         }
         "clf" | "xml" => {
-            let doc = roxmltree::Document::parse(&text).map_err(|e| err(&e.to_string()))?;
+            let doc = roxmltree::Document::parse(text).map_err(|e| err(&e.to_string()))?;
             let mut ops = Vec::new();
             for node in doc.root_element().children().filter(|c| c.is_element()) {
                 let out_scale = bit_scale(node.attribute("outBitDepth"));
@@ -1266,10 +1292,14 @@ pub fn load_lut(path: &Path) -> Result<(u32, Vec<[f32; 3]>), String> {
                 match node.tag_name().name() {
                     "LUT1D" => {
                         let (dim, v) = arr(array.ok_or_else(|| err("LUT1D without Array"))?);
+                        let n = lut_len(dim.first().copied().unwrap_or(0).into(), 1).map_err(|e| err(&e))?;
                         let ch = dim.get(1).copied().unwrap_or(1) as usize;
+                        if !matches!(ch, 1 | 3) || Some(v.len()) != n.checked_mul(ch) {
+                            return Err(err("LUT1D Array size does not match dim"));
+                        }
                         let t: Vec<[f32; 3]> = v
-                            .chunks(ch.max(1))
-                            .map(|c| if ch >= 3 { [c[0], c[1], c[2]] } else { [c[0]; 3] }.map(|x| x / out_scale))
+                            .chunks_exact(ch)
+                            .map(|c| if ch == 3 { [c[0], c[1], c[2]] } else { [c[0]; 3] }.map(|x| x / out_scale))
                             .collect();
                         if in_scale != 1.0 {
                             ops.push(Op::Range([0.0, 1.0, 0.0, 1.0]));
@@ -1279,10 +1309,11 @@ pub fn load_lut(path: &Path) -> Result<(u32, Vec<[f32; 3]>), String> {
                     "LUT3D" => {
                         let (dim, v) = arr(array.ok_or_else(|| err("LUT3D without Array"))?);
                         let n = dim.first().copied().unwrap_or(0);
-                        if n < 2 || v.len() != (n * n * n * 3) as usize {
+                        let len = lut_len(n.into(), 3).map_err(|e| err(&e))?;
+                        if Some(v.len()) != len.checked_mul(3) {
                             return Err(err("LUT3D Array size does not match dim"));
                         }
-                        let mut t = vec![[0.0f32; 3]; (n * n * n) as usize];
+                        let mut t = vec![[0.0f32; 3]; len];
                         for r in 0..n {
                             for g in 0..n {
                                 for b in 0..n {
@@ -1300,7 +1331,9 @@ pub fn load_lut(path: &Path) -> Result<(u32, Vec<[f32; 3]>), String> {
                         let mut mx = [[0.0f32; 4]; 3];
                         for (r, row) in mx.iter_mut().enumerate() {
                             for (c, cell) in row.iter_mut().enumerate().take(cols.min(4)) {
-                                *cell = v.get(r * cols + c).copied().unwrap_or(0.0) * in_scale / out_scale;
+                                *cell = v.get(r.saturating_mul(cols).saturating_add(c)).copied().unwrap_or(0.0)
+                                    * in_scale
+                                    / out_scale;
                             }
                         }
                         ops.push(Op::Matrix(mx));
@@ -3609,6 +3642,89 @@ mod tests {
         let last = t1[t1.len() - 1];
         assert!((last[0] - 0.5).abs() < 1e-6 && (t1[16][1] - 0.0).abs() < 1e-6);
         assert!(load_lut(&tmp("bad.cube", "LUT_3D_SIZE 3\n0 0 0\n")).is_err());
+    }
+
+    /// `src` truncated at every length and with 0x01, 0x80 and 0xFF xored into every byte.
+    fn mutations(src: &str) -> impl Iterator<Item = String> + '_ {
+        let b = src.as_bytes();
+        let cut = (0..b.len()).map(move |n| String::from_utf8_lossy(&b[..n]).into_owned());
+        let flip = (0..b.len()).flat_map(move |i| {
+            [0x01u8, 0x80, 0xFF].map(|m| {
+                let mut v = b.to_vec();
+                v[i] ^= m;
+                String::from_utf8_lossy(&v).into_owned()
+            })
+        });
+        cut.chain(flip)
+    }
+
+    fn cube_text(n: usize) -> String {
+        let mut text = format!("LUT_3D_SIZE {n}\n");
+        for k in 0..n * n * n {
+            let c = [k % n, k / n % n, k / n / n].map(|v| v as f32 / (n - 1) as f32);
+            text.push_str(&format!("{} {} {}\n", c[0], c[1], c[2]));
+        }
+        text
+    }
+
+    #[test]
+    fn cube_lattice_sizes_are_bounded() {
+        // 2048³ wraps to 0 in 32 bits: an empty table must not pass for one
+        assert!(load_lut(&tmp("huge.cube", "LUT_3D_SIZE 2048\n")).is_err());
+        let parse = |text: &str| parse_lut(text, "cube", "t.cube");
+        for n in ["0", "1", "257", "2048", "4294967295", "-2", "x"] {
+            let e = parse(&format!("LUT_3D_SIZE {n}\n0 0 0\n")).unwrap_err();
+            assert!(e.contains("LUT_3D_SIZE") || e.contains("outside 2..=256"), "{n}: {e}");
+        }
+        for n in ["0", "1", "65537", "4294967295"] {
+            assert!(parse(&format!("LUT_1D_SIZE {n}\n0 0 0\n")).is_err(), "{n}");
+        }
+        let e = parse("LUT_3D_SIZE 256\n0 0 0\n").unwrap_err();
+        assert!(e.contains("expected 16777216 rows, found 1"), "{e}");
+        assert!(parse("LUT_1D_SIZE 3\n0 0 0\n1 1 1\n").is_err());
+        assert_eq!(parse(&cube_text(3)).unwrap().0, 3);
+        assert_eq!(parse("LUT_1D_SIZE 2\n0 0 0\n1 1 1\n").unwrap().0, 33);
+    }
+
+    #[test]
+    fn three_dl_and_clf_lattice_sizes_are_bounded() {
+        for text in ["0 1023\n", "0 1023\n0 0 0\n", "0 0 0\n1 1 1\n"] {
+            assert!(parse_lut(text, "3dl", "t.3dl").unwrap_err().contains("outside 2..=256"), "{text:?}");
+        }
+        assert!(parse_lut(&"0 0 0\n".repeat(9), "3dl", "t.3dl").unwrap_err().contains("not a cube"));
+        let clf = |node: &str| parse_lut(&format!("<ProcessList id=\"x\">{node}</ProcessList>"), "clf", "t.clf");
+        for dim in ["0 0 0 3", "1 1 1 3", "257 257 257 3", "2048 2048 2048 3", "4294967295 4294967295 4294967295 3"] {
+            let e = clf(&format!("<LUT3D><Array dim=\"{dim}\"></Array></LUT3D>")).unwrap_err();
+            assert!(e.contains("outside 2..=256"), "{dim}: {e}");
+        }
+        assert!(clf("<LUT3D><Array dim=\"2 2 2 3\">0 0 0</Array></LUT3D>").unwrap_err().contains("does not match"));
+        for dim in ["0 1", "1 1", "65537 1", "4294967295 3"] {
+            assert!(clf(&format!("<LUT1D><Array dim=\"{dim}\">0</Array></LUT1D>")).is_err(), "{dim}");
+        }
+        // channel counts other than 1 and 3, and arrays whose length is not dim's product, are errors
+        for (dim, v) in [("2 3", "0 0 0 1"), ("2 2", "0 0 1 1"), ("3 1", "0 1"), ("2 1", "0 0.5 1")] {
+            let e = clf(&format!("<LUT1D><Array dim=\"{dim}\">{v}</Array></LUT1D>")).unwrap_err();
+            assert!(e.contains("does not match"), "{dim}: {e}");
+        }
+        assert_eq!(clf("<LUT1D><Array dim=\"2 3\">0 0 0 1 1 1</Array></LUT1D>").unwrap().0, 33);
+    }
+
+    #[test]
+    fn lut_parsers_survive_truncation_and_bit_flips() {
+        let three_dl =
+            "0 1023\n0 0 0\n0 0 1023\n0 1023 0\n0 1023 1023\n1023 0 0\n1023 0 1023\n1023 1023 0\n1023 1023 1023\n";
+        let clf = r#"<ProcessList id="x"><Matrix><Array dim="3 3">1 0 0 0 1 0 0 0 1</Array></Matrix><LUT1D outBitDepth="10i"><Array dim="2 1">0 1023</Array></LUT1D><LUT3D><Array dim="2 2 2 3">0 0 0 1 0 0 0 1 0 1 1 0 0 0 1 1 0 1 0 1 1 1 1 1</Array></LUT3D><Range><minInValue>0</minInValue><maxInValue>1</maxInValue></Range></ProcessList>"#;
+        let one_d = "LUT_1D_SIZE 2\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n0 0 0\n1 1 1\n";
+        for (ext, src) in
+            [("cube", cube_text(2)), ("cube", one_d.into()), ("3dl", three_dl.into()), ("clf", clf.into())]
+        {
+            parse_lut(&src, ext, "t").unwrap();
+            for text in mutations(&src) {
+                if let Ok((n, t)) = parse_lut(&text, ext, "t") {
+                    assert_eq!(lut_len(n.into(), 3), Ok(t.len()), "{ext} {text:?}");
+                }
+            }
+        }
     }
 
     #[test]
