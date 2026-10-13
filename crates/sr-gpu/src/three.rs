@@ -2955,6 +2955,44 @@ pub fn sort_src() -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The largest distance between two renders of one size, in steps of the half floats the target stores.
+    fn half_steps(a: &[[f32; 4]], b: &[[f32; 4]]) -> u32 {
+        assert_eq!(a.len(), b.len(), "renders of one size");
+        // half floats ordered as integers: negative values mirrored below zero
+        let ordered = |x: f32| {
+            let bits = half::f16::from_f32(x).to_bits();
+            if bits & 0x8000 == 0 {
+                i32::from(bits)
+            } else {
+                -i32::from(bits & 0x7fff)
+            }
+        };
+        a.iter().flatten().zip(b.iter().flatten()).map(|(&x, &y)| ordered(x).abs_diff(ordered(y))).max().unwrap_or(0)
+    }
+
+    /// Asserts that a specialised pipeline renders what the general one does. Both evaluate the same expressions, but a
+    /// driver may contract or reorder them differently once a constant is folded in (naga marks no SPIR-V result
+    /// `NoContraction`): llvmpipe, the adapter CI pins, renders both identically and is held to that, while the NVIDIA
+    /// driver (615.71, RTX 3050) differs by one half-float step in some channels, the bound for a hardware adapter.
+    fn assert_same_render(info: &wgpu::AdapterInfo, actual: &[[f32; 4]], expected: &[[f32; 4]], what: &str) {
+        let bound = if info.name.to_lowercase().contains("llvmpipe") { 0 } else { 1 };
+        let steps = half_steps(actual, expected);
+        assert!(steps <= bound, "{what}: {steps} half-float steps apart on {} (at most {bound})", info.name);
+    }
+
+    #[test]
+    fn half_steps_count_the_half_floats_between_two_renders() {
+        let one_step = 1.0 + 2f32.powi(-10);
+        assert_eq!(half_steps(&[[0.5, 1.0, -0.0, 0.0]], &[[0.5, 1.0, 0.0, 0.0]]), 0, "signed zeros are one value");
+        assert_eq!(half_steps(&[[1.0, 0.25, 0.0, 1.0]], &[[1.0, 0.25, 0.0, one_step]]), 1);
+        assert_eq!(
+            half_steps(&[[2f32.powi(-24), 0.0, 0.0, 0.0]], &[[-(2f32.powi(-24)), 0.0, 0.0, 0.0]]),
+            2,
+            "across zero"
+        );
+        assert_eq!(half_steps(&[[1.0; 4], [0.0; 4]], &[[1.0; 4], [1.0, 0.0, 0.0, 0.0]]), 15360, "the largest channel");
+    }
+
     #[test]
     fn a_box_is_out_of_view_only_wholly_beyond_one_plane() {
         use super::*;
@@ -3279,9 +3317,11 @@ mod tests {
                 let actual_stats = engine.stats;
                 engine.specialize_global_lights = false;
                 let expected = engine.render_now(&scene, None);
-                assert_eq!(
-                    actual, expected,
-                    "global count={count}, kinds={kinds:?}, mixed={mixed}, transparent={transparent}"
+                assert_same_render(
+                    &gpu.info,
+                    &actual,
+                    &expected,
+                    &format!("global count={count}, kinds={kinds:?}, mixed={mixed}, transparent={transparent}"),
                 );
                 assert_eq!(actual_stats, engine.stats, "lighting statistics and overflow stay unchanged");
                 assert_eq!(actual_stats.tile_overflow, count > MAX_PER_TILE);
@@ -3464,7 +3504,7 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
                 let expected = engine.render_now(&scene, None);
                 std::mem::swap(&mut engine.dof_pipe, &mut reference);
                 assert!(actual.iter().any(|p| p[3] > 0.01), "the oracle must render visible geometry");
-                assert_eq!(actual, expected, "blades={blades}, max_coc={max_coc}");
+                assert_same_render(&gpu.info, &actual, &expected, &format!("blades={blades}, max_coc={max_coc}"));
             }
         }
 
@@ -3516,7 +3556,12 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
                 let expected = engine.render_now(&scene, None);
                 std::mem::swap(&mut engine.dof_pipe, &mut reference);
                 assert!(actual.iter().all(|p| p[3] > 0.99), "whole frame has geometry");
-                assert_eq!(actual, expected, "uniform CoC: blades={blades}, max_coc={max_coc}");
+                assert_same_render(
+                    &gpu.info,
+                    &actual,
+                    &expected,
+                    &format!("uniform CoC: blades={blades}, max_coc={max_coc}"),
+                );
             }
         }
         if gpu.scalar_target == wgpu::TextureFormat::R32Float
@@ -3551,7 +3596,7 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
             std::mem::swap(&mut engine.dof_pipe, &mut reference);
             let expected = engine.render_now(&scene, None);
             std::mem::swap(&mut engine.dof_pipe, &mut reference);
-            assert_eq!(actual, expected, "uniform-region boundary");
+            assert_same_render(&gpu.info, &actual, &expected, "uniform-region boundary");
             assert_eq!(actual, rgba_reference.render_now(&scene, None), "depth format at uniform-region boundary");
             std::mem::swap(&mut engine.dof_pipe, &mut classification);
             let mask = engine.render_now(&scene, None);
