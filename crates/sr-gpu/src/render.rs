@@ -3828,7 +3828,8 @@ impl Renderer {
             out[i..j].sort_by(|a, b| {
                 let za = g.nodes[*a].three_d.unwrap()[0];
                 let zb = g.nodes[*b].three_d.unwrap()[0];
-                zb.partial_cmp(&za).unwrap_or(std::cmp::Ordering::Equal)
+                // NaN depths go last, so the order stays total
+                zb.partial_cmp(&za).unwrap_or_else(|| za.is_nan().cmp(&zb.is_nan()))
             });
             i = j;
         }

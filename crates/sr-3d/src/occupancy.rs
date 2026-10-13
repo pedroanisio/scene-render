@@ -650,15 +650,16 @@ impl Properties {
                 }
             }
         }
-        // eigenvectors are the columns of v; order by eigenvalue (ties keep the order of the axes)
+        // eigenvectors are the columns of v; order by eigenvalue (ties keep the order of the axes, NaN goes last)
         let mut order = [0usize, 1, 2];
-        order.sort_by(|i, j| a[*i][*i].partial_cmp(&a[*j][*j]).unwrap_or(std::cmp::Ordering::Equal));
+        order.sort_by(|i, j| {
+            let (x, y) = (a[*i][*i], a[*j][*j]);
+            x.partial_cmp(&y).unwrap_or_else(|| x.is_nan().cmp(&y.is_nan()))
+        });
         let moments = order.map(|k| a[k][k]);
         let mut axes = order.map(|k| [v[0][k], v[1][k], v[2][k]]);
         for axis in axes.iter_mut().take(2) {
-            let big = (0..3)
-                .max_by(|i, j| axis[*i].abs().partial_cmp(&axis[*j].abs()).unwrap_or(std::cmp::Ordering::Equal))
-                .unwrap_or(0);
+            let big = (0..3).max_by(|i, j| axis[*i].abs().total_cmp(&axis[*j].abs())).unwrap_or(0);
             if axis[big] < 0.0 {
                 *axis = axis.map(|c| -c);
             }

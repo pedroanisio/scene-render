@@ -200,8 +200,24 @@ fn rejoin(
     if subject.is_empty() {
         return;
     }
-    // JavaScript's sort is stable; so is `sort_by`.
-    clip.sort_by(|&a, &b| compare(&nodes[a].x, &nodes[b].x).partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal));
+    // JavaScript's sort is stable; so is `sort_by`. Points with a non-finite coordinate go last, so a NaN
+    // difference never makes the comparator inconsistent (which `sort_by` may answer with a panic).
+    let bad = |i: usize| nodes[i].x.iter().any(|c| !c.is_finite());
+    clip.sort_by(|&a, &b| {
+        bad(a).cmp(&bad(b)).then_with(|| {
+            if bad(a) {
+                return std::cmp::Ordering::Equal;
+            }
+            let d = compare(&nodes[a].x, &nodes[b].x);
+            if d < 0.0 {
+                std::cmp::Ordering::Less
+            } else if d > 0.0 {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+    });
     for list in [&subject, &clip] {
         let n = list.len();
         for i in 0..n {

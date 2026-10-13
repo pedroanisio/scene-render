@@ -1,7 +1,9 @@
 """Production code neither propagates a poisoned lock nor panics when it orders a NaN.
 
 `lock().unwrap()` turns one panic while a lock is held into a panic in every later caller; `partial_cmp(..).unwrap()`
-panics on the first NaN a parameter or a decoded file brings. Code under `#[cfg(test)]` may do either.
+panics on the first NaN a parameter or a decoded file brings, and `partial_cmp(..).unwrap_or(Equal)` makes a NaN equal to
+everything, which is no order at all: `sort_by` may then panic or leave the slice in any order. Code under
+`#[cfg(test)]` may do any of these.
 """
 import pathlib
 import re
@@ -15,7 +17,7 @@ ALLOWED = {}
 
 LOCK = re.compile(r"\.(?:lock|read|write|get_mut)\(\)\s*\.(?:unwrap\(\)|expect\()")
 PARTIAL_CMP = re.compile(r"\bpartial_cmp\(")
-UNWRAPPED = re.compile(r"\s*\.(?:unwrap\(\)|expect\()")
+UNWRAPPED = re.compile(r"\s*\.(?:unwrap\(\)|expect\(|unwrap_or\(|unwrap_or_default\(\))")
 TEST_ONLY = re.compile(r"#\[cfg\((?:all\()?test\b")
 ITEM = re.compile(
     r"(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|unsafe|const|extern)\s+)*"
@@ -164,7 +166,7 @@ class PanicPatternTests(unittest.TestCase):
     def test_no_production_code_unwraps_a_lock_or_a_partial_order(self):
         new = sorted(where for key, at in self.sites.items() if key not in ALLOWED for where in at)
         self.assertEqual(new, [], "recover the lock with `unwrap_or_else(PoisonError::into_inner)`, or order with "
-                                  "`total_cmp` (or handle the NaN), instead of unwrapping")
+                                  "`total_cmp` (or order the NaN explicitly), instead of unwrapping or defaulting")
 
     def test_every_allowed_site_is_still_there(self):
         self.assertEqual(sorted(set(ALLOWED) - set(self.sites)), [], "remove these from ALLOWED: they are fixed")
@@ -176,7 +178,7 @@ class PanicPatternTests(unittest.TestCase):
             'const S: &str = "x.partial_cmp(y).unwrap()";',
             'const R: &str = r#"m.read().unwrap()"#;',
             "fn b(v: &mut [f64]) { v.sort_by(|a, b| a.partial_cmp(&(b * 2.0)).unwrap()); }",  # 5: found
-            "fn c(v: &mut [f64]) { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Equal)); }",
+            "fn c(v: &mut [f64]) { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Equal)); }",          # 6: found
             "#[cfg(test)]",
             "fn d<A, B>(m: &RwLock<u8>) -> u8 { let c = '{'; *m.write().unwrap() }",
             "struct S {",
@@ -191,8 +193,11 @@ class PanicPatternTests(unittest.TestCase):
             "fn f<'a>(m: &'a RwLock<u8>) -> u8 { *m",
             "    .read()",                                                                       # 19: found
             "    .expect(\"poisoned\") }",
+            "fn g(v: &mut [f64]) { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or_default()); }",     # 21: found
+            "fn h(v: &mut [f64]) { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or_else(|| a.is_nan().cmp(&b.is_nan()))); }",
         ])
-        self.assertEqual(findings(source), [(1, "lock"), (5, "partial_cmp"), (19, "lock")])
+        self.assertEqual(findings(source), [(1, "lock"), (5, "partial_cmp"), (6, "partial_cmp"), (19, "lock"),
+                                            (21, "partial_cmp")])
 
     def test_test_only_module_files_are_skipped(self):
         root = ROOT / "crates/x/src"

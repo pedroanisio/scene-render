@@ -436,8 +436,17 @@ fn order(a: &Finding, b: &Finding) -> std::cmp::Ordering {
     .then_with(|| key(a).cmp(&key(b)))
     .then_with(|| a.severity.cmp(&b.severity))
     .then_with(|| {
-        let n = |f: &Finding| (f.time.map(|t| t[1]), f.measured, f.limit);
-        n(a).partial_cmp(&n(b)).unwrap_or(std::cmp::Ordering::Equal)
+        // `total_cmp`, not `partial_cmp`: a NaN quantity must not compare equal to everything, or the sort is not
+        // a total order (and `sort_by` may panic on it).
+        let opt = |x: Option<f64>, y: Option<f64>| match (x, y) {
+            (None, None) => std::cmp::Ordering::Equal,
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (Some(x), Some(y)) => x.total_cmp(&y),
+        };
+        opt(a.time.map(|t| t[1]), b.time.map(|t| t[1]))
+            .then_with(|| opt(a.measured, b.measured))
+            .then_with(|| opt(a.limit, b.limit))
     })
 }
 
@@ -446,4 +455,48 @@ pub fn report_path(folder: &Path, output: &sr_model::model::Output) -> Option<st
     use sr_model::element::Element as _;
     let r = output.get_attr("report")?.to_string();
     Some(crate::pipeline_resolve(folder, &r))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn finding(time: Option<[f64; 2]>, measured: Option<f64>, limit: Option<f64>) -> Finding {
+        Finding {
+            code: "ACC1".into(),
+            severity: Severity::Warning,
+            path: "/scene".into(),
+            node: None,
+            time,
+            measured,
+            limit,
+            unit: None,
+            message: String::new(),
+            at: None,
+        }
+    }
+
+    #[test]
+    fn findings_with_nan_quantities_are_still_totally_ordered() {
+        let values = [None, Some(f64::NAN), Some(-f64::NAN), Some(0.0), Some(-0.0), Some(1.0), Some(f64::INFINITY)];
+        let mut all = Vec::new();
+        for (i, &m) in values.iter().enumerate() {
+            for &l in &values {
+                all.push(finding(Some([0.0, values[(i + 3) % values.len()].unwrap_or(2.0)]), m, l));
+            }
+        }
+        for a in &all {
+            assert_eq!(order(a, a), std::cmp::Ordering::Equal);
+            for b in &all {
+                assert_eq!(order(a, b), order(b, a).reverse());
+                for c in &all {
+                    if order(a, b).is_le() && order(b, c).is_le() {
+                        assert!(order(a, c).is_le(), "{a:?} <= {b:?} <= {c:?} but not {a:?} <= {c:?}");
+                    }
+                }
+            }
+        }
+        all.sort_by(order);
+        assert!(all.windows(2).all(|w| order(&w[0], &w[1]).is_le()));
+    }
 }
