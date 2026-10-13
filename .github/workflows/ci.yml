@@ -30,7 +30,10 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
+      # the whole history: tools/tests/test_no_panic_crates.py reads every earlier version of its list
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/setup
       # the toolchain maze/rust-toolchain.toml pins, with its wasm target, so the maze.wasm rebuild check runs
       - run: rustup toolchain install
