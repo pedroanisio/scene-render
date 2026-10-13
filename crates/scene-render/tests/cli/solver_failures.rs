@@ -98,6 +98,9 @@ fn written(dir: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn a_solver_that_cannot_run_fails_every_render_command_and_names_its_cause() {
+    // without FFmpeg the encode fails on the missing tool, not on the solver: the render commands are still checked
+    let encodes =
+        crate::common::ffmpeg("a_solver_that_cannot_run_fails_every_render_command_and_names_its_cause: encode");
     for (name, xml, cause, derived) in cases() {
         let dir = scratch(name);
         let scene = dir.join("scene.xml");
@@ -105,12 +108,17 @@ fn a_solver_that_cannot_run_fails_every_render_command_and_names_its_cause() {
         let scene = scene.to_str().unwrap();
         let png = dir.join("out.png");
         let pattern = dir.join("seq_%04d.png");
-        let commands: Vec<(&str, Vec<&str>)> = vec![
+        let mut commands: Vec<(&str, Vec<&str>)> = vec![
             ("render", vec!["render", scene, "--time", "1.0", "-o", png.to_str().unwrap()]),
             ("render --strict", vec!["render", scene, "--time", "1.0", "-o", png.to_str().unwrap(), "--strict"]),
             ("render --bench", vec!["render", scene, "--bench", "--frames", "10..11"]),
-            ("encode", vec!["encode", scene, "-o", pattern.to_str().unwrap(), "--start", "1.0", "--end", "1.1"]),
         ];
+        if encodes {
+            commands.push((
+                "encode",
+                vec!["encode", scene, "-o", pattern.to_str().unwrap(), "--start", "1.0", "--end", "1.1"],
+            ));
+        }
         for (label, args) in commands {
             let o = run(&args);
             let stderr = String::from_utf8_lossy(&o.stderr);

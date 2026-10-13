@@ -1,5 +1,7 @@
 //! SREP 19's conformance cases through `scene-render encode` and `output/@report`.
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -45,6 +47,9 @@ const THIRTY: &str = "abcdefghij klmnopqrs tuvwxyz12";
 
 #[test]
 fn srep_0019_speed() {
+    if !common::ffmpeg("srep_0019_speed") {
+        return;
+    }
     let track = format!(
         r#"<captionTrack id="cc" language="en" mode="sidecar" readingSpeed="20"><cue start="0" end="1" text="{THIRTY}"/></captionTrack>"#
     );
@@ -58,6 +63,9 @@ fn srep_0019_speed() {
 
 #[test]
 fn srep_0019_short() {
+    if !common::ffmpeg("srep_0019_short") {
+        return;
+    }
     let track =
         r#"<captionTrack id="cc" language="en" mode="sidecar"><cue start="0" end="0.5" text="Hi"/></captionTrack>"#;
     let r = report("short", &scene(r#"legibilityCheck="warn""#, "<composition/>", track, (640, 360)));
@@ -69,6 +77,9 @@ fn srep_0019_short() {
 
 #[test]
 fn srep_0019_size() {
+    if !common::ffmpeg("srep_0019_size") {
+        return;
+    }
     let body = r#"<assets><text id="t" text="Small print" width="600" height="100" size="24" font="DejaVu Sans"/></assets><composition><layer id="small" asset="t"/></composition>"#;
     let r = report(
         "size",
@@ -83,6 +94,9 @@ fn srep_0019_size() {
 
 #[test]
 fn srep_0019_off() {
+    if !common::ffmpeg("srep_0019_off") {
+        return;
+    }
     let track = format!(
         r#"<captionTrack id="cc" language="en" mode="sidecar" readingSpeed="20"><cue start="0" end="1" text="{THIRTY}"/></captionTrack>"#
     );
@@ -92,6 +106,9 @@ fn srep_0019_off() {
 
 #[test]
 fn composition_captions_mapped_through_segments_are_measured() {
+    if !common::ffmpeg("composition_captions_mapped_through_segments_are_measured") {
+        return;
+    }
     // SREP 19: every caption cue drawn in the output. With segments, the composition's cues are measured where the
     // output shows them, in output time; a cue outside every segment is not shown and not measured.
     let scene = format!(

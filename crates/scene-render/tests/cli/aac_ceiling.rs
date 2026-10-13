@@ -50,7 +50,9 @@ fn write_clipped_mix(path: &Path, seconds: usize) {
 
 #[test]
 fn encode_reports_the_decoded_aac_true_peak_and_the_gain_it_took() {
-    sr_testkit::require_ffmpeg!("encode_reports_the_decoded_aac_true_peak_and_the_gain_it_took", &[sr_media_ffmpeg()]);
+    if !crate::common::ffmpeg("encode_reports_the_decoded_aac_true_peak_and_the_gain_it_took") {
+        return;
+    }
     let dir = std::env::temp_dir().join(format!("sr-cli-aac-ceiling-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     write_clipped_mix(&dir.join("mix.wav"), 6);
@@ -70,8 +72,4 @@ fn encode_reports_the_decoded_aac_true_peak_and_the_gain_it_took() {
     let text = String::from_utf8_lossy(&o.stdout);
     assert_eq!(o.status.code(), Some(0), "{text}{}", String::from_utf8_lossy(&o.stderr));
     assert!(text.contains("audio ceiling: the AAC decodes to") && text.contains("mixed down"), "{text}");
-}
-
-fn sr_media_ffmpeg() -> String {
-    std::env::var("SR_FFMPEG").unwrap_or_else(|_| "ffmpeg".into())
 }

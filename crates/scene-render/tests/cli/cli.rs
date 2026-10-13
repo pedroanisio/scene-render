@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
+use crate::common::no_gpu;
+
 fn corpus(p: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus").join(p)
 }
@@ -196,6 +198,9 @@ fn render_and_encode_surface_image_size_warnings() {
     }
     assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(String::from_utf8_lossy(&o.stdout).contains("warning[A07]"));
+    if !crate::common::ffmpeg("render_and_encode_surface_image_size_warnings") {
+        return;
+    }
     let pattern = dir.join("encode_%03d.png");
     let o = run(&["encode", file, "-o", pattern.to_str().unwrap(), "--end", "0.1", "--json"]);
     assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
@@ -204,15 +209,6 @@ fn render_and_encode_surface_image_size_warnings() {
     // a warning is a finding --strict counts (SREP 18: only information is left out)
     let o = run(&["encode", file, "-o", pattern.to_str().unwrap(), "--end", "0.1", "--json", "--strict"]);
     assert_eq!(o.status.code(), Some(1), "{}", String::from_utf8_lossy(&o.stderr));
-}
-
-fn no_gpu(o: &Output) -> bool {
-    let e = String::from_utf8_lossy(&o.stderr);
-    if o.status.code() == Some(2) && e.contains("no GPU adapter") {
-        eprintln!("skipping: {e}");
-        return true;
-    }
-    false
 }
 
 fn run_env(args: &[&str], env: &[(&str, &str)]) -> Output {
@@ -286,6 +282,9 @@ fn rendering_on_a_software_adapter_warns() {
     }
     let text = String::from_utf8_lossy(&o.stdout);
     assert!(text.contains("warning:") && text.contains("software"), "{text}");
+    if !crate::common::ffmpeg("rendering_on_a_software_adapter_warns") {
+        return;
+    }
     let pattern = dir.join("sw_%03d.png");
     let o = run_env(
         &["encode", &scene, "-o", pattern.to_str().unwrap(), "--end", "0.2", "--json"],
@@ -314,6 +313,9 @@ fn quality_overrides_render_drafts_at_half_size_and_encode_at_full_size() {
     assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
     let img = image::open(&png).unwrap();
     assert_eq!((img.width(), img.height()), (24, 16), "a draft frame is half size");
+    if !crate::common::ffmpeg("quality_overrides_render_drafts_at_half_size_and_encode_at_full_size") {
+        return;
+    }
     let pattern = dir.join("enc_%03d.png");
     let o = run(&["encode", &scene, "-o", pattern.to_str().unwrap(), "--end", "0.2", "--quality", "draft", "--json"]);
     assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
@@ -463,7 +465,7 @@ fn watch_renders_again_what_an_edit_changed() {
     while !(0..10).all(|k| dir.join(format!("w_{k:03}.png")).exists()) {
         if let Some(status) = child.try_wait().unwrap() {
             let o = child.wait_with_output().unwrap();
-            if String::from_utf8_lossy(&o.stderr).contains("no GPU adapter") {
+            if no_gpu(&o) {
                 return;
             }
             panic!("watch exited early with {status}: {}", String::from_utf8_lossy(&o.stderr));
@@ -566,6 +568,9 @@ fn encode_writes_adhoc_outputs() {
     }
     assert_eq!(o.status.code(), Some(2), "no <output> in the document");
     assert!(String::from_utf8_lossy(&o.stderr).contains("defines no matching <output>"));
+    if !crate::common::ffmpeg("encode_writes_adhoc_outputs") {
+        return;
+    }
     let mp4 = dir.join("clip.mp4").display().to_string();
     let o = run(&["encode", &scene, "-o", &mp4, "--hw", "software", "--json"]);
     if no_gpu(&o) {
@@ -684,6 +689,9 @@ fn strict_render_fails_on_shader_fallback() {
 
 #[test]
 fn strict_parallel_encode_retains_findings_from_early_chunks() {
+    if !crate::common::ffmpeg("strict_parallel_encode_retains_findings_from_early_chunks") {
+        return;
+    }
     let dir = render_fixture("parallel-findings");
     let scene = dir.join("scene.xml");
     std::fs::write(
@@ -713,6 +721,9 @@ fn strict_parallel_encode_retains_findings_from_early_chunks() {
 
 #[test]
 fn strict_encode_rejects_unresolved_placeholders_and_reports_them() {
+    if !crate::common::ffmpeg("strict_encode_rejects_unresolved_placeholders_and_reports_them") {
+        return;
+    }
     let dir = render_fixture("strict-template");
     let scene = dir.join("r.scene.xml");
     std::fs::write(
@@ -1144,6 +1155,9 @@ fn a_percent_sign_in_a_directory_is_not_a_frame_pattern() {
     assert!(one.is_file());
     let o = run(&["render", scene, "--frames", "0..2", "-o", one.to_str().unwrap()]);
     assert!(String::from_utf8_lossy(&o.stderr).contains("names one file"), "{o:?}");
+    if !crate::common::ffmpeg("a_percent_sign_in_a_directory_is_not_a_frame_pattern") {
+        return;
+    }
     // encode takes the sequence codec from the file name, and writes the frames
     let encoded = dir.join("75%/e_%03d.png");
     let o = run(&["encode", scene, "-o", encoded.to_str().unwrap(), "--end", "0.2"]);
@@ -1254,6 +1268,9 @@ fn bound_assets_invalidate_changed_frames() {
 
 #[test]
 fn plain_exports_keep_the_final_partial_frame() {
+    if !crate::common::ffmpeg("plain_exports_keep_the_final_partial_frame") {
+        return;
+    }
     let (dir, scene) = two_halves("partial-frame-export", "");
     for (name, segment) in [("plain", ""), ("segmented", r#"<segment from="0" to="0.21"/>"#)] {
         let xml = format!(
@@ -1373,6 +1390,9 @@ fn a_3d_document_takes_an_adapter_that_can_draw_it_by_default() {
 
 #[test]
 fn encoding_a_3d_document_by_default_takes_an_adapter_that_can_draw_it() {
+    if !crate::common::ffmpeg("encoding_a_3d_document_by_default_takes_an_adapter_that_can_draw_it") {
+        return;
+    }
     // encode builds its own adapter, so it needs the same document-driven choice as render
     let o = run(&["gpus", "--json"]);
     let Ok(r) = serde_json::from_slice::<serde_json::Value>(&o.stdout) else { return };
@@ -1450,6 +1470,9 @@ fn render_and_encode_stop_on_enforce_error_and_say_so_on_warn() {
     let all = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
     assert_eq!(o.status.code(), Some(0), "{all}");
     assert!(all.contains("SA01"), "{all}");
+    if !crate::common::ffmpeg("render_and_encode_stop_on_enforce_error_and_say_so_on_warn") {
+        return;
+    }
     let png = dir.join("w_%03d.png");
     let o = run(&["encode", &f, "-o", png.to_str().unwrap(), "--end", "0.2", "--json"]);
     assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
@@ -1624,6 +1647,9 @@ fn a_finding_that_changes_the_result_still_fails_deny_warnings() {
 
 #[test]
 fn encode_strict_does_not_count_information_but_counts_a_warning() {
+    if !crate::common::ffmpeg("encode_strict_does_not_count_information_but_counts_a_warning") {
+        return;
+    }
     let inert = compile_fixture(
         "strict-inert",
         "",
@@ -1653,6 +1679,9 @@ fn encode_strict_does_not_count_information_but_counts_a_warning() {
 
 #[test]
 fn encode_strict_accepts_posterize_time_on_a_node_that_starts_later() {
+    if !crate::common::ffmpeg("encode_strict_accepts_posterize_time_on_a_node_that_starts_later") {
+        return;
+    }
     // a node absent at its posterized step start is drawn as it was, which is nothing: not a delivery gap
     let f = compile_fixture(
         "pt-start",

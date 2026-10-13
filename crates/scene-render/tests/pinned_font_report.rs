@@ -5,6 +5,8 @@
 #[path = "../../sr-text/tests/support/test_font.rs"]
 mod test_font;
 
+mod common;
+
 use std::process::Command;
 
 use serde_json::Value;
@@ -45,6 +47,9 @@ fn glyph_findings(r: &Value) -> Vec<Value> {
 
 #[test]
 fn srep_0021_pinned_font_reports_the_missing_glyph_as_an_error() {
+    if !common::ffmpeg("srep_0021_pinned_font_reports_the_missing_glyph_as_an_error") {
+        return;
+    }
     let r = report("pinned", "pinned");
     let g = glyph_findings(&r);
     assert_eq!(g.len(), 1, "{r:#}");
@@ -55,6 +60,9 @@ fn srep_0021_pinned_font_reports_the_missing_glyph_as_an_error() {
 
 #[test]
 fn under_the_system_policy_the_host_draws_it() {
+    if !common::ffmpeg("under_the_system_policy_the_host_draws_it") {
+        return;
+    }
     // DejaVu Sans (the engine's text tests need it) has é: no face is missing it
     let r = report("system", "system");
     assert!(glyph_findings(&r).is_empty(), "{r:#}");
@@ -62,6 +70,9 @@ fn under_the_system_policy_the_host_draws_it() {
 
 #[test]
 fn strict_fails_on_a_missing_glyph_under_the_pinned_policy() {
+    if !common::ffmpeg("strict_fails_on_a_missing_glyph_under_the_pinned_policy") {
+        return;
+    }
     // FONT-GLYPH at error severity is a finding --strict counts (SREP 18: only information is left out)
     let d = std::env::temp_dir().join(format!("sr-pinned-strict-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -96,6 +107,9 @@ fn strict_fails_on_a_missing_glyph_under_the_pinned_policy() {
 
 #[test]
 fn a_pinned_document_without_font_assets_reports_every_character() {
+    if !common::ffmpeg("a_pinned_document_without_font_assets_reports_every_character") {
+        return;
+    }
     let d = std::env::temp_dir().join(format!("sr-pinned-none-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();

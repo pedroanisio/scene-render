@@ -1,6 +1,8 @@
 //! SREP 18: render reports. The conformance cases `srep-0018-report`, `-failed` and `-deterministic`, run through
 //! `scene-render encode`, and the shape of `scene-render-report/1` as the SREP's field table gives it.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -139,6 +141,9 @@ fn check_shape(r: &Value) {
 
 #[test]
 fn srep_0018_report_lists_exactly_the_inert_findings() {
+    if !common::ffmpeg("srep_0018_report_lists_exactly_the_inert_findings") {
+        return;
+    }
     let d = dir("report");
     let o = encode(&d, REPORT_SCENE, "case.report.json");
     assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
@@ -190,6 +195,9 @@ fn srep_0018_failed_render_still_writes_its_report() {
 
 #[test]
 fn srep_0018_reports_are_deterministic() {
+    if !common::ffmpeg("srep_0018_reports_are_deterministic") {
+        return;
+    }
     let d = dir("deterministic");
     let first = encode(&d, REPORT_SCENE, "first.json");
     assert_eq!(first.status.code(), Some(0), "{}", String::from_utf8_lossy(&first.stderr));
@@ -202,6 +210,9 @@ fn srep_0018_reports_are_deterministic() {
 
 #[test]
 fn text_that_overflows_its_box_is_reported_with_the_overflow() {
+    if !common::ffmpeg("text_that_overflows_its_box_is_reported_with_the_overflow") {
+        return;
+    }
     let d = dir("txt-fit");
     let scene = r##"<scene version="1.2">
   <project width="200" height="120" fps="10" duration="1" background="#000000"/>
@@ -231,6 +242,9 @@ fn text_that_overflows_its_box_is_reported_with_the_overflow() {
 
 #[test]
 fn several_outputs_need_an_id_in_the_report_path() {
+    if !common::ffmpeg("several_outputs_need_an_id_in_the_report_path") {
+        return;
+    }
     let d = dir("several");
     let scene = r##"<scene version="1.2">
   <project width="32" height="32" fps="10" duration="0.2" background="#000000"/>
@@ -254,6 +268,9 @@ fn several_outputs_need_an_id_in_the_report_path() {
 
 #[test]
 fn srep_0018_report_through_output_report() {
+    if !common::ffmpeg("srep_0018_report_through_output_report") {
+        return;
+    }
     // output/@report, relative to the document, written after rendering without any command-line flag
     let d = dir("attribute");
     let scene = REPORT_SCENE.replace(
@@ -315,6 +332,9 @@ fn no_matching_output_still_writes_the_requested_report() {
 
 #[test]
 fn strict_counts_every_finding_at_warning_or_error_and_no_information() {
+    if !common::ffmpeg("strict_counts_every_finding_at_warning_or_error_and_no_information") {
+        return;
+    }
     let d = dir("strict");
     // information only (INERT-I2, INERT-I8): --strict passes
     let o = encode_args(&d, REPORT_SCENE, &["--strict"]);
@@ -360,6 +380,9 @@ fn txt_fit(name: &str, scene: &str) -> (Vec<Value>, Option<i32>) {
 
 #[test]
 fn a_sub_pixel_line_box_overhang_is_information_and_passes_strict() {
+    if !common::ffmpeg("a_sub_pixel_line_box_overhang_is_information_and_passes_strict") {
+        return;
+    }
     // the films' case: size 64 in a 76 px box, the default lineHeight 1.2 makes a 76.8 px line box
     let (fit, strict) = txt_fit(
         "overhang",
@@ -377,6 +400,9 @@ fn a_sub_pixel_line_box_overhang_is_information_and_passes_strict() {
 
 #[test]
 fn text_clipped_to_its_box_is_a_warning_and_fails_strict() {
+    if !common::ffmpeg("text_clipped_to_its_box_is_a_warning_and_fails_strict") {
+        return;
+    }
     // one 30 px line in a 20 px box with overflow="clip": no character is dropped, but 10 px of the line are cut
     let (fit, strict) = txt_fit(
         "clipped",
@@ -394,6 +420,9 @@ fn text_clipped_to_its_box_is_a_warning_and_fails_strict() {
 
 #[test]
 fn a_block_leaving_the_frame_is_a_warning() {
+    if !common::ffmpeg("a_block_leaving_the_frame_is_a_warning") {
+        return;
+    }
     // three 30 px lines in a 50 px box placed at y = 100 of a 120 px frame: the block ends at 190, 70 px out
     let (fit, strict) = txt_fit(
         "off-frame",
@@ -411,6 +440,9 @@ fn a_block_leaving_the_frame_is_a_warning() {
 
 #[test]
 fn srep_0072_prec1_reaches_the_report_under_its_registry_code() {
+    if !common::ffmpeg("srep_0072_prec1_reaches_the_report_under_its_registry_code") {
+        return;
+    }
     // SREP 72 adds PREC1 to the registry: information, in the validator and in the render report
     let d = dir("srep72");
     let scene = std::fs::read_to_string(
@@ -434,6 +466,9 @@ fn srep_0072_prec1_reaches_the_report_under_its_registry_code() {
 
 #[test]
 fn srep_0034_findings_reach_the_report() {
+    if !common::ffmpeg("srep_0034_findings_reach_the_report") {
+        return;
+    }
     let d = dir("srep34");
     let collapse = r##"<scene version="1.2">
   <project width="64" height="48" fps="10" duration="1" background="#000000"/>
@@ -462,6 +497,9 @@ fn srep_0034_findings_reach_the_report() {
 
 #[test]
 fn srep_0022_the_report_names_constructs_this_engine_does_not_draw_exactly() {
+    if !common::ffmpeg("srep_0022_the_report_names_constructs_this_engine_does_not_draw_exactly") {
+        return;
+    }
     let d = dir("srep22");
     image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 128, 255, 255])).save(d.join("tile.png")).unwrap();
     // a pattern paint: listed as approximate in capabilities.json
