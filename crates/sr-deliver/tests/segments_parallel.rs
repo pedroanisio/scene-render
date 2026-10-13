@@ -4,8 +4,9 @@
 mod common;
 use std::path::{Path, PathBuf};
 
+/// The adapter for a delivery: without it or FFmpeg, each test skips.
 fn gpu() -> Option<sr_gpu::Gpu> {
-    common::gpu()
+    common::delivery("parallel segment tests")
 }
 
 fn dir(name: &str) -> PathBuf {

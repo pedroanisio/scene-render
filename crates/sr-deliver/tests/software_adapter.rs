@@ -2,6 +2,8 @@
 //! (workers compete for the same CPU cores), while an explicit count is honoured.
 //! Workers use independent devices on the caller's selected adapter.
 
+mod common;
+
 use std::path::PathBuf;
 
 use sr_gpu::gpu::GpuOptions;
@@ -36,6 +38,9 @@ fn programme(name: &str) -> sr_model::Document {
 #[test]
 fn software_rendering_is_reported_and_runs_one_automatic_worker() {
     let Some(gpu) = software() else { return };
+    if !common::ffmpeg_available("software adapter tests") {
+        return;
+    }
     let doc = programme("auto");
     let opts = sr_deliver::Options { parallel: sr_deliver::Parallel::Auto, ..Default::default() };
     let r = sr_deliver::deliver(&doc, &doc.scene.outputs[0], Some(&gpu), &opts, &mut |_, _| {}).unwrap();
@@ -58,6 +63,9 @@ fn workers_open_independent_devices_on_the_adapter_the_caller_chose() {
 #[test]
 fn an_explicit_worker_count_is_honoured_on_a_software_adapter() {
     let Some(gpu) = software() else { return };
+    if !common::ffmpeg_available("software adapter tests") {
+        return;
+    }
     let doc = programme("explicit");
     let opts = sr_deliver::Options { parallel: sr_deliver::Parallel::Count(2), ..Default::default() };
     let r = sr_deliver::deliver(&doc, &doc.scene.outputs[0], Some(&gpu), &opts, &mut |_, _| {}).unwrap();

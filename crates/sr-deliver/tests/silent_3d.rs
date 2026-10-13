@@ -11,7 +11,7 @@ const NO_ENVIRONMENT: &str = "X-rs-scene-render-3D-METAL-NO-ENVIRONMENT";
 
 /// Delivers the corpus document `name` as a PNG sequence, with a report; its findings and warnings.
 fn deliver(name: &str) -> Option<(Vec<Finding>, Vec<String>)> {
-    let gpu = common::gpu()?;
+    let gpu = common::delivery("silent 3D tests")?;
     let corpus = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus/valid");
     let d = sr_model::load_file(corpus.join(format!("{name}.scene.xml")), &sr_model::LoadOptions::default())
         .unwrap_or_else(|e| panic!("{name}: {e:?}"));

@@ -7,7 +7,7 @@ use sr_model::model::ProjectQuality;
 
 #[test]
 fn output_layers_match_the_authored_quality_in_serial_and_parallel_delivery() {
-    let Some(gpu) = common::gpu() else { return };
+    let Some(gpu) = common::delivery("overlay quality tests") else { return };
     for captions in [false, true] {
         let dir = std::env::temp_dir().join(format!("sr-overlay-quality-{}-{captions}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

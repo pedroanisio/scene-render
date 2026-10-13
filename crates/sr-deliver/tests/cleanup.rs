@@ -33,6 +33,9 @@ fn a_failed_delivery_leaves_no_temporary_directory_or_truncated_output() {
 
     // a frame that cannot be rendered half way: serial, and through the two-pass intermediate
     let Some(gpu) = common::gpu() else { return };
+    if !common::encoder("failed deliveries", "libx264") {
+        return;
+    }
     std::fs::write(dir.join("bad.png"), b"not an image").unwrap();
     for (name, extra) in [("serial", ""), ("twopass", r#"twoPass="true" bitrate="200000""#)] {
         let doc = load(

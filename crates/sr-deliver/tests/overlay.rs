@@ -5,7 +5,7 @@ mod common;
 
 #[test]
 fn output_overlays_enforce_safe_areas_on_their_own_clock() {
-    let Some(gpu) = common::gpu() else { return };
+    let Some(gpu) = common::delivery("overlay tests") else { return };
     for (name, level, force, rejects) in
         [("error", "error", "", true), ("warn", "warn", "", false), ("force", "error", "safeAreaForce=\"true\"", false)]
     {
@@ -39,7 +39,7 @@ fn output_overlays_enforce_safe_areas_on_their_own_clock() {
 
 #[test]
 fn safe_area_audit_checks_only_selected_output_captions() {
-    let Some(gpu) = common::gpu() else { return };
+    let Some(gpu) = common::delivery("overlay tests") else { return };
     for (selected, mode, rejects) in [("good", "burn", false), ("bad", "sidecar", true), ("bad", "burn", true)] {
         let d = std::env::temp_dir().join(format!("sr-overlay-captions-{}-{selected}-{mode}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
@@ -70,7 +70,7 @@ fn safe_area_audit_checks_only_selected_output_captions() {
 
 #[test]
 fn overlays_use_caller_parameters_and_data_rows() {
-    let Some(gpu) = common::gpu() else { return };
+    let Some(gpu) = common::delivery("overlay tests") else { return };
     for workers in [1, 2] {
         for cli in [false, true] {
             let d = std::env::temp_dir().join(format!("sr-overlay-{}-{workers}-{cli}", std::process::id()));

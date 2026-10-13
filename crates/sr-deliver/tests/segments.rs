@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 
 /// One device for the whole binary: tests run in parallel, and creating a device per test has
 /// deadlocked and crashed the driver.
+/// The adapter for a delivery: without it or FFmpeg, each test skips.
 fn gpu() -> Option<sr_gpu::Gpu> {
-    common::gpu()
+    common::delivery("segment tests")
 }
 
 fn dir(name: &str) -> PathBuf {

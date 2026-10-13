@@ -1,6 +1,8 @@
 //! The audio of outputs with segments (SREP 13): pitch under `stretch` and `resample`, loudness
 //! measured on the output's programme, source selection, and the output's own tracks in output time.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 
 const RATE: u32 = 48000;
@@ -60,6 +62,9 @@ fn rms(x: &[f32], from: f64, to: f64) -> f64 {
 
 #[test]
 fn stretch_keeps_pitch_and_resample_follows_the_rate() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     let d = fixtures("pitch");
     for (mode, want) in [("stretch", 440.0), ("resample", 880.0)] {
         let (x, _) = deliver(
@@ -78,6 +83,9 @@ fn stretch_keeps_pitch_and_resample_follows_the_rate() {
 
 #[test]
 fn loudness_is_normalised_on_the_output_programme() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     let d = fixtures("loud");
     let (_, r) = deliver(
         &d,
@@ -90,6 +98,9 @@ fn loudness_is_normalised_on_the_output_programme() {
 
 #[test]
 fn unselected_buses_still_trigger_output_ducking() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     let d = fixtures("bus-duck");
     let mix = r#"<audioTrack id="voice" asset="a440" role="dialogue" bus="speech"/>
                  <bus id="speech" output="dialogue"/><bus id="dialogue"/>"#;
@@ -117,6 +128,9 @@ fn unselected_buses_still_trigger_output_ducking() {
 
 #[test]
 fn bus_keys_keep_selected_and_output_owned_inputs() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     let d = fixtures("bus-key-inputs");
     for (mix, own, direct) in [
         (
@@ -156,6 +170,9 @@ fn bus_keys_keep_selected_and_output_owned_inputs() {
 
 #[test]
 fn bus_keys_feed_effect_sidechains_and_apply_bus_gain() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     let d = fixtures("bus-key-fx");
     let render = |key: &str, gain: i32| {
         deliver(
@@ -181,6 +198,9 @@ fn bus_keys_feed_effect_sidechains_and_apply_bus_gain() {
 
 #[test]
 fn outputs_select_their_sources() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     let d = fixtures("select");
     let mix = r#"<audioTrack id="music" asset="a440" role="music" bus="fx"/>
                  <audioTrack id="voice" asset="a1000" role="dialogue"/>
@@ -200,6 +220,9 @@ fn outputs_select_their_sources() {
 
 #[test]
 fn nonsegmented_audio_honours_command_line_range_overrides() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     let d = fixtures("select-range");
     let opts = sr_deliver::Options { start: Some(0.0), end: Some(3.0), ..Default::default() };
     let (x, _) = deliver_with_options(
@@ -216,6 +239,9 @@ fn nonsegmented_audio_honours_command_line_range_overrides() {
 
 #[test]
 fn own_tracks_honour_command_line_range_overrides() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     let d = fixtures("own-range");
     for (start, end) in [(0.0, 3.0), (1.5, 3.5)] {
         let opts = sr_deliver::Options { start: Some(start), end: Some(end), ..Default::default() };
@@ -257,21 +283,33 @@ fn check_own_automation(property: &str, before: f64, after: f64, rises: bool) {
 
 #[test]
 fn own_tracks_animate_volume_in_output_time() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     check_own_automation("volume", 0.0, 1.0, true);
 }
 
 #[test]
 fn own_tracks_animate_gain_in_output_time() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     check_own_automation("gain", -60.0, 0.0, true);
 }
 
 #[test]
 fn own_tracks_animate_pan_in_output_time() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     check_own_automation("pan", -1.0, 1.0, false);
 }
 
 #[test]
 fn outputs_without_segments_keep_all_sources() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     let d = fixtures("select-plain");
     let mix = r#"<audioTrack id="music" asset="a440" role="music" bus="fx"/>
                  <audioTrack id="voice" asset="a1000" role="dialogue"/>
@@ -291,6 +329,9 @@ fn outputs_without_segments_keep_all_sources() {
 
 #[test]
 fn an_outputs_own_tracks_play_in_output_time() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     let d = fixtures("own");
     // nothing of the composition is selected; the output's own track starts at output time 0.5, while
     // the segment plays composition time 2‥3
@@ -309,6 +350,9 @@ fn an_outputs_own_tracks_play_in_output_time() {
 
 #[test]
 fn joins_crossfade_without_a_click() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     let d = fixtures("join");
     // the same tone cut out of phase: the join is a short equal-power crossfade, so no sample jumps by
     // more than a tone sample ever does
@@ -324,6 +368,9 @@ fn joins_crossfade_without_a_click() {
 
 #[test]
 fn own_tracks_play_without_segments_from_the_outputs_start() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     let d = fixtures("plain");
     // no scene audio at all; the output starts at composition 1 s and its track at output 0.5 s
     let xml = r##"<scene version="1.2"><project width="64" height="36" fps="25" duration="4" background="#000000"/>
@@ -343,6 +390,9 @@ fn own_tracks_play_without_segments_from_the_outputs_start() {
 
 #[test]
 fn selection_acts_only_with_segments() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     let d = fixtures("noselect");
     // without segments, audioRoles has no effect: the composition's music plays under the output's own track
     let xml = r##"<scene version="1.2"><project width="64" height="36" fps="25" duration="4" background="#000000"/>
@@ -360,6 +410,9 @@ fn selection_acts_only_with_segments() {
 
 #[test]
 fn stretching_keeps_loudness() {
+    if !common::ffmpeg_available("segment audio tests") {
+        return;
+    }
     let d = fixtures("stretchloud");
     let loud = |speed: &str| {
         let (_, r) = deliver(

@@ -3,7 +3,7 @@ mod common;
 
 #[test]
 fn overlay_shaders_read_audio_in_serial_and_parallel_delivery() {
-    let Some(gpu) = common::gpu() else { return };
+    let Some(gpu) = common::delivery("overlay audio tests") else { return };
     let d = std::env::temp_dir().join(format!("sr-overlay-audio-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     let samples: Vec<f32> = (0..19200).map(|i| if i < 9600 { 0.0 } else { 0.5 }).collect();

@@ -45,11 +45,16 @@ fn fixtures() -> Option<std::path::PathBuf> {
     if !common::ffmpeg_available("access tests") {
         return None;
     }
+    Some(fixture_dir())
+}
+
+/// A fresh directory for one delivery, for helpers whose callers already checked for FFmpeg.
+fn fixture_dir() -> std::path::PathBuf {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let d = std::env::temp_dir().join(format!("sr-access-{}-{id}", std::process::id()));
     std::fs::create_dir_all(d.join("out")).unwrap();
-    Some(d)
+    d
 }
 
 fn doc(dir: &std::path::Path, access: &str, body: &str) -> sr_model::Document {
@@ -234,7 +239,7 @@ fn identical_text_and_background_fail_only_when_text_has_visible_coverage() {
         ("", "", r##"<shape id="cover" shape="rect" width="64" height="36" fill="#000000"/>"##, "AB", false),
         ("", "", "", " ", false),
     ] {
-        let dir = fixtures().unwrap();
+        let Some(dir) = fixtures() else { return };
         let xml = format!(
             r##"<scene version="1.2"><project width="64" height="36" fps="10" duration="0.2" background="#000000"/>
           <metadata><accessibility contrastCheck="error" flashCheck="off"/></metadata>
@@ -281,7 +286,7 @@ fn caption_requirement(
     workers: u32,
     output_captions: bool,
 ) -> Result<sr_deliver::pipeline::Report, sr_deliver::DeliverError> {
-    let dir = fixtures().unwrap();
+    let dir = fixture_dir();
     let track = if output_captions {
         r#"<captionTrack id="cc" language="en"><cue start="0" end="1" text="Hello world"/></captionTrack>"#
     } else {
@@ -305,7 +310,7 @@ fn caption_requirement(
 
 #[test]
 fn output_caption_tracks_satisfy_the_caption_requirement() {
-    if gpu().is_none() {
+    if gpu().is_none() || !common::ffmpeg_available("access tests") {
         return;
     }
     for workers in [1, 2] {
@@ -317,7 +322,7 @@ fn output_caption_tracks_satisfy_the_caption_requirement() {
 
 #[test]
 fn parallel_delivery_rejects_missing_required_captions() {
-    if gpu().is_none() {
+    if gpu().is_none() || !common::ffmpeg_available("access tests") {
         return;
     }
     for workers in [1, 2] {
@@ -346,7 +351,7 @@ fn overlay_contrast_uses_the_delivered_backdrop() {
         ("#000000", "#FFFFFF", true, false, false),
         ("#303030", "#000000", false, true, false),
     ] {
-        let dir = fixtures().unwrap();
+        let Some(dir) = fixtures() else { return };
         let text = r#"<layer id="low" asset="label" x="4" y="8"/>"#;
         let body = if group { format!(r#"<group id="g" isolate="true">{text}</group>"#) } else { text.into() };
         let cover =
@@ -386,7 +391,7 @@ fn caption_contrast_is_checked_over_the_picture() {
         ("#303030", true, true),
         ("#FFFFFF", true, false),
     ] {
-        let dir = fixtures().unwrap();
+        let Some(dir) = fixtures() else { return };
         let track = r#"<captionTrack id="cc" language="en" mode="burn" style="caption-style" x="32" y="2" width="56"><cue start="0" end="0.2" text="AB"/></captionTrack>"#;
         let (output_captions, captions) =
             if composition { ("", format!("<captions>{track}</captions>")) } else { (track, String::new()) };
@@ -413,7 +418,7 @@ fn caption_contrast_is_checked_over_the_picture() {
 }
 
 fn regression_contrast_case(id: &str, cover: &str) -> Result<sr_deliver::pipeline::Report, sr_deliver::DeliverError> {
-    let dir = fixtures().unwrap();
+    let dir = fixture_dir();
     let xml = format!(
         r##"<scene version="1.2"><project width="64" height="36" fps="10" duration="0.2" background="#000000"/>
       <metadata><accessibility contrastCheck="error" flashCheck="off"/></metadata>
@@ -429,7 +434,7 @@ fn regression_contrast_case(id: &str, cover: &str) -> Result<sr_deliver::pipelin
 
 #[test]
 fn regression_captions_id_does_not_bypass_contrast() {
-    if gpu().is_none() {
+    if gpu().is_none() || !common::ffmpeg_available("access tests") {
         return;
     }
     let result = regression_contrast_case("captions", "");
@@ -438,7 +443,7 @@ fn regression_captions_id_does_not_bypass_contrast() {
 
 #[test]
 fn regression_occluded_text_has_no_contrast_requirement() {
-    if gpu().is_none() {
+    if gpu().is_none() || !common::ffmpeg_available("access tests") {
         return;
     }
     let result = regression_contrast_case(
@@ -451,7 +456,7 @@ fn regression_occluded_text_has_no_contrast_requirement() {
 #[test]
 fn regression_draft_contrast_probes_use_rendered_coordinates() {
     let Some(gpu) = gpu() else { return };
-    let dir = fixtures().unwrap();
+    let Some(dir) = fixtures() else { return };
     for quality in [sr_model::model::ProjectQuality::Final, sr_model::model::ProjectQuality::Draft] {
         for color in ["#000000", "#FFFFFF"] {
             let xml = format!(
@@ -486,7 +491,7 @@ fn regression_contrast_checks_all_times_even_with_a_later_layer() {
     if gpu().is_none() {
         return;
     }
-    let dir = fixtures().unwrap();
+    let Some(dir) = fixtures() else { return };
     for later in [false, true] {
         for low_at_end in [false, true] {
             let (before, after, at) =

@@ -1,8 +1,9 @@
 mod common;
 use std::path::PathBuf;
 
+/// The adapter for a delivery: without it or FFmpeg, each test skips.
 fn gpu() -> Option<sr_gpu::Gpu> {
-    common::gpu()
+    common::delivery("delivery regression tests")
 }
 
 fn directory(name: &str) -> PathBuf {

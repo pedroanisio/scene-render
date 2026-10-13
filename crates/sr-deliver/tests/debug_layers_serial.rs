@@ -1,6 +1,7 @@
 //! With the GPU debug layers on, a delivery renders with one worker whatever was asked for, and says why.
 //! One test per binary: it sets a process-wide environment variable.
 
+mod common;
 use sr_gpu::gpu::GpuOptions;
 
 fn programme() -> (sr_model::Document, std::path::PathBuf) {
@@ -25,6 +26,9 @@ fn debug_layers_force_one_worker_and_the_report_says_why() {
         eprintln!("skipping: no llvmpipe adapter");
         return;
     };
+    if !common::encoder("debug layers", "ffv1") {
+        return;
+    }
     let (doc, _dir) = programme();
     let opts = sr_deliver::Options { parallel: sr_deliver::Parallel::Count(2), ..Default::default() };
     let run =

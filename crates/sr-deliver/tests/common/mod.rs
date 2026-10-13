@@ -7,6 +7,13 @@ pub fn gpu() -> Option<sr_gpu::Gpu> {
     sr_testkit::gpu(GPU.get_or_init(|| sr_gpu::Gpu::new().map_err(|e| e.to_string())).clone(), "GPU tests")
 }
 
+/// The adapter for a delivery, which also needs FFmpeg; without either, skips `context` (or fails under
+/// `SR_REQUIRE_GPU=1` or `SR_REQUIRE_FFMPEG=1`).
+pub fn delivery(context: &str) -> Option<sr_gpu::Gpu> {
+    let gpu = gpu()?;
+    ffmpeg_available(context).then_some(gpu)
+}
+
 /// Skips what `context` needs FFmpeg for, saying why, or fails under `SR_REQUIRE_FFMPEG=1`.
 pub fn skip_ffmpeg(context: &str, reason: &str) {
     sr_testkit::FFMPEG.skip(context, reason);
