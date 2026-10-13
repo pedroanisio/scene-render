@@ -11,12 +11,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 # Sites not fixed yet, as (file, the source line stripped) and the reason. The list may only shrink: an entry that
 # excuses nothing fails the test, so a fixed site is removed here in the same change.
-ALLOWED = {
-    ("crates/scene-render/src/main.rs", "times.sort_by(|a, b| a.partial_cmp(b).unwrap());"):
-        "the CLI's own timing summary; fixed together with the rest of main.rs",
-    ("crates/scene-render/src/main.rs", "v.sort_by(|a, b| a.partial_cmp(b).unwrap());"):
-        "the CLI's own timing summary; fixed together with the rest of main.rs",
-}
+ALLOWED = {}
 
 LOCK = re.compile(r"\.(?:lock|read|write|get_mut)\(\)\s*\.(?:unwrap\(\)|expect\()")
 PARTIAL_CMP = re.compile(r"\bpartial_cmp\(")
