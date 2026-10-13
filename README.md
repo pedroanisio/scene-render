@@ -952,6 +952,22 @@ tools/                      oracle.py, build_corpus.py, oracle_diff.py, kitchen_
                             MapLibre style-spec scripts that write the test fixtures)
 ```
 
+The crates form layers, lowest first. A normal or build dependency points only to a strictly lower layer; a dev
+dependency may point anywhere that closes no cycle. `tools/tests/test_crate_layers.py` states the layers and checks
+them against `cargo metadata`:
+
+<!-- facts:crate-layers -->
+1. **kernels**: `sr-media`, `sr-vector`, `sr-volume`, `sr-wasm`. Document-independent geometry, volumes, WebAssembly and FFmpeg I/O that everything shares.
+2. **primitives**: `sr-3d`, `sr-audio`, `sr-geo`, `sr-sim`, `sr-text`. Document-independent text, 3D assets, simulation, geography and audio.
+3. **model**: `sr-model`. The document: validation, the typed model, asset verification.
+4. **evaluation**: `sr-eval`. Documents to frames of drawable state.
+5. **rendering**: `sr-gpu`. Frames to pixels on the GPU.
+6. **delivery**: `sr-deliver`. Audio mix, encode pipeline, outputs and destinations.
+7. **resolution**: `sr-resolve`. The provider step that fills generated-media and transcription caches.
+8. **entry points**: `scene-render`, `sr-fuzz`. The CLI and the fuzzing harness.
+9. **test support**: `sr-testkit`, when present. Only a dev dependency, never a normal or build one.
+<!-- /facts -->
+
 ## Tests
 
 `cargo test` runs every crate's suites. GPU tests skip with a message when no adapter exists unless `SR_REQUIRE_GPU=1` is set (as in renderer CI), and media tests skip with a message when FFmpeg, ffprobe or an encoder they need is missing unless `SR_REQUIRE_FFMPEG=1` is set (as in renderer CI). By subsystem:

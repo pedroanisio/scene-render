@@ -8,9 +8,11 @@ usage: tools/doc_facts.py --check [FILE.md ...]   exit 1 when a marked figure di
 A document marks a figure as <!-- facts:NAME -->VALUE<!-- /facts -->; the comments do not render. Without file
 arguments, every tracked *.md and crates/**/*.rs outside vendor/ is processed. Facts come only from files in the repository, so the
 check needs no build: the vendored schema release (schema/UPSTREAM), the document version (sr-model's
-SCHEMA_VERSION), the Schematron, the conformance corpus manifest, the evaluator's codes and the workspace members.
+SCHEMA_VERSION), the Schematron, the conformance corpus manifest, the evaluator's codes, the workspace members and
+the crate layers (tools/tests/test_crate_layers.py).
 """
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -63,7 +65,16 @@ def facts():
 
     members = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["members"]
     out["crates"] = str(len(members))
+    out["crate-layers"] = crate_layers().render()
     return out
+
+
+def crate_layers():
+    """The module that states the crate layering once: tools/tests/test_crate_layers.py."""
+    spec = importlib.util.spec_from_file_location("test_crate_layers", ROOT / "tools/tests/test_crate_layers.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def tracked_docs():
