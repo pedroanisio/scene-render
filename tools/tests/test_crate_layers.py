@@ -129,9 +129,11 @@ def violations(metadata, layers=LAYERS, dev_only=DEV_ONLY):
 
 
 def cargo_metadata():
-    out = subprocess.run(["cargo", "metadata", "--format-version", "1", "--offline", "--locked"], cwd=ROOT, check=True,
-                         capture_output=True, text=True).stdout
-    return json.loads(out)
+    cmd = ["cargo", "metadata", "--format-version", "1", "--offline", "--locked"]
+    run = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+    if run.returncode != 0:
+        raise RuntimeError(f"{' '.join(cmd)} exited {run.returncode}:\n{run.stderr}")
+    return json.loads(run.stdout)
 
 
 def render(layers=LAYERS, dev_only=DEV_ONLY):
