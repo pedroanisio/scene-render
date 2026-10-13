@@ -40,7 +40,8 @@ fn heif_decodable(context: &str, name: &str, libheif: bool) -> bool {
 
 #[test]
 fn lossless_formats_decode_exactly() {
-    let mut names = vec![
+    // Formats the in-process decoders read: these must never reach FFmpeg or libheif.
+    let native = [
         ("pattern.png", true),
         ("pattern.webp", true),
         ("pattern.tiff", true),
@@ -49,20 +50,28 @@ fn lossless_formats_decode_exactly() {
         ("pattern.bmp", false),
         ("pattern.ppm", false),
         ("pattern.gif", false),
-        ("pattern.dds", true),
         ("pattern.ff", true),
         ("pattern.jxl", false),
     ];
+    let mut external = Vec::new();
     if common::ffmpeg_available("lossless_formats_decode_exactly: the formats only FFmpeg reads") {
-        // Formats only FFmpeg reads.
-        names.extend([("pattern.psd", false), ("pattern.jp2", false)]);
+        // Formats only FFmpeg reads; the in-process DDS decoder reads DXT1/3/5 surfaces, not uncompressed ones.
+        external.extend([("pattern.psd", false), ("pattern.jp2", false), ("pattern.dds", true)]);
         // FFmpeg alone misreads the identity-matrix AVIF: exact through libheif.
         if heif_decodable("lossless_formats_decode_exactly", "pattern.avif", true) {
-            names.push(("pattern.avif", false));
+            external.push(("pattern.avif", false));
         }
     }
-    for (name, alpha) in names {
+    let native = native.into_iter().map(|(name, alpha)| (name, alpha, true));
+    for (name, alpha, in_process) in native.chain(external.into_iter().map(|(name, alpha)| (name, alpha, false))) {
         let s = still::open(&fixture(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+        if in_process {
+            assert!(
+                !s.decoder.starts_with("ffmpeg:") && s.decoder != "heif-convert",
+                "{name} decodes in-process, not through {}",
+                s.decoder
+            );
+        }
         let img = s.image.to_rgba8();
         assert_eq!(img.dimensions(), (W, H), "{name}");
         for (x, y, p) in img.enumerate_pixels() {
@@ -77,7 +86,9 @@ fn external_tools_read_what_the_native_decoders_cannot() {
     if !common::ffmpeg_available("external_tools_read_what_the_native_decoders_cannot") {
         return;
     }
-    for (name, codec) in [("pattern.psd", "psd"), ("pattern.jp2", "jpeg2000"), ("pattern.avif", "av1")] {
+    for (name, codec) in
+        [("pattern.psd", "psd"), ("pattern.jp2", "jpeg2000"), ("pattern.dds", "dds"), ("pattern.avif", "av1")]
+    {
         let s = still::open(&fixture(name)).unwrap();
         assert!(
             (s.decoder.starts_with("ffmpeg:") && s.decoder.contains(codec))

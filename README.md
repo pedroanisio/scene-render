@@ -657,8 +657,8 @@ A 3D Gaussian Splatting capture (Kerbl et al. 2023) turns an object photographed
 Every still the renderer reads (image layers, sequences, patterns, sprites, shader and material textures, simulation seeds, environment maps) goes through `sr_media::still::open`.
 
 **Formats.**
-- In-process: PNG, JPEG, WebP, GIF, TIFF, BMP, TGA, QOI, PNM, ICO, DDS, farbfeld, Radiance HDR and OpenEXR (the `image` crate), and JPEG XL (`jxl-oxide`).
-- HEIC, HEIF and AVIF prefer the `heif-convert` executable from libheif (`libheif-examples` on Ubuntu/Debian; override with `SR_HEIF_CONVERT`). This handles HEIF item layouts and identity-matrix AVIF that some FFmpeg versions decode incorrectly. If unavailable or unsuccessful, decoding falls back to FFmpeg. Install libheif for the verified HEIC/AVIF path. Formats the in-process decoders refuse (PSD, JPEG 2000, SGI, PCX and others) also use FFmpeg, reading one frame at the source bit depth.
+- In-process: PNG, JPEG, WebP, GIF, TIFF, BMP, TGA, QOI, PNM, ICO, DDS (DXT1/3/5 surfaces), farbfeld, Radiance HDR and OpenEXR (the `image` crate), and JPEG XL (`jxl-oxide`).
+- HEIC, HEIF and AVIF prefer the `heif-convert` executable from libheif (`libheif-examples` on Ubuntu/Debian; override with `SR_HEIF_CONVERT`). This handles HEIF item layouts and identity-matrix AVIF that some FFmpeg versions decode incorrectly. If unavailable or unsuccessful, decoding falls back to FFmpeg. Install libheif for the verified HEIC/AVIF path. Formats the in-process decoders refuse (PSD, JPEG 2000, SGI, PCX, uncompressed DDS and others) also use FFmpeg, reading one frame at the source bit depth.
 - Animated GIF and APNG play as `<video>` sources through FFmpeg; FFmpeg does not decode animated WebP, which loads its first frame.
 - The AVIF and HEIC libraries are not linked into the renderer; external decoders run as subprocesses.
 

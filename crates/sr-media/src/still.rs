@@ -1,12 +1,13 @@
 //! Still images in every common format, with orientation and colour.
 //!
-//! * PNG, JPEG, WebP, GIF, TIFF, BMP, TGA, QOI, PNM, ICO, DDS, farbfeld,
-//!   Radiance HDR and OpenEXR decode in-process (the `image` crate); JPEG XL
-//!   decodes in-process through `jxl-oxide`.
+//! * PNG, JPEG, WebP, GIF, TIFF, BMP, TGA, QOI, PNM, ICO, DDS (DXT1/3/5),
+//!   farbfeld, Radiance HDR and OpenEXR decode in-process (the `image` crate);
+//!   JPEG XL decodes in-process through `jxl-oxide`.
 //! * HEIC, HEIF and AVIF prefer libheif's `heif-convert` executable, with
 //!   FFmpeg as fallback. Override the executable with `SR_HEIF_CONVERT`.
 //!   Other formats the in-process decoders cannot read (PSD, JPEG 2000, SGI,
-//!   PCX, …) use FFmpeg. HEIF colour comes from the original `colr` property.
+//!   PCX, uncompressed DDS, …) use FFmpeg. HEIF colour comes from the original
+//!   `colr` property.
 //! * EXIF orientation is applied, so phone photos come out upright.
 //! * The embedded colour description is returned for the caller to honour:
 //!   an ICC profile (PNG `iCCP`, JPEG `APP2`, WebP `ICCP`, TIFF, JPEG XL, HEIF
