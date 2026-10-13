@@ -95,7 +95,7 @@ const TIME_EFFECTS: &[&str] = &["posterize-time", "echo", "pixel-motion-blur"];
 /// sequence frame.
 pub fn files(path: &Path, doc: &sr_model::Document) -> std::io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    named(path, doc, &mut files, &mut vec![path.canonicalize().unwrap_or_else(|_| path.to_path_buf())])?;
+    named(path, doc, &mut files, &mut vec![path.canonicalize().unwrap_or_else(|_| path.to_path_buf())], 0)?;
     files.sort();
     files.dedup();
     Ok(files)
@@ -115,15 +115,22 @@ pub fn effective_files(path: &Path, doc: &sr_model::Document, p: &sr_eval::Progr
 }
 
 /// Adds the files `doc` at `path` names to `files`, then those of the documents it includes that are not in
-/// `seen` yet: they are loaded when the scene is evaluated, so the main document does not name their files.
+/// `seen` yet: they are loaded when the scene is evaluated, so the main document does not name their files. `doc`
+/// lies `depth` includes below the main document; the evaluator refuses includes nested deeper than
+/// [`sr_model::limits::MAX_INCLUDE_DEPTH`], so their files are never read.
 fn named(
     path: &Path,
     doc: &sr_model::Document,
     files: &mut Vec<PathBuf>,
     seen: &mut Vec<PathBuf>,
+    depth: usize,
 ) -> std::io::Result<()> {
     let base = path.parent().unwrap_or(Path::new("."));
-    for inc in scene_inputs(&doc.scene, base, files)? {
+    let includes = scene_inputs(&doc.scene, base, files)?;
+    if depth >= sr_model::limits::MAX_INCLUDE_DEPTH {
+        return Ok(());
+    }
+    for inc in includes {
         // one file has many spellings (`parts/../main.xml`): documents that include each other must end
         let real = inc.canonicalize().unwrap_or_else(|_| inc.clone());
         if seen.contains(&real) {
@@ -131,7 +138,7 @@ fn named(
         }
         seen.push(real);
         if let Ok(doc) = sr_model::load_file(&inc, &sr_model::LoadOptions::without_assets()) {
-            named(&inc, &doc, files, seen)?;
+            named(&inc, &doc, files, seen, depth + 1)?;
         }
     }
     Ok(())

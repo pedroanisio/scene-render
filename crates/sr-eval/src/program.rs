@@ -821,7 +821,10 @@ fn load_data(ds: &m::DataSource, base: &Path) -> Result<Vec<V>, String> {
                     return Err(format!("{s} data sources are not fetched; use a local file"))
                 }
             };
-            std::fs::read_to_string(&p).map_err(|e| format!("cannot read {}: {e}", p.display()))?
+            // a data file is held to the bound of the document that names it
+            sr_model::limits::read_capped(&p, sr_model::limits::MAX_DOCUMENT_BYTES)
+                .and_then(|b| String::from_utf8(b).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+                .map_err(|e| format!("cannot read {}: {e}", p.display()))?
         }
         None => ds.value.clone(),
     };
@@ -2280,11 +2283,22 @@ impl Builder {
                 return;
             }
         };
-        let key = format!("file:{}", path.display());
-        if ctx.stack.contains(&key) || ctx.stack.len() > 16 {
+        // one key per file, however its `src` spells the path (`a.xml`, `./a.xml`, `sub/../a.xml`, a link)
+        let key = format!("file:{}", path.canonicalize().unwrap_or_else(|_| path.clone()).display());
+        if ctx.stack.contains(&key) {
             self.diags.push(err(
                 "E13",
                 format!("include {:?} includes {} inside itself", inc.id, path.display()),
+                inc.loc,
+                inc.id.as_str(),
+            ));
+            return;
+        }
+        let max = sr_model::limits::MAX_INCLUDE_DEPTH;
+        if ctx.stack.iter().filter(|k| k.starts_with("file:")).count() >= max {
+            self.diags.push(err(
+                "E13",
+                format!("include {:?}: includes are nested more than {max} levels deep", inc.id),
                 inc.loc,
                 inc.id.as_str(),
             ));

@@ -14,7 +14,10 @@ pub const CODES: &[(&str, &str)] = &[
     ("E10", "A repeat's @over names a parameter that is not a list, or a variant or layout does not exist."),
     ("E11", "Transform parenting through @parent forms a cycle or names a node outside the composition; a reference to a node, a bone or a crater (a fracture's, crater's or water impulse's source, a burst's crater, an ocean's splash, colliders, gas) names none in its scope. A transformConstraint's target or pole that names no node, bone, light or tracking data in its scope is a warning: the constraint has no effect."),
     ("E12", "An include cannot be loaded, is invalid, or names a symbol its document lacks."),
-    ("E13", "A symbol or include instantiates itself, directly or through other instances."),
+    (
+        "E13",
+        "A symbol or include instantiates itself, directly or through other instances, or includes nest more than 16 levels deep.",
+    ),
     ("E14", "A link source is not nodeId.property, param:name, audio:track[:band] or marker:id."),
     ("E15", "A motion path's SVG data does not parse."),
     ("E17", "Tracking data or skin weights cannot be read or parsed (missing file, unknown format, binary FBX, bad rows, unknown bone)."),
