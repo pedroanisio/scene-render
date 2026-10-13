@@ -13,8 +13,9 @@
 //!   container of the schema, with hardware encoder selection.
 //!
 //! FFmpeg runs as a child process, so a crashing decoder cannot take the
-//! renderer with it, and any FFmpeg 4–7 build works, including builds with
-//! NVENC, VideoToolbox, VAAPI, QSV or AMF.
+//! renderer with it, and any FFmpeg 5.1 or newer build works (the decoder
+//! passes `-fps_mode`, which 5.1 introduced), including builds with NVENC,
+//! VideoToolbox, VAAPI, QSV or AMF.
 
 pub mod decode;
 pub mod encode;

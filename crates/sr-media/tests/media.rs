@@ -1,5 +1,7 @@
 //! Decode tests against media generated with FFmpeg's lavfi sources.
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
@@ -9,7 +11,10 @@ use sr_media::{decode_audio, probe, PixelLayout, VideoDecoder};
 /// Frame k of the counter videos has luma (k * 4) % 256.
 fn fixtures() -> Option<PathBuf> {
     static D: OnceLock<Option<PathBuf>> = OnceLock::new();
-    D.get_or_init(|| {
+    if !common::encoder("media tests", "libx264") {
+        return None;
+    }
+    let made = D.get_or_init(|| {
         let dir = std::env::temp_dir().join(format!("sr-media-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok()?;
         let run = |args: &[&str]| {
@@ -75,13 +80,12 @@ fn fixtures() -> Option<PathBuf> {
                 "pcm_s16le",
                 dir.join("tone.wav").to_str()?,
             ]);
-        if !ok {
-            eprintln!("skipping media tests: ffmpeg could not create fixtures");
-            return None;
-        }
-        Some(dir)
-    })
-    .clone()
+        ok.then_some(dir)
+    });
+    if made.is_none() {
+        common::skip_ffmpeg("media tests", "ffmpeg could not create the fixtures");
+    }
+    made.clone()
 }
 
 #[test]

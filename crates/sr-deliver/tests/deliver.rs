@@ -18,7 +18,10 @@ fn ffmpeg(args: &[&str]) -> bool {
 
 fn fixtures() -> Option<PathBuf> {
     static D: OnceLock<Option<PathBuf>> = OnceLock::new();
-    D.get_or_init(|| {
+    if !common::encoder("delivery tests", "libx264") {
+        return None;
+    }
+    let made = D.get_or_init(|| {
         let d = std::env::temp_dir().join(format!("sr-deliver-{}", std::process::id()));
         std::fs::create_dir_all(&d).ok()?;
         let p = |n: &str| d.join(n).display().to_string();
@@ -51,8 +54,11 @@ fn fixtures() -> Option<PathBuf> {
             &p("music.wav"),
         ]);
         ok.then_some(d)
-    })
-    .clone()
+    });
+    if made.is_none() {
+        common::skip_ffmpeg("delivery tests", "ffmpeg could not create the fixtures (libx264 and AAC)");
+    }
+    made.clone()
 }
 
 const SCENE: &str = r##"<scene version="1.1">

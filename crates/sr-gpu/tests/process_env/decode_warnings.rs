@@ -18,7 +18,10 @@ fn a_clip_that_stops_decoding_is_reported_on_the_frames_it_cannot_show() {
         .status()
         .is_ok_and(|s| s.success());
     if !made {
-        eprintln!("skipping: ffmpeg could not create the fixture");
+        skip_ffmpeg(
+            "a_clip_that_stops_decoding_is_reported_on_the_frames_it_cannot_show",
+            "ffmpeg could not create the fixture",
+        );
         return;
     }
     let xml = r##"<scene version="1.1"><project width="64" height="32" fps="25" duration="1" background="#000000"/>

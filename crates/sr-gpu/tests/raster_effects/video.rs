@@ -14,9 +14,12 @@ fn ffmpeg(args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-/// Video fixtures next to the image fixtures; None when FFmpeg is missing.
+/// Video fixtures next to the image fixtures; None, after [`skip_ffmpeg`], when FFmpeg cannot make them.
 fn videos() -> Option<std::path::PathBuf> {
     static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !common::encoder("video layer tests", "libx264") {
+        return None;
+    }
     let dir = fixtures();
     let ok = *D.get_or_init(|| {
         let p = |n: &str| dir.join(n).display().to_string();
@@ -59,6 +62,9 @@ fn videos() -> Option<std::path::PathBuf> {
                 &p("alpha.mov"),
             ])
     });
+    if !ok {
+        common::skip_ffmpeg("video layer tests", "ffmpeg could not create the fixtures");
+    }
     ok.then_some(dir)
 }
 

@@ -1,5 +1,7 @@
 //! Spherical video metadata written into MP4 files, read back by us and by ffprobe.
 
+mod common;
+
 use sr_media::spherical::{inject, read, Projection, Stereo};
 use std::process::Command;
 
@@ -114,6 +116,10 @@ fn probe(path: &std::path::Path) -> String {
 
 #[test]
 fn v1_and_v2_metadata_survive_both_box_orders() {
+    const CONTEXT: &str = "v1_and_v2_metadata_survive_both_box_orders";
+    if !common::encoder(CONTEXT, "libx264") {
+        return;
+    }
     let dir = std::env::temp_dir().join(format!("sr-spherical-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for (faststart, projection, stereo) in
@@ -121,7 +127,7 @@ fn v1_and_v2_metadata_survive_both_box_orders() {
     {
         let p = dir.join(format!("v{faststart}.mp4"));
         if !encode(&p, faststart) {
-            eprintln!("ffmpeg with libx264 unavailable; skipping");
+            common::skip_ffmpeg(CONTEXT, "ffmpeg could not encode the fixture with libx264");
             return;
         }
         inject(&p, projection, stereo).unwrap();

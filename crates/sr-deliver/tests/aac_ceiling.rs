@@ -1,5 +1,6 @@
 //! The decoded true peak of a delivered AAC stays under the master's ceiling.
 
+mod common;
 use std::path::Path;
 
 /// A loud, flat-topped stereo mix: summed tones and noise driven hard into a clip, 48 kHz, 16 bit.
@@ -71,7 +72,7 @@ fn scene(dir: &Path, ceiling: f64) -> sr_model::Document {
 
 #[test]
 fn a_delivered_aac_holds_the_masters_true_peak_ceiling() {
-    if std::process::Command::new(sr_media::ffmpeg()).arg("-version").output().is_err() {
+    if !common::ffmpeg_available("a_delivered_aac_holds_the_masters_true_peak_ceiling") {
         return;
     }
     let dir = std::env::temp_dir().join(format!("sr-aac-ceiling-{}", std::process::id()));
@@ -94,7 +95,7 @@ fn a_delivered_aac_holds_the_masters_true_peak_ceiling() {
 
 #[test]
 fn a_mix_that_already_holds_the_ceiling_is_not_touched() {
-    if std::process::Command::new(sr_media::ffmpeg()).arg("-version").output().is_err() {
+    if !common::ffmpeg_available("a_mix_that_already_holds_the_ceiling_is_not_touched") {
         return;
     }
     let dir = std::env::temp_dir().join(format!("sr-aac-ceiling-quiet-{}", std::process::id()));
@@ -117,7 +118,7 @@ fn deliver(dir: &Path, ceiling: f64) -> Result<sr_deliver::pipeline::Report, sr_
 
 #[test]
 fn a_hard_driven_mix_is_corrected_in_more_than_one_pass() {
-    if std::process::Command::new(sr_media::ffmpeg()).arg("-version").output().is_err() {
+    if !common::ffmpeg_available("a_hard_driven_mix_is_corrected_in_more_than_one_pass") {
         return;
     }
     // driven hard into a clip, the decoded peak sits several dB over the ceiling, and one correction by the excess falls

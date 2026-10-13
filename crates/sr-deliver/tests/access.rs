@@ -42,13 +42,7 @@ fn flash_thresholds() {
 }
 
 fn fixtures() -> Option<std::path::PathBuf> {
-    let ok = std::process::Command::new(sr_media::ffmpeg())
-        .arg("-version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !ok {
-        eprintln!("skipping: FFmpeg missing");
+    if !common::ffmpeg_available("access tests") {
         return None;
     }
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

@@ -1,5 +1,7 @@
 //! Every codec and container end to end through the local FFmpeg.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 
 use sr_media::encode::*;
@@ -9,10 +11,6 @@ fn dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!("sr-encode-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     d
-}
-
-fn have_ffmpeg() -> bool {
-    std::process::Command::new(sr_media::ffmpeg()).arg("-version").output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 fn spec(path: &Path, codec: Codec, input: InputFormat) -> EncodeSpec {
@@ -57,8 +55,12 @@ fn spec(path: &Path, codec: Codec, input: InputFormat) -> EncodeSpec {
 
 #[test]
 fn av1_two_pass_produces_and_consumes_statistics() {
-    if !have_ffmpeg() || (!working_encoder("libsvtav1") && !working_encoder("libaom-av1")) {
-        eprintln!("FFmpeg with a two-pass AV1 encoder unavailable; skipping");
+    let context = "av1_two_pass_produces_and_consumes_statistics";
+    if !common::ffmpeg_available(context) {
+        return;
+    }
+    if !working_encoder("libsvtav1") && !working_encoder("libaom-av1") {
+        common::skip_ffmpeg(context, "FFmpeg has no working two-pass AV1 encoder (libsvtav1 or libaom-av1)");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -96,8 +98,8 @@ fn av1_two_pass_produces_and_consumes_statistics() {
 /// colorspace", FFmpeg 7.1), while libaom encodes it: an odd frame goes to libaom, as a frame below 64×64 does.
 #[test]
 fn av1_odd_frames_go_to_an_encoder_that_takes_them() {
-    if !have_ffmpeg() || !working_encoder("libsvtav1") || !working_encoder("libaom-av1") {
-        eprintln!("FFmpeg with SVT-AV1 and libaom unavailable; skipping");
+    let context = "av1_odd_frames_go_to_an_encoder_that_takes_them";
+    if !common::encoder(context, "libsvtav1") || !common::encoder(context, "libaom-av1") {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -233,7 +235,7 @@ fn tone(d: &Path) -> PathBuf {
 
 #[test]
 fn every_video_codec_produces_a_readable_file() {
-    if !have_ffmpeg() {
+    if !common::ffmpeg_available("every_video_codec_produces_a_readable_file") {
         return;
     }
     let d = dir();
@@ -278,7 +280,7 @@ fn every_video_codec_produces_a_readable_file() {
 
 #[test]
 fn sequences_alpha_and_hdr_metadata() {
-    if !have_ffmpeg() {
+    if !common::ffmpeg_available("sequences_alpha_and_hdr_metadata") {
         return;
     }
     let d = dir();
@@ -331,7 +333,7 @@ fn sequences_alpha_and_hdr_metadata() {
 
 #[test]
 fn audio_muxing_audio_only_and_two_pass() {
-    if !have_ffmpeg() {
+    if !common::ffmpeg_available("audio_muxing_audio_only_and_two_pass") {
         return;
     }
     let d = dir();
@@ -390,7 +392,7 @@ fn validation_hardware_fallback_and_bitrate_fitting() {
     assert!(s.validate().is_err(), "alpha in h264");
     let s = spec(&d.join("seq.png"), Codec::PngSequence, InputFormat::Rgba8);
     assert!(s.validate().is_err(), "sequence without a pattern");
-    if have_ffmpeg() {
+    if common::ffmpeg_available("validation_hardware_fallback_and_bitrate_fitting") {
         // with no GPU encoder present, auto falls back to software
         let e = choose_encoder(Codec::H264, Hardware::Auto).unwrap();
         assert!(e == "libx264" || e.contains('_'), "{e}");
@@ -401,7 +403,7 @@ fn validation_hardware_fallback_and_bitrate_fitting() {
 
 #[test]
 fn stills_in_four_formats() {
-    if !have_ffmpeg() {
+    if !common::ffmpeg_available("stills_in_four_formats") {
         return;
     }
     let d = dir();
@@ -421,7 +423,7 @@ fn stills_in_four_formats() {
 
 #[test]
 fn a_rejected_stream_reports_ffmpegs_reason_and_leaves_no_file() {
-    if !have_ffmpeg() {
+    if !common::ffmpeg_available("a_rejected_stream_reports_ffmpegs_reason_and_leaves_no_file") {
         return;
     }
     let p = dir().join("odd.mp4");
@@ -455,7 +457,7 @@ fn a_rejected_stream_reports_ffmpegs_reason_and_leaves_no_file() {
 
 #[test]
 fn a_percent_sign_in_the_directory_is_not_a_frame_pattern() {
-    if !have_ffmpeg() {
+    if !common::ffmpeg_available("a_percent_sign_in_the_directory_is_not_a_frame_pattern") {
         return;
     }
     let pattern = dir().join("50%/f_%04d.png");
@@ -467,7 +469,7 @@ fn a_percent_sign_in_the_directory_is_not_a_frame_pattern() {
 
 #[test]
 fn test_encoder_preserves_existing_output_until_success() {
-    if !have_ffmpeg() {
+    if !common::ffmpeg_available("test_encoder_preserves_existing_output_until_success") {
         return;
     }
     let d = tempfile::tempdir().unwrap();
@@ -493,7 +495,7 @@ fn test_encoder_preserves_existing_output_until_success() {
 
 #[test]
 fn test_failed_segment_join_preserves_existing_output() {
-    if !have_ffmpeg() {
+    if !common::ffmpeg_available("test_failed_segment_join_preserves_existing_output") {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -510,7 +512,7 @@ fn test_failed_segment_join_preserves_existing_output() {
 #[test]
 fn staging_is_private_and_publication_preserves_permissions() {
     use std::os::unix::fs::PermissionsExt;
-    if !have_ffmpeg() {
+    if !common::ffmpeg_available("staging_is_private_and_publication_preserves_permissions") {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -531,7 +533,7 @@ fn staging_is_private_and_publication_preserves_permissions() {
 
 #[test]
 fn ffmpegs_aac_encoder_runs_without_the_tools_that_click() {
-    if !have_ffmpeg() {
+    if !common::ffmpeg_available("ffmpegs_aac_encoder_runs_without_the_tools_that_click") {
         return;
     }
     let d = dir();
@@ -558,7 +560,7 @@ fn ffmpegs_aac_encoder_runs_without_the_tools_that_click() {
 /// gave the same bytes on both hosts). A fixed count makes an encode the same on every host.
 #[test]
 fn the_software_encoders_use_a_fixed_number_of_threads() {
-    if !have_ffmpeg() {
+    if !common::ffmpeg_available("the_software_encoders_use_a_fixed_number_of_threads") {
         return;
     }
     let d = dir();

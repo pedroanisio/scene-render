@@ -50,7 +50,13 @@ fn write_clipped_mix(path: &Path, seconds: usize) {
 
 #[test]
 fn encode_reports_the_decoded_aac_true_peak_and_the_gain_it_took() {
-    if Command::new(sr_media_ffmpeg()).arg("-version").output().is_err() {
+    if !Command::new(sr_media_ffmpeg()).arg("-version").output().is_ok_and(|o| o.status.success()) {
+        let reason = format!("cannot run {}", sr_media_ffmpeg());
+        assert!(
+            std::env::var("SR_REQUIRE_FFMPEG").as_deref() != Ok("1"),
+            "{reason} (SR_REQUIRE_FFMPEG=1 requires FFmpeg)"
+        );
+        eprintln!("SKIPPED (encode_reports_the_decoded_aac_true_peak_and_the_gain_it_took): {reason}");
         return;
     }
     let dir = std::env::temp_dir().join(format!("sr-cli-aac-ceiling-{}", std::process::id()));

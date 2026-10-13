@@ -46,7 +46,8 @@ is not legal advice, and a contributor who needs certainty about its effect shou
 ## Toolchain
 
 - **Rust:** 1.90 or newer (`rust-version` in `Cargo.toml`). CI also checks the whole workspace on exactly 1.90.
-- **FFmpeg and ffprobe:** 5.1 or newer, for media tests and encoding. Without them, media tests skip.
+- **FFmpeg and ffprobe:** 5.1 or newer, for media tests and encoding. Without them, or without an encoder a test
+  needs, media tests skip with a `SKIPPED` line unless `SR_REQUIRE_FFMPEG=1` is set, as in renderer CI.
 - **Python 3.11 or newer:** for `tools/`. The tool tests use the standard library (`tomllib` needs 3.11). The
   conformance oracle (`tools/oracle.py`, `tools/build_corpus.py`) also needs `lxml`.
 

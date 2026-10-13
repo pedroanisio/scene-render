@@ -1,6 +1,8 @@
 //! Still-image formats: every fixture decodes to the pattern it was written
 //! from (`tools/fixtures/make_still_formats.py`), upright, with its colour tag.
 
+mod common;
+
 use std::path::PathBuf;
 
 use sr_media::still::{self, Colour};
@@ -20,10 +22,6 @@ fn pattern(x: u32, y: u32, alpha: bool) -> [u8; 4] {
 
 fn expected() -> serde_json::Value {
     serde_json::from_str(&std::fs::read_to_string(fixture("expected.json")).unwrap()).unwrap()
-}
-
-fn ffmpeg_available() -> bool {
-    std::process::Command::new(sr_media::ffmpeg()).arg("-version").output().is_ok_and(|o| o.status.success())
 }
 
 /// Whether the HEIF fixture `name` decodes here (through libheif, when `libheif`): that takes libheif's
@@ -57,7 +55,7 @@ fn lossless_formats_decode_exactly() {
         ("pattern.ff", true),
         ("pattern.jxl", false),
     ];
-    if ffmpeg_available() {
+    if common::ffmpeg_available("lossless_formats_decode_exactly: the formats only FFmpeg reads") {
         // Formats only FFmpeg reads.
         names.extend([("pattern.psd", false), ("pattern.jp2", false)]);
         // FFmpeg alone misreads the identity-matrix AVIF: exact through libheif.
@@ -78,7 +76,7 @@ fn lossless_formats_decode_exactly() {
 
 #[test]
 fn external_tools_read_what_the_native_decoders_cannot() {
-    if !ffmpeg_available() {
+    if !common::ffmpeg_available("external_tools_read_what_the_native_decoders_cannot") {
         return;
     }
     for (name, codec) in [("pattern.psd", "psd"), ("pattern.jp2", "jpeg2000"), ("pattern.avif", "av1")] {

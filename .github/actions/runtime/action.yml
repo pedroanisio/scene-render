@@ -31,6 +31,7 @@ runs:
           echo "SR_REQUIRE_HEIC=1" >> "$GITHUB_ENV"
         fi
         echo "SR_REQUIRE_GPU=1" >> "$GITHUB_ENV"
+        echo "SR_REQUIRE_FFMPEG=1" >> "$GITHUB_ENV"
         echo "SR_GPU_BACKEND=vulkan" >> "$GITHUB_ENV"
         icd=$(find /usr/share/vulkan/icd.d -name '*lvp*.json' -print -quit)
         test -n "$icd"

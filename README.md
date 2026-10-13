@@ -953,7 +953,7 @@ tools/                      oracle.py, build_corpus.py, oracle_diff.py, kitchen_
 
 ## Tests
 
-`cargo test` runs every crate's suites. GPU tests skip with a message when no adapter exists unless `SR_REQUIRE_GPU=1` is set (as in renderer CI), and media tests skip when FFmpeg is missing. By subsystem:
+`cargo test` runs every crate's suites. GPU tests skip with a message when no adapter exists unless `SR_REQUIRE_GPU=1` is set (as in renderer CI), and media tests skip with a message when FFmpeg, ffprobe or an encoder they need is missing unless `SR_REQUIRE_FFMPEG=1` is set (as in renderer CI). By subsystem:
 
 - **Document model:** lexical types, attribute coverage of every complex type, the conformance corpus, the load-time budget.
 - **Evaluation:** curves, noise and RNG golden values, parser and VM, channels, data formats, semantics tests (transforms, keys, expressions, links, timing, templating, repeats, instances, includes, transitions, mattes, motion paths, cameras, audio, every error code, order-independent determinism), the frame-evaluation budget; every constraint type, node and bone IK, skeleton animation, track constraints, stabilisation and error E17.

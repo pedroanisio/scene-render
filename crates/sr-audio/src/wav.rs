@@ -151,7 +151,12 @@ mod tests {
             .args(["-v", "error", "-show_entries", "stream=channels,duration", "-of", "csv=p=0"])
             .arg(&path)
             .output();
-        let Ok(out) = probe else { return };
+        let Ok(out) = probe else {
+            let reason = "cannot run ffprobe";
+            assert!(std::env::var("SR_REQUIRE_FFMPEG").as_deref() != Ok("1"), "{reason} (SR_REQUIRE_FFMPEG=1)");
+            eprintln!("SKIPPED (ffmpeg_reads_rf64): {reason}");
+            return;
+        };
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(out.status.success() && text.trim().starts_with("6,0.1"), "{text}");
     }

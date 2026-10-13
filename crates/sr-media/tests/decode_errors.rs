@@ -1,6 +1,8 @@
 //! A failing decoder says why. In a process of its own: it replaces the FFmpeg executable.
 #![cfg(unix)]
 
+mod common;
+
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
@@ -17,7 +19,7 @@ fn a_failing_decoder_says_why() {
         .status()
         .is_ok_and(|s| s.success());
     if !made {
-        eprintln!("skipping: ffmpeg could not create the fixture");
+        common::skip_ffmpeg("a_failing_decoder_says_why", "ffmpeg could not create the fixture");
         return;
     }
     // stands in for FFmpeg: SR_TEST_BYTES of frames, then a failure
