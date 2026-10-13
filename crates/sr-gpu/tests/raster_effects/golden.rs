@@ -87,11 +87,16 @@ fn kitchen_scene_matches_goldens() {
     assert!(failures.is_empty(), "{}; images and metrics: {}", failures.join("\n"), out.display());
 }
 
+/// Adapters (vendor, name, backend) whose decoded output was checked byte for byte against a reference set, and the
+/// set: each entry is recorded in that set's provenance.json. Selection is by hardware identity, never by whichever
+/// image gives the lowest error, so an adapter not listed here compares against the llvmpipe references.
+const REFERENCE_PROFILES: &[(u32, &str, wgpu::Backend, &str)] = &[
+    (0x10de, "NVIDIA RTX 6000 Ada Generation", wgpu::Backend::Vulkan, "nvidia-rtx6000-ada-vulkan"),
+    (0x10de, "NVIDIA GeForce RTX 3050", wgpu::Backend::Vulkan, "nvidia-rtx6000-ada-vulkan"),
+];
+
 fn reference_profile(name: &str, vendor: u32, backend: wgpu::Backend) -> Option<&'static str> {
-    // This adapter reproduces the reviewed historical references byte for byte.
-    // Select by hardware identity, never by whichever image gives the lowest error.
-    (vendor == 0x10de && name == "NVIDIA RTX 6000 Ada Generation" && backend == wgpu::Backend::Vulkan)
-        .then_some("nvidia-rtx6000-ada-vulkan")
+    REFERENCE_PROFILES.iter().find(|p| p.0 == vendor && p.1 == name && p.2 == backend).map(|p| p.3)
 }
 
 #[test]
@@ -100,6 +105,24 @@ fn hardware_reference_profile_requires_the_recorded_adapter_and_backend() {
     assert_eq!(reference_profile(name, 0x10de, wgpu::Backend::Vulkan), Some("nvidia-rtx6000-ada-vulkan"));
     assert_eq!(reference_profile(name, 0x10de, wgpu::Backend::Gl), None);
     assert_eq!(reference_profile("llvmpipe", 0x10005, wgpu::Backend::Vulkan), None);
+    let ampere = "NVIDIA GeForce RTX 3050";
+    assert_eq!(reference_profile(ampere, 0x10de, wgpu::Backend::Vulkan), Some("nvidia-rtx6000-ada-vulkan"));
+    assert_eq!(reference_profile(ampere, 0x10de, wgpu::Backend::Gl), None);
+    assert_eq!(reference_profile("NVIDIA GeForce RTX 3060", 0x10de, wgpu::Backend::Vulkan), None);
+}
+
+#[test]
+fn every_reference_profile_records_its_adapters() {
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    for &(_, name, backend, dir) in REFERENCE_PROFILES {
+        let text = std::fs::read_to_string(base.join(dir).join("provenance.json")).unwrap();
+        let record: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let adapters = record["verified_adapters"].as_array().unwrap_or_else(|| panic!("{dir}: no verified_adapters"));
+        assert!(
+            adapters.iter().any(|a| a["adapter"] == name && a["backend"] == format!("{backend:?}")),
+            "{dir}/provenance.json does not record {name} ({backend:?})"
+        );
+    }
 }
 
 fn reference(
