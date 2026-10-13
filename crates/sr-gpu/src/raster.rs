@@ -374,14 +374,10 @@ mod tests {
 
     #[test]
     fn solid_fill_specialization_matches_general_rasterization_exactly() {
-        let gpu = match crate::gpu::test_gpu() {
-            Ok(gpu) => gpu,
-            Err(error) => {
-                assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "{error}");
-                eprintln!("skipping GPU test: {error}");
-                return;
-            }
-        };
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "solid_fill_specialization_matches_general_rasterization_exactly"
+        );
         let d = &gpu.device;
         let layout = crate::resources::source_layout(d);
         // Partial edge tiles, an empty tile, fractional edge coverage, overlapping

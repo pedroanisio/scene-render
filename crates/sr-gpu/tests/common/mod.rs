@@ -16,49 +16,27 @@ pub fn exact_test_name(module_path: &str, name: &str) -> String {
     }
 }
 
+/// The adapter, created once; without one, each caller skips (or fails under `SR_REQUIRE_GPU=1`, as in CI).
 pub fn gpu() -> Option<Gpu> {
-    static G: OnceLock<Option<Gpu>> = OnceLock::new();
-    G.get_or_init(|| match Gpu::new() {
-        Ok(g) => Some(g),
-        Err(e) => {
-            assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "required GPU unavailable: {e}");
-            eprintln!("skipping GPU tests: {e}");
-            None
-        }
-    })
-    .clone()
+    static G: OnceLock<Result<Gpu, String>> = OnceLock::new();
+    sr_testkit::gpu(G.get_or_init(|| Gpu::new().map_err(|e| e.to_string())).clone(), "GPU tests")
 }
 
 /// Skips what `context` needs FFmpeg for, saying why, or fails under `SR_REQUIRE_FFMPEG=1` (as in CI).
 pub fn skip_ffmpeg(context: &str, reason: &str) {
-    assert!(
-        std::env::var("SR_REQUIRE_FFMPEG").as_deref() != Ok("1"),
-        "{context}: {reason} (SR_REQUIRE_FFMPEG=1 requires FFmpeg)"
-    );
-    eprintln!("SKIPPED ({context}): {reason}");
+    sr_testkit::FFMPEG.skip(context, reason);
 }
 
 /// Whether `ffmpeg` and `ffprobe` run (`SR_FFMPEG` and `SR_FFPROBE` name them); if not, skips with [`skip_ffmpeg`].
 pub fn ffmpeg_available(context: &str) -> bool {
-    for tool in [sr_media::ffmpeg(), sr_media::ffprobe()] {
-        if !std::process::Command::new(&tool).arg("-version").output().is_ok_and(|o| o.status.success()) {
-            skip_ffmpeg(context, &format!("cannot run {tool}"));
-            return false;
-        }
-    }
-    true
+    sr_testkit::ffmpeg(context, &[sr_media::ffmpeg(), sr_media::ffprobe()])
 }
 
 /// Whether FFmpeg runs and its `name` encoder encodes; if not, skips with [`skip_ffmpeg`].
 pub fn encoder(context: &str, name: &str) -> bool {
-    if !ffmpeg_available(context) {
-        return false;
-    }
-    if !sr_media::encode::working_encoder(name) {
-        skip_ffmpeg(context, &format!("FFmpeg has no working {name} encoder"));
-        return false;
-    }
-    true
+    sr_testkit::ffmpeg_encoder(context, &[sr_media::ffmpeg(), sr_media::ffprobe()], name, || {
+        sr_media::encode::working_encoder(name)
+    })
 }
 
 /// A directory with fixture images:

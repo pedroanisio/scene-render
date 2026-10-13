@@ -36,3 +36,4 @@ naga = { version = "30", features = ["wgsl-in"] }
 
 [dev-dependencies]
 sr-sim = { path = "../sr-sim" }
+sr-testkit.workspace = true

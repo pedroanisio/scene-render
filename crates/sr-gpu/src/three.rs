@@ -3024,14 +3024,8 @@ mod tests {
     #[test]
     fn alpha_discard_specialization_matches_general_shader() {
         use super::*;
-        let gpu = match crate::gpu::test_gpu() {
-            Ok(gpu) => gpu,
-            Err(error) => {
-                assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "{error}");
-                eprintln!("skipping GPU test: {error}");
-                return;
-            }
-        };
+        let gpu =
+            sr_testkit::require_gpu!(crate::gpu::test_gpu(), "alpha_discard_specialization_matches_general_shader");
         let mut engine =
             ThreeEngine::new_with(gpu.device.clone(), gpu.queue.clone(), gpu.gbuffer_depth, gpu.scalar_target);
         let sphere = sr_3d::prim::sphere(22.0, 24);
@@ -3140,14 +3134,7 @@ mod tests {
     #[test]
     fn plain_material_matches_general_shader() {
         use super::*;
-        let gpu = match crate::gpu::test_gpu() {
-            Ok(gpu) => gpu,
-            Err(error) => {
-                assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "{error}");
-                eprintln!("skipping GPU test: {error}");
-                return;
-            }
-        };
+        let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "plain_material_matches_general_shader");
         let mut engine =
             ThreeEngine::new_with(gpu.device.clone(), gpu.queue.clone(), gpu.gbuffer_depth, gpu.scalar_target);
         let mut rgba_reference = ThreeEngine::new_with(
@@ -3345,14 +3332,7 @@ mod tests {
     #[test]
     fn dof_matches_original_aperture_shader() {
         use super::*;
-        let gpu = match crate::gpu::test_gpu() {
-            Ok(gpu) => gpu,
-            Err(error) => {
-                assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "{error}");
-                eprintln!("skipping GPU test: {error}");
-                return;
-            }
-        };
+        let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "dof_matches_original_aperture_shader");
         let mut engine =
             ThreeEngine::new_with(gpu.device.clone(), gpu.queue.clone(), gpu.gbuffer_depth, gpu.scalar_target);
         let mut rgba_reference = ThreeEngine::new_with(
@@ -3608,14 +3588,7 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
     #[test]
     fn raster_compiles_only_pipelines_used_by_the_scene() {
         use super::*;
-        let gpu = match crate::gpu::test_gpu() {
-            Ok(gpu) => gpu,
-            Err(error) => {
-                assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "{error}");
-                eprintln!("skipping GPU test: {error}");
-                return;
-            }
-        };
+        let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "raster_compiles_only_pipelines_used_by_the_scene");
         let mut engine = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
         let mesh = sr_3d::prim::plane(16.0, 16.0, 1);
         let draw = Draw3 {

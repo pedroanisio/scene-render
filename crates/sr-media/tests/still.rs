@@ -25,19 +25,17 @@ fn expected() -> serde_json::Value {
 }
 
 /// Whether the HEIF fixture `name` decodes here (through libheif, when `libheif`): that takes libheif's
-/// `heif-convert` with its HEVC plugin, or an FFmpeg that reads HEIF items. Without, its checks are skipped
-/// with a notice; `SR_REQUIRE_HEIC=1` (set in CI) runs them regardless, so a missing decoder fails there.
-fn heif_decodable(name: &str, libheif: bool) -> bool {
-    if std::env::var_os("SR_REQUIRE_HEIC").is_some_and(|v| v == "1") {
-        return true;
-    }
-    let why = match still::open(&fixture(name)) {
-        Ok(s) if !libheif || s.decoder == "heif-convert" => return true,
-        Ok(s) => format!("decoded by {}, not libheif", s.decoder),
-        Err(e) => e,
+/// `heif-convert` with its HEVC plugin, or an FFmpeg that reads HEIF items. Without, `context` skips its checks
+/// with a notice; `SR_REQUIRE_HEIC=1` (set in CI) fails it.
+fn heif_decodable(context: &str, name: &str, libheif: bool) -> bool {
+    let probe = match still::open(&fixture(name)) {
+        Ok(s) if libheif && s.decoder != "heif-convert" => {
+            Err(format!("{name}: decoded by {}, not libheif", s.decoder))
+        }
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("{name}: {e}")),
     };
-    eprintln!("skipping the {name} checks (SR_REQUIRE_HEIC=1 requires them): {why}");
-    false
+    sr_testkit::heic(probe, context).is_some()
 }
 
 #[test]
@@ -59,7 +57,7 @@ fn lossless_formats_decode_exactly() {
         // Formats only FFmpeg reads.
         names.extend([("pattern.psd", false), ("pattern.jp2", false)]);
         // FFmpeg alone misreads the identity-matrix AVIF: exact through libheif.
-        if heif_decodable("pattern.avif", true) {
+        if heif_decodable("lossless_formats_decode_exactly", "pattern.avif", true) {
             names.push(("pattern.avif", false));
         }
     }
@@ -141,7 +139,7 @@ fn embedded_colour_descriptions_are_reported() {
         Colour::Unsupported(why) => assert!(why.contains("CMYK"), "{why}"),
         other => panic!("{other:?}"),
     }
-    if heif_decodable("p3-icc.heic", false) {
+    if heif_decodable("embedded_colour_descriptions_are_reported", "p3-icc.heic", false) {
         match still::open(&fixture("p3-icc.heic")).unwrap().colour {
             Colour::Icc(p) => assert_eq!(p.description, "Display P3 (test)"),
             other => panic!("{other:?}"),
@@ -152,7 +150,7 @@ fn embedded_colour_descriptions_are_reported() {
 
 #[test]
 fn heic_pixels_match_libheif() {
-    if !heif_decodable("p3-nclx.heic", false) {
+    if !heif_decodable("heic_pixels_match_libheif", "p3-nclx.heic", false) {
         return;
     }
     let e = expected();

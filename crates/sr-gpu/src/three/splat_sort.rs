@@ -107,14 +107,7 @@ fn sorted_timed(eng: &ThreeEngine, keys: &[u32], scatter: &str) -> (Vec<u32>, f6
 
 #[test]
 fn software_scatter_matches_shader_and_stable_reference() {
-    let gpu = match crate::gpu::test_gpu() {
-        Ok(g) => g,
-        Err(e) => {
-            assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "{e}");
-            eprintln!("skipping GPU test: {e}");
-            return;
-        }
-    };
+    let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "software_scatter_matches_shader_and_stable_reference");
     let eng = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
     for n in [0, 1, 255, 256, 257, 1025] {
         let mut seed = 7u32;

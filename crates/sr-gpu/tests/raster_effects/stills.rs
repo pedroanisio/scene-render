@@ -21,19 +21,9 @@ fn expected() -> serde_json::Value {
 const LINEAR: Working = Working { space: ColorSpace::LinearSrgb, linear: true };
 
 /// Whether the HEIC fixtures decode here (libheif's `heif-convert` with its HEVC plugin, or an FFmpeg that
-/// reads HEIF items). Without, their checks are skipped with a notice; `SR_REQUIRE_HEIC=1` (set in CI) runs
-/// them regardless, so a missing decoder fails there.
-fn heic_decodable() -> bool {
-    if std::env::var_os("SR_REQUIRE_HEIC").is_some_and(|v| v == "1") {
-        return true;
-    }
-    match sr_media::still::open(&still("p3-nclx.heic")) {
-        Ok(_) => true,
-        Err(why) => {
-            eprintln!("skipping the HEIC checks (SR_REQUIRE_HEIC=1 requires them): {why}");
-            false
-        }
-    }
+/// reads HEIF items). Without, `context` skips their checks with a notice; `SR_REQUIRE_HEIC=1` (set in CI) fails it.
+fn heic_decodable(context: &str) -> bool {
+    sr_testkit::heic(sr_media::still::open(&still("p3-nclx.heic")), context).is_some()
 }
 
 /// The decoded pixels as 8-bit display sRGB.
@@ -109,7 +99,7 @@ fn profiles_that_name_a_space_take_its_exact_path() {
         resources::coding(&open("p3.png"), ColorSpace::Srgb, Transfer::Auto, false),
         Coding::Named(ColorSpace::Srgb, Transfer::Auto)
     );
-    if heic_decodable() {
+    if heic_decodable("profiles_that_name_a_space_take_its_exact_path") {
         assert_eq!(c("p3-nclx.heic"), Coding::Named(ColorSpace::DisplayP3, Transfer::Srgb));
         assert_eq!(c("p3-icc.heic"), Coding::Named(ColorSpace::DisplayP3, Transfer::Srgb));
         // HEVC is lossy: allow a few steps on top of LittleCMS.

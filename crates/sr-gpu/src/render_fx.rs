@@ -2351,14 +2351,8 @@ mod motion_cache_tests {
 
     #[test]
     fn retained_motion_textures_respect_budget_and_recent_use() {
-        let gpu = match crate::gpu::test_gpu() {
-            Ok(gpu) => gpu,
-            Err(error) => {
-                assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "{error}");
-                eprintln!("skipping GPU test: {error}");
-                return;
-            }
-        };
+        let gpu =
+            sr_testkit::require_gpu!(crate::gpu::test_gpu(), "retained_motion_textures_respect_budget_and_recent_use");
         let document = sr_model::load_str(
             r##"<scene version="1.1"><project width="32" height="32" fps="10" duration="1"/>
                 <composition><shape id="a" shape="rect" width="8" height="8" fill="#FFFFFF"/>

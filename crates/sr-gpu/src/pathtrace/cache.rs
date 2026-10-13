@@ -279,7 +279,10 @@ mod tests {
 
     #[test]
     fn render_geometry_moves_between_cache_and_scene_without_copying() {
-        let gpu = crate::gpu::test_gpu().unwrap();
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "render_geometry_moves_between_cache_and_scene_without_copying"
+        );
         let e = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
         let mut s = fixture(vec![draw(&e, Vec3::new(32., 32., 0.))]);
         let mut c = BuildCache::default();

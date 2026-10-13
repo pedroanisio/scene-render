@@ -64,7 +64,7 @@ mod tests {
     use super::*;
     #[test]
     fn completed_splat_indices_obey_lru_and_byte_limits() {
-        let gpu = crate::gpu::test_gpu().unwrap();
+        let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "completed_splat_indices_obey_lru_and_byte_limits");
         let e = crate::three::ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
         let cloud = e.upload_splats(&sr_3d::Splats::default());
         let buffer = |size| {

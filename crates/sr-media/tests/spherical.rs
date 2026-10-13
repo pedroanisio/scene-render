@@ -11,7 +11,9 @@ fn metadata_staging_does_not_follow_symlinks_or_replace_existing_temporary_files
     use std::os::unix::fs::symlink;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("movie.mp4");
-    assert!(encode(&path, true));
+    if !encoded("metadata_staging_does_not_follow_symlinks_or_replace_existing_temporary_files", &path, true) {
+        return;
+    }
     let victim = dir.path().join("unrelated.txt");
     std::fs::write(&victim, b"unrelated data").unwrap();
     let old_temp = path.with_extension("spherical.tmp");
@@ -33,7 +35,9 @@ fn metadata_replacement_preserves_output_permissions() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("movie.mp4");
-    assert!(encode(&path, true));
+    if !encoded("metadata_replacement_preserves_output_permissions", &path, true) {
+        return;
+    }
     for mode in [0o600, 0o640] {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
         inject(&path, Projection::Cubemap, Stereo::Mono).unwrap();
@@ -66,7 +70,9 @@ fn changing_projection_removes_old_v1_projection_and_stereo() {
     let dir = std::env::temp_dir().join(format!("sr-spherical-switch-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("switch.mp4");
-    assert!(encode(&path, true), "ffmpeg with libx264 required for this regression");
+    if !encoded("changing_projection_removes_old_v1_projection_and_stereo", &path, true) {
+        return;
+    }
     inject(&path, Projection::Equirectangular, Stereo::TopBottom).unwrap();
     let has_v1 = || {
         let data = std::fs::read(&path).unwrap();
@@ -82,6 +88,15 @@ fn changing_projection_removes_old_v1_projection_and_stereo() {
     assert_eq!(read(&path).unwrap(), Some((Projection::Equirectangular, Stereo::LeftRight)));
     assert!(probe(&path).contains("\"nb_read_frames\": \"10\""));
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Whether `encode` wrote the fixture; if FFmpeg or its libx264 encoder is missing, skips `context` instead.
+fn encoded(context: &str, path: &std::path::Path, faststart: bool) -> bool {
+    if !common::encoder(context, "libx264") {
+        return false;
+    }
+    assert!(encode(path, faststart), "FFmpeg has a working libx264 encoder but could not encode the fixture");
+    true
 }
 
 fn encode(path: &std::path::Path, faststart: bool) -> bool {

@@ -12,3 +12,6 @@ publish.workspace = true
 rayon.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+sr-testkit.workspace = true

@@ -42,11 +42,8 @@ fn kitchen_scene_matches_goldens() {
     let mut failures = Vec::new();
     let mut reports = Vec::new();
     for (k, t) in [0.0, 0.7, 1.4].into_iter().enumerate() {
-        let Some(r) = render_times(&d, &[t]) else {
-            assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "required GPU unavailable");
-            eprintln!("skipping golden comparison: no GPU adapter");
-            return;
-        };
+        // Without an adapter, `render_times` has skipped (or failed under `SR_REQUIRE_GPU=1`).
+        let Some(r) = render_times(&d, &[t]) else { return };
         let rgba = r.renderer.to_srgb8(&r.px);
         let actual = image::RgbaImage::from_raw(r.size[0], r.size[1], rgba.clone()).unwrap();
         actual.save(out.join(format!("kitchen_{k}.actual.png"))).unwrap();

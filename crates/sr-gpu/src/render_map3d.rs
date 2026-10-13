@@ -442,7 +442,10 @@ impl Renderer {
 mod cache_tests {
     #[test]
     fn drape_resolutions_coexist_and_reuse_their_uploaded_textures() {
-        let gpu = crate::gpu::test_gpu().unwrap();
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "drape_resolutions_coexist_and_reuse_their_uploaded_textures"
+        );
         let xml = r##"<scene version="1.2"><project width="64" height="64" fps="10" duration="2"/>
         <assets><map id="m" width="100" height="100" background="#326599"/></assets>
         <composition><object3D id="a" primitive="globe" map="m" radius="12" textureSize="128" x="18" y="32">
@@ -472,7 +475,10 @@ mod cache_tests {
     }
     #[test]
     fn drape_cache_is_bounded_and_oversized_images_do_not_flush_reusable_variants() {
-        let gpu = crate::gpu::test_gpu().unwrap();
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "drape_cache_is_bounded_and_oversized_images_do_not_flush_reusable_variants"
+        );
         let mut e = crate::three::ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
         let small = e.upload_rgba8(1, 1, &[255; 4], true);
         let big = e.upload_rgba8(2, 2, &[255; 16], true);

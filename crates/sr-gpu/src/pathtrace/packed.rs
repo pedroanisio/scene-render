@@ -78,7 +78,10 @@ mod tests {
     use super::*;
     #[test]
     fn storage_cache_checks_pixels_and_evicts_within_its_byte_budget() {
-        let gpu = crate::gpu::test_gpu().unwrap();
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "storage_cache_checks_pixels_and_evicts_within_its_byte_budget"
+        );
         let buffer = || {
             gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,

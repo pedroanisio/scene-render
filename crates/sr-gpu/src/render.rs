@@ -5427,14 +5427,10 @@ mod draw_uniform_tests {
 
     #[test]
     fn mask_coverage_budget_counts_all_images_used_in_the_current_frame() {
-        let gpu = match crate::gpu::test_gpu() {
-            Ok(gpu) => gpu,
-            Err(error) => {
-                assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "{error}");
-                eprintln!("skipping GPU test: {error}");
-                return;
-            }
-        };
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "mask_coverage_budget_counts_all_images_used_in_the_current_frame"
+        );
         let cache_supported = gpu.scalar_target == wgpu::TextureFormat::R32Float;
         let document = sr_model::load_str(
             r#"<scene version="1.1"><project width="32" height="32" fps="10" duration="1"/><composition/></scene>"#,
@@ -5495,14 +5491,10 @@ mod draw_uniform_tests {
 
     #[test]
     fn cached_mask_coverage_preserves_pixels_across_opacity_and_geometry_changes() {
-        let gpu = match crate::gpu::test_gpu() {
-            Ok(gpu) => gpu,
-            Err(error) => {
-                assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "{error}");
-                eprintln!("skipping GPU test: {error}");
-                return;
-            }
-        };
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "cached_mask_coverage_preserves_pixels_across_opacity_and_geometry_changes"
+        );
         let cache_supported = gpu.scalar_target == wgpu::TextureFormat::R32Float;
         let document = sr_model::load_str(r##"<scene version="1.1">
             <project width="127" height="97" fps="10" duration="3" background="#173546"/>

@@ -2867,6 +2867,7 @@ dependencies = [
  "sr-media",
  "sr-model",
  "sr-resolve",
+ "sr-testkit",
  "sr-vector",
  "sr-volume",
 ]
@@ -3085,6 +3086,7 @@ version = "0.5.0"
 dependencies = [
  "rayon",
  "serde",
+ "sr-testkit",
  "thiserror",
 ]
 
@@ -3103,6 +3105,7 @@ dependencies = [
  "sr-gpu",
  "sr-media",
  "sr-model",
+ "sr-testkit",
  "sr-text",
  "thiserror",
  "unicode-normalization",
@@ -3179,6 +3182,7 @@ dependencies = [
  "sr-media",
  "sr-model",
  "sr-sim",
+ "sr-testkit",
  "sr-text",
  "sr-vector",
  "sr-volume",
@@ -3194,6 +3198,7 @@ dependencies = [
  "jxl-oxide",
  "serde",
  "serde_json",
+ "sr-testkit",
  "tempfile",
  "thiserror",
 ]
@@ -3246,6 +3251,10 @@ dependencies = [
  "sr-volume",
  "thiserror",
 ]
+
+[[package]]
+name = "sr-testkit"
+version = "0.5.0"
 
 [[package]]
 name = "sr-text"

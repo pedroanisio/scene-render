@@ -766,14 +766,7 @@ mod tests {
 
     #[test]
     fn nv12_blocks_match_piecewise_packing_byte_for_byte() {
-        let gpu = match crate::gpu::test_gpu() {
-            Ok(gpu) => gpu,
-            Err(error) => {
-                assert!(std::env::var("SR_REQUIRE_GPU").as_deref() != Ok("1"), "{error}");
-                eprintln!("skipping GPU test: {error}");
-                return;
-            }
-        };
+        let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "nv12_blocks_match_piecewise_packing_byte_for_byte");
         let layout = crate::resources::source_layout(&gpu.device);
         let frame = crate::resources::create(&gpu.device, &layout, [8, 6], 1, "NV12 oracle");
         let bytes: Vec<u8> = (0..48)
