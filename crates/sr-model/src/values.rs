@@ -279,23 +279,31 @@ impl Fps {
 
     /// Index of the frame displayed at time `t` (seconds). Times within one
     /// nanosecond below a frame boundary belong to the next frame, which
-    /// absorbs rounding in times written as decimals.
+    /// absorbs rounding in times written as decimals; when frames are shorter
+    /// than two nanoseconds the window is half a frame.
     pub fn frame_at(self, t: f64) -> u64 {
         let f = t * self.num as f64 / self.den as f64;
-        (f + 1e-9 * self.as_f64()).floor().max(0.0) as u64
+        (f + self.snap()).floor().max(0.0) as u64
     }
 
     /// Number of frames needed to cover `duration` seconds: the count is
-    /// rounded to the nearest frame when within one nanosecond of it and
-    /// rounded up otherwise, so the last partial frame is rendered.
+    /// rounded to the nearest frame when within one nanosecond of it (half a
+    /// frame when frames are shorter than two nanoseconds) and rounded up
+    /// otherwise, so the last partial frame is rendered.
     pub fn frame_count(self, duration: f64) -> u64 {
         let f = duration * self.num as f64 / self.den as f64;
         let r = f.round();
-        if (f - r).abs() <= 1e-9 * self.as_f64() {
+        if (f - r).abs() <= self.snap() {
             r as u64
         } else {
             f.ceil() as u64
         }
+    }
+
+    /// The distance, in frames, within which a time counts as a frame boundary: one nanosecond, but never more than
+    /// half a frame, so a boundary never captures a time nearer the next one.
+    fn snap(self) -> f64 {
+        (1e-9 * self.as_f64()).min(0.5)
     }
 
     /// Nominal integer rate used by timecode (e.g. 30 for 30000/1001).
@@ -568,5 +576,15 @@ mod tests {
         assert!(Timecode::parse_value("00:01:00;00").unwrap().to_frame(ntsc).is_err());
         assert_eq!(Timecode::parse_value("00:10:00;00").unwrap().to_frame(ntsc).unwrap(), 17982);
         assert_eq!(Timecode::parse_value("01:00:00:00").unwrap().to_frame(Fps::new(25, 1).unwrap()).unwrap(), 90000);
+    }
+
+    #[test]
+    fn a_frame_shorter_than_a_nanosecond_starts_at_its_own_time() {
+        let fast = Fps::new(4_000_000_000, 1).unwrap();
+        assert_eq!(fast.frame_at(fast.frame_time(1)), 1);
+        assert_eq!(fast.frame_at(fast.frame_time(1_000_000)), 1_000_000);
+        assert_eq!(fast.frame_count(fast.frame_time(7)), 7);
+        // a time just below a boundary still belongs to the next frame
+        assert_eq!(fast.frame_at(fast.frame_time(8) * (1.0 - 1e-12)), 8);
     }
 }
