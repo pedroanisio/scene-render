@@ -97,6 +97,18 @@ pub fn open(path: &Path) -> Result<Still, String> {
     }
 }
 
+/// Whether `path` holds a still image format: by its signature, or by its extension for formats
+/// without one (TGA).
+pub fn is_still(path: &Path) -> bool {
+    let mut head = [0u8; 64];
+    let Ok(n) = std::fs::File::open(path).and_then(|mut f| f.read(&mut head)) else { return false };
+    let head = &head[..n];
+    heif::is_heif(head)
+        || head.starts_with(&[0xff, 0x0a])
+        || head.get(4..8) == Some(b"JXL ")
+        || image::ImageReader::open(path).and_then(|r| r.with_guessed_format()).is_ok_and(|r| r.format().is_some())
+}
+
 fn native(path: &Path) -> Result<Still, String> {
     let reader = image::ImageReader::open(path).and_then(|r| r.with_guessed_format()).map_err(|e| e.to_string())?;
     let format = reader.format().ok_or("unknown format")?;

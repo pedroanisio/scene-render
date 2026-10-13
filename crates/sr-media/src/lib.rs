@@ -9,6 +9,8 @@
 //! * [`decode_audio`] returns interleaved `f32` samples at a chosen rate.
 //! * [`still`] decodes still images of every common format, upright, with
 //!   their embedded colour profile.
+//! * [`scopes`] measures clipping, legal range and saturation of frames and
+//!   stills, with waveform, parade, histogram and vectorscope summaries.
 //! * [`encode`] builds and runs encoder command lines for every codec and
 //!   container of the schema, with hardware encoder selection.
 //!
@@ -24,6 +26,7 @@ pub mod encode;
 pub mod heif;
 pub mod icc;
 pub mod probe;
+pub mod scopes;
 pub mod spherical;
 pub mod still;
 

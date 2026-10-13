@@ -919,7 +919,7 @@ crates/sr-text/src/         font, style, layout, glyph (outlines, COLR, bitmaps)
                             text on a path), captions, chart, audiogram, code, formula; extrusion (glyph outlines for solid extrusion)
 crates/sr-media/src/        probe, decode (video look-ahead, audio), encode (codecs, containers, hardware, stills),
                             spherical (360 metadata), still (image formats, orientation), icc (colour profiles),
-                            heif (HEIF colour boxes)
+                            heif (HEIF colour boxes), scopes (waveform, parade, histogram, vectorscope, levels QA)
 crates/sr-geo/src/          data (GeoJSON, TopoJSON, KML, GPX), sphere (spherical geometry), clip (antimeridian,
                             small circle, rectangle, rejoin), project (projections, resampling, fit), view (map
                             camera, fly-to), pmtiles (archives), mvt (vector tiles), style (MapLibre styles),
