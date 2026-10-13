@@ -7,4 +7,5 @@ mod common;
 mod debug_gpu_flag;
 mod eval_json_warnings;
 mod program_findings;
+mod scopes;
 mod solver_failures;
