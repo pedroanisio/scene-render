@@ -362,7 +362,11 @@ impl Timecode {
             )));
         }
         let (h, m, s, f) = (self.hours as u64, self.minutes as u64, self.seconds as u64, self.frames as u64);
-        let base = ((h * 60 + m) * 60 + s) * nominal + f;
+        // fields below 2^32 keep the seconds below 2^44, but the frame number need not fit in 64 bits
+        let base = ((h * 60 + m) * 60 + s)
+            .checked_mul(nominal)
+            .and_then(|b| b.checked_add(f))
+            .ok_or_else(|| ValueError::new(format!("timecode {self} at {fps} fps is past the last frame number")))?;
         if !self.drop_frame {
             return Ok(base);
         }
@@ -376,6 +380,7 @@ impl Timecode {
             )));
         }
         let total_minutes = h * 60 + m;
+        // the dropped labels number at most nominal/15 per minute, fewer than the minute's frames in `base`
         Ok(base - drop * (total_minutes - total_minutes / 10))
     }
 
@@ -586,5 +591,19 @@ mod tests {
         assert_eq!(fast.frame_count(fast.frame_time(7)), 7);
         // a time just below a boundary still belongs to the next frame
         assert_eq!(fast.frame_at(fast.frame_time(8) * (1.0 - 1e-12)), 8);
+    }
+
+    #[test]
+    fn a_timecode_past_the_last_frame_number_is_an_error() {
+        let fast = Fps::new(4_200_000_000, 1).unwrap();
+        let far = Timecode { hours: 1_300_000, minutes: 0, seconds: 0, frames: 0, drop_frame: false };
+        let message = far.to_frame(fast).unwrap_err().to_string();
+        assert!(message.contains("1300000:00:00:00") && message.contains("4200000000"), "{message}");
+        assert!(Timecode { drop_frame: true, ..far }.to_frame(fast).is_err());
+        assert!(far.to_seconds(fast).is_err());
+        let last = Timecode { hours: u32::MAX, minutes: u32::MAX, seconds: u32::MAX, frames: 0, drop_frame: false };
+        assert!(last.to_frame(Fps::new(u32::MAX, 1).unwrap()).is_err());
+        // the same hours fit at a broadcast rate
+        assert_eq!(far.to_frame(Fps::new(30, 1).unwrap()), Ok(1_300_000 * 3600 * 30));
     }
 }
