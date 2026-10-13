@@ -57,11 +57,16 @@ def findings(path, text):
 class PathRules(unittest.TestCase):
     def test_each_path_rule_names_what_it_rejects(self):
         for rule, path in [
-            ("A1", "CLAUDE.md"), ("A2", ".claude/settings.json"), ("A3", ".github/copilot-instructions.md"),
+            ("A1", "crates/sr-gpu/CLAUDE.md"), ("A1", "AGENTS.md"), ("A2", ".claude/settings.json"), ("A3", ".github/copilot-instructions.md"),
             ("A4", "docs/prompts/x.md"), ("A5", "notes/PLAN-x.md"), ("A6", "build.log"), ("A7", "x-findings.md"),
         ]:
             bad, _ = hygiene.check([path], "/nonexistent")
             self.assertTrue(any(f" {rule} " in b for b in bad), f"{rule} on {path}: {bad}")
+
+    def test_the_root_project_guidelines_are_releasable(self):
+        # CLAUDE.md at the root states the project's binding contributor rules, as CONTRIBUTING.md does
+        bad, _ = hygiene.check(["CLAUDE.md"], "/nonexistent")
+        self.assertEqual(bad, [])
 
 
 class TextRules(unittest.TestCase):

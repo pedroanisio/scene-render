@@ -60,7 +60,9 @@ COMMIT_RULES = [
 ]
 
 # (path prefix, rule) -> reason. Keep entries narrow.
-ALLOW = {}
+ALLOW = {
+    ("CLAUDE.md", "A1"): "the root CLAUDE.md states the project's binding contributor rules, as CONTRIBUTING.md does",
+}
 
 SKIP = ("Cargo.lock", "tests/corpus/", "tools/check_release_hygiene.py",
         "tools/tests/test_release_hygiene.py", "vendor/")
