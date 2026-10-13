@@ -646,14 +646,15 @@ fn validate(
     let mut reports = Vec::new();
     let mut infos: std::collections::HashMap<PathBuf, Vec<String>> = Default::default();
     for file in files {
-        let text = match std::fs::read(file).map(String::from_utf8) {
-            Ok(Ok(t)) => t,
-            Ok(Err(e)) => {
-                reports.push((file, None, Some(format!("not UTF-8: {e}"))));
+        let text = match sr_model::read_document(file) {
+            Ok(t) => t,
+            // past the document size limit: an XML error, the file left unread
+            Err(LoadError::Invalid(report)) => {
+                reports.push((file, Some((String::new(), report)), None));
                 continue;
             }
-            Err(e) => {
-                reports.push((file, None, Some(e.to_string())));
+            Err(LoadError::Io { source, .. }) => {
+                reports.push((file, None, Some(source.to_string())));
                 continue;
             }
         };
@@ -897,7 +898,7 @@ fn inspect(file: &Path, json: bool, no_assets: bool, out: &mut Out) -> std::io::
             return Ok(ExitCode::from(2));
         }
         Err(LoadError::Invalid(report)) => {
-            let text = std::fs::read_to_string(file).unwrap_or_default();
+            let text = sr_model::read_document(file).unwrap_or_default();
             let lines = LineIndex::new(&text);
             for d in &report.diagnostics {
                 out.diagnostic(file, &lines, d)?;
@@ -1076,10 +1077,12 @@ fn eval(
     out: &mut Out,
 ) -> std::io::Result<ExitCode> {
     let lopts = if no_assets { LoadOptions::without_assets() } else { LoadOptions::default() };
-    let text = match std::fs::read_to_string(file) {
+    let text = match sr_model::read_document(file) {
         Ok(t) => t,
+        // past the document size limit: loading reports it
+        Err(LoadError::Invalid(_)) => String::new(),
         Err(e) => {
-            eprintln!("error: cannot read {}: {e}", file.display());
+            eprintln!("error: {e}");
             return Ok(ExitCode::from(2));
         }
     };
@@ -1249,10 +1252,12 @@ fn render(
     inc: Incremental,
     out: &mut Out,
 ) -> std::io::Result<ExitCode> {
-    let text = match std::fs::read_to_string(file) {
+    let text = match sr_model::read_document(file) {
         Ok(t) => t,
+        // past the document size limit: loading reports it
+        Err(LoadError::Invalid(_)) => String::new(),
         Err(e) => {
-            eprintln!("error: cannot read {}: {e}", file.display());
+            eprintln!("error: {e}");
             return Ok(ExitCode::from(2));
         }
     };
@@ -1667,7 +1672,7 @@ fn encode(
     out: &mut Out,
 ) -> std::io::Result<ExitCode> {
     use sr_deliver::render_report::{self, Finding, OutputInfo, ReportWriter};
-    let bytes = match std::fs::read(file) {
+    let bytes = match sr_model::limits::read_capped(file, sr_model::limits::MAX_DOCUMENT_BYTES) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: cannot read {}: {e}", file.display());

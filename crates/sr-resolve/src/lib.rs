@@ -516,7 +516,11 @@ pub fn resolve(path: &Path, o: &Options) -> Result<Vec<Resolution>, String> {
         file.try_lock().map_err(|e| format!("{}: another resolver holds the document lock: {e}", path.display()))?;
         Some(DocumentLock(file))
     };
-    let mut text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut text = match sr_model::read_document(path) {
+        Ok(t) => t,
+        Err(sr_model::LoadError::Io { source, .. }) => return Err(format!("{}: {source}", path.display())),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
     let original = text.clone();
     let base = path.parent().map(Path::to_path_buf).unwrap_or_default();
     let base = if base.as_os_str().is_empty() { PathBuf::from(".") } else { base };

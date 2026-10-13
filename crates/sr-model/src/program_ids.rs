@@ -247,7 +247,13 @@ pub(crate) fn scope(
             })
             .collect::<Vec<_>>()
     };
-    let doc = roxmltree::Document::parse(text)
+    if crate::limits::too_deep(text, crate::limits::MAX_DEPTH).is_some() {
+        let max = crate::limits::MAX_DEPTH;
+        return Err(fail_all(format!(
+            "the document with the outputs in place nests elements more than {max} levels deep"
+        )));
+    }
+    let doc = roxmltree::Document::parse_with_options(text, crate::limits::parsing_options())
         .map_err(|e| fail_all(format!("the document with the outputs in place is not well-formed: {e}")))?;
     let (_, types) = crate::xsd::structure::validate_typed(&doc, &mut Vec::new());
     let owner = |at: usize| outputs.iter().find(|(r, _)| r.contains(&at)).map(|(_, k)| *k);

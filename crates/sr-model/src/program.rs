@@ -195,8 +195,10 @@ fn check_fragment(text: &str) -> Result<(), String> {
         return Err("the output has a DOCTYPE or an entity declaration".into());
     }
     let wrapped = format!("<sr-fragment>{text}</sr-fragment>");
-    let opts = roxmltree::ParsingOptions { allow_dtd: false, ..Default::default() };
-    let doc = roxmltree::Document::parse_with_options(&wrapped, opts)
+    if crate::limits::too_deep(&wrapped, crate::limits::MAX_DEPTH).is_some() {
+        return Err(format!("the output nests elements more than {} levels deep", crate::limits::MAX_DEPTH));
+    }
+    let doc = roxmltree::Document::parse_with_options(&wrapped, crate::limits::parsing_options())
         .map_err(|e| format!("the output is not a well-formed XML fragment: {e}"))?;
     let root = doc.root_element();
     for c in root.children() {

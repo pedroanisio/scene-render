@@ -881,7 +881,7 @@ Encoding reports preserve template diagnostics in `evaluation_warnings`; human o
 schema/                     the XSD and Schematron contract
 crates/sr-model/build.rs    generator: tables, typed model, assert catalogue
 crates/sr-model/src/        diag, xsd/{simple,structure}, rules, assets, values, parse, model, element (name-based
-                            attribute access), document, codes; effect_attrs (the effect attribute bag), foam (which water takes albedo foam), inert (attributes
+                            attribute access), document, limits (document size, node count, nesting and include depth), codes; effect_attrs (the effect attribute bag), foam (which water takes albedo foam), inert (attributes
                             valid and without effect), program and program_ids (build-mode programs and their scoped ids)
 crates/sr-eval/src/         program (templating, instantiation, compilation), eval (frames), layout, channel,
                             curve, expr/{parse,vm}, value, path, data, rng, rig (constraints, bones,

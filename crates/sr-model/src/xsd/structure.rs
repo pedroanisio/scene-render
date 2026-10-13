@@ -28,8 +28,8 @@ use crate::diag::{element_path, Diagnostic, Loc};
 
 const XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";
 
-/// Maximum element nesting depth accepted.
-pub const MAX_DEPTH: usize = 256;
+/// Maximum element nesting depth accepted ([`crate::limits::MAX_DEPTH`]).
+pub const MAX_DEPTH: usize = crate::limits::MAX_DEPTH;
 
 /// Maximum structural errors reported for the children of one element.
 const MAX_CHILD_ERRORS: usize = 32;

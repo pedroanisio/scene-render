@@ -455,8 +455,19 @@ fn run(xml: &str, base_dir: PathBuf, opts: &LoadOptions, build: bool) -> Outcome
     let lines = LineIndex::new(xml);
     with_line_index(&lines, || {
         let mut report = Report::default();
-        let doc = match roxmltree::Document::parse(xml) {
+        // the parser descends recursively: a document nested past the limit is refused before it runs
+        if let Some(at) = crate::limits::too_deep(xml, crate::limits::MAX_DEPTH) {
+            let message = format!("elements are nested more than {} levels deep", crate::limits::MAX_DEPTH);
+            report.diagnostics.push(Diagnostic::error("S12", message, Loc::at(at), "/"));
+            return Outcome { report, document: None };
+        }
+        let doc = match roxmltree::Document::parse_with_options(xml, crate::limits::parsing_options()) {
             Ok(d) => d,
+            Err(roxmltree::Error::NodesLimitReached) => {
+                let message = format!("the document has more than {} XML nodes", crate::limits::MAX_XML_NODES);
+                report.diagnostics.push(Diagnostic::error("XML", message, Loc { line: 1, column: 1, offset: 0 }, "/"));
+                return Outcome { report, document: None };
+            }
             Err(e) => {
                 let p = e.pos();
                 let line_start: usize =
@@ -597,8 +608,30 @@ fn base_for(opts: &LoadOptions, file: Option<&Path>) -> PathBuf {
     }
 }
 
-fn read(path: &Path) -> Result<String, LoadError> {
-    let bytes = std::fs::read(path).map_err(|source| LoadError::Io { path: path.to_path_buf(), source })?;
+/// The report of a document past [`crate::limits::MAX_DOCUMENT_BYTES`], which is refused unparsed.
+fn oversize() -> Report {
+    let message = format!("the document is larger than {} bytes", crate::limits::MAX_DOCUMENT_BYTES);
+    Report { diagnostics: vec![Diagnostic::error("XML", message, Loc { line: 1, column: 1, offset: 0 }, "/")] }
+}
+
+/// Runs the pipeline over a document a caller handed in, refusing one past the size limit first.
+fn run_checked(xml: &str, base_dir: PathBuf, opts: &LoadOptions, build: bool) -> Outcome {
+    if xml.len() as u64 > crate::limits::MAX_DOCUMENT_BYTES {
+        return Outcome { report: oversize(), document: None };
+    }
+    run(xml, base_dir, opts, build)
+}
+
+/// Reads a scene document's text. A file past [`crate::limits::MAX_DOCUMENT_BYTES`] is refused before its content
+/// is read, as an invalid document whose report holds one `XML` error; a file that cannot be read, or is not UTF-8,
+/// is an I/O error.
+pub fn read_document(path: impl AsRef<Path>) -> Result<String, LoadError> {
+    let path = path.as_ref();
+    let bytes = match crate::limits::read_capped(path, crate::limits::MAX_DOCUMENT_BYTES) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::FileTooLarge => return Err(LoadError::Invalid(oversize())),
+        Err(source) => return Err(LoadError::Io { path: path.to_path_buf(), source }),
+    };
     String::from_utf8(bytes).map_err(|e| LoadError::Io {
         path: path.to_path_buf(),
         source: std::io::Error::new(std::io::ErrorKind::InvalidData, format!("not UTF-8: {e}")),
@@ -608,26 +641,30 @@ fn read(path: &Path) -> Result<String, LoadError> {
 /// Validates a document held in memory. Every stage runs; the report lists
 /// errors and warnings in document order.
 pub fn validate_str(xml: &str, opts: &LoadOptions) -> Report {
-    run(xml, base_for(opts, None), opts, false).report
+    run_checked(xml, base_for(opts, None), opts, false).report
 }
 
 /// Validates a file.
 pub fn validate_file(path: impl AsRef<Path>, opts: &LoadOptions) -> Result<Report, LoadError> {
     let path = path.as_ref();
-    let xml = read(path)?;
+    let xml = match read_document(path) {
+        Ok(x) => x,
+        Err(LoadError::Invalid(report)) => return Ok(report),
+        Err(e) => return Err(e),
+    };
     Ok(run(&xml, base_for(opts, Some(path)), opts, false).report)
 }
 
 /// Loads a document held in memory into the typed model.
 pub fn load_str(xml: &str, opts: &LoadOptions) -> Result<Document, LoadError> {
-    let o = run(xml, base_for(opts, None), opts, true);
+    let o = run_checked(xml, base_for(opts, None), opts, true);
     o.document.ok_or(LoadError::Invalid(o.report))
 }
 
 /// Loads a file into the typed model.
 pub fn load_file(path: impl AsRef<Path>, opts: &LoadOptions) -> Result<Document, LoadError> {
     let path = path.as_ref();
-    let xml = read(path)?;
+    let xml = read_document(path)?;
     let o = run(&xml, base_for(opts, Some(path)), opts, true);
     o.document.ok_or(LoadError::Invalid(o.report))
 }

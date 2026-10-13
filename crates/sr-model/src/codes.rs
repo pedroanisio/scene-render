@@ -16,7 +16,11 @@ pub struct Code {
 }
 
 const FIXED: &[(&str, &str, &str)] = &[
-    ("XML", "xml", "The file is not well-formed XML."),
+    (
+        "XML",
+        "xml",
+        "The file is not well-formed XML, or is past a document limit: larger than 64 MiB or more than 4,000,000 XML nodes.",
+    ),
     ("S01", "structure", "The root element is not <scene>."),
     ("S02", "structure", "An element is not allowed where it appears: unknown, out of order, or repeated too often."),
     ("S03", "structure", "A required child element is missing."),
@@ -28,7 +32,11 @@ const FIXED: &[(&str, &str, &str)] = &[
     ("S09", "structure", "Two elements share the same xs:ID value; ids are unique across the document."),
     ("S10", "structure", "An xs:IDREF value names no element id."),
     ("S11", "structure", "An element or attribute is in a foreign namespace; scene-render uses no namespace."),
-    ("S12", "structure", "Elements are nested deeper than the supported limit of 256 levels."),
+    (
+        "S12",
+        "structure",
+        "Elements are nested deeper than the supported limit of 256 levels; such a document is refused before it is parsed.",
+    ),
     (
         "W01",
         "structure",

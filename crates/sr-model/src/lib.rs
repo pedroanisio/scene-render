@@ -38,6 +38,7 @@ pub mod effect_attrs;
 pub mod element;
 pub mod foam;
 pub mod inert;
+pub mod limits;
 pub mod model;
 pub mod parse;
 pub mod program;
@@ -48,8 +49,8 @@ pub mod xsd;
 
 pub use diag::{Diagnostic, Loc, Measure, Report, Severity};
 pub use document::{
-    load_file, load_str, validate_file, validate_str, Document, Index, LoadError, LoadOptions, NodePath, NodeRoot,
-    ResolvedPaint, Target, Version,
+    load_file, load_str, read_document, validate_file, validate_str, Document, Index, LoadError, LoadOptions, NodePath,
+    NodeRoot, ResolvedPaint, Target, Version,
 };
 
 /// Schema version implemented by this crate: the newest document version it accepts, that of the vendored sr-core
