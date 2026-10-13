@@ -90,8 +90,9 @@ class PaletteTests(unittest.TestCase):
 
 
 class MazeTests(unittest.TestCase):
-    """maze.wasm is built by examples/program-maze/build.sh, which needs a wasm target that CI does not install, so the
-    check is on the sources: build.sh records their digest, and a source edited without a rebuild no longer matches."""
+    """maze.wasm is built by examples/program-maze/build.sh with the toolchain maze/rust-toolchain.toml pins, since
+    another rustc emits other bytes. build.sh records the digest of the sources, so a source edited without a rebuild no
+    longer matches, and where that toolchain is installed (CI installs it) the module is rebuilt and compared."""
 
     def test_the_module_was_built_from_the_checked_in_sources(self):
         recorded = (MAZE / "maze.source-sha256").read_text().strip()
@@ -110,15 +111,17 @@ class MazeTests(unittest.TestCase):
         self.assertIn("Cargo.toml Cargo.lock src", script)
 
     def test_the_module_is_what_the_sources_build_to(self):
-        """Rebuilds in a scratch copy and compares bytes. The build needs the wasm target: without it the test is
-        skipped, and SR_REQUIRE_WASM=1 (set it where the target is installed) makes its absence a failure."""
+        """Rebuilds in a scratch copy and compares bytes. The build needs the pinned toolchain and its wasm target:
+        without them the test is skipped (nothing is downloaded), and SR_REQUIRE_WASM=1 (set it where they are
+        installed) makes their absence a failure."""
         libdir = subprocess.run(["rustc", "--print", "target-libdir", "--target", "wasm32-unknown-unknown"],
-                                capture_output=True, text=True).stdout.strip()
+                                cwd=MAZE / "maze", capture_output=True, text=True,
+                                env={**os.environ, "RUSTUP_AUTO_INSTALL": "0"}).stdout.strip()
         have_target = bool(libdir) and pathlib.Path(libdir).is_dir() and any(pathlib.Path(libdir).glob("libcore-*"))
         if not have_target:
             if os.environ.get("SR_REQUIRE_WASM") == "1":
-                self.fail("wasm32-unknown-unknown is not installed and SR_REQUIRE_WASM=1")
-            self.skipTest("wasm32-unknown-unknown is not installed")
+                self.fail("the maze toolchain or its wasm32-unknown-unknown target is not installed and SR_REQUIRE_WASM=1")
+            self.skipTest("the maze toolchain or its wasm32-unknown-unknown target is not installed")
         with tempfile.TemporaryDirectory() as d:
             work = pathlib.Path(d) / "maze"
             shutil.copytree(MAZE / "maze", work, ignore=shutil.ignore_patterns("target"))

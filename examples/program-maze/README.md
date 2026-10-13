@@ -33,8 +33,9 @@ module that runs once when the document loads. No script writes the XML.
 
 ## Rebuilding the module
 
-Run `./build.sh`. It needs `rustup target add wasm32-unknown-unknown`, and it prints the new SHA-256 for
-`program/@sha256`. The module imports only `sr.rand_u64` and `sr.param_f64`.
+Run `./build.sh`. It builds with the toolchain `maze/rust-toolchain.toml` pins, because another rustc emits
+other bytes; `rustup toolchain install` in `maze/` installs it with its wasm target. It prints the new SHA-256
+for `program/@sha256`. The module imports only `sr.rand_u64` and `sr.param_f64`.
 
 ## Rendering
 

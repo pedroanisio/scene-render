@@ -32,6 +32,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
+      # the toolchain maze/rust-toolchain.toml pins, with its wasm target, so the maze.wasm rebuild check runs
+      - run: rustup toolchain install
+        working-directory: examples/program-maze/maze
       - run: python3 tools/check_release_hygiene.py --all
       - run: python3 tools/doc_facts.py --check
       - run: python3 tools/doc_links.py
@@ -40,6 +43,8 @@ jobs:
       - run: cargo test --workspace --doc --features scene-render/pdf --locked --no-fail-fast
       - run: python3 -m unittest discover -s tools/tests -v
         if: always()
+        env:
+          SR_REQUIRE_WASM: 1
       - uses: actions/upload-artifact@v6
         if: always()
         with:
