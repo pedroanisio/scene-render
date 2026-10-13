@@ -166,6 +166,15 @@ class DocLinksTests(unittest.TestCase):
             self.assertEqual([(k, t) for _, k, t in doc_links.problems(doc)],
                              [("link", "no-such-file.md"), ("path", "crates/no-such-crate/src/lib.rs")])
 
+    def test_fenced_code_is_text_not_links(self):
+        # CommonMark renders a fence literally: a template's `[x](<PATH>)` there is an example, not a link
+        with tempfile.TemporaryDirectory(dir=ROOT) as d:
+            doc = pathlib.Path(d) / "doc.md"
+            doc.write_text("```markdown\n[a](<RELATIVE_PATH>)\n~~~\n[b](inside.md)\n```\n[c](after.md)\n"
+                           "  ~~~~\n[d](tilde.md)\n```\n~~~~~\n[e](closed.md)\n")
+            self.assertEqual([(n, k, t) for n, k, t in doc_links.problems(doc)],
+                             [(6, "link", "after.md"), (11, "link", "closed.md")])
+
 
 if __name__ == "__main__":
     unittest.main()

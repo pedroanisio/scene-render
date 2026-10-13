@@ -5,8 +5,8 @@ usage: tools/doc_links.py [--exclude FILE.md ...] [FILE.md ...]   default: every
 
 A relative link is the target of `[text](target)` that is not a URL or an anchor. A repository path is a code span
 that starts with a top-level directory of this repository (`crates/`, `tools/`, `tests/`, `schema/`, `examples/`,
-`vendor/`, `.github/`) and holds no placeholder (`<…>`, `{…}`, `*`, `%`). Exit status 1 lists every one that does not
-exist.
+`vendor/`, `.github/`) and holds no placeholder (`<…>`, `{…}`, `*`, `%`). Fenced code blocks are text, as CommonMark
+renders them, so neither is looked for there. Exit status 1 lists every one that does not exist.
 """
 import re
 import subprocess
@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LINK = re.compile(r"\]\(([^)\s]+)\)")
 SPAN = re.compile(r"`((?:crates|tools|tests|schema|examples|vendor|\.github)/[^`\s]+)`")
 PLACEHOLDER = re.compile(r"[<>{}*%]|\.\.\.|…")
+FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
 
 # Paths that are written on purpose and do not exist here, with the reason.
 ALLOW = {
@@ -34,7 +35,18 @@ def tracked_docs():
 def problems(path):
     text = path.read_text()
     found = []
+    fence = None  # the marker that opened the fenced code block the line is in
     for n, line in enumerate(text.splitlines(), 1):
+        marker = FENCE.match(line)
+        if fence is None and marker:
+            fence = marker.group(1)
+            continue
+        if fence is not None:
+            # a block closes at a bare fence of its own character, at least as long
+            closing = marker and not line[marker.end():].strip() and marker.group(1)[0] == fence[0]
+            if closing and len(marker.group(1)) >= len(fence):
+                fence = None
+            continue
         for target in LINK.findall(line):
             target = target.split("#", 1)[0]
             if not target or re.match(r"^[a-z][a-z0-9+.-]*:", target):
