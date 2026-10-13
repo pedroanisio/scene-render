@@ -7,6 +7,8 @@
 //! deformation (as-rigid-as-possible) and tracking data live here too,
 //! because they are geometry evaluated on the CPU.
 
+#![forbid(unsafe_code)]
+
 pub mod arap;
 pub mod d24;
 pub mod deform;

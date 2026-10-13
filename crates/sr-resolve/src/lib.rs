@@ -29,6 +29,8 @@
 //! Caches are written only inside the document's folder (or the folder named by
 //! `SR_RESOLVE_ROOT`), so a document cannot direct a provider's output elsewhere.
 
+#![forbid(unsafe_code)]
+
 pub mod doc;
 #[cfg(feature = "pdf")]
 pub mod pdf;

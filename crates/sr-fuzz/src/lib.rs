@@ -17,6 +17,8 @@
 //! The parsers of the files a document points at (captions, Lottie, SVG,
 //! map and 3D data, …) are fuzzed at the byte level by [`targets`].
 
+#![forbid(unsafe_code)]
+
 pub mod targets;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};

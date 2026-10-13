@@ -3,6 +3,9 @@
 //! source does.
 //!
 //! `cargo run --release -p sr-eval --example blur_profile -- scene.xml [first=0] [frames=40] [samples=16] [shutter=180]`
+
+#![forbid(unsafe_code)]
+
 use sr_eval::Evaluator;
 use std::time::Instant;
 

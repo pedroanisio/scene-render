@@ -7,6 +7,9 @@ struct Counting;
 fn added(n: usize) {
     PEAK.fetch_max(LIVE.fetch_add(n, Relaxed) + n, Relaxed);
 }
+// SAFETY: every operation forwards its arguments unchanged to System and returns its result. The
+// bookkeeping only updates atomics; it never allocates and never touches the allocated memory.
+#[allow(unsafe_code)]
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
         let p = unsafe { System.alloc(l) };

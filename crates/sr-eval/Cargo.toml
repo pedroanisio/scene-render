@@ -34,3 +34,6 @@ sha2.workspace = true
 wat = "1.243"
 serde_json.workspace = true
 rayon.workspace = true
+
+[lints]
+workspace = true

@@ -287,6 +287,10 @@
       "origin": "previous-repository"
     },
     {
+      "file": "crates/sr-eval/tests/crater_memory.rs",
+      "sha256": "53b5d630c5312f8f120aed404b548d3e4ed9c31f8639b55bbbe28bb5ff7b117a"
+    },
+    {
       "file": "crates/sr-eval/tests/fracture.rs",
       "sha256": "464c7917504811cadef4ed201c91fef2f712a51f605f377ec628830f8439c1c9",
       "origin": "previous-repository"
@@ -325,6 +329,10 @@
       "file": "crates/sr-eval/tests/terrain.rs",
       "sha256": "385b4bc8870c4a16549359ba82bbbb85c1a79d76f8dd6847bca1877d167a9999",
       "origin": "previous-repository"
+    },
+    {
+      "file": "crates/sr-eval/tests/terrain_memory.rs",
+      "sha256": "0d1a32390684739f725d42ab41ab6d1caafa6f5083c244125a983a69866f45ba"
     },
     {
       "file": "crates/sr-geo/src/pmtiles.rs",
@@ -522,6 +530,14 @@
       "origin": "previous-repository"
     },
     {
+      "file": "crates/sr-sim/examples/ocean_profile.rs",
+      "sha256": "1656d3bea7e046bb808aa51874c41cdc16077a2af46e1e58fe1cc0bf1ded4d95"
+    },
+    {
+      "file": "crates/sr-sim/examples/pyro_profile.rs",
+      "sha256": "083be643d357e982766bac50b47acb0358d4e3bea7c36f5471a27c65c0eb0eff"
+    },
+    {
       "file": "crates/sr-sim/src/ocean.rs",
       "sha256": "7b08495f0bcd79ec08ccc558a0ac4ef10c50e93b6d518e6e0f060c9ce7212105",
       "origin": "previous-repository"
@@ -645,6 +661,14 @@
       "file": "crates/sr-text/src/extrusion.rs",
       "sha256": "8889e7a7d20c1c18a1025abd25d6d0370c18c7585e6669485f101ef584bcefd9",
       "origin": "previous-repository"
+    },
+    {
+      "file": "crates/sr-volume/Cargo.toml",
+      "sha256": "bec29f653408157f1e0196dcdc6ea5ef4abe239dfd585ace2289c8bdff758063"
+    },
+    {
+      "file": "crates/sr-volume/src/openvdb/codec.rs",
+      "sha256": "bbbb2900a65b0472ff2fe00cc0f61e61cc912eaf855d2e77639a8af0ebd5b203"
     },
     {
       "file": "examples/cinematic-impact/hero.scene.xml",

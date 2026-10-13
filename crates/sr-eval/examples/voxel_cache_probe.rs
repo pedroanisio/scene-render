@@ -1,5 +1,8 @@
 //! What the content-keyed cache of derived products costs against what it saves, on a body of about a million cells: the fingerprint, the comparison
 //! of the content, and each product worked out and found.
+
+#![forbid(unsafe_code)]
+
 use sr_3d::occupancy::Occupancy;
 use sr_eval::voxel_cache::DerivedCache;
 use std::time::Instant;

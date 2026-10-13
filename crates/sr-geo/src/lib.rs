@@ -16,6 +16,8 @@
 //! The spherical algorithms are ported from d3-geo 3.1 (ISC licence,
 //! © Mike Bostock) and checked against it.
 
+#![forbid(unsafe_code)]
+
 pub mod clip;
 pub mod data;
 pub mod mvt;

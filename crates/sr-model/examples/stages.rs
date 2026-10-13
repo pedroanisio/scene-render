@@ -1,4 +1,7 @@
 //! Times each loading stage on a document: `cargo run --release --example stages -- FILE`.
+
+#![forbid(unsafe_code)]
+
 use std::time::Instant;
 
 fn main() {

@@ -9,6 +9,8 @@
 //! with a velocity and a spin, so that it keeps moving over the floor (a body that has come to rest is put to sleep and costs
 //! nothing) and the step time that is printed is the one of 180 steps of that.
 
+#![forbid(unsafe_code)]
+
 use sr_sim::{fields::Field, physics3d::*};
 use std::time::Instant;
 

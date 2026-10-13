@@ -5,6 +5,9 @@
 //! A 40-unit square body of thickness 3 crosses the water at 8 units per second over a flat bed
 //! of 10 (0.5-unit cells, g = 9.81, canonical step 1/24 s). Each mode runs STEPS canonical steps
 //! on a fresh solver, three times, and prints the time per step of each run.
+
+#![forbid(unsafe_code)]
+
 use sr_sim::ocean::{Boundary, Cell, Forcing, Lift, Ocean, Order, Spec};
 use std::time::Instant;
 

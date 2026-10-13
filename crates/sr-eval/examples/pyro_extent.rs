@@ -4,6 +4,9 @@
 //!
 //! usage: pyro_extent SCENE NODE-ID TIME... [-- ATTRIBUTES]   (ATTRIBUTES are added to the `<pyro>` element, for
 //! example `follow="true" followMargin="6"`)
+
+#![forbid(unsafe_code)]
+
 use sr_eval::Evaluator;
 
 fn main() {

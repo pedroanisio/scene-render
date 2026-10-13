@@ -17,6 +17,8 @@
 //! passes `-fps_mode`, which 5.1 introduced), including builds with NVENC,
 //! VideoToolbox, VAAPI, QSV or AMF.
 
+#![forbid(unsafe_code)]
+
 pub mod decode;
 pub mod encode;
 pub mod heif;

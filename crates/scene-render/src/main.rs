@@ -1,5 +1,7 @@
 //! `scene-render` — validate and inspect scene-render 1.1 documents.
 
+#![forbid(unsafe_code)]
+
 mod changes;
 
 use std::io::Write;

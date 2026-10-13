@@ -30,3 +30,6 @@ serde_json.workspace = true
 
 [[example]]
 name = "stages"
+
+[lints]
+workspace = true

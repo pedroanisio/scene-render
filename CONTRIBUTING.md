@@ -71,6 +71,10 @@ python3 -m unittest discover -s tools/tests -v
 - **Corpus:** when you change the schema or the rules, run `python3 tools/build_corpus.py`. Commit the result:
   CI fails if `tests/corpus` differs from what the generator writes.
 - **Staged files:** `tools/check_release_hygiene.py --staged` checks only what you are about to commit.
+- **Unsafe code:** the workspace denies `unsafe_code`, and crate roots without audited items forbid it. `unsafe` is
+  allowed only on the items listed in `ALLOWED` in `tools/tests/test_unsafe_policy.py`, each with
+  `#[allow(unsafe_code)]` on the narrowest item and a `// SAFETY:` comment above each block. To request an exception,
+  add the item there with its reason in the same pull request and explain why safe code cannot do the same.
 
 ## Commits
 

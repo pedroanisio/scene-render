@@ -12,6 +12,7 @@ fn observe(size: usize) {
 }
 // SAFETY: all allocation operations delegate unchanged to System. Observation
 // uses only atomics, never allocates, and does not access allocated memory.
+#[allow(unsafe_code)]
 unsafe impl GlobalAlloc for ObservedSystem {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         observe(layout.size());

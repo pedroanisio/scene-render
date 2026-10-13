@@ -5,6 +5,8 @@
 //! For floors of 1e4, 1e5 and 1e6 cells: the time to remove 1, 1 000 and 100 000 cells from a collider nobody else holds, and from one
 //! that a copy (a checkpoint) holds, where the first edit has to copy the whole shape; and the resident memory a copy of the shape adds.
 
+#![forbid(unsafe_code)]
+
 use rapier3d_f64::prelude::*;
 use std::time::Instant;
 

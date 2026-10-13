@@ -12,6 +12,8 @@
 //! The impulse lands at step 2 so the short run is dominated by the pressure solve.
 //! Control threads with `RAYON_NUM_THREADS`.
 
+#![forbid(unsafe_code)]
+
 use sr_sim::pyro::{
     Advection, Boundary, Impulse, Inputs, Obstacle, PressureSolver, Shape, Simulation, Source, Spec, StepProfile,
 };

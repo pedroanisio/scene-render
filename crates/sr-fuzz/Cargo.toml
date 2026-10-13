@@ -16,3 +16,6 @@ sr-text.workspace = true
 sr-geo.workspace = true
 sr-3d = { path = "../sr-3d" }
 serde_json.workspace = true
+
+[lints]
+workspace = true

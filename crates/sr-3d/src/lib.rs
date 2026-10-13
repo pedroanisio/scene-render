@@ -14,6 +14,7 @@
 //! y down, z away from the default camera. Imported Y-up assets measured in
 //! metres map into it through [`Y_UP_METRES`] (100 px per metre).
 
+#![forbid(unsafe_code)]
 // Keep numeric loops explicit; allow equivalent spellings across Clippy versions.
 // lints some clippy versions lack: allowed where known
 #![allow(unknown_lints, clippy::chunks_exact_to_as_chunks, clippy::manual_is_multiple_of)]

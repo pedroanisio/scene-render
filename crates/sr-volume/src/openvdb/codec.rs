@@ -80,6 +80,7 @@ pub(super) fn values<R: Read + Seek>(
     Ok(out)
 }
 
+#[allow(unsafe_code)]
 fn block<R: Read + Seek>(r: &mut Input<R>, expected: usize, compression: u32) -> Result<Vec<u8>, Error> {
     if compression & 5 == 0 {
         let mut data = vec![0; expected];

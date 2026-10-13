@@ -3,6 +3,8 @@
 //!
 //! usage: voxel_surface_probe
 
+#![forbid(unsafe_code)]
+
 use sr_3d::occupancy::Occupancy;
 use sr_3d::voxel::surface::{expand, exposed_faces, mesh_quads, Classes, SurfaceCache};
 use std::time::Instant;

@@ -6,6 +6,8 @@
 //! posters and thumbnails, and post-render delivery to files, S3, Google
 //! Cloud Storage, Azure Blob Storage, HTTP PUT, SFTP and webhooks.
 
+#![forbid(unsafe_code)]
+
 pub mod access;
 pub mod audio;
 pub mod capabilities;

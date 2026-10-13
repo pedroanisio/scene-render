@@ -15,6 +15,7 @@
 //! counter-based hash of seeds and indices, so results do not depend on the
 //! order in which frames are requested.
 
+#![cfg_attr(not(test), forbid(unsafe_code))]
 #![allow(clippy::manual_is_multiple_of)]
 
 pub mod cratering;

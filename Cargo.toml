@@ -12,6 +12,11 @@ license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/pedroanisio/scene-render"
 publish = false
 
+# Every member inherits this with `[lints] workspace = true`. `deny`, not `forbid`, so that the audited items listed in
+# tools/tests/test_unsafe_policy.py can opt out with `#[allow(unsafe_code)]`.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
 [workspace.dependencies]
 sr-model = { path = "crates/sr-model" }
 sr-eval = { path = "crates/sr-eval" }

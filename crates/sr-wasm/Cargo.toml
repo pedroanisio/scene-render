@@ -17,3 +17,6 @@ wasmtime = { version = "=41.0.4", default-features = false, features = ["craneli
 
 [dev-dependencies]
 wat = "1.243"
+
+[lints]
+workspace = true

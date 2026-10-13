@@ -5,6 +5,10 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 thread_local! { static ALLOCATIONS: Cell<Option<usize>> = const { Cell::new(None) }; }
 struct Counting;
+// SAFETY: every operation forwards its arguments unchanged to System and returns its result. The
+// bookkeeping only updates const-initialised thread-local cells; it never allocates and never touches the
+// allocated memory.
+#[allow(unsafe_code)]
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let _ = ALLOCATIONS.try_with(|n| {

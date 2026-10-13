@@ -455,6 +455,7 @@ thread_local! {
 /// of live font bytes only: a parse drops every entry whose bytes no [`FontLib`] holds any more, so a thread that
 /// builds a library per document or per text solid does not keep the bytes of every library it built. An entry holds
 /// its bytes, so their address, the key, is not reused while the entry exists.
+#[allow(unsafe_code)]
 fn cached_face(data: &Arc<Vec<u8>>, index: u32) -> Option<std::rc::Rc<CachedFace>> {
     let key = (Arc::as_ptr(data) as usize, index);
     if let Some(c) = FACE_CACHE.with(|m| m.borrow().get(&key).cloned()) {

@@ -16,6 +16,8 @@
 //! and simpleContent extension. Any other construct aborts the build, so a
 //! schema change that needs new generator support cannot be silently ignored.
 
+#![forbid(unsafe_code)]
+
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;

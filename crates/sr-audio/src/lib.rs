@@ -10,6 +10,7 @@
 //!
 //! Everything is deterministic: the same inputs give the same samples.
 
+#![forbid(unsafe_code)]
 // DSP loops index several buffers by sample position
 #![allow(clippy::needless_range_loop)]
 

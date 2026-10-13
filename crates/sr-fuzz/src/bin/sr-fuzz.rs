@@ -5,6 +5,8 @@
 //! `--iterations N --partition I/K` executes a deterministic share of N inputs;
 //! `--report FILE` writes its counters as JSON for CI coverage verification.
 
+#![forbid(unsafe_code)]
+
 use std::time::{Duration, Instant};
 
 fn main() {

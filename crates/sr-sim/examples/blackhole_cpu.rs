@@ -1,6 +1,9 @@
 //! Writes the CPU image of a Schwarzschild black hole with a disc as a binary PPM, for looking at: `cargo run --release
 //! -p sr-sim --example blackhole_cpu -- out.ppm [inclination degrees] [width] [height]`. The brightness of the disc is
 //! the bolometric `(g T)^4` of its temperature, so the side that approaches is the brighter.
+
+#![forbid(unsafe_code)]
+
 use sr_sim::gr::image::{render, Camera, Class, Disk};
 use sr_sim::gr::oracle;
 

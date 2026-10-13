@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use sr_vector::geom::{p, Xf};
 use sr_vector::measure::{trim, TrimMode};
 use sr_vector::scene::{Cmd, FillRule, Paint, Scene};

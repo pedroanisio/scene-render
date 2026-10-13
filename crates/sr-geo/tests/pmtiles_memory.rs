@@ -9,6 +9,7 @@ static LARGEST: AtomicUsize = AtomicUsize::new(0);
 
 // SAFETY: allocation and deallocation delegate unchanged to System. Observation
 // only updates atomics and never accesses allocated memory or allocates itself.
+#[allow(unsafe_code)]
 unsafe impl GlobalAlloc for ObservedSystem {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if OBSERVE.load(Ordering::Relaxed) {

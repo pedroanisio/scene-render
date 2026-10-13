@@ -8,6 +8,8 @@
 //! moments and the same frame, so one of them is wrong. The same tensor with the larger moment on y or on z, or with two equal larger moments, is
 //! returned correctly.
 
+#![forbid(unsafe_code)]
+
 use rapier3d_f64::prelude::*;
 
 fn main() {

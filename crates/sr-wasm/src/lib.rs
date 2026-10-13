@@ -23,6 +23,7 @@
 //! 5. **Imports**: only `sr.rand_u64`, `sr.rand_f64`, `sr.param_f64` and `sr.param_str`.
 //! 6. **Cache**: [`cache_key`] gives the key. The caller stores and looks up outputs.
 
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 use std::collections::HashMap;

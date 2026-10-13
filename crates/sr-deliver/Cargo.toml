@@ -26,3 +26,6 @@ unicode-normalization.workspace = true
 [dev-dependencies]
 image.workspace = true
 sr-testkit.workspace = true
+
+[lints]
+workspace = true

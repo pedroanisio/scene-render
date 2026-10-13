@@ -7,6 +7,9 @@
 //! deep with 0.5-unit cells, g = 9.81, closed edges and a Gaussian hump on top. The
 //! first step runs from the initial state and the second from the first; both are
 //! printed with the load average at the start, and the peak resident memory.
+
+#![forbid(unsafe_code)]
+
 use sr_sim::ocean::{Boundary, Cell, Ocean, Order, Spec};
 use std::time::Instant;
 
