@@ -33,6 +33,8 @@ sr-volume = { path = "crates/sr-volume" }
 sr-wasm = { path = "crates/sr-wasm" }
 # test helpers: a dev-dependency only, never a dependency
 sr-testkit = { path = "crates/sr-testkit" }
+# property tests, through sr-testkit only: `std` without `fork`, so no temporary files or child processes
+proptest = { version = "1.11", default-features = false, features = ["std"] }
 wgpu = "30"
 pollster = "1"
 bytemuck = { version = "1", features = ["derive"] }

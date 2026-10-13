@@ -5,8 +5,12 @@
 //! `SR_REQUIRE_HEIC=1` (as in renderer CI) turn the skip into a failure that names the reason.
 //!
 //! A test that stands in a fake tool (`curl`, `ffmpeg`) writes its script with [`executable`], never `std::fs::write`.
+//!
+//! A property test runs through [`property::check`], which draws the same cases on every run.
 
 #![forbid(unsafe_code)]
+
+pub mod property;
 
 use std::fmt::Display;
 #[cfg(unix)]

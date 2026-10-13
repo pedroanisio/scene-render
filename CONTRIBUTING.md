@@ -70,6 +70,10 @@ python3 -m unittest discover -s tools/tests -v
   `sr_testkit::executable`, never `std::fs::write`: a file this process wrote is inherited open by any process another
   test thread forks meanwhile, and Linux then refuses to run it ("Text file busy").
   `tools/tests/test_executable_fixtures.py` enforces it.
+- **Property tests:** run them with `sr_testkit::property::check(name, cases, strategy, test)`, not the `proptest!`
+  macro. The seed comes from the property's name, the case count is the one you pass, no failure files are written and
+  no `PROPTEST_*` variable changes the run, so a failure reproduces from the source alone. The panic message carries the
+  shrunk input: copy it into a unit test next to the fix.
 - **GPU tests:** they skip without an adapter unless `SR_REQUIRE_GPU=1` is set. CI runs the tests on Vulkan in
   <!-- facts:ci-shards -->20<!-- /facts --> shards (`tools/ci_tests.py`).
 - **Corpus:** when you change the schema or the rules, run `python3 tools/build_corpus.py`. Commit the result:
