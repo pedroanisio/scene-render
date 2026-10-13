@@ -10,7 +10,7 @@ use sr_vector::scene::{Cmd, FillRule, Gradient, GradientKind, MaskOp, Paint, Sce
 use sr_vector::stroke::{self, Cap, Join, Style as StrokeStyle};
 use sr_vector::{shapes, Path, Poly};
 
-use crate::font::FontLib;
+use crate::font::{cache, FontLib};
 use crate::layout::Layout;
 use crate::style::{Decoration, StrokePos};
 
@@ -161,7 +161,7 @@ impl FontLib {
     /// Glyph outline in font units (y up), cached.
     pub fn outline(&self, face: usize, gid: u16, vars: &[([u8; 4], f32)]) -> Arc<Path> {
         let key = (face, gid, var_key(vars));
-        if let Some(pth) = self.outlines.lock().unwrap().get(&key) {
+        if let Some(pth) = cache(&self.outlines).get(&key) {
             return pth.clone();
         }
         let pth = self
@@ -172,7 +172,7 @@ impl FontLib {
             })
             .unwrap_or_default();
         let a = Arc::new(pth);
-        self.outlines.lock().unwrap().insert(key, a.clone());
+        cache(&self.outlines).insert(key, a.clone());
         a
     }
 

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use crate::MediaError;
 
@@ -297,7 +297,7 @@ pub struct EncodeSpec {
 pub fn working_encoder(name: &str) -> bool {
     static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
-    if let Some(v) = cache.lock().unwrap().get(name) {
+    if let Some(v) = cache.lock().unwrap_or_else(PoisonError::into_inner).get(name) {
         return *v;
     }
     let mut cmd = Command::new(crate::ffmpeg());
@@ -311,7 +311,7 @@ pub fn working_encoder(name: &str) -> bool {
     }
     cmd.args(["-frames:v", "2", "-c:v", name, "-f", "null", "-"]);
     let ok = cmd.stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
-    cache.lock().unwrap().insert(name.to_string(), ok);
+    cache.lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string(), ok);
     ok
 }
 

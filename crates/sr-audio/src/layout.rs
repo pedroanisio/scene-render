@@ -252,7 +252,7 @@ pub fn point_gains(layout: Layout, azimuth: f64, elevation: f64) -> Vec<f64> {
     // horizontal speakers sorted by azimuth
     let mut ring: Vec<(f64, usize)> =
         sp.iter().enumerate().filter(|(_, s)| !s.lfe && s.elevation.abs() < 1.0).map(|(i, s)| (s.azimuth, i)).collect();
-    ring.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    ring.sort_by(|a, b| a.0.total_cmp(&b.0));
     let az = ((azimuth + 180.0).rem_euclid(360.0)) - 180.0;
     for k in 0..ring.len() {
         let (a0, i0) = ring[k];

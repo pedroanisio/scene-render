@@ -412,9 +412,11 @@ fn spectral_gate(x: &[f32], amount: f64) -> Vec<f32> {
     // noise profile: 10th percentile magnitude per bin
     let mut noise = vec![0.0; N / 2 + 1];
     for (b, nb) in noise.iter_mut().enumerate() {
-        let mut mags: Vec<f64> = spectra.iter().map(|(r, i)| (r[b] * r[b] + i[b] * i[b]).sqrt()).collect();
-        mags.sort_by(|a, c| a.partial_cmp(c).unwrap());
-        *nb = mags[mags.len() / 10];
+        // a NaN sample (a decoded file can carry one) spoils the frames it falls in, not the profile of the others
+        let mut mags: Vec<f64> =
+            spectra.iter().map(|(r, i)| (r[b] * r[b] + i[b] * i[b]).sqrt()).filter(|m| !m.is_nan()).collect();
+        mags.sort_by(f64::total_cmp);
+        *nb = mags.get(mags.len() / 10).copied().unwrap_or(0.0);
     }
     let mut out = vec![0f64; n];
     let mut norm = vec![0f64; n];
@@ -531,5 +533,16 @@ mod tests {
             assert!(b.iter().flatten().any(|v| v.abs() > 1e-4), "{name} is silent");
             assert!(b != src, "{name} changed nothing");
         }
+    }
+
+    #[test]
+    fn noise_reduction_of_nan_samples_does_not_panic() {
+        // a decoded file can carry NaN; the noise profile sorts the magnitudes of every frame that sees one
+        let mut b = vec![sine(440.0, 0.5, 0.5)];
+        b[0][3000] = f32::NAN;
+        b[0][9000] = -f32::NAN;
+        process(&Effect { amount: 0.5, ..Effect::new(Kind::NoiseReduction) }, &mut b, 48000.0, None);
+        assert_eq!(b[0].len(), 24000);
+        assert!(b[0][20000..].iter().all(|v| v.is_finite()), "frames clear of the NaN stay finite");
     }
 }

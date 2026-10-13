@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::style::Style;
 use rustybuzz::ttf_parser;
@@ -94,6 +94,12 @@ pub struct FontLib {
 fn has_color(face: &ttf_parser::Face) -> bool {
     let t = face.tables();
     t.colr.is_some() || t.cbdt.is_some() || t.sbix.is_some()
+}
+
+/// Locks one of the library's memo caches. Every holder does a single `get` or `insert` of a finished value, so a
+/// panic elsewhere while the lock was held leaves the map whole: a poisoned cache is used as it is, not propagated.
+pub(crate) fn cache<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl FontLib {
@@ -217,7 +223,7 @@ impl FontLib {
             return st.families.iter().find_map(|f| self.pinned_family(f, st)).or(first);
         }
         let key = format!("{:?}|{}|{}|{}", st.families, st.weight, st.italic, st.stretch);
-        if let Some(r) = self.select_cache.lock().unwrap().get(&key) {
+        if let Some(r) = cache(&self.select_cache).get(&key) {
             return *r;
         }
         let mut found = None;
@@ -248,7 +254,7 @@ impl FontLib {
             let first = self.db.faces().next().map(|f| f.id);
             found = first.and_then(|id| self.load_id(id));
         }
-        self.select_cache.lock().unwrap().insert(key, found);
+        cache(&self.select_cache).insert(key, found);
         found
     }
 
@@ -283,12 +289,12 @@ impl FontLib {
 
     /// Whether face `f` maps `ch`.
     pub fn covers(&self, f: usize, ch: char) -> bool {
-        if let Some(&c) = self.cover.lock().unwrap().get(&(f, ch)) {
+        if let Some(&c) = cache(&self.cover).get(&(f, ch)) {
             return c;
         }
         let fd = &self.faces[f];
         let c = ttf_parser::Face::parse(&fd.data, fd.index).map(|face| face.glyph_index(ch).is_some()).unwrap_or(false);
-        self.cover.lock().unwrap().insert((f, ch), c);
+        cache(&self.cover).insert((f, ch), c);
         c
     }
 
@@ -320,7 +326,7 @@ impl FontLib {
                 }
             }
         }
-        if let Some(r) = self.fallback.lock().unwrap().get(&(ch, emoji)) {
+        if let Some(r) = cache(&self.fallback).get(&(ch, emoji)) {
             return r.unwrap_or(primary);
         }
         // any installed face; colour faces first for emoji
@@ -339,7 +345,7 @@ impl FontLib {
                 break;
             }
         }
-        self.fallback.lock().unwrap().insert((ch, emoji), best);
+        cache(&self.fallback).insert((ch, emoji), best);
         best.unwrap_or(primary)
     }
 
@@ -504,5 +510,37 @@ mod face_cache_tests {
         cached_face(&data, 0).expect("face");
         assert_eq!(entries(), 2);
         assert!(FACE_CACHE.with(|m| m.borrow().values().any(|c| Arc::ptr_eq(&c.data, &keep))));
+    }
+
+    /// Panics on another thread while it holds `m`, as a caller that panicked mid-render would.
+    fn poison<T: Send>(m: &Mutex<T>) {
+        let held = std::thread::scope(|s| {
+            s.spawn(|| {
+                let _guard = m.lock();
+                panic!("a caller panics while it holds the cache");
+            })
+            .join()
+        });
+        assert!(held.is_err() && m.is_poisoned());
+    }
+
+    #[test]
+    fn a_poisoned_cache_still_answers() {
+        let path = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../sr-eval/tests/fixtures/solid.ttf"));
+        let mut lib = FontLib::new(false);
+        let face = lib.file(&path, 0).expect("solid.ttf loads");
+        let st = Style { families: vec!["no such family".into()], ..Style::default() };
+        let first = (lib.select(&st), lib.covers(face, 'A'), lib.face_for(face, &st, '\u{4E00}', false));
+        let outline = lib.outline(face, 1, &[]);
+        poison(&lib.select_cache);
+        poison(&lib.cover);
+        poison(&lib.fallback);
+        poison(&lib.outlines);
+        // cached answers survive, and new ones are still computed and stored
+        assert_eq!((lib.select(&st), lib.covers(face, 'A'), lib.face_for(face, &st, '\u{4E00}', false)), first);
+        assert!(Arc::ptr_eq(&lib.outline(face, 1, &[]), &outline));
+        assert_eq!(lib.select(&Style { weight: 700, ..st.clone() }), first.0);
+        assert!(!lib.covers(face, '\u{4E01}'));
+        assert!(Arc::ptr_eq(&lib.outline(face, 2, &[]), &lib.outline(face, 2, &[])));
     }
 }

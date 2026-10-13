@@ -37,7 +37,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
@@ -122,6 +122,12 @@ pub(crate) struct Entry {
 
 /// Models read for a program, by asset key; they live as long as the compiled scene.
 pub(crate) type Cache = Mutex<HashMap<String, Arc<Entry>>>;
+
+/// The models of a program. An entry is made whole before it is inserted, so a panic while another caller held the
+/// lock leaves only whole entries: a poisoned cache is used as it is, not propagated to every later load.
+fn models(program: &Program) -> MutexGuard<'_, HashMap<String, Arc<Entry>>> {
+    program.voxel_models.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 fn document<'a>(p: &'a Program, key: &str) -> Result<(&'a sr_model::model::Scene, PathBuf, String), String> {
     let (doc, id) = p.assets.get(key).ok_or_else(|| format!("asset {key} not found"))?;
@@ -319,7 +325,8 @@ pub fn load(program: &Program, key: &str) -> Result<Arc<VoxelModel>, String> {
         )));
     }
     // the files are as they were when the model was made: the model, with no reading of any of them
-    if let Some(entry) = program.voxel_models.lock().unwrap().get(key) {
+    let cached = models(program).get(key).cloned();
+    if let Some(entry) = cached {
         if !entry.stats.is_empty() && entry.stats.iter().all(|s| Stat::of(&s.path) == *s) {
             return Ok(entry.model.clone());
         }
@@ -345,12 +352,11 @@ pub fn load(program: &Program, key: &str) -> Result<Arc<VoxelModel>, String> {
         }
     }
     // the file was written again without a change of its bytes: the model is the same, and the entry is of the file as it is now
-    let known =
-        program.voxel_models.lock().unwrap().get(key).filter(|e| e.source.sha256 == read.source.sha256).cloned();
+    let known = models(program).get(key).filter(|e| e.source.sha256 == read.source.sha256).cloned();
     if let Some(entry) = known {
         let model = entry.model.clone();
         let renewed = Entry { source: read.source, stats: read.stats, model: model.clone() };
-        program.voxel_models.lock().unwrap().insert(key.to_string(), Arc::new(renewed));
+        models(program).insert(key.to_string(), Arc::new(renewed));
         return Ok(model);
     }
     let bytes = &read.bytes;
@@ -407,10 +413,58 @@ pub fn load(program: &Program, key: &str) -> Result<Arc<VoxelModel>, String> {
         cell_size,
         source: read.source.clone(),
     });
-    program
-        .voxel_models
-        .lock()
-        .unwrap()
+    models(program)
         .insert(key.to_string(), Arc::new(Entry { source: read.source, stats: read.stats, model: model.clone() }));
     Ok(model)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `.vox` file of one 2-cell-a-side cube.
+    fn cube() -> Vec<u8> {
+        let chunk = |name: &str, content: &[u8]| {
+            [name.as_bytes(), &(content.len() as i32).to_le_bytes(), &0i32.to_le_bytes(), content].concat()
+        };
+        let size: Vec<u8> = [2i32, 2, 2].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let mut xyzi = 8i32.to_le_bytes().to_vec();
+        (0..8u8).for_each(|i| xyzi.extend([i & 1, i >> 1 & 1, i >> 2 & 1, 3]));
+        let children = [chunk("SIZE", &size), chunk("XYZI", &xyzi)].concat();
+        [
+            &b"VOX "[..],
+            &150i32.to_le_bytes(),
+            b"MAIN",
+            &0i32.to_le_bytes(),
+            &(children.len() as i32).to_le_bytes(),
+            &children,
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn a_poisoned_model_cache_still_loads() {
+        let dir = std::env::temp_dir().join(format!("voxel-asset-poison-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("cube.vox"), cube()).unwrap();
+        let xml = r##"<scene version="1.3"><project width="64" height="64" fps="24" duration="1"/><assets><voxelAsset id="cube" src="cube.vox"/></assets><materials><material id="stone" baseColor="#808080"/></materials><composition><object3D id="o" primitive="voxels" voxels="cube" material="stone"/></composition></scene>"##;
+        let doc = sr_model::load_str(xml, &sr_model::LoadOptions { verify_assets: false, base_dir: Some(dir.clone()) })
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let ev = crate::Evaluator::new(&doc, &Default::default()).unwrap();
+        let first = load(ev.program(), "cube").unwrap();
+        // a load that panics on another thread while it holds the cache
+        let held = std::thread::scope(|s| {
+            s.spawn(|| {
+                let _guard = ev.program().voxel_models.lock();
+                panic!("a load panics while it holds the cache");
+            })
+            .join()
+        });
+        assert!(held.is_err() && ev.program().voxel_models.is_poisoned());
+        // the cached model is still returned, and a file written again is still read again
+        assert!(Arc::ptr_eq(&load(ev.program(), "cube").unwrap(), &first));
+        std::fs::write(dir.join("cube.vox"), cube()).unwrap();
+        assert_eq!(load(ev.program(), "cube").unwrap().occupancy.count(), 8);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

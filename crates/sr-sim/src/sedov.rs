@@ -40,15 +40,21 @@ pub fn solve(gamma: f64) -> Result<Sedov, String> {
 /// The solution for `gamma`, computed once for each ratio in the process (a blast asks for it for every step of a simulation).
 pub fn solve_cached(gamma: f64) -> Result<std::sync::Arc<Sedov>, String> {
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
     static SOLVED: OnceLock<Mutex<HashMap<u64, Arc<Sedov>>>> = OnceLock::new();
     let key = gamma.to_bits();
-    if let Some(found) = SOLVED.get_or_init(Default::default).lock().unwrap().get(&key) {
+    if let Some(found) = SOLVED.get_or_init(Default::default).lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
         return Ok(found.clone());
     }
     let solved = Arc::new(solve(gamma)?);
     // another thread may have solved the same gas while this one did: the first to enter is the one that everybody gets
-    Ok(SOLVED.get_or_init(Default::default).lock().unwrap().entry(key).or_insert(solved).clone())
+    Ok(SOLVED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry(key)
+        .or_insert(solved)
+        .clone())
 }
 
 /// The right-hand side of the three equations, as derivatives with respect to `xi`: `(U', (ln G)', (ln P)')` (the logarithms keep `G`, which
