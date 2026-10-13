@@ -3,7 +3,6 @@
 
 mod common;
 
-use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 use sr_media::VideoDecoder;
@@ -24,12 +23,10 @@ fn a_failing_decoder_says_why() {
     }
     // stands in for FFmpeg: SR_TEST_BYTES of frames, then a failure
     let fake = dir.join("ffmpeg");
-    std::fs::write(
+    sr_testkit::executable(
         &fake,
         "#!/bin/sh\nhead -c \"$SR_TEST_BYTES\" /dev/zero\necho 'clip.mkv: Invalid data found when processing input' >&2\nexit 1\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     std::env::set_var("SR_FFMPEG", &fake);
     std::env::set_var("SR_TEST_BYTES", "0");
     let mut dec = VideoDecoder::open(&clip, None, 4).unwrap();

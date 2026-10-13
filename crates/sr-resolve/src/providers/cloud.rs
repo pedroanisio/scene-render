@@ -179,11 +179,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn curl_disables_user_config_and_keeps_error_stream_private() {
-        use std::os::unix::fs::PermissionsExt;
         let work = tempfile::tempdir().unwrap();
         let curl = work.path().join("curl");
-        std::fs::write(&curl, "#!/usr/bin/env python3\nimport sys,pathlib\nconfig=sys.stdin.read()\npathlib.Path(__file__).with_suffix('.args').write_text(' '.join(sys.argv[1:]))\nsys.stderr.write(config)\nsys.exit(1)\n").unwrap();
-        std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o700)).unwrap();
+        sr_testkit::executable(&curl, "#!/usr/bin/env python3\nimport sys,pathlib\nconfig=sys.stdin.read()\npathlib.Path(__file__).with_suffix('.args').write_text(' '.join(sys.argv[1:]))\nsys.stderr.write(config)\nsys.exit(1)\n");
         std::env::set_var("SR_CURL", &curl);
         let result = post(
             "https://example.invalid/?token=dummy-url-secret",

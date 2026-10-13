@@ -1,6 +1,6 @@
 [package]
 name = "sr-testkit"
-description = "scene-render test helpers: skip a test whose GPU, FFmpeg or HEIC decoder is missing, or fail it where CI requires one"
+description = "scene-render test helpers: skip a test whose GPU, FFmpeg or HEIC decoder is missing, or fail it where CI requires one; write fake-tool scripts that run at once"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

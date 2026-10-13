@@ -3236,6 +3236,7 @@ dependencies = [
  "sr-geo",
  "sr-media",
  "sr-model",
+ "sr-testkit",
  "sr-text",
  "tempfile",
  "unicode-normalization",

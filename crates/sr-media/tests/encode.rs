@@ -116,7 +116,6 @@ fn av1_odd_frames_go_to_an_encoder_that_takes_them() {
 #[cfg(unix)]
 #[test]
 fn av1_two_pass_checks_encoder_statistics_before_selection() {
-    use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
     if let Ok(mode) = std::env::var("SR_AV1_PROBE_TEST") {
         let dir = tempfile::tempdir().unwrap();
@@ -140,7 +139,7 @@ fn av1_two_pass_checks_encoder_statistics_before_selection() {
     }
     let dir = tempfile::tempdir().unwrap();
     let ffmpeg = dir.path().join("ffmpeg");
-    std::fs::write(
+    sr_testkit::executable(
         &ffmpeg,
         r#"#!/usr/bin/env python3
 import os, sys
@@ -153,9 +152,7 @@ if '-passlogfile' in a:
     with open(path, 'w') as f: f.write('statistics' if mode == 'modern' else '')
 sys.exit(1 if codec == 'libaom-av1' and mode == 'unsupported' else 0)
 "#,
-    )
-    .unwrap();
-    std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     for mode in ["fallback", "unsupported", "modern"] {
         let output = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "av1_two_pass_checks_encoder_statistics_before_selection", "--nocapture"])

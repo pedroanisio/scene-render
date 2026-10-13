@@ -2,7 +2,6 @@
 #![cfg(unix)]
 
 use sr_resolve::{resolve, Options, Status};
-use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn shared_store_distinguishes_relative_local_models() {
@@ -10,7 +9,7 @@ fn shared_store_distinguishes_relative_local_models() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let exe = root.join("fake-piper");
-    std::fs::write(
+    sr_testkit::executable(
         &exe,
         r#"#!/usr/bin/env python3
 import sys, wave, struct
@@ -21,9 +20,7 @@ with wave.open(args[args.index('-f') + 1], 'wb') as w:
     w.setparams((1, 2, 48000, 0, 'NONE', 'not compressed'))
     w.writeframes(struct.pack('<h', int(model)) * 4800)
 "#,
-    )
-    .unwrap();
-    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let old_piper = std::env::var_os("SR_PIPER");
     std::env::set_var("SR_PIPER", &exe);
     let opts = Options { store: Some(root.join("store")), ..Default::default() };

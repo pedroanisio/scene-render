@@ -66,6 +66,10 @@ python3 -m unittest discover -s tools/tests -v
 - **Test prerequisites:** a test that needs a GPU adapter, FFmpeg or a HEIC decoder asks `sr-testkit` (a
   dev-dependency, never published), which prints `SKIPPED (<test>): <reason>` or, under `SR_REQUIRE_GPU=1`,
   `SR_REQUIRE_FFMPEG=1` or `SR_REQUIRE_HEIC=1`, fails with the reason. Do not read those variables in a test.
+- **Fake tools:** a test that runs a script in place of `curl`, `ffmpeg` or another tool writes it with
+  `sr_testkit::executable`, never `std::fs::write`: a file this process wrote is inherited open by any process another
+  test thread forks meanwhile, and Linux then refuses to run it ("Text file busy").
+  `tools/tests/test_executable_fixtures.py` enforces it.
 - **GPU tests:** they skip without an adapter unless `SR_REQUIRE_GPU=1` is set. CI runs the tests on Vulkan in
   <!-- facts:ci-shards -->20<!-- /facts --> shards (`tools/ci_tests.py`).
 - **Corpus:** when you change the schema or the rules, run `python3 tools/build_corpus.py`. Commit the result:

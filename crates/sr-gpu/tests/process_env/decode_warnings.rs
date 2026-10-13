@@ -5,7 +5,6 @@
 use super::common;
 use common::*;
 
-use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 #[test]
@@ -31,12 +30,10 @@ fn a_clip_that_stops_decoding_is_reported_on_the_frames_it_cannot_show() {
     let d = sr_model::load_str(xml, &opts).unwrap_or_else(|e| panic!("{e:?}"));
     // stands in for FFmpeg: three frames (32×16 yuv420p), then a failure
     let fake = dir.join("ffmpeg");
-    std::fs::write(
+    sr_testkit::executable(
         &fake,
         "#!/bin/sh\nhead -c 2304 /dev/zero\necho 'clip.mkv: Invalid data found when processing input' >&2\nexit 1\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     std::env::set_var("SR_FFMPEG", &fake);
     let Some(r) = render_times(&d, &[0.0]) else { return };
     assert!(r.stats.errors.is_empty(), "{:?}", r.stats.errors);
@@ -61,7 +58,7 @@ fn a_clip_that_stops_decoding_is_reported_on_the_frames_it_cannot_show() {
         assert!(r.stats.errors.iter().any(|e| e.starts_with(&format!("{id}: "))));
     }
     // A normal EOF may hold the final frame without treating it as a decode failure.
-    std::fs::write(&fake, "#!/bin/sh\nhead -c 2304 /dev/zero\nexit 0\n").unwrap();
+    sr_testkit::executable(&fake, "#!/bin/sh\nhead -c 2304 /dev/zero\nexit 0\n");
     let r = render_times(&d, &[0.0, 0.4, 0.4]).unwrap();
     assert!(r.stats.errors.is_empty(), "{:?}", r.stats.errors);
     let _ = std::fs::remove_dir_all(&dir);

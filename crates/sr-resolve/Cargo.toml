@@ -41,6 +41,7 @@ path = "src/bin/example_provider.rs"
 [dev-dependencies]
 serde_json.workspace = true
 image.workspace = true
+sr-testkit.workspace = true
 
 [lints]
 workspace = true

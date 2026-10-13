@@ -540,12 +540,10 @@ mod tests {
 
     #[cfg(unix)]
     fn curl_fixture(name: &str, script: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("sr-curl-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let tool = dir.join("curl.py");
-        std::fs::write(&tool, format!("#!/usr/bin/env python3\n{script}\n")).unwrap();
-        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o700)).unwrap();
+        sr_testkit::executable(&tool, &format!("#!/usr/bin/env python3\n{script}\n"));
         tool
     }
 
@@ -649,7 +647,7 @@ assert ' ' not in url, url
         let dir = std::env::temp_dir().join(format!("sr-curl-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let tool = dir.join("curl.py");
-        std::fs::write(
+        sr_testkit::executable(
             &tool,
             r#"#!/usr/bin/env python3
 import sys
@@ -662,13 +660,7 @@ Path(__file__).with_suffix('.passed').touch()
 print(config)
 sys.exit(1)
 "#,
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
+        );
         let err = curl_with_tool(
             tool.to_str().unwrap(),
             &[
