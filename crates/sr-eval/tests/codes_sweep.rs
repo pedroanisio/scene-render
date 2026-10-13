@@ -11,9 +11,9 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Literals of the shape of a code that are not diagnostic codes: constants of the expression language, a WAV chunk
-/// tag and a fuzz target's value type.
-const NOT_CODES: &[&str] = &["LN10", "LN2", "SQRT2", "RF64", "VEC3"];
+/// Literals of the shape of a code that are not diagnostic codes: constants of the expression language and a fuzz
+/// target's value type.
+const NOT_CODES: &[&str] = &["LN10", "LN2", "SQRT2", "VEC3"];
 
 /// Every code of every catalogue: the fixed and inert ones of the model, the Schematron asserts, the evaluation codes.
 fn catalogue() -> BTreeSet<String> {
@@ -45,6 +45,24 @@ fn strays(text: &str, known: &BTreeSet<String>) -> Vec<String> {
     literals(text).into_iter().filter(|l| !known.contains(l) && !NOT_CODES.contains(&l.as_str())).collect()
 }
 
+/// `text` without its top-level inline test modules (`#[cfg(test)]` then `mod name {`, closed by rustfmt with a `}`
+/// alone at the start of a line): a code a unit test writes as a fixture is not an emit site. A module left open fails,
+/// so a layout this cannot read is reported rather than swallowing the rest of the file.
+fn without_test_modules(path: &Path, text: &str) -> String {
+    let head = Regex::new(r"^(?:pub(?:\([a-z]+\))? )?mod [a-z_0-9]+ \{$").unwrap();
+    let mut out = String::new();
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        if line == "#[cfg(test)]" && lines.peek().is_some_and(|next| head.is_match(next)) {
+            assert!(lines.any(|l| l == "}"), "{}: an inline test module is never closed", path.display());
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// The non-test Rust sources of the workspace's crates, without the catalogues themselves.
 fn sources() -> Vec<(PathBuf, String)> {
     fn walk(dir: &Path, out: &mut Vec<(PathBuf, String)>) {
@@ -56,7 +74,7 @@ fn sources() -> Vec<(PathBuf, String)> {
                     walk(&path, out);
                 }
             } else if name.ends_with(".rs") && name != "codes.rs" {
-                let text = std::fs::read_to_string(&path).unwrap();
+                let text = without_test_modules(&path, &std::fs::read_to_string(&path).unwrap());
                 out.push((path, text));
             }
         }
@@ -143,4 +161,21 @@ fn the_sweep_flags_an_unlisted_code_and_a_prefixed_message() {
     assert_eq!(strays(r#"format!("CMP13: too big")"#, &known), vec!["CMP13"]);
     assert!(strays(r#"let n = "CMP12: ok";"#, &known).is_empty());
     assert!(strays(r#"("LN10", 2.30)"#, &known).is_empty());
+}
+
+#[test]
+fn inline_test_modules_are_not_emit_sites() {
+    let p = Path::new("x.rs");
+    let text = "fn a() { diag(\"E01\"); }\n\n#[cfg(test)]\nmod tests {\n    fn f() { diag(\"E99\"); }\n}\nfn b() { diag(\"E02\"); }\n";
+    let kept = without_test_modules(p, text);
+    assert!(kept.contains("\"E01\"") && kept.contains("\"E02\"") && !kept.contains("E99"), "{kept}");
+    // A cfg(test) item that is not a module stays: only whole test modules are dropped.
+    let item = "#[cfg(test)]\nfn helper() { diag(\"E98\"); }\n";
+    assert_eq!(without_test_modules(p, item), item);
+}
+
+#[test]
+#[should_panic(expected = "never closed")]
+fn an_unclosed_test_module_fails_the_sweep() {
+    without_test_modules(Path::new("x.rs"), "#[cfg(test)]\nmod tests {\n    fn f() {}\n");
 }
