@@ -409,94 +409,84 @@ impl Video<'_> {
         // the helper works on the one after it, two frames ahead at most. Simulated state
         // is stepped in time order under a lock, so those documents evaluate here, serially.
         let ahead = !ev.has_simulation();
-        std::thread::scope(|s| -> Result<(), DeliverError> {
-            let graphs = if ahead {
-                let (tx, rx) = sync_channel::<sr_eval::FrameGraph>(1);
-                std::thread::Builder::new().name("sr-eval".into()).spawn_scoped(s, move || {
-                    for &t in times {
-                        // the render loop stopped early: nobody wants the rest
-                        if tx.send(ev.evaluate(t)).is_err() {
-                            break;
+        evaluated(
+            times,
+            ahead,
+            |t| ev.evaluate(t),
+            |next| {
+                for (k, &t) in times.iter().enumerate() {
+                    let t0 = Instant::now();
+                    let g = next(t)?;
+                    let t1 = Instant::now();
+                    let ft = self.segments.as_ref().map(|(_, frames)| frames[k]);
+                    let out_t = ft.map_or(t - self.origin, |f| f.output);
+                    let frame = self.render_side(&g, t, ft.as_ref())?;
+                    unsupported.extend(frame.stats.unsupported.iter().cloned());
+                    for id in &frame.stats.contrast_unprobed {
+                        seen.unprobed(id, k, opacity_of(&g, id));
+                    }
+                    for (id, ratio) in &frame.stats.contrast {
+                        seen.contrast(id, opacity_of(&g, id), *ratio, t);
+                    }
+                    report.decode_wait_seconds += frame.stats.decode_wait;
+                    report.vector_seconds += frame.stats.vector_seconds;
+                    stateful(report, &frame.stats);
+                    seen_in_3d(report, &frame.stats, t);
+                    let (picture, placement) = self.picture(&frame, ft.as_ref(), &mut unsupported)?;
+                    if checks.contrast_on() {
+                        if let Some(o) = self.overlay.as_mut() {
+                            for (id, opacity, ratio) in o.contrast(&mut self.stage, out_t, &picture, placement)? {
+                                let id = sr_gpu::ContrastTarget::Node(format!("output layer: {id}"));
+                                seen.contrast(&id, opacity, ratio, out_t);
+                            }
                         }
                     }
-                })?;
-                Some(rx)
-            } else {
-                None
-            };
-            for (k, &t) in times.iter().enumerate() {
-                let t0 = Instant::now();
-                let g = match &graphs {
-                    Some(rx) => rx.recv().map_err(|_| DeliverError::Invalid("evaluator thread stopped".into()))?,
-                    None => ev.evaluate(t),
-                };
-                let t1 = Instant::now();
-                let ft = self.segments.as_ref().map(|(_, frames)| frames[k]);
-                let out_t = ft.map_or(t - self.origin, |f| f.output);
-                let frame = self.render_side(&g, t, ft.as_ref())?;
-                unsupported.extend(frame.stats.unsupported.iter().cloned());
-                for id in &frame.stats.contrast_unprobed {
-                    seen.unprobed(id, k, opacity_of(&g, id));
-                }
-                for (id, ratio) in &frame.stats.contrast {
-                    seen.contrast(id, opacity_of(&g, id), *ratio, t);
-                }
-                report.decode_wait_seconds += frame.stats.decode_wait;
-                report.vector_seconds += frame.stats.vector_seconds;
-                stateful(report, &frame.stats);
-                seen_in_3d(report, &frame.stats, t);
-                let (picture, placement) = self.picture(&frame, ft.as_ref(), &mut unsupported)?;
-                if checks.contrast_on() {
-                    if let Some(o) = self.overlay.as_mut() {
-                        for (id, opacity, ratio) in o.contrast(&mut self.stage, out_t, &picture, placement)? {
-                            let id = sr_gpu::ContrastTarget::Node(format!("output layer: {id}"));
-                            seen.contrast(&id, opacity, ratio, out_t);
+                    let over = match self.overlay.as_mut() {
+                        Some(o) => {
+                            let (tex, problems) = o.draw(&mut self.stage, out_t)?;
+                            unsupported.extend(problems);
+                            Some(tex)
                         }
+                        None => None,
+                    };
+                    if let Some(tex) = flash_picture.as_ref() {
+                        self.stage.place_with_overlay(&picture, &working, tex, placement, over);
+                        seen.flash(out_t, self.renderer.flash_grid(tex));
                     }
-                }
-                let over = match self.overlay.as_mut() {
-                    Some(o) => {
-                        let (tex, problems) = o.draw(&mut self.stage, out_t)?;
-                        unsupported.extend(problems);
-                        Some(tex)
-                    }
-                    None => None,
-                };
-                if let Some(tex) = flash_picture.as_ref() {
-                    self.stage.place_with_overlay(&picture, &working, tex, placement, over);
-                    seen.flash(out_t, self.renderer.flash_grid(tex));
-                }
-                seen.finish_frame().map_err(DeliverError::Invalid)?;
-                let next = self.stage.submit_placed(
-                    &picture,
-                    &working,
-                    &self.color,
-                    self.format,
-                    self.size,
-                    self.keep_alpha,
-                    placement,
-                    over,
-                );
-                let t2 = Instant::now();
-                meter::add(&mut report.stage_seconds, 0, (t1 - t0).as_secs_f64());
-                meter::add(&mut report.stage_seconds, 1, (t2 - t1).as_secs_f64());
-                if let Some((_, prev)) = pending.replace((t, next)) {
-                    let w = Instant::now();
-                    let bytes = self.stage.wait(prev);
-                    meter::add(&mut report.stage_seconds, 2, w.elapsed().as_secs_f64());
-                    meter::add(&mut report.stage_seconds, 3, sink(bytes)?);
-                }
-                if k + 1 == times.len() {
-                    if let Some((_, last)) = pending.take() {
+                    seen.finish_frame().map_err(DeliverError::Invalid)?;
+                    let next = self.stage.submit_placed(
+                        &picture,
+                        &working,
+                        &self.color,
+                        self.format,
+                        self.size,
+                        self.keep_alpha,
+                        placement,
+                        over,
+                    );
+                    let t2 = Instant::now();
+                    meter::add(&mut report.stage_seconds, 0, (t1 - t0).as_secs_f64());
+                    meter::add(&mut report.stage_seconds, 1, (t2 - t1).as_secs_f64());
+                    if let Some((_, prev)) = pending.replace((t, next)) {
                         let w = Instant::now();
-                        let bytes = self.stage.wait(last);
+                        let bytes = self.stage.wait(prev);
                         meter::add(&mut report.stage_seconds, 2, w.elapsed().as_secs_f64());
                         meter::add(&mut report.stage_seconds, 3, sink(bytes)?);
                     }
+                    if k + 1 == times.len() {
+                        if let Some((_, last)) = pending.take() {
+                            let w = Instant::now();
+                            let bytes = self.stage.wait(last);
+                            meter::add(&mut report.stage_seconds, 2, w.elapsed().as_secs_f64());
+                            meter::add(&mut report.stage_seconds, 3, sink(bytes)?);
+                        }
+                    }
+                    // the output stage and the overlay draw on the same device after the frame's own check
+                    self.renderer.gpu().take_error()?;
                 }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            },
+        )?;
         report.unsupported = unsupported.into_iter().collect();
         Ok(())
     }
@@ -610,6 +600,48 @@ impl Checks {
     }
 }
 
+/// Runs `body` with a source of the graphs of `times`, which `body` asks for in order. With `ahead`, a helper
+/// thread evaluates them through `eval` one frame ahead of `body`; otherwise each is evaluated when asked for.
+/// A panic of the helper comes back as an error that carries its message, rather than unwinding the delivery.
+fn evaluated<G: Send, R>(
+    times: &[f64],
+    ahead: bool,
+    eval: impl Fn(f64) -> G + Sync,
+    body: impl FnOnce(&mut dyn FnMut(f64) -> Result<G, DeliverError>) -> Result<R, DeliverError>,
+) -> Result<R, DeliverError> {
+    if !ahead {
+        return body(&mut |t| Ok(eval(t)));
+    }
+    let eval = &eval;
+    std::thread::scope(|s| {
+        let (tx, rx) = sync_channel::<G>(1);
+        let helper = std::thread::Builder::new().name("sr-eval".into()).spawn_scoped(s, move || {
+            for &t in times {
+                // the render loop stopped early: nobody wants the rest
+                if tx.send(eval(t)).is_err() {
+                    break;
+                }
+            }
+        })?;
+        let result = body(&mut |_| rx.recv().map_err(|_| DeliverError::Invalid("evaluator thread stopped".into())));
+        // unblock the helper when the body stopped early, then join it here so its panic is not re-raised
+        drop(rx);
+        match helper.join() {
+            Ok(()) => result,
+            Err(payload) => Err(DeliverError::Invalid(format!("evaluation panicked: {}", panic_message(&*payload)))),
+        }
+    })
+}
+
+/// The message a panic was raised with, when it is a string.
+pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("no message")
+}
+
 /// Writes frames through an encoder on its own thread; returns blocked seconds per frame.
 struct Feeder {
     tx: Option<std::sync::mpsc::SyncSender<Vec<u8>>>,
@@ -653,7 +685,9 @@ impl Feeder {
         self.complete.store(true, std::sync::atomic::Ordering::Relaxed);
         drop(self.tx.take());
         match self.handle.take() {
-            Some(h) => Ok(h.join().map_err(|_| DeliverError::Invalid("encoder thread panicked".into()))??),
+            Some(h) => Ok(h
+                .join()
+                .map_err(|p| DeliverError::Invalid(format!("encoder thread panicked: {}", panic_message(&*p))))??),
             None => Ok(String::new()),
         }
     }
@@ -1422,7 +1456,9 @@ fn run_delivery(
                 handles
                     .into_iter()
                     .map(|h| {
-                        h.join().unwrap_or_else(|_| Err(DeliverError::Invalid("a segment render panicked".into())))
+                        h.join().unwrap_or_else(|p| {
+                            Err(DeliverError::Invalid(format!("a segment render panicked: {}", panic_message(&*p))))
+                        })
                     })
                     .collect()
             });
@@ -2233,6 +2269,47 @@ fn thinned_contrasts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Graphs evaluated ahead arrive in order, and a body that stops early releases the helper.
+    #[test]
+    fn graphs_evaluated_ahead_arrive_in_order() {
+        let times = [0.0, 0.5, 1.0, 1.5];
+        for ahead in [false, true] {
+            let got = evaluated(
+                &times,
+                ahead,
+                |t| t * 2.0,
+                |next| times.iter().map(|&t| next(t)).collect::<Result<Vec<_>, _>>(),
+            );
+            assert_eq!(got.unwrap(), vec![0.0, 1.0, 2.0, 3.0]);
+            let first = evaluated(&times, ahead, |t| t, |next| next(0.0));
+            assert_eq!(first.unwrap(), 0.0);
+        }
+    }
+
+    /// A panic while evaluating ahead (a bug in sr-eval) is an error of the delivery that names it, not a panic
+    /// re-raised when the thread scope ends.
+    #[test]
+    fn a_panic_while_evaluating_ahead_is_an_error() {
+        let times = [0.0, 0.5, 1.0];
+        let result = evaluated(
+            &times,
+            true,
+            |t| if t > 0.25 { panic!("cannot evaluate {t}") } else { t },
+            |next| times.iter().map(|&t| next(t)).collect::<Result<Vec<_>, _>>(),
+        );
+        match result {
+            Err(DeliverError::Invalid(m)) => assert_eq!(m, "evaluation panicked: cannot evaluate 0.5"),
+            other => panic!("expected an evaluation error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn panic_messages_are_read_from_either_payload() {
+        assert_eq!(panic_message(&"literal"), "literal");
+        assert_eq!(panic_message(&String::from("formatted")), "formatted");
+        assert_eq!(panic_message(&7_u8), "no message");
+    }
 
     /// `--parallel auto` splits an output by the scene alone, so the file is the same on every machine (v0.2.1
     /// pinned the encoders' threads for the same reason): the host only decides how many chunks render at once.
