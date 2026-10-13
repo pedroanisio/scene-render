@@ -1,0 +1,1115 @@
+{
+  "schema_version": "1.0.0",
+  "metadata": {
+    "model": "claude-opus-5-5",
+    "tool": "claude-code",
+    "date": "2026-10-13"
+  },
+  "files": {
+    "crates/sr-3d/tests/fixtures/rig.fbx": {
+      "origin": "generated",
+      "sha256": "1b963388d7956e2eefa4e02f5bf33797d4292b844694f7121c0c1d74c73bdd25",
+      "bytes": 69356,
+      "generator": "tools/fixtures/make_fbx_rig.py",
+      "note": "written by Blender through its Python API (bpy)"
+    },
+    "crates/sr-3d/tests/fixtures/stage.usda": {
+      "origin": "generated",
+      "sha256": "3370920c4bf0f3759d2f8851c5a8d5df269fc33fa13da2ffb2f7dbb80a2e6705",
+      "bytes": 12491,
+      "generator": "tools/fixtures/make_usd_stage.py"
+    },
+    "crates/sr-3d/tests/fixtures/stage.usdc": {
+      "origin": "generated",
+      "sha256": "63c1078c767db3dd53ba226a0715b78bd12aa0ac5b99eb149d0dca8bd05a2077",
+      "bytes": 7373,
+      "generator": "tools/fixtures/make_usd_stage.py"
+    },
+    "crates/sr-3d/tests/fixtures/stage.usdz": {
+      "origin": "generated",
+      "sha256": "58775eac31e0e01edd807e5a2492815fe66afa518f8f27cb34a7b768a75e576b",
+      "bytes": 7539,
+      "generator": "tools/fixtures/make_usd_stage.py"
+    },
+    "crates/sr-3d/tests/fixtures/values.usdc": {
+      "origin": "generated",
+      "sha256": "0d42195fab6bc5ae087ff161bd18034284fc5ba83b9591496d356bcedd37a159",
+      "bytes": 3256,
+      "generator": "tools/fixtures/make_usdc_values.py"
+    },
+    "crates/sr-3d/tests/fixtures/vox/materials.vox": {
+      "origin": "generated",
+      "sha256": "2c591559b4479c82a303536b979569f09520ab25a3dda066887084423bee9e7b",
+      "bytes": 1330,
+      "generator": "tools/make_vox.py",
+      "checked_by": "tools/tests/test_generated_artifacts.py"
+    },
+    "crates/sr-3d/tests/fixtures/vox/nested.vox": {
+      "origin": "generated",
+      "sha256": "0bbb54f9e3e25d6ed7442d8c315ed7ec4ca4d3311046a3efbb372ea43847db82",
+      "bytes": 1392,
+      "generator": "tools/make_vox.py",
+      "checked_by": "tools/tests/test_generated_artifacts.py"
+    },
+    "crates/sr-3d/tests/fixtures/vox/no-rgba.vox": {
+      "origin": "generated",
+      "sha256": "a4e1e699f2b73bafd8a9ce8dd59a1773061e4c003587c0201ecfb59bc5baed16",
+      "bytes": 80,
+      "generator": "tools/make_vox.py",
+      "checked_by": "tools/tests/test_generated_artifacts.py"
+    },
+    "crates/sr-3d/tests/fixtures/vox/one-model-v200.vox": {
+      "origin": "generated",
+      "sha256": "452679b2eaa3fa51f089295677e29fd1c22814b668a62973b9aeb9e63db95b8d",
+      "bytes": 1116,
+      "generator": "tools/make_vox.py",
+      "checked_by": "tools/tests/test_generated_artifacts.py"
+    },
+    "crates/sr-3d/tests/fixtures/vox/one-model.vox": {
+      "origin": "generated",
+      "sha256": "9bdaa78d5705877e107bc7ed8f746fd56d49cbe993901ef123cbbb6be2c56921",
+      "bytes": 1116,
+      "generator": "tools/make_vox.py",
+      "checked_by": "tools/tests/test_generated_artifacts.py",
+      "note": "byte-equal to conformance/srep_cases/assets/srep80-voxels.vox in sr-core at schema-1.7.0"
+    },
+    "crates/sr-3d/tests/fixtures/vox/real/dotvox_axes.expected.json": {
+      "origin": "generated",
+      "sha256": "f0d44577d5c9d608182075c2b2026160b2d1ab8bba2da3c02c85075bb9693404",
+      "bytes": 724,
+      "generator": "tools/vox_axes.py"
+    },
+    "crates/sr-3d/tests/fixtures/vox/real/dotvox_axes.vox": {
+      "origin": "third-party",
+      "sha256": "cd686ce1fd0d66975d4fb97a20fff1fbb43763cec0cf4eb327248c5ce7690d2a",
+      "bytes": 44053,
+      "source": "https://github.com/dust-engine/dot_vox",
+      "licence": "MIT",
+      "licence_file": "crates/sr-3d/tests/fixtures/vox/real/dotvox_LICENSE",
+      "notice": "crates/sr-3d/tests/fixtures/vox/real/SOURCES.md"
+    },
+    "crates/sr-3d/tests/fixtures/vox/real/dotvox_metal-material.vox": {
+      "origin": "third-party",
+      "sha256": "7ed3b4debf4baa0e1d74e592c1dda60995c2207a8f74d903dce402cc653434fc",
+      "bytes": 29101,
+      "source": "https://github.com/dust-engine/dot_vox",
+      "licence": "MIT",
+      "licence_file": "crates/sr-3d/tests/fixtures/vox/real/dotvox_LICENSE",
+      "notice": "crates/sr-3d/tests/fixtures/vox/real/SOURCES.md"
+    },
+    "crates/sr-3d/tests/fixtures/vox/real/dotvox_not_a.vox": {
+      "origin": "third-party",
+      "sha256": "2c9dccb89079a1b1a3f3e89b4e7da301015a268b4190f56f9a6d02df95c36d3a",
+      "bytes": 4471,
+      "source": "https://github.com/dust-engine/dot_vox",
+      "licence": "MIT",
+      "licence_file": "crates/sr-3d/tests/fixtures/vox/real/dotvox_LICENSE",
+      "notice": "crates/sr-3d/tests/fixtures/vox/real/SOURCES.md"
+    },
+    "crates/sr-3d/tests/fixtures/vox/real/dotvox_single-voxel-with-material.vox": {
+      "origin": "third-party",
+      "sha256": "ac1a606494036d445a6c67d15466f6711b06ea1236f9053cda1e75b593e91267",
+      "bytes": 28993,
+      "source": "https://github.com/dust-engine/dot_vox",
+      "licence": "MIT",
+      "licence_file": "crates/sr-3d/tests/fixtures/vox/real/dotvox_LICENSE",
+      "notice": "crates/sr-3d/tests/fixtures/vox/real/SOURCES.md"
+    },
+    "crates/sr-3d/tests/fixtures/vox/real/ephtracy_chr_cat.vox": {
+      "origin": "third-party",
+      "sha256": "16377209391da8398be5763c5d37ff370ee39c6328bd861d177cc220434ce1ef",
+      "bytes": 2312,
+      "source": "https://github.com/ephtracy/voxel-model",
+      "licence": "MIT",
+      "licence_file": "crates/sr-3d/tests/fixtures/vox/real/ephtracy_LICENSE",
+      "notice": "crates/sr-3d/tests/fixtures/vox/real/SOURCES.md"
+    },
+    "crates/sr-3d/tests/fixtures/vox/real/ephtracy_chr_knight.vox": {
+      "origin": "third-party",
+      "sha256": "455208399cc7f888629bf4715284ffb5608a0157342e1e8135f460788dddf6f4",
+      "bytes": 2688,
+      "source": "https://github.com/ephtracy/voxel-model",
+      "licence": "MIT",
+      "licence_file": "crates/sr-3d/tests/fixtures/vox/real/ephtracy_LICENSE",
+      "notice": "crates/sr-3d/tests/fixtures/vox/real/SOURCES.md"
+    },
+    "crates/sr-3d/tests/fixtures/vox/real/ephtracy_chr_sol.vox": {
+      "origin": "third-party",
+      "sha256": "f008203a601be9edb0e62ead69f2ccaf9fe3db9607c23966d1a1a24abcf960cc",
+      "bytes": 1236,
+      "source": "https://github.com/ephtracy/voxel-model",
+      "licence": "MIT",
+      "licence_file": "crates/sr-3d/tests/fixtures/vox/real/ephtracy_LICENSE",
+      "notice": "crates/sr-3d/tests/fixtures/vox/real/SOURCES.md"
+    },
+    "crates/sr-3d/tests/fixtures/vox/rotations.vox": {
+      "origin": "generated",
+      "sha256": "74ea51b26ddb1472b10e4aa428b3340343981f514192dc48b80ef27feabfc4a3",
+      "bytes": 3702,
+      "generator": "tools/make_vox.py",
+      "checked_by": "tools/tests/test_generated_artifacts.py"
+    },
+    "crates/sr-3d/tests/fixtures/vox/spec-rotation.vox": {
+      "origin": "generated",
+      "sha256": "d3b18dc4e3694204360c6edd863c737bafe6b3cda570b4aba7e7c779d830fbf7",
+      "bytes": 1276,
+      "generator": "tools/make_vox.py",
+      "checked_by": "tools/tests/test_generated_artifacts.py"
+    },
+    "crates/sr-3d/tests/fixtures/vox/two-models.vox": {
+      "origin": "generated",
+      "sha256": "9bad24ec2a70293c88784b398b86f9c00e8a0064c9f7638d2ebc1de575ddde44",
+      "bytes": 1451,
+      "generator": "tools/make_vox.py",
+      "checked_by": "tools/tests/test_generated_artifacts.py"
+    },
+    "crates/sr-3d/tests/fixtures/vox/unknown-chunks.vox": {
+      "origin": "generated",
+      "sha256": "dd26b73c0a5aff7f229eaa5482e951c81593bd817fe45e8557d0b27207ea59e4",
+      "bytes": 1207,
+      "generator": "tools/make_vox.py",
+      "checked_by": "tools/tests/test_generated_artifacts.py"
+    },
+    "crates/sr-eval/tests/fixtures/cube-1m.glb": {
+      "origin": "unknown",
+      "sha256": "c869f07f6ccac9e57a319f20fb24687a4c7fc32642c4de73c2683426d0ac4976",
+      "bytes": 656,
+      "note": "656-byte glTF 2.0 binary whose position bounds are 0 to 1 on each axis; no generator or record names it"
+    },
+    "crates/sr-eval/tests/fixtures/cube-2m.glb": {
+      "origin": "unknown",
+      "sha256": "9f1844d45f9a1934545f7f64cd968a0867e7f1e57c1c4ae09218b841ba4db65a",
+      "bytes": 656,
+      "note": "656-byte glTF 2.0 binary whose position bounds are 0 to 2 on each axis; no generator or record names it"
+    },
+    "crates/sr-eval/tests/fixtures/ring-closed.obj": {
+      "origin": "unknown",
+      "sha256": "5b80d2a1de14d2e47ae2107dc8ae1b3ce9a56efa21e2f2faed1d39731eea0a17",
+      "bytes": 19612,
+      "note": "Wavefront OBJ annulus in the XY plane, radius 6 to 11, closed and 0.3 thick (384 vertices); no generator or record names it"
+    },
+    "crates/sr-eval/tests/fixtures/ring-flat.obj": {
+      "origin": "unknown",
+      "sha256": "61c4300516ca90b58a6fb2efe958374d009642de421d09b33b41fc52f73f6bcf",
+      "bytes": 6446,
+      "note": "Wavefront OBJ annulus in the XY plane, radius 6 to 11, flat (192 vertices); no generator or record names it"
+    },
+    "crates/sr-eval/tests/fixtures/solid.ttf": {
+      "origin": "generated",
+      "sha256": "bb31817072a7fd50cf78dd26e289094e2d7938bf1cd9ba99e4bffc40ed17048b",
+      "bytes": 856,
+      "generator": "tools/fixtures/make_solid_font.py"
+    },
+    "crates/sr-geo/styles/protomaps-dark.json": {
+      "origin": "third-party",
+      "sha256": "595e96949de2770eefdf664707ba29814d1329e3c48de082203d443886fccf4d",
+      "bytes": 65294,
+      "source": "https://github.com/protomaps/basemaps",
+      "licence": "BSD-3-Clause",
+      "licence_file": "crates/sr-geo/styles/protomaps_LICENSE.md",
+      "notice": "crates/sr-geo/styles/NOTICE",
+      "in_binary": true,
+      "note": "the basemaps release it was taken from is not recorded"
+    },
+    "crates/sr-geo/styles/protomaps-light.json": {
+      "origin": "third-party",
+      "sha256": "0b59638c710d8b4eae92ea50a10917b960821deac9935575ecbf15595a66fd7e",
+      "bytes": 65316,
+      "source": "https://github.com/protomaps/basemaps",
+      "licence": "BSD-3-Clause",
+      "licence_file": "crates/sr-geo/styles/protomaps_LICENSE.md",
+      "notice": "crates/sr-geo/styles/NOTICE",
+      "in_binary": true,
+      "note": "the basemaps release it was taken from is not recorded"
+    },
+    "crates/sr-geo/tests/fixtures/baixa.pmtiles": {
+      "origin": "third-party",
+      "sha256": "bdcd9688152e139f354ad5dc9b5bb2d6a59de83f6ea30cd9206a40bcd2b908f8",
+      "bytes": 431368,
+      "source": "https://protomaps.com",
+      "licence": "ODbL-1.0",
+      "licence_file": "crates/sr-geo/tests/fixtures/odbl_LICENSE",
+      "notice": "crates/sr-geo/tests/fixtures/NOTICE",
+      "note": "a Protomaps basemap extract of OpenStreetMap data; the build it was cut from is not recorded"
+    },
+    "crates/sr-geo/tests/fixtures/countries-110m.json": {
+      "origin": "third-party",
+      "sha256": "2516c915867c7baf18ddec727aec46c315541a07cfb3d79a6559b05d5e94eee8",
+      "bytes": 107761,
+      "source": "https://github.com/topojson/world-atlas",
+      "licence": "ISC",
+      "licence_file": "crates/sr-geo/tests/fixtures/world-atlas_LICENSE",
+      "notice": "crates/sr-geo/tests/fixtures/NOTICE",
+      "note": "TopoJSON of Natural Earth 1:110m countries (Natural Earth data is public domain)"
+    },
+    "crates/sr-geo/tests/fixtures/d3.json": {
+      "origin": "generated",
+      "sha256": "9e8da98c523b9c9d65b24529e1476fca9753ee40fe5014fc8102c07545a3ccff",
+      "bytes": 582395,
+      "generator": "tools/fixtures/make_geo_expected.mjs"
+    },
+    "crates/sr-geo/tests/fixtures/hill.pmtiles": {
+      "origin": "generated",
+      "sha256": "e598a2608266ab7de6b7c08a9e2222eceed770e2980fe59a3d84fdf88c8d1f93",
+      "bytes": 73640,
+      "generator": "tools/fixtures/make_tile_expected.py"
+    },
+    "crates/sr-geo/tests/fixtures/lambert-box.geojson": {
+      "origin": "unknown",
+      "sha256": "62b4dd36468d7509b112f6d4831e59dae4cb730b0b1a39dda6bf760747a840cb",
+      "bytes": 207,
+      "note": "207-byte GeoJSON with one 20-degree box polygon; no generator or record names it"
+    },
+    "crates/sr-geo/tests/fixtures/raster.pmtiles": {
+      "origin": "generated",
+      "sha256": "f8bc680c129c74be9360aa0bde56af397aa0b102876a2e824d4078a46c6b04e0",
+      "bytes": 15698,
+      "generator": "tools/fixtures/make_tile_expected.py"
+    },
+    "crates/sr-geo/tests/fixtures/style.json": {
+      "origin": "generated",
+      "sha256": "13ee7c45344da1eb85b228f6ae54615153c626826f0bcfa3aa070d55fb86e9fb",
+      "bytes": 547077,
+      "generator": "tools/fixtures/make_style_expected.mjs"
+    },
+    "crates/sr-geo/tests/fixtures/tiles.json": {
+      "origin": "generated",
+      "sha256": "4b6cf90a6b1087f67dd13d649c3a38615a185919637785749d74a6959c6914b5",
+      "bytes": 34812,
+      "generator": "tools/fixtures/make_tile_expected.py"
+    },
+    "crates/sr-gpu/tests/fixtures/fonts/wght-test.ttf": {
+      "origin": "generated",
+      "sha256": "89cea41880afe3db07b3e49f2e21af85eb15084b51b6727f4d890c1d86c591f4",
+      "bytes": 1088,
+      "generator": "tools/fixtures/make_variable_font.py"
+    },
+    "crates/sr-gpu/tests/fixtures/geo/lambert-box.geojson": {
+      "origin": "copy",
+      "sha256": "62b4dd36468d7509b112f6d4831e59dae4cb730b0b1a39dda6bf760747a840cb",
+      "bytes": 207,
+      "of": "crates/sr-geo/tests/fixtures/lambert-box.geojson"
+    },
+    "crates/sr-gpu/tests/fixtures/geo/place.kml": {
+      "origin": "unknown",
+      "sha256": "c3bbcd080710c17afc5fa748099f728bf6934d56094cc9aef38083641282a834",
+      "bytes": 303,
+      "note": "303-byte KML with one polygon placemark; no generator or record names it"
+    },
+    "crates/sr-gpu/tests/fixtures/geo/speck.geojson": {
+      "origin": "unknown",
+      "sha256": "19bfcdd1a9e26742ef7a549da33823f5821a4eb44e17fdbd0d975b4c7670b455",
+      "bytes": 211,
+      "note": "211-byte GeoJSON with one tiny polygon; no generator or record names it"
+    },
+    "crates/sr-gpu/tests/fixtures/geo/squares.geojson": {
+      "origin": "unknown",
+      "sha256": "e28ad4dfab38a3219b1fc3fd51d5be24b3428e62b6d933ba2c880ba12f96a09d",
+      "bytes": 640,
+      "note": "640-byte GeoJSON of square polygons; no generator or record names it"
+    },
+    "crates/sr-gpu/tests/fixtures/geo/track.gpx": {
+      "origin": "unknown",
+      "sha256": "1f52a4bd9ea4704d4daaedfe9bfb6ae829962151178ed7ce2f55723c083bbca9",
+      "bytes": 236,
+      "note": "236-byte GPX track with creator=\"test\"; no generator or record names it"
+    },
+    "crates/sr-gpu/tests/fixtures/ocio/curve.spi1d": {
+      "origin": "generated",
+      "sha256": "b5b8203fbbd85a8a622a894e91442d63f82dc561e70224eb0f2d07000257a3ca",
+      "bytes": 11316,
+      "generator": "tools/fixtures/make_ocio_expected.py"
+    },
+    "crates/sr-gpu/tests/fixtures/ocio/small.ocio": {
+      "origin": "generated",
+      "sha256": "7628d731fde8908f802653b04ee05141dcde93984b6830cb2229c97e0982aace",
+      "bytes": 1850,
+      "generator": "tools/fixtures/make_ocio_expected.py"
+    },
+    "crates/sr-gpu/tests/fixtures/three_dof_reference.wgsl": {
+      "origin": "authored",
+      "sha256": "eefe246a15a7e5f0c7412686ee67ac8e49b739b61362f1649c051e0ec25e33bd",
+      "bytes": 2975,
+      "evidence": "its header: \"Original per-pixel aperture calculation, retained independently for exact GPU regression tests.\""
+    },
+    "crates/sr-gpu/tests/golden/kitchen_0.png": {
+      "origin": "generated",
+      "sha256": "f1c4156ae5cc02893d03408090e2e8ca8b5c293819d5452cdeed4ec720a7817b",
+      "bytes": 11718,
+      "generator": "crates/sr-gpu/tests/raster_effects/golden.rs",
+      "record": "crates/sr-gpu/tests/golden/provenance.json",
+      "note": "rendered on llvmpipe and written by the test under SR_BLESS=1"
+    },
+    "crates/sr-gpu/tests/golden/kitchen_1.png": {
+      "origin": "generated",
+      "sha256": "b19700fb837a5c3e24d58e98daefedf15e61aaea479fa94468879503fe4c068b",
+      "bytes": 11494,
+      "generator": "crates/sr-gpu/tests/raster_effects/golden.rs",
+      "record": "crates/sr-gpu/tests/golden/provenance.json",
+      "note": "rendered on llvmpipe and written by the test under SR_BLESS=1"
+    },
+    "crates/sr-gpu/tests/golden/kitchen_2.png": {
+      "origin": "generated",
+      "sha256": "4c8b9397a08c26facf43f67d8f9fe347b9214b4708b9ab091b0189fb1bc258c5",
+      "bytes": 11575,
+      "generator": "crates/sr-gpu/tests/raster_effects/golden.rs",
+      "record": "crates/sr-gpu/tests/golden/provenance.json",
+      "note": "rendered on llvmpipe and written by the test under SR_BLESS=1"
+    },
+    "crates/sr-gpu/tests/golden/nvidia-rtx6000-ada-vulkan/kitchen_0.png": {
+      "origin": "generated",
+      "sha256": "47ab1d9d8ed3d21d7837087f06be12b8db6debb9202f924f2b26bac3fdc4d1df",
+      "bytes": 11717,
+      "generator": "crates/sr-gpu/tests/raster_effects/golden.rs",
+      "record": "crates/sr-gpu/tests/golden/nvidia-rtx6000-ada-vulkan/provenance.json",
+      "note": "rendered on an NVIDIA RTX 6000 Ada (Vulkan) and written by the test under SR_BLESS=1"
+    },
+    "crates/sr-gpu/tests/golden/nvidia-rtx6000-ada-vulkan/kitchen_1.png": {
+      "origin": "generated",
+      "sha256": "9720c74bf9ae01cd6ce07a0e2616c8be86229f8435eba498cc25c95c93d9b4c7",
+      "bytes": 11493,
+      "generator": "crates/sr-gpu/tests/raster_effects/golden.rs",
+      "record": "crates/sr-gpu/tests/golden/nvidia-rtx6000-ada-vulkan/provenance.json",
+      "note": "rendered on an NVIDIA RTX 6000 Ada (Vulkan) and written by the test under SR_BLESS=1"
+    },
+    "crates/sr-gpu/tests/golden/nvidia-rtx6000-ada-vulkan/kitchen_2.png": {
+      "origin": "generated",
+      "sha256": "0decf538e203c415776dfa52abbc7f5f06c4457daac3edd64816139c368daab9",
+      "bytes": 11571,
+      "generator": "crates/sr-gpu/tests/raster_effects/golden.rs",
+      "record": "crates/sr-gpu/tests/golden/nvidia-rtx6000-ada-vulkan/provenance.json",
+      "note": "rendered on an NVIDIA RTX 6000 Ada (Vulkan) and written by the test under SR_BLESS=1"
+    },
+    "crates/sr-gpu/tests/shaders/broken.glsl": {
+      "origin": "authored",
+      "sha256": "607c378db8c9194e8e1570b7b4d57f3ef12c9cd6d5089e0c6c2d3200fa41284c",
+      "bytes": 246,
+      "evidence": "its header: \"Deliberately invalid GLSL (undeclared identifier) for the error-handling tests.\""
+    },
+    "crates/sr-gpu/tests/shaders/circleopen.glsl": {
+      "origin": "third-party",
+      "sha256": "abe140644abb46a73ff168fdcda0777c18a23d32979210a518b595f7fb629097",
+      "bytes": 438,
+      "source": "https://github.com/gl-transitions/gl-transitions",
+      "licence": "MIT",
+      "licence_file": "crates/sr-gpu/tests/shaders/gl-transitions_LICENSE",
+      "notice": "crates/sr-gpu/tests/shaders/NOTICE"
+    },
+    "crates/sr-gpu/tests/shaders/directionalwipe.glsl": {
+      "origin": "third-party",
+      "sha256": "64882ccc3048e41cd877ab1f9d02ff9a2f783c72e174e3677bd5e8e0c985641d",
+      "bytes": 556,
+      "source": "https://github.com/gl-transitions/gl-transitions",
+      "licence": "MIT",
+      "licence_file": "crates/sr-gpu/tests/shaders/gl-transitions_LICENSE",
+      "notice": "crates/sr-gpu/tests/shaders/NOTICE"
+    },
+    "crates/sr-gpu/tests/shaders/doorway.glsl": {
+      "origin": "third-party",
+      "sha256": "e4530e78e82f820ac838a26f6f81ea5edabc219e20fe0e7819543afc3ee8a4c7",
+      "bytes": 1240,
+      "source": "https://github.com/gl-transitions/gl-transitions",
+      "licence": "MIT",
+      "licence_file": "crates/sr-gpu/tests/shaders/gl-transitions_LICENSE",
+      "notice": "crates/sr-gpu/tests/shaders/NOTICE"
+    },
+    "crates/sr-gpu/tests/shaders/duotone.fs": {
+      "origin": "unknown",
+      "sha256": "db73d87746783e3eeeffdb6147c62bd1b6aab85ce28330f881d5d2121b9a41b5",
+      "bytes": 957,
+      "note": "two-pass ISF 2 duotone (a quarter-size luma pass, then a map pass); its ISF DESCRIPTION names no author and no generator or record names it"
+    },
+    "crates/sr-gpu/tests/shaders/fade.glsl": {
+      "origin": "third-party",
+      "sha256": "c8604cf49c7980bc676a3789b51d5f6687e7396a04be93dc78115f82a4ba53d1",
+      "bytes": 143,
+      "source": "https://github.com/gl-transitions/gl-transitions",
+      "licence": "MIT",
+      "licence_file": "crates/sr-gpu/tests/shaders/gl-transitions_LICENSE",
+      "notice": "crates/sr-gpu/tests/shaders/NOTICE"
+    },
+    "crates/sr-gpu/tests/shaders/glow.glsl": {
+      "origin": "authored",
+      "sha256": "803ff5fa857bbb4484ed51b7d7eaa7bc9ddac0a5e52bc75ea8827c25d7707e4b",
+      "bytes": 801,
+      "evidence": "its header states the scene-render effect convention it is written to"
+    },
+    "crates/sr-gpu/tests/shaders/invert.glsl": {
+      "origin": "authored",
+      "sha256": "46e2908ca03aab658f3ae8d6160bb21d261fb8fedfd08686c6a28089ff16e45e",
+      "bytes": 245,
+      "evidence": "its header states the scene-render effect convention it is written to"
+    },
+    "crates/sr-gpu/tests/shaders/invert_shadertoy.glsl": {
+      "origin": "authored",
+      "sha256": "6682b0be8036d7033801de7a46c46906c0a90dd30f5601354bde6a63c2d56052",
+      "bytes": 246,
+      "evidence": "its header: \"Invert, Shadertoy convention\""
+    },
+    "crates/sr-gpu/tests/shaders/rainbow_shadertoy.glsl": {
+      "origin": "authored",
+      "sha256": "02ca76bacbd94ac295725d4a80d438ba20760421b93e74246f092b1551a2e69c",
+      "bytes": 399,
+      "evidence": "its header: \"Time-animated Shadertoy tint: the classic \\\"new shader\\\" palette over the input.\""
+    },
+    "crates/sr-gpu/tests/shaders/srep67-colour.wgsl": {
+      "origin": "upstream",
+      "sha256": "a22f43037713ce5da8c04491bdff53b5ab33c6b2acea0e3e0b1c54738b57ad77",
+      "bytes": 317,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep67-colour.wgsl",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-gpu/tests/shaders/srep67-three-interleaved.wgsl": {
+      "origin": "upstream",
+      "sha256": "01e5f8494b7ed558574e50da973a8ac9c03db909ce365c5e7073714df5b30498",
+      "bytes": 487,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep67-three-interleaved.wgsl",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-gpu/tests/shaders/srep67-three.wgsl": {
+      "origin": "upstream",
+      "sha256": "820cb6fea9d74f3bf2c1978246b031fbac1d3e708bff1ce685d90c1731e80fad",
+      "bytes": 261,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep67-three.wgsl",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-gpu/tests/shaders/srep72-f32.fs": {
+      "origin": "upstream",
+      "sha256": "1e5850bc978e897ab6384080d9e0a8c34dea1a2fd845f930d05b0a78c97c86d3",
+      "bytes": 545,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep72-f32.fs",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-gpu/tests/shaders/srep72-stripe-plain.glsl": {
+      "origin": "authored",
+      "sha256": "589124b72f11285e1e5e5012cb6409118fa6e9eb9f2ea1af4c142422078538f7",
+      "bytes": 292,
+      "evidence": "its header names the SREP 72 case it exercises"
+    },
+    "crates/sr-gpu/tests/shaders/srep72-stripe-shadertoy.glsl": {
+      "origin": "authored",
+      "sha256": "6ae83015be29f1463b3752217901af9fb0e46f3423dc6e8bc41e08642dfe3154",
+      "bytes": 350,
+      "evidence": "its header names the SREP 72 case it exercises"
+    },
+    "crates/sr-gpu/tests/shaders/srep72-stripe.fs": {
+      "origin": "upstream",
+      "sha256": "4b36a3aec48b74f021819553209d87eac52f51323fd815febf8704d258380d2d",
+      "bytes": 385,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep72-stripe.fs",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-media/tests/fixtures/still/adobe.png": {
+      "origin": "generated",
+      "sha256": "d09d6dea68175550a901dba515053fe41883ca08af27bc857b04b7c6c764ad0f",
+      "bytes": 312,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/anim.gif": {
+      "origin": "generated",
+      "sha256": "48e2823d515099b60d440c05e045e1fec16b330e3755cfca4cbb59fdb4d885fe",
+      "bytes": 186,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/cmyk.jpg": {
+      "origin": "generated",
+      "sha256": "e8d0efb8e144e4048a27b2668a7b097a425947a408fd06cb0a6f9a165bdfe921",
+      "bytes": 899,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/gray.png": {
+      "origin": "generated",
+      "sha256": "754be395436cbba392b142619769a2910d98c8bc1a212f36f04385536da49e25",
+      "bytes": 226,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/linear.exr": {
+      "origin": "generated",
+      "sha256": "62a9be24ded32c18b00738d5fb015fa7fa19d91fd13422f54372c75b7431cee7",
+      "bytes": 441,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/linear.hdr": {
+      "origin": "generated",
+      "sha256": "a26058c824c13a57cd72e0218a593a5a74f355858555cface2c7ee918a5d6903",
+      "bytes": 430,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/p3-icc.heic": {
+      "origin": "generated",
+      "sha256": "a843ee20d8e701e64d4e9903740d6e8740b289c0bf0e05da85c550ff2c793a1f",
+      "bytes": 1147,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/p3-nclx.heic": {
+      "origin": "generated",
+      "sha256": "068c7cf7bef6caddf956ffcab9098af0f9152a1703a82fc6c13dcab1ea563795",
+      "bytes": 638,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/p3.icc": {
+      "origin": "generated",
+      "sha256": "f51e31ed947dc29c10612f2294c0455e74af4589b6b807e380318e880fec32d7",
+      "bytes": 516,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/p3.png": {
+      "origin": "generated",
+      "sha256": "bd5cc51d284891fe61dd680aee0bd3d5c1cc72e7f45c08f8b0a6bbf5d3dc4a75",
+      "bytes": 313,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/pattern.avif": {
+      "origin": "generated",
+      "sha256": "5091ef197adff76085fbb0756913c0ebfc64772e88a0190de7df607344050a5a",
+      "bytes": 366,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/pattern.bmp": {
+      "origin": "generated",
+      "sha256": "8700179f2aa3a37e16bc6cd8cf0a01b2876492f26c1ac541144b46c39eee9c84",
+      "bytes": 342,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/pattern.dds": {
+      "origin": "generated",
+      "sha256": "8c2c9411a017056e02f9a93eddad7aa28d451987a782473d45634d1cf5661f3f",
+      "bytes": 512,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/pattern.ff": {
+      "origin": "generated",
+      "sha256": "3c359a1d28b53ae70cd5a8c52362b383462bb0c5fc7732056de674ee628f7c3c",
+      "bytes": 784,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/pattern.gif": {
+      "origin": "generated",
+      "sha256": "1e929c8dafce6d127e9745539c1dead4c626ceaf3eb9b818a4f6e4861d1479da",
+      "bytes": 522,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/pattern.jp2": {
+      "origin": "generated",
+      "sha256": "2ce4139e5bff7181a6bde64b17e3ba0a21bcaf9cf91e37de43f39bf523feb7be",
+      "bytes": 301,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/pattern.jxl": {
+      "origin": "generated",
+      "sha256": "4978438700c01d9bb6d985bb118ee464357345611881f41de811a4c4e95b42c8",
+      "bytes": 342,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/pattern.png": {
+      "origin": "generated",
+      "sha256": "023dcb9cb08b0f6383b42c63c22b4403aeb211c50c861c18208e8ddab93e4d7f",
+      "bytes": 89,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/pattern.ppm": {
+      "origin": "generated",
+      "sha256": "21fad17cd932b086f24d075eb9de1b93a05a56c74d263dadc6b3d1d7df1fd8b5",
+      "bytes": 300,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/pattern.psd": {
+      "origin": "generated",
+      "sha256": "706f33083454f44d8146d0bef121985f7fb807e71ee873ef6120bc28476823d7",
+      "bytes": 328,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/pattern.qoi": {
+      "origin": "generated",
+      "sha256": "fd35f42e5ccbd467918db22bafd211a8bb80b8bd536821d9713993f734684832",
+      "bytes": 501,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/pattern.tga": {
+      "origin": "generated",
+      "sha256": "34197604161769f5d01bec35f897cf9115e9ddb5456b0702d9102723f6d71616",
+      "bytes": 428,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/pattern.tiff": {
+      "origin": "generated",
+      "sha256": "a090349389f9606c63d58254bce0344e8d2afa5bc672a3774a8ca4c961ca5cb2",
+      "bytes": 538,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/pattern.webp": {
+      "origin": "generated",
+      "sha256": "995a26434e5f824754aed476c4e9adc754963bf1c8db0be56c419bb5c7f485e2",
+      "bytes": 58,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/rotated.jpg": {
+      "origin": "generated",
+      "sha256": "9544d9f37567fa9a393aabb4f63b8e5d76ba3463fdcb201ae6ba8be805259af6",
+      "bytes": 805,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/srgb-icc.png": {
+      "origin": "generated",
+      "sha256": "b9470e9672abb107d7101e2448eb5b045625aa24167597c1dc14ba614d8a53b1",
+      "bytes": 307,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-media/tests/fixtures/still/table.png": {
+      "origin": "generated",
+      "sha256": "854e8cd6326237855c570324bba00e3da2fceb04b3d3ae533d072dbb1ec0c271",
+      "bytes": 2455,
+      "generator": "tools/fixtures/make_still_formats.py"
+    },
+    "crates/sr-volume/tests/data/openvdb/affine-background.vdb": {
+      "origin": "generated",
+      "sha256": "96b7b06d4ee864e757314290d2fbd35cc1d23309ecb0b119c95350bce958d36b",
+      "bytes": 10049,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/dense-blosc.vdb": {
+      "origin": "generated",
+      "sha256": "71065f7c0c1f9d3a674b074238cbfa4cfac63b2e2c2d8e4e603d8b707bc57b5b",
+      "bytes": 10357,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/dense-zip.vdb": {
+      "origin": "generated",
+      "sha256": "b006428152a40fda0d5b7a543ea51246c8718b01f960c70b24cbe6da0f0a6750",
+      "bytes": 10226,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/density-blosc.vdb": {
+      "origin": "generated",
+      "sha256": "4c13e81b448a747e68afe82bffadf15ccd70e64adc1bca5c92cb350ab4fd38a3",
+      "bytes": 19578,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/density-half.vdb": {
+      "origin": "generated",
+      "sha256": "f6792bd14d3ec93e83c42d8b04d4a837096c6f71973bb90e7592757a2c6090fa",
+      "bytes": 19471,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/density-none.vdb": {
+      "origin": "generated",
+      "sha256": "3cbb529f044574dfb0a1c8815fa08ed50765f5fb1773704a365d727227d73914",
+      "bytes": 318333,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/density-zip.vdb": {
+      "origin": "generated",
+      "sha256": "2f5750c09aa6ac8eb7ae61ced2876a14881c5440f0811b7012e516ff389fd3fd",
+      "bytes": 19426,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/double.vdb": {
+      "origin": "generated",
+      "sha256": "45a7d2a9b7f36553a0222fd4d95b30efa9edc11381a097eb3465d8f51533ecf4",
+      "bytes": 9992,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/frustum.vdb": {
+      "origin": "generated",
+      "sha256": "d99a22d6cc6c88c8279517b7379c431b31ff66975db40ee5ae532587e4112faf",
+      "bytes": 318461,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/instanced.vdb": {
+      "origin": "generated",
+      "sha256": "758daf32d189f4c78846a5080a636aa8aff54bd77d789c5642061b7e62e476ee",
+      "bytes": 19787,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/large-tile.vdb": {
+      "origin": "generated",
+      "sha256": "6c29a1effae09be9f479f6d6c3a1e8a7c90f08996fb9d4b9933ba64cf513d660",
+      "bytes": 577,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/render-0.vdb": {
+      "origin": "generated",
+      "sha256": "2b2c9853bee924eb4cf40731c85bc71a4e79d9781b35ab51425cad53528102a8",
+      "bytes": 1097,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/render-1.vdb": {
+      "origin": "generated",
+      "sha256": "d08974ea2eb304216d47922c953e4d9761dfdb680b09f0de2b8d6c9b5edb27ea",
+      "bytes": 1097,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/tiles.vdb": {
+      "origin": "generated",
+      "sha256": "c6e4bfb7f08129c5db4639908f6202bc43aeb23f2541f6c1026954520b7fa2aa",
+      "bytes": 19657,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/unsupported-bool.vdb": {
+      "origin": "generated",
+      "sha256": "db6950e5e40e23e749b1c88139c846a13f5171a60dce8f24a8e3169a0854ee83",
+      "bytes": 508,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/vector-double.vdb": {
+      "origin": "generated",
+      "sha256": "2733cb52276f36b311ca225ac41a202e9a66fdd202e081c91794c33f48c73265",
+      "bytes": 10075,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-volume/tests/data/openvdb/vector.vdb": {
+      "origin": "generated",
+      "sha256": "7b07fd874e8afbf4f6a6bc2f33102a1ea0279c8cd92ff407325bb8e421eaf088",
+      "bytes": 29603,
+      "generator": "tools/openvdb_fixture.cpp"
+    },
+    "crates/sr-wasm/tests/modules/srep66-bad-output.wasm": {
+      "origin": "upstream",
+      "sha256": "5d599c2ebd2406b705c0ad71d19c0b6f9e2f8de9688fc7ae302c85d605434ce4",
+      "bytes": 100,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep66-bad-output.wasm",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-wasm/tests/modules/srep66-grow.wasm": {
+      "origin": "upstream",
+      "sha256": "92456737d6333b89df2f27707772e5bc1bd6365bc4177dbd892efc78e154fc8f",
+      "bytes": 317,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep66-grow.wasm",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-wasm/tests/modules/srep66-loop.wasm": {
+      "origin": "upstream",
+      "sha256": "7b3bf9598edf963a8241d89ebe279382ae39987dcc0059072fa04d181e687b7d",
+      "bytes": 59,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep66-loop.wasm",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-wasm/tests/modules/srep66-nan.wasm": {
+      "origin": "upstream",
+      "sha256": "3c19b70db778177e376a5e9b12e941ca8a03db7b52c357d53c005c2dbecaad85",
+      "bytes": 384,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep66-nan.wasm",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-wasm/tests/modules/srep66-param.wasm": {
+      "origin": "upstream",
+      "sha256": "86886519af364d8f21cad86046b9dd6902040e48d4f3a7d5d29e2fb5ef79930d",
+      "bytes": 368,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep66-param.wasm",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-wasm/tests/modules/srep66-rect.wasm": {
+      "origin": "upstream",
+      "sha256": "2b2cbfb8eed8624f6aa8a112626fae8cdc0e15c220557f0afdc6e5da56d48c96",
+      "bytes": 179,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep66-rect.wasm",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-wasm/tests/modules/srep66-relaxed.wasm": {
+      "origin": "upstream",
+      "sha256": "7522af5094c935efe00aa640037659f9cec80061aa614b83c38d5691094efb35",
+      "bytes": 219,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep66-relaxed.wasm",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-wasm/tests/modules/srep66-rows.wasm": {
+      "origin": "upstream",
+      "sha256": "30913dad3a42ec921501faa4c7402fb2b441c06743d3f5ceca607b45f64f9ba3",
+      "bytes": 85,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep66-rows.wasm",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-wasm/tests/modules/srep66-seed.wasm": {
+      "origin": "upstream",
+      "sha256": "0e193170a743149588c169946340d92023713689fbad9a39f70241c414e0da67",
+      "bytes": 332,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep66-seed.wasm",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-wasm/tests/modules/srep66-shared.wasm": {
+      "origin": "upstream",
+      "sha256": "5bd7bf529173644473e08d9fcfdfcf4c0815493754f84839e2c00c46ba30ff71",
+      "bytes": 180,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep66-shared.wasm",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-wasm/tests/modules/srep66-wasi.wasm": {
+      "origin": "upstream",
+      "sha256": "4ea7d3820190e9b9812bd604a8a5e95acc00dd8fb8003a9c8faf912a50431dc8",
+      "bytes": 224,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep66-wasi.wasm",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-wasm/tests/modules/srep69-counter.wasm": {
+      "origin": "upstream",
+      "sha256": "102ec7058fa604f20d4265061f4d6ad44e8769077e1ddd246f0140772f4d11cf",
+      "bytes": 212,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep69-counter.wasm",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-wasm/tests/modules/srep69-no-step.wasm": {
+      "origin": "upstream",
+      "sha256": "a0d3fd99d601419205b1805af6bc330df080b221fcea141f847c24785ad1bf89",
+      "bytes": 116,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep69-no-step.wasm",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "crates/sr-wasm/tests/modules/srep69-rng.wasm": {
+      "origin": "upstream",
+      "sha256": "61253aa79f3499dc112cf6333772f257c640f9de56d1e619bd442424abdd966b",
+      "bytes": 173,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep69-rng.wasm",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "examples/cinematic-impact/sky.hdr": {
+      "origin": "generated",
+      "sha256": "06737ab41074a5a339cc86f57f051f67d8052ac03d347ffbbe32f307b0bd693d",
+      "bytes": 524337,
+      "generator": "tools/make_sky_hdr.py",
+      "record": "tools/tests/test_generated_artifacts.py",
+      "checked_by": "tools/tests/test_generated_artifacts.py"
+    },
+    "examples/program-maze/maze.wasm": {
+      "origin": "generated",
+      "sha256": "3392a0266455736c1cca6f3656019af701def85ee306875213e0c53c81b32767",
+      "bytes": 40265,
+      "generator": "examples/program-maze/build.sh",
+      "checked_by": "tools/tests/test_generated_artifacts.py"
+    },
+    "tests/corpus/media/advected-0.srvol": {
+      "origin": "unknown",
+      "sha256": "58d55d9ab76fb902b9a8214c427bf5b93246dc0a4779f275b9824da1fbeb00af",
+      "bytes": 8994,
+      "note": "8994-byte scene-render volume, frame 0 of an advected sequence; no generator or record names it"
+    },
+    "tests/corpus/media/advected-1.srvol": {
+      "origin": "unknown",
+      "sha256": "e779148487cac6e95eafd9b18633e6efa04de9412516c7bbec13ce1cb717558b",
+      "bytes": 8994,
+      "note": "8994-byte scene-render volume, frame 1 of an advected sequence; no generator or record names it"
+    },
+    "tests/corpus/media/baked-volume/d84b6f1039cea877892766b878d50473e81529aee9f487a44c0a1d1f9c226583.srvol": {
+      "origin": "copy",
+      "sha256": "d84b6f1039cea877892766b878d50473e81529aee9f487a44c0a1d1f9c226583",
+      "bytes": 161,
+      "of": "tests/corpus/media/uniform.srvol"
+    },
+    "tests/corpus/media/baked-volume/manifest.srvseq": {
+      "origin": "unknown",
+      "sha256": "68cb87c6720ed0ac07c87a7ae48f5a3a69c326c085f8dcb655be7738035432d8",
+      "bytes": 72,
+      "note": "72-byte SRVSEQ volume-sequence manifest; tools/build_corpus.py pins its SHA-256 but does not write it"
+    },
+    "tests/corpus/media/block.vox": {
+      "origin": "generated",
+      "sha256": "525f4dc0f8cbd616308fdb37666363851997362c51ea72fce27f862586066b68",
+      "bytes": 5192,
+      "generator": "tools/make_corpus_block.py",
+      "note": "byte-equal to conformance/srep_cases/assets/srep80-block.vox in sr-core at schema-1.7.0"
+    },
+    "tests/corpus/media/clip.mp4": {
+      "origin": "unknown",
+      "sha256": "e8066f89bf3f5ba391d3033afb798d60a67b8bd63861631260c57f37732bca0f",
+      "bytes": 76,
+      "note": "76-byte MP4 stub: a 24-byte ftyp box and zero bytes, no media; no generator or record names it"
+    },
+    "tests/corpus/media/counter.wasm": {
+      "origin": "copy",
+      "sha256": "102ec7058fa604f20d4265061f4d6ad44e8769077e1ddd246f0140772f4d11cf",
+      "bytes": 212,
+      "of": "crates/sr-wasm/tests/modules/srep69-counter.wasm"
+    },
+    "tests/corpus/media/grade.cube": {
+      "origin": "unknown",
+      "sha256": "c8bce4299c8606d5ca59a4724f46e484e430c42d506cfc2a3f30bbe84d5199cc",
+      "bytes": 62,
+      "note": "62-byte identity 3D LUT of size 2; no generator or record names it"
+    },
+    "tests/corpus/media/impact-0.vdb": {
+      "origin": "copy",
+      "sha256": "2b2c9853bee924eb4cf40731c85bc71a4e79d9781b35ab51425cad53528102a8",
+      "bytes": 1097,
+      "of": "crates/sr-volume/tests/data/openvdb/render-0.vdb"
+    },
+    "tests/corpus/media/impact-1.vdb": {
+      "origin": "copy",
+      "sha256": "d08974ea2eb304216d47922c953e4d9761dfdb680b09f0de2b8d6c9b5edb27ea",
+      "bytes": 1097,
+      "of": "crates/sr-volume/tests/data/openvdb/render-1.vdb"
+    },
+    "tests/corpus/media/inter.ttf": {
+      "origin": "unknown",
+      "sha256": "c207f52b40a7470bac99ec03cc8882fb74e68853e9be7020bb7a8e3dfd2f8eb9",
+      "bytes": 23,
+      "note": "23-byte stub whose text is \"fake-font-for-tests\"; it is not the Inter typeface; no generator or record names it"
+    },
+    "tests/corpus/media/logo.png": {
+      "origin": "unknown",
+      "sha256": "53c1ebdaf73c3d3d069adff257fffbc7b99486e30b42c37cb485ec0bced63cca",
+      "bytes": 79,
+      "note": "79-byte 16x16 PNG; no generator or record names it"
+    },
+    "tests/corpus/media/mesh-frame-0.obj": {
+      "origin": "unknown",
+      "sha256": "ebfb96409a6058ba56db749ec4a4ca2a7dc636942d037ca4e97d0922974c2180",
+      "bytes": 81,
+      "note": "Wavefront OBJ with the header \"# Synthetic triangle, metres, Y up.\", which names no author; it differs from sr-core's srep83-mesh-frame-0.obj; no generator or record names it"
+    },
+    "tests/corpus/media/mesh-frame-1.obj": {
+      "origin": "unknown",
+      "sha256": "cd765022061ed02c6bac0a366f324bd33d64ec3a914ed06aeee4782f44b3b783",
+      "bytes": 117,
+      "note": "Wavefront OBJ with the header \"# Synthetic triangle, metres, Y up.\", which names no author; it differs from sr-core's srep83-mesh-frame-1.obj; no generator or record names it"
+    },
+    "tests/corpus/media/music.wav": {
+      "origin": "unknown",
+      "sha256": "4872b61c768dff943f9e021453d816f06e35adc8edd88ef183301f03e31b94a5",
+      "bytes": 44,
+      "note": "44-byte WAV header with an empty data chunk; no generator or record names it"
+    },
+    "tests/corpus/media/places.geojson": {
+      "origin": "unknown",
+      "sha256": "6835b996e02a5d81173cc113fec9b1f3558e5c7f65c17e2db0573964b31a55da",
+      "bytes": 306,
+      "note": "306-byte GeoJSON with one polygon and one line; no generator or record names it"
+    },
+    "tests/corpus/media/rect.wasm": {
+      "origin": "copy",
+      "sha256": "2b2cbfb8eed8624f6aa8a112626fae8cdc0e15c220557f0afdc6e5da56d48c96",
+      "bytes": 179,
+      "of": "crates/sr-wasm/tests/modules/srep66-rect.wasm"
+    },
+    "tests/corpus/media/robot.glb": {
+      "origin": "generated",
+      "sha256": "9d120bc06becc10df7b3b667fbae2270ffb199e063b8eaf22f7112b4d9196ae9",
+      "bytes": 656,
+      "generator": "tools/fixtures/make_corpus_mesh.py",
+      "note": "byte-equal to conformance/srep_cases/assets/srep80-robot.glb in sr-core at schema-1.7.0"
+    },
+    "tests/corpus/media/rows.wasm": {
+      "origin": "copy",
+      "sha256": "30913dad3a42ec921501faa4c7402fb2b441c06743d3f5ceca607b45f64f9ba3",
+      "bytes": 85,
+      "of": "crates/sr-wasm/tests/modules/srep66-rows.wasm"
+    },
+    "tests/corpus/media/spin_0001.png": {
+      "origin": "unknown",
+      "sha256": "72ba75274ba0854e94af3326139a6d409ac710a30b4110e26dd970798cfb1860",
+      "bytes": 73,
+      "note": "73-byte 4x4 PNG, one frame of a five-frame sequence; no generator or record names it"
+    },
+    "tests/corpus/media/spin_0002.png": {
+      "origin": "unknown",
+      "sha256": "1652d5f605cee23505f14c2cf98f466a0131d3633ca8a57a75682d08d4400ed1",
+      "bytes": 73,
+      "note": "73-byte 4x4 PNG, one frame of a five-frame sequence; no generator or record names it"
+    },
+    "tests/corpus/media/spin_0003.png": {
+      "origin": "unknown",
+      "sha256": "eaa9f271837b1d0331072429eff62b6bc7f6bbbcbd363ec598e1969ad5eda826",
+      "bytes": 73,
+      "note": "73-byte 4x4 PNG, one frame of a five-frame sequence; no generator or record names it"
+    },
+    "tests/corpus/media/spin_0004.png": {
+      "origin": "unknown",
+      "sha256": "d1a2efe3bf74feed0ea03f34c9a74f9296c225bd11b364544c8a94f2dc10302f",
+      "bytes": 73,
+      "note": "73-byte 4x4 PNG, one frame of a five-frame sequence; no generator or record names it"
+    },
+    "tests/corpus/media/spin_0005.png": {
+      "origin": "unknown",
+      "sha256": "cd60e464755d27a4be0c7eb313db396f8ed1bb9ef3a0054ac5dea3b86f79a91f",
+      "bytes": 73,
+      "note": "73-byte 4x4 PNG, one frame of a five-frame sequence; no generator or record names it"
+    },
+    "tests/corpus/media/srep67-three.wgsl": {
+      "origin": "copy",
+      "sha256": "820cb6fea9d74f3bf2c1978246b031fbac1d3e708bff1ce685d90c1731e80fad",
+      "bytes": 261,
+      "of": "crates/sr-gpu/tests/shaders/srep67-three.wgsl"
+    },
+    "tests/corpus/media/streets.pmtiles": {
+      "origin": "copy",
+      "sha256": "f8bc680c129c74be9360aa0bde56af397aa0b102876a2e824d4078a46c6b04e0",
+      "bytes": 15698,
+      "of": "crates/sr-geo/tests/fixtures/raster.pmtiles"
+    },
+    "tests/corpus/media/studio.hdr": {
+      "origin": "unknown",
+      "sha256": "a6047f6d65ac4310d388c7731fa1a6e18b5fc90073d87bdee8c0d740336b024e",
+      "bytes": 49,
+      "note": "49-byte 1x1 Radiance HDR; no generator or record names it"
+    },
+    "tests/corpus/media/terrain.pmtiles": {
+      "origin": "unknown",
+      "sha256": "9b34a8772aeaffeb8e65ece0d6595cc157e113fe214274df5094cf2dfd05a6ac",
+      "bytes": 207,
+      "note": "207-byte PMTiles v3 archive whose tile type is PNG; no generator or record names it"
+    },
+    "tests/corpus/media/test.jhf": {
+      "origin": "unknown",
+      "sha256": "915ee440fb8f487ccdb69254ae29870f496b306fc43aa83245cb889c875ecb0a",
+      "bytes": 1085,
+      "note": "1085-byte Hershey font of 95 lines; no generator or record names it"
+    },
+    "tests/corpus/media/texture.png": {
+      "origin": "unknown",
+      "sha256": "a8401cc8932a308c8afec292ffa5d55a44c8ecee132fa20d8ba0d7539b92f27c",
+      "bytes": 74,
+      "note": "74-byte 8x8 PNG; no generator or record names it"
+    },
+    "tests/corpus/media/transcript.vtt": {
+      "origin": "unknown",
+      "sha256": "44856296552580d04ebfa293ec4a3a5bf07cb1556b07d3e475d875b1eb16e594",
+      "bytes": 38,
+      "note": "38-byte WebVTT with one cue, \"Hello\"; no generator or record names it"
+    },
+    "tests/corpus/media/uniform-00.srvol": {
+      "origin": "copy",
+      "sha256": "d84b6f1039cea877892766b878d50473e81529aee9f487a44c0a1d1f9c226583",
+      "bytes": 161,
+      "of": "tests/corpus/media/uniform.srvol"
+    },
+    "tests/corpus/media/uniform.srvol": {
+      "origin": "upstream",
+      "sha256": "d84b6f1039cea877892766b878d50473e81529aee9f487a44c0a1d1f9c226583",
+      "bytes": 161,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep79-uniform.srvol",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0"
+    },
+    "tests/corpus/media/voice.wav": {
+      "origin": "unknown",
+      "sha256": "a7c8762ed87de244999d54dd968928d4fc415edcbb2d0b9497c0960b1754a977",
+      "bytes": 45,
+      "note": "45-byte WAV whose data chunk declares 0 bytes, followed by one byte; no generator or record names it"
+    },
+    "tests/corpus/media/voxels.vox": {
+      "origin": "upstream",
+      "sha256": "9bdaa78d5705877e107bc7ed8f746fd56d49cbe993901ef123cbbb6be2c56921",
+      "bytes": 1116,
+      "source": "https://github.com/pedroanisio/sr-core/tree/95cf9b0a676415a0e7eb2e86505db512576d4e2d",
+      "upstream_path": "conformance/srep_cases/assets/srep80-voxels.vox",
+      "note": "MIT, same author; byte-equal to the file at schema-1.7.0 and to the generated crates/sr-3d/tests/fixtures/vox/one-model.vox"
+    }
+  }
+}

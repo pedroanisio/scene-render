@@ -1,2 +1,2 @@
-baixa.pmtiles: Protomaps basemap (https://protomaps.com) extract, data © OpenStreetMap contributors, available under the Open Database License (https://www.openstreetmap.org/copyright).
-countries-110m.json: world-atlas (ISC licence), from Natural Earth (public domain).
+baixa.pmtiles: Protomaps basemap (https://protomaps.com) extract, data © OpenStreetMap contributors, available under the Open Database License (https://www.openstreetmap.org/copyright); the licence text is in odbl_LICENSE.
+countries-110m.json: world-atlas (ISC licence), from Natural Earth (public domain); the licence text is in world-atlas_LICENSE.
