@@ -2413,11 +2413,18 @@ impl Builder<'_> {
             }
             "lighting" => {
                 let c = lin(colour("color", [1.0; 4]));
+                // Point-light attenuation; omitted values use the schema's smooth default.
+                let falloff = match a.str("falloff").as_deref() {
+                    Some("linear") => 1.0,
+                    Some("quadratic") => 0.0,
+                    Some("none") => 3.0,
+                    _ => 2.0,
+                };
                 v[0] = [
                     if angle != 0.0 { angle } else { -45.0 }.to_radians() as f32,
                     a.num("relief", 0.0).max(0.2) as f32,
                     intensity.clamp(0.0, 1.0) as f32,
-                    0.0,
+                    falloff,
                 ];
                 v[1] = v4(c);
                 for (k, l) in cx.lights.iter().take(4).enumerate() {
@@ -2425,15 +2432,23 @@ impl Builder<'_> {
                 }
                 self.simple(Entry::Conv, 3, v, input, Aux::None)
             }
-            "stroke" | "outline" | "matte-choke" => {
-                if kind == "matte-choke" {
-                    let choke = amount * px;
-                    v[0] = [choke.abs() as f32, (choke > 0.0) as u8 as f32, 0.0, 0.0];
-                    let aux = self.morph_field(input, choke.abs(), choke <= 0.0, choke > 0.0, &mut v);
-                    let o = self.simple(Entry::Morph, 0, v, input, aux);
-                    let soft = a.num("softness", 0.1) * px * 4.0;
-                    return Ok(if soft >= 1.0 { self.blur(&o, soft * 0.5) } else { o });
+            "matte-choke" => {
+                let position = a.str("position");
+                let centered = position.as_deref() == Some("center");
+                // Positive amounts place the changed band on the requested side; negative amounts reverse it.
+                let erode = (position.as_deref() == Some("inside")) != (amount < 0.0);
+                let radius = amount.abs() * px;
+                v[0] = [radius as f32, erode as u8 as f32, 0.0, centered as u8 as f32];
+                let aux = self.morph_field(input, radius, centered || !erode, centered || erode, &mut v);
+                let o = self.simple(Entry::Morph, 0, v, input, aux);
+                let soft = a.num("softness", 0.1) * px * 4.0;
+                if soft >= 1.0 {
+                    self.blur(&o, soft * 0.5)
+                } else {
+                    o
                 }
+            }
+            "stroke" | "outline" => {
                 let c = colour("color", [1.0; 4]);
                 let pos = match a.str("position").as_deref() {
                     Some("inside") => 1.0,
@@ -2443,7 +2458,18 @@ impl Builder<'_> {
                 v[0] = [(sz.max(1.0) * px) as f32, 0.0, 0.0, pos];
                 v[1] = v4(c);
                 let aux = self.morph_field(input, sz.max(1.0) * px, pos != 1.0, pos != 0.0, &mut v);
-                self.simple(Entry::Morph, if kind == "stroke" { 1 } else { 2 }, v, input, aux)
+                // Blur the ring before compositing, retaining the sharp original in a stroke.
+                let soft = a.num("softness", 0.1) * px * 4.0;
+                if soft < 1.0 {
+                    return Ok(self.simple(Entry::Morph, if kind == "stroke" { 1 } else { 2 }, v, input, aux));
+                }
+                let ring = self.simple(Entry::Morph, 2, v, input, aux);
+                let ring = self.blur(&ring, soft * 0.5);
+                if kind == "outline" {
+                    return Ok(ring);
+                }
+                // the stroke: the ring behind the content (outside), else over it
+                self.combine(if pos == 0.0 { 2 } else { 3 }, input, &ring, 1.0, [1.0; 3], 0.0)
             }
             "shader" => return self.shader_effect(e, a, input, cx),
             other => return Err(format!("effect type {other} is not drawn")),
@@ -2593,7 +2619,7 @@ impl Builder<'_> {
         samples: u32,
     ) -> Arc<Tex> {
         let mut v = [[0.0f32; 4]; 8];
-        v[0] = [shutter as f32, samples.clamp(1, 64) as f32, 0.0, 0.0];
+        v[0] = [shutter as f32, samples.min(self.max_samples as u32).clamp(1, 64) as f32, 0.0, 0.0];
         self.simple(Entry::Flow, 0, v, src, Aux::Flow(flow))
     }
 

@@ -90,8 +90,18 @@ fn wide_morphology_follows_every_level_of_alpha() {
                     format!(r##"<effect id="fx" type="stroke" size="{radius}" position="inside" color="#FF0000"/>"##),
                     true,
                 ),
-                (format!(r##"<effect id="fx" type="matte-choke" amount="{radius}" softness="0"/>"##), true),
-                (format!(r##"<effect id="fx" type="matte-choke" amount="-{radius}" softness="0"/>"##), false),
+                (
+                    format!(
+                        r##"<effect id="fx" type="matte-choke" position="inside" amount="{radius}" softness="0"/>"##
+                    ),
+                    true,
+                ),
+                (
+                    format!(
+                        r##"<effect id="fx" type="matte-choke" position="inside" amount="-{radius}" softness="0"/>"##
+                    ),
+                    false,
+                ),
             ] {
                 let r = render_sub(&scene(128, &body(r#" effects="fx""#), &effect), 0.0).unwrap();
                 assert!(r.stats.unsupported.is_empty(), "{:?}", r.stats.unsupported);
@@ -128,7 +138,9 @@ fn wide_chokes_keep_soft_edges_soft() {
     let Some(src) = render_sub(&scene(128, &body("soft"), soft), 0.0) else { return };
     let alpha: Vec<f32> = src.px.iter().map(|p| p[3]).collect();
     for (amount, erode) in [(7.0f32, true), (-7.0, false)] {
-        let fx = format!(r#"{soft}<effect id="choke" type="matte-choke" amount="{amount}" softness="0"/>"#);
+        let fx = format!(
+            r#"{soft}<effect id="choke" type="matte-choke" position="inside" amount="{amount}" softness="0"/>"#
+        );
         let r = render_sub(&scene(128, &body("soft choke"), &fx), 0.0).unwrap();
         let got: Vec<f32> = r.px.iter().map(|p| p[3]).collect();
         let (mean, off) = diff(&got, &reference(&alpha, 128, amount.abs(), erode));
@@ -139,13 +151,13 @@ fn wide_chokes_keep_soft_edges_soft() {
 
 #[test]
 fn a_dilated_matte_keeps_the_colour_of_the_edge_it_grows_from() {
-    // a negative matte-choke amount dilates: the grown ring takes the colour of the nearest source, it is not
+    // A negative inside matte-choke amount dilates: the grown ring takes the colour of the nearest source, it is not
     // opaque black (invisible on a black ground, wrong on any other)
     for amount in [-6, -20] {
         let d = scene(
             128,
             r##"<shape id="sq" shape="rect" x="44" y="44" width="40" height="40" fill="#FF0000" effects="mc"/>"##,
-            &format!(r##"<effect id="mc" type="matte-choke" amount="{amount}"/>"##),
+            &format!(r##"<effect id="mc" type="matte-choke" position="inside" amount="{amount}"/>"##),
         );
         let Some(r) = render_sub(&d, 0.0) else { return };
         // four texels outside the square's left edge (x = 44), on its middle row

@@ -159,12 +159,12 @@ fn posterized_layers_keep_their_effect_targets_to_the_layer() {
         WIDE,
         "",
         &mover("pt ink"),
-        r##"<effect id="pt" type="posterize-time" frequency="30"/><effect id="ink" type="stroke" size="0.5" color="#FF0000"/>"##,
+        r##"<effect id="pt" type="posterize-time" frequency="30"/><effect id="ink" type="stroke" size="0.5" color="#FF0000" softness="0"/>"##,
     );
     let Some(r) = render_sub(&d, 0.51) else { return };
     assert!(r.stats.unsupported.is_empty(), "{:?}", r.stats.unsupported);
     // posterized to t = 0.5: the square spans x 100..132; the stroke is 0.5 local units, 4 px at
-    // the layer's scale of 8, so it spans 96..100 and 132..136
+    // the layer's scale of 8, so the explicitly hard ring spans 96..100 and 132..136
     assert_px(&r, 116, 66, [1.0, 1.0, 1.0, 1.0], 2e-2);
     assert_px(&r, 98, 66, [1.0, 0.0, 0.0, 1.0], 5e-2);
     assert!(r.at(140, 66)[3] < 0.02, "{:?}", r.at(140, 66));
@@ -305,7 +305,7 @@ fn matte_choke_erodes_by_its_amount() {
         r##"width="96" height="96" fps="10" duration="1" background="#00000000""##,
         "",
         r##"<shape id="sq" shape="rect" x="28" y="28" width="40" height="40" fill="#FFFFFF" effects="choke"/>"##,
-        r#"<effect id="choke" type="matte-choke" amount="12" softness="0"/>"#,
+        r#"<effect id="choke" type="matte-choke" position="inside" amount="12" softness="0"/>"#,
     );
     let Some(r) = render_sub(&d, 0.0) else { return };
     // the square shrinks from 28..68 to 40..56
@@ -440,6 +440,7 @@ fn regression_wide_morphology_preserves_partial_alpha() {
     for alpha in ["40", "BF"] {
         for radius in [4, 5, 12] {
             for kind in ["stroke", "matte-choke"] {
+                let position = if kind == "matte-choke" { "inside" } else { "outside" };
                 let d = scene(
                     r##"width="96" height="96" fps="10" duration="1" background="#00000000""##,
                     "",
@@ -447,7 +448,7 @@ fn regression_wide_morphology_preserves_partial_alpha() {
                         r##"<shape id="sq" shape="rect" x="28" y="28" width="40" height="40" fill="#FFFFFF{alpha}" effects="fx"/>"##
                     ),
                     &format!(
-                        r##"<effect id="fx" type="{kind}" size="{radius}" amount="{radius}" softness="0" color="#FF0000"/>"##
+                        r##"<effect id="fx" type="{kind}" position="{position}" size="{radius}" amount="{radius}" softness="0" color="#FF0000"/>"##
                     ),
                 );
                 let Some(r) = render_sub(&d, 0.0) else { return };

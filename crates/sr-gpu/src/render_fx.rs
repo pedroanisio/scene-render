@@ -300,8 +300,9 @@ fn reach(e: &m::Effect, a: &Attrs) -> f64 {
                 60.0
             }
         }
-        "stroke" | "outline" => sz.max(1.0),
-        "matte-choke" => a.num("amount", 1.0).abs(),
+        // Four blur sigmas beyond the morphological edge (sigma = softness * 2 local pixels).
+        "stroke" | "outline" => sz.max(1.0) + a.num("softness", 0.1) * 8.0,
+        "matte-choke" => a.num("amount", 1.0).abs() + a.num("softness", 0.1) * 8.0,
         "turbulent-displace" | "heat-haze" | "wave-warp" | "ripple" | "glitch" | "vhs" | "chromatic-aberration" => {
             a.num("amount", 1.0).abs() * 4.0 + 8.0
         }

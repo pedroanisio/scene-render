@@ -622,6 +622,159 @@ fn time_effects_use_other_frames() {
 }
 
 #[test]
+fn a5_pixel_motion_blur_clamps_its_samples() {
+    let pm =
+        moving("", r#"effects="pmb""#, r#"<effect id="pmb" type="pixel-motion-blur" amount="1" samples="100000"/>"#);
+    let Some(r) = render_sub(&pm, 0.5) else { return };
+    assert!(problems(&r).is_empty(), "{:?}", problems(&r));
+    let capped =
+        moving("", r#"effects="pmb""#, r#"<effect id="pmb" type="pixel-motion-blur" amount="1" samples="64"/>"#);
+    let c = render_sub(&capped, 0.5).unwrap();
+    assert!(r.px == c.px, "samples above the cap draw as the cap");
+    let absent = moving("", r#"effects="pmb""#, r#"<effect id="pmb" type="pixel-motion-blur" amount="1"/>"#);
+    let default =
+        moving("", r#"effects="pmb""#, r#"<effect id="pmb" type="pixel-motion-blur" amount="1" samples="16"/>"#);
+    assert!(render_sub(&absent, 0.5).unwrap().px == render_sub(&default, 0.5).unwrap().px);
+}
+
+/// A flat grey frame under one point light of range 40 px at (60, 48), with the lighting effect's `falloff` set to `f`.
+fn lit_row(falloff: &str) -> Option<Vec<f32>> {
+    let xml = format!(
+        r##"<scene version="1.1"><project width="128" height="96" fps="10" duration="2" background="#000000"/>
+        <composition><shape id="bar" shape="rect" x="0" y="0" width="128" height="96" fill="#808080" effects="lit"/></composition>
+        <lights><light id="pl" type="point" x="60" y="48" range="40" intensity="2"/></lights>
+        <effects><effect id="lit" type="lighting" lights="pl" intensity="1"{falloff}/></effects></scene>"##
+    );
+    let d = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap_or_else(|e| panic!("{e:?}"));
+    let r = render(&d)?;
+    assert!(problems(&r).is_empty(), "{:?}", problems(&r));
+    Some((0..128).map(|x| r.at(x, 48)[1]).collect())
+}
+
+#[test]
+fn a5_lighting_falloff_shapes_the_point_light() {
+    let Some(absent) = lit_row("") else { return };
+    let row = |f: &str| lit_row(&format!(r#" falloff="{f}""#)).unwrap();
+    let (none, linear, quadratic, smooth) = (row("none"), row("linear"), row("quadratic"), row("smooth"));
+    // 10 px from the light is a quarter of its range: weights 1, 0.75, 0.5625 and smoothstep(0.75) = 0.84375
+    let x = 70;
+    assert!(
+        none[x] > smooth[x] && smooth[x] > linear[x] && linear[x] > quadratic[x],
+        "{} {} {} {}",
+        none[x],
+        smooth[x],
+        linear[x],
+        quadratic[x]
+    );
+    // beyond the range only `none` still adds light
+    let far = 110;
+    assert!(none[far] > linear[far] + 0.01, "{} {}", none[far], linear[far]);
+    assert!((linear[far] - quadratic[far]).abs() < 1e-6 && (smooth[far] - quadratic[far]).abs() < 1e-6);
+    // The schema default is smooth, including when the attribute is omitted.
+    assert_eq!(absent, smooth);
+}
+
+#[test]
+fn a5_stroke_and_outline_softness_uses_schema_default() {
+    for kind in ["stroke", "outline"] {
+        let ring = |extra: &str| {
+            let d = fx_doc(
+                r##"background="#00000000""##,
+                r##"<shape id="n" shape="rect" x="24" y="8" width="16" height="16" fill="#FFFFFF" effects="fx"/>"##,
+                &format!(r##"<effect id="fx" type="{kind}" size="4" color="#FF0000"{extra}/>"##),
+            );
+            render(&d)
+        };
+        let Some(hard) = ring(r#" softness="0""#) else { return };
+        assert!(problems(&hard).is_empty(), "{:?}", problems(&hard));
+        let absent = ring("").unwrap();
+        let default = ring(r#" softness="0.1""#).unwrap();
+        assert!(absent.px == default.px, "{kind}: absent softness matches the schema default");
+        let soft = ring(r#" softness="1""#).unwrap();
+        assert!(problems(&soft).is_empty(), "{:?}", problems(&soft));
+        // the ring spans x = 20..24; its outer edge is at 20
+        let (inside, beyond) = ((20, 16), (18, 16));
+        assert!(hard.at(inside.0, inside.1)[3] > 0.99, "{kind}: {:?}", hard.at(inside.0, inside.1));
+        assert!(
+            soft.at(inside.0, inside.1)[3] < hard.at(inside.0, inside.1)[3] - 0.05,
+            "{kind}: {:?}",
+            soft.at(inside.0, inside.1)
+        );
+        assert!(hard.at(beyond.0, beyond.1)[3] < 1e-3, "{kind}");
+        assert!(soft.at(beyond.0, beyond.1)[3] > 0.02, "{kind}: {:?}", soft.at(beyond.0, beyond.1));
+        assert!(soft.at(17, 16)[3] > 0.001, "{kind}: blur must extend beyond the hard ring's crop");
+    }
+}
+
+#[test]
+fn a5_softness_default_scales_with_the_node() {
+    for kind in ["stroke", "outline"] {
+        let ring = |softness: &str| {
+            render(&fx_doc(
+                r##"background="#00000000""##,
+                r##"<shape id="n" shape="rect" x="24" y="8" width="4" height="4" scaleX="4" scaleY="4" fill="#FFFFFF" effects="fx"/>"##,
+                &format!(r##"<effect id="fx" type="{kind}" size="1" color="#FF0000"{softness}/>"##),
+            ))
+        };
+        let Some(absent) = ring("") else { return };
+        let default = ring(r#" softness="0.1""#).unwrap();
+        let zero = ring(r#" softness="0""#).unwrap();
+        assert!(absent.px == default.px, "{kind}: default must not depend on explicit presence");
+        assert!(default.px != zero.px, "{kind}: the default softens a scaled edge");
+    }
+}
+
+#[test]
+fn a5_matte_choke_position_places_the_edge_band() {
+    let choke = |position: &str, amount: f64| {
+        render(&fx_doc(
+            r##"background="#00000000""##,
+            r##"<shape id="n" shape="rect" x="24" y="8" width="16" height="16" fill="#FF8000" effects="fx"/>"##,
+            &format!(r#"<effect id="fx" type="matte-choke" amount="{amount}" softness="0"{position}/>"#),
+        ))
+    };
+    for radius in [3.0, 6.0] {
+        let Some(outside) = choke(r#" position="outside""#, radius) else { return };
+        let inside = choke(r#" position="inside""#, radius).unwrap();
+        let center = choke(r#" position="center""#, radius).unwrap();
+        assert!(problems(&outside).is_empty(), "{:?}", problems(&outside));
+        assert!(problems(&inside).is_empty(), "{:?}", problems(&inside));
+        assert!(problems(&center).is_empty(), "{:?}", problems(&center));
+        assert!(outside.px == choke("", radius).unwrap().px, "default is outside");
+        assert!(inside.px == choke(r#" position="outside""#, -radius).unwrap().px);
+        assert!(outside.px == choke(r#" position="inside""#, -radius).unwrap().px);
+        for x in [23, 24] {
+            assert_px(&outside, x, 16, [1.0, lin8(128), 0.0, 1.0], 0.01);
+            assert_px(&inside, x, 16, [0.0; 4], 0.01);
+            assert_px(&center, x, 16, [0.5, lin8(128) * 0.5, 0.0, 0.5], 0.01);
+        }
+        assert_px(&center, 32, 16, [1.0, lin8(128), 0.0, 1.0], 0.01);
+    }
+}
+
+#[test]
+fn a5_pixel_motion_blur_honors_draft_sample_budget() {
+    let run = |samples: u32| {
+        let d = moving(
+            "",
+            r#"effects="pmb""#,
+            &format!(r#"<effect id="pmb" type="pixel-motion-blur" amount="4" samples="{samples}"/>"#),
+        );
+        let ev = sr_eval::Evaluator::new(&d, &sr_eval::EvalOptions::default()).unwrap();
+        let mut r = sr_gpu::Renderer::new(gpu()?, ev.program());
+        r.quality = Some(sr_model::model::ProjectQuality::Draft);
+        let g = ev.evaluate(0.5);
+        let mut sub = |t: f64| ev.evaluate(t);
+        let f = r.render_with(&g, ev.program(), Some(&mut sub));
+        assert!(f.stats.errors.is_empty(), "{:?}", f.stats.errors);
+        Some(r.read(&f.texture))
+    };
+    let Some(capped) = run(8) else { return };
+    assert!(capped == run(100000).unwrap(), "draft uses at most eight taps");
+    assert!(capped != run(1).unwrap(), "fixture must expose the blur sampling");
+}
+
+#[test]
 fn posterize_time_of_a_node_that_did_not_exist_yet_draws_nothing_and_does_not_blame_the_provider() {
     // the node starts at 0.6 s; with two steps per second the frame at 0.7 s shows the node as it was at 0.5 s,
     // when it was absent. A sub-frame provider is present, so a "needs a sub-frame provider" note would be false,

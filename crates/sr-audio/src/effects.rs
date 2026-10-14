@@ -193,7 +193,14 @@ pub fn process(e: &Effect, buf: &mut Planar, rate: f64, key: Option<&Planar>) {
             let g = compressor_gain(&det[..n.min(det.len())], e, rate);
             apply_gain_db(buf, &g, e.gain);
         }
-        Kind::Limiter => crate::loudness::limit(buf, rate, e.threshold, e.release.max(0.01)),
+        Kind::Limiter => {
+            // `gain` drives the input, so the ceiling (`threshold`) still holds after it
+            if e.gain != 0.0 {
+                let k = db_to_lin(e.gain);
+                buf.iter_mut().flatten().for_each(|v| *v = (*v as f64 * k) as f32);
+            }
+            crate::loudness::limit(buf, rate, e.threshold, e.release.max(0.01))
+        }
         Kind::Gate => {
             let det = linked_level(key.unwrap_or(buf));
             let (ca, cr) = (coeff(e.attack, rate), coeff(e.release, rate));
@@ -222,12 +229,13 @@ pub fn process(e: &Effect, buf: &mut Planar, rate: f64, key: Option<&Planar>) {
                 }
             }
             let g = compressor_gain(&det, e, rate);
+            let makeup = db_to_lin(e.gain);
             for ch in buf.iter_mut() {
                 let mut hp = Biquad::new(Shape::HighPass, rate, f * 0.7, std::f64::consts::FRAC_1_SQRT_2, 0.0);
                 for (i, v) in ch.iter_mut().enumerate() {
                     let x = *v as f64;
                     let hi = hp.tick(x);
-                    *v = ((x - hi) + hi * db_to_lin(g[i])) as f32;
+                    *v = (((x - hi) + hi * db_to_lin(g[i])) * makeup) as f32;
                 }
             }
         }
@@ -477,6 +485,51 @@ mod tests {
         let mut g = vec![sine(1000.0, 0.5, 0.2)];
         process(&Effect { gain: -6.0, ..Effect::new(Kind::Gain) }, &mut g, 48000.0, None);
         assert!((peak_db(&g[0]) - (lin_to_db(0.5) - 6.0)).abs() < 0.05);
+    }
+
+    #[test]
+    fn a5_de_esser_applies_makeup_gain() {
+        // De-esser gain is make-up after processing: +6 dB multiplies the processed output by 10^(6/20).
+        let src = vec![sine(8000.0, 0.5, 1.0), sine(300.0, 0.3, 1.0)];
+        let run = |kind: Kind, gain: f64, threshold: f64| {
+            let mut b = src.clone();
+            process(&Effect { gain, threshold, ..Effect::new(kind) }, &mut b, 48000.0, None);
+            b
+        };
+        let (plain, lifted) = (run(Kind::DeEsser, 0.0, -18.0), run(Kind::DeEsser, 6.0, -18.0));
+        for (p, l) in plain.iter().zip(&lifted) {
+            for (a, b) in p.iter().zip(l) {
+                assert!((*b as f64 - *a as f64 * db_to_lin(6.0)).abs() < 1e-5, "{a} {b}");
+            }
+        }
+        let attenuated = run(Kind::DeEsser, -6.0, -18.0);
+        for (p, a) in plain.iter().flatten().zip(attenuated.iter().flatten()) {
+            assert!((*a as f64 - *p as f64 * db_to_lin(-6.0)).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn a5_limiter_gain_drives_input_and_preserves_ceiling() {
+        let src = vec![sine(8000.0, 0.5, 1.0), sine(300.0, 0.3, 1.0)];
+        let run = |gain: f64| {
+            let mut b = src.clone();
+            process(&Effect { gain, threshold: -6.0, ..Effect::new(Kind::Limiter) }, &mut b, 48000.0, None);
+            b
+        };
+        let mut legacy = src.clone();
+        crate::loudness::limit(&mut legacy, 48000.0, -6.0, 0.1);
+        assert_eq!(legacy, run(0.0), "zero gain preserves the previous limiter output exactly");
+        // Limiter gain drives the input, so the ceiling still holds.
+        let quiet = |gain: f64| {
+            let mut b = vec![sine(1000.0, db_to_lin(-30.0), 1.0)];
+            process(&Effect { gain, threshold: -6.0, ..Effect::new(Kind::Limiter) }, &mut b, 48000.0, None);
+            peak_db(&b[0])
+        };
+        assert!((quiet(6.0) - quiet(0.0) - 6.0).abs() < 0.05, "{} {}", quiet(6.0), quiet(0.0));
+        assert!((quiet(-6.0) - quiet(0.0) + 6.0).abs() < 0.05, "{} {}", quiet(-6.0), quiet(0.0));
+        let driven = run(12.0);
+        let peak = crate::loudness::true_peak(&driven, 48000.0);
+        assert!(peak <= -6.0 + 0.05 && peak > -6.5, "true peak {peak}");
     }
 
     #[test]

@@ -69,7 +69,7 @@ fn kernels_read_only_declared_attributes() {
                 continue;
             }
         };
-        let (_, reads) = sr_gpu::vector::record_reads(|| render(&doc));
+        let (_, reads) = sr_gpu::vector::record_reads(|| render_sub(&doc, 0.5));
         for (element, name) in reads {
             if !matches!(element.as_str(), "effect" | "effectType") {
                 continue;
@@ -87,7 +87,7 @@ fn kernels_read_only_declared_attributes() {
 
 /// The source of the kernels, read as text: a kernel arm that uses a value read up front for every type (`amount`, `sz`, ...)
 /// must declare the attribute, which the recorder cannot see because the read happens before the arm.
-const KERNELS: &str = include_str!("../../src/fx.rs");
+const KERNELS: &str = concat!(include_str!("../../src/fx.rs"), "\n", include_str!("../../src/render_fx.rs"));
 
 /// The identifiers a kernel arm can use, and the attributes they stand for.
 const UPFRONT: &[(&str, &[&str])] = &[
@@ -153,6 +153,12 @@ fn qualified_helpers_are_distinct_from_up_front_locals() {
 /// The effect types an arm head names: a line starting with a quoted name or `| "name"`, continued until the line with `=>`.
 fn arm_head(lines: &[&str], i: usize) -> Option<(Vec<String>, usize)> {
     let first = lines[i].trim_start();
+    // Temporal effects are dispatched by `if` in render_fx, rather than match arms in fx.
+    if let Some((name, _)) = first.strip_prefix("if kind == \"").and_then(|s| s.split_once("\" {")) {
+        if sr_model::effect_attrs::declared(name).is_some() {
+            return Some((vec![name.to_string()], i));
+        }
+    }
     if !(first.starts_with('"') || first.starts_with("| \"")) {
         return None;
     }
@@ -179,12 +185,11 @@ fn arm_head(lines: &[&str], i: usize) -> Option<(Vec<String>, usize)> {
     None
 }
 
-#[test]
-fn arms_declare_the_values_they_use_from_the_up_front_reads() {
+/// Effect arms and their used identifiers, including temporal effects in the renderer.
+fn kernel_arms() -> Vec<(Vec<String>, Vec<String>)> {
     let lines: Vec<&str> = KERNELS.lines().collect();
     let indent = |l: &str| l.len() - l.trim_start().len();
-    let mut failures = Vec::new();
-    let mut covered = std::collections::BTreeSet::new();
+    let mut arms = Vec::new();
     let mut i = 0;
     while i < lines.len() {
         let Some((names, head_end)) = arm_head(&lines, i) else {
@@ -197,7 +202,7 @@ fn arms_declare_the_values_they_use_from_the_up_front_reads() {
         while j < lines.len() {
             let l = lines[j];
             let starts_arm = arm_head(&lines, j).is_some() && indent(l) <= ind;
-            if starts_arm || (!l.trim().is_empty() && indent(l) < ind) {
+            if starts_arm || (l.trim() == "}" && indent(l) == ind) || (!l.trim().is_empty() && indent(l) < ind) {
                 break;
             }
             body.push(l);
@@ -209,6 +214,17 @@ fn arms_declare_the_values_they_use_from_the_up_front_reads() {
             body.truncate(k - i);
         }
         let tokens = identifiers(&body.join("\n"));
+        arms.push((names, tokens));
+        i = j;
+    }
+    arms
+}
+
+#[test]
+fn arms_declare_the_values_they_use_from_the_up_front_reads() {
+    let mut failures = Vec::new();
+    let mut covered = std::collections::BTreeSet::new();
+    for (names, tokens) in kernel_arms() {
         for (ident, attrs) in UPFRONT {
             if tokens.iter().any(|t| t == ident) {
                 for ty in &names {
@@ -221,16 +237,75 @@ fn arms_declare_the_values_they_use_from_the_up_front_reads() {
             }
         }
         covered.extend(names);
-        i = j;
     }
-    // every declared type has an arm in the kernels, except those the render passes handle themselves (their reads are
-    // explicit, so the recorder sees them)
-    let outside = ["displacement-map", "echo", "pixel-motion-blur", "posterize-time"];
+    // Every declared type has a scanned arm, except these renderer dispatches that use compound conditions.
+    // Pixel motion blur is scanned above and its reads are also exercised with a sub-frame provider.
+    let outside = ["displacement-map", "echo", "posterize-time"];
     let missing: Vec<&str> = sr_model::effect_attrs::DECLARED
         .iter()
         .map(|(t, _)| *t)
         .filter(|t| !covered.contains(*t) && !outside.contains(t))
         .collect();
     assert!(missing.is_empty(), "the scan did not find arms for: {missing:?}");
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The attribute-table rows of the effects whose kernels read exactly what they declare: a declared name no kernel
+/// reads is a promise the renderer does not keep (`INERT-I13` would stay silent on a document that sets it).
+#[test]
+fn a5_the_table_lists_what_these_effects_read() {
+    let declared =
+        |ty: &str| sr_model::effect_attrs::declared(ty).unwrap_or_else(|| panic!("{ty} has no list")).to_vec();
+    assert_eq!(declared("pixel-motion-blur"), ["amount", "samples"]);
+    assert_eq!(declared("matte-choke"), ["amount", "position", "softness"]);
+    assert!(declared("lighting").contains(&"falloff"));
+    for ty in ["stroke", "outline"] {
+        assert_eq!(declared(ty), ["color", "position", "size", "softness"], "{ty}");
+    }
+}
+
+/// Every attribute these types declare is read while one renders (the converse of the test above).
+#[test]
+fn declared_attributes_are_read() {
+    let Some(_) = gpu() else { return };
+    let names = bag();
+    let mut failures = Vec::new();
+    for ty in ["matte-choke", "stroke", "outline", "lighting", "pixel-motion-blur"] {
+        let attrs: String = names
+            .iter()
+            .filter(|n| !matches!(**n, "id" | "type" | "enabled" | "mix"))
+            .filter_map(|n| sample(n).map(|v| format!(r#" {n}="{v}""#)))
+            .collect();
+        let xml = format!(
+            r##"<scene version="1.6"><project width="32" height="32" fps="10" duration="1" background="#202020"/>
+            <composition><shape id="other" shape="rect" x="2" y="2" width="12" height="12" fill="#FFFFFF"/>
+            <shape id="n" shape="rect" x="8" y="8" width="16" height="16" fill="#FF8800" effects="fx"/></composition>
+            <lights><light id="lamp" type="point" x="16" y="16" intensity="1"/></lights>
+            <effects><effect id="fx" type="{ty}"{attrs}/></effects></scene>"##
+        );
+        let doc =
+            sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap_or_else(|e| panic!("{e:?}"));
+        let (_, reads) = sr_gpu::vector::record_reads(|| render_sub(&doc, 0.5));
+        let mut read: Vec<String> = reads
+            .into_iter()
+            .filter(|(el, _)| matches!(el.as_str(), "effect" | "effectType"))
+            .map(|(_, n)| n)
+            .collect();
+        // Up-front reads are intentionally silent in the recorder; include only locals used by this arm.
+        for (names, tokens) in kernel_arms() {
+            if names.iter().any(|name| name == ty) {
+                for (ident, attrs) in UPFRONT {
+                    if tokens.iter().any(|token| token == ident) {
+                        read.extend(attrs.iter().map(|name| name.to_string()));
+                    }
+                }
+            }
+        }
+        for name in sr_model::effect_attrs::declared(ty).unwrap() {
+            if !read.iter().any(|r| r == name) {
+                failures.push(format!("{ty} declares {name}, which no kernel read"));
+            }
+        }
+    }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

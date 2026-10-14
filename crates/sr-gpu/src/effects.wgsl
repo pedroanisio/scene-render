@@ -960,7 +960,8 @@ fn fs_bokeh(in: VOut) -> @location(0) vec4<f32> {
 
 // i.x: 0 sharpen (v0.x amount), 1 emboss (v0.x angle rad, v0.y relief, v0.z amount),
 // 2 bevel (v0.x angle rad, v0.y size px, v0.z intensity), 3 lighting (v0.x angle rad, v0.y relief,
-// v0.z intensity, v1 colour; up to 4 point lights in v3..v6: xy uv, z intensity, w radius uv)
+// v0.z intensity, v0.w falloff (0 quadratic, 1 linear, 2 smooth, 3 none), v1 colour; up to 4 point lights in v3..v6:
+// xy uv, z intensity, w radius uv)
 @fragment
 fn fs_conv(in: VOut) -> @location(0) vec4<f32> {
     let d = dims();
@@ -1005,8 +1006,15 @@ fn fs_conv(in: VOut) -> @location(0) vec4<f32> {
                 let pl = v[3 + k2];
                 if (pl.z > 0.0) {
                     let dv = vec3((pl.xy - in.uv) * vec2(d.x / d.y, 1.0), 0.15);
-                    let fall = clamp(1.0 - length(dv.xy) / max(pl.w, 1e-3), 0.0, 1.0);
-                    light += max(dot(nrm, normalize(dv)), 0.0) * pl.z * fall * fall;
+                    let f0 = clamp(1.0 - length(dv.xy) / max(pl.w, 1e-3), 0.0, 1.0);
+                    var fall = f0 * f0; // quadratic
+                    switch u32(v[0].w) {
+                        case 1u: { fall = f0; }                    // linear
+                        case 2u: { fall = f0 * f0 * (3.0 - 2.0 * f0); } // smooth: smoothstep
+                        case 3u: { fall = 1.0; }                   // none
+                        default: {}
+                    }
+                    light += max(dot(nrm, normalize(dv)), 0.0) * pl.z * fall;
                 }
             }
             let lit = s.rgb * mix(1.0, light, v[0].z) * mix(vec3(1.0), v[1].rgb, v[0].z);
@@ -1095,7 +1103,7 @@ fn morph_wide(p: vec2<i32>, r: f32) -> Morph {
 }
 
 // Max (dilate) or min (erode) of alpha over a disc. v0: radius px, mode (0 dilate, 1 erode),
-// wide-disc flag; i.x: 0 plain result, 1 stroke ring (v1 colour, v0.w position: 0 outside, 1 inside, 2 centre),
+// wide-disc flag; i.x: 0 matte result (v0.w = 1 averages min/max), 1 stroke ring (v1 colour, v0.w position: 0 outside, 1 inside, 2 centre),
 // 2 outline only, 3 the field of a small disc (v2.x its radius px: every texel of it is weighed),
 // 4 the field of the disc of radius v2.w, from the one in aux. A wide disc reads the field in aux.
 @fragment
@@ -1146,11 +1154,11 @@ fn fs_morph(in: VOut) -> @location(0) vec4<f32> {
         }
     }
     if (fx_op() == 0u) {
-        let na = select(mx, mn, v[0].y > 0.5);
+        let na = select(select(mx, mn, v[0].y > 0.5), (mx + mn) * 0.5, v[0].w > 0.5);
         let f = select(0.0, na / s.a, s.a > 1e-5);
         // grown texels take the colour of the nearest source, covered ones keep their own
         let base = select(unpre(donor), unpre(s), s.a > 1e-5);
-        return select(vec4(base * na, na), s * f, s.a > 1e-5 && v[0].y > 0.5);
+        return select(vec4(base * na, na), s * f, s.a > 1e-5 && v[0].y > 0.5 && v[0].w < 0.5);
     }
     var ring = 0.0;
     let pos = u32(v[0].w);
