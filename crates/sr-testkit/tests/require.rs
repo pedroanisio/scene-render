@@ -20,6 +20,22 @@ fn missing_gpu() {
 }
 
 #[test]
+fn missing_vulkan() {
+    if child() {
+        let _: () = sr_testkit::require_vulkan!(Err::<(), _>("no Vulkan adapter"), "missing_vulkan");
+        panic!("require_vulkan! went on without a Vulkan adapter");
+    }
+}
+
+#[test]
+fn missing_gl() {
+    if child() {
+        let _: () = sr_testkit::require_gl!(Err::<(), _>("no OpenGL adapter"), "missing_gl");
+        panic!("require_gl! went on without an OpenGL adapter");
+    }
+}
+
+#[test]
 fn missing_ffmpeg() {
     if child() {
         sr_testkit::require_ffmpeg!("missing_ffmpeg", &[NO_TOOL]);
@@ -39,7 +55,7 @@ fn missing_heic() {
 fn rerun(test: &str, var: &str, value: Option<&str>) -> (bool, String) {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command.args(["--exact", test, "--nocapture", "--test-threads=1"]).env(CHILD, "1");
-    for other in ["SR_REQUIRE_GPU", "SR_REQUIRE_FFMPEG", "SR_REQUIRE_HEIC"] {
+    for other in ["SR_REQUIRE_GPU", "SR_REQUIRE_VULKAN", "SR_REQUIRE_GL", "SR_REQUIRE_FFMPEG", "SR_REQUIRE_HEIC"] {
         command.env_remove(other);
     }
     if let Some(value) = value {
@@ -49,8 +65,10 @@ fn rerun(test: &str, var: &str, value: Option<&str>) -> (bool, String) {
     (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned())
 }
 
-const CASES: [(&str, &str, &str, &str); 3] = [
+const CASES: [(&str, &str, &str, &str); 5] = [
     ("missing_gpu", "SR_REQUIRE_GPU", "no adapter", "a GPU adapter"),
+    ("missing_vulkan", "SR_REQUIRE_VULKAN", "no Vulkan adapter", "a Vulkan adapter"),
+    ("missing_gl", "SR_REQUIRE_GL", "no OpenGL adapter", "an OpenGL adapter"),
     ("missing_ffmpeg", "SR_REQUIRE_FFMPEG", "cannot run /nonexistent/sr-testkit-tool", "FFmpeg"),
     ("missing_heic", "SR_REQUIRE_HEIC", "no HEVC plugin", "a HEIC decoder"),
 ];
@@ -74,5 +92,21 @@ fn a_missing_requirement_fails_the_test_where_it_is_required() {
         assert!(stderr.contains(&format!("{test}: {reason} ({var}=1 requires {needs})")), "{test}: {stderr}");
         assert!(!stderr.contains("SKIPPED"), "{test}: {stderr}");
         assert!(!stderr.contains("went on"), "{test}: {stderr}");
+    }
+}
+
+#[test]
+fn each_backend_is_required_on_its_own() {
+    // SR_REQUIRE_GPU asks for some adapter; it does not make a missing Vulkan or OpenGL adapter fail, nor does
+    // requiring one backend fail a test that misses the other
+    for (test, other) in [
+        ("missing_vulkan", "SR_REQUIRE_GPU"),
+        ("missing_vulkan", "SR_REQUIRE_GL"),
+        ("missing_gl", "SR_REQUIRE_GPU"),
+        ("missing_gl", "SR_REQUIRE_VULKAN"),
+    ] {
+        let (passed, stderr) = rerun(test, other, Some("1"));
+        assert!(passed, "{test} with {other}=1: {stderr}");
+        assert!(stderr.contains(&format!("SKIPPED ({test}):")), "{test}: {stderr}");
     }
 }
