@@ -3226,9 +3226,12 @@ dependencies = [
  "sr-3d",
  "sr-eval",
  "sr-geo",
+ "sr-gpu",
+ "sr-media",
  "sr-model",
  "sr-text",
  "sr-vector",
+ "sr-volume",
 ]
 
 [[package]]

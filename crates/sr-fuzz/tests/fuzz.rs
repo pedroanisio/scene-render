@@ -169,6 +169,46 @@ fn document_assets_smoke() {
 }
 
 #[test]
+fn lut_smoke() {
+    smoke("lut", 1000);
+}
+
+#[test]
+fn openvdb_smoke() {
+    smoke("openvdb", 300);
+}
+
+#[test]
+fn srvol_smoke() {
+    smoke("srvol", 600);
+}
+
+#[test]
+fn vox_smoke() {
+    smoke("vox", 600);
+}
+
+#[test]
+fn font_smoke() {
+    smoke("font", 200);
+}
+
+#[test]
+fn stroke_font_smoke() {
+    smoke("stroke-font", 1000);
+}
+
+#[test]
+fn icc_smoke() {
+    smoke("icc", 1000);
+}
+
+#[test]
+fn ies_smoke() {
+    smoke("ies", 1000);
+}
+
+#[test]
 fn campaign_partitions_preserve_the_serial_work_and_crashes() {
     let seeds =
         vec![r#"<scene version="1.0"><project width="4" height="4" fps="1" duration="1"/><composition/></scene>"#

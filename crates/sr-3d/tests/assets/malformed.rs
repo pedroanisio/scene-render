@@ -1,5 +1,6 @@
 //! Malformed assets are import errors (or are repaired), never panics or runaway allocations.
 
+use sr_3d::light::Ies;
 use sr_3d::{anim, import, Animation, Asset, Channel, Interp, Model, Node, Path};
 
 fn tmp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
@@ -239,4 +240,66 @@ fn sparse_accessor_indices_must_be_ordered_and_inside_the_accessor() {
             }
         }
     }
+}
+
+/// An LM-63 profile with `nv` vertical and `nh` horizontal angles as written, then `values`.
+fn ies(nv: &str, nh: &str, multiplier: &str, values: &str) -> String {
+    format!("IESNA:LM-63-2002\nTILT=NONE\n1 1000 {multiplier} {nv} {nh} 1 2 0 0 0\n1 1 100\n{values}\n")
+}
+
+#[test]
+fn ies_angle_counts_whose_table_overflows_are_an_error() {
+    for (nv, nh) in [("1e10", "1e10"), ("4294967296", "4294967296"), ("1e30", "1")] {
+        let e = Ies::parse(&ies(nv, nh, "1", "0 0 100")).expect_err("a table larger than memory is no profile");
+        assert!(e.contains("angle"), "{nv}x{nh}: {e}");
+    }
+}
+
+#[test]
+fn ies_with_no_angles_or_fractional_counts_is_an_error() {
+    for (nv, nh, values) in
+        [("0", "0", ""), ("1", "0", "0"), ("0", "1", "0"), ("-1", "1", "0 0"), ("1.5", "1", "0 0 100")]
+    {
+        let e =
+            Ies::parse(&ies(nv, nh, "1", values)).expect_err("a profile needs a whole number of angles of each kind");
+        assert!(e.contains("angle"), "{nv}x{nh}: {e}");
+    }
+}
+
+#[test]
+fn ies_angles_out_of_order_or_not_finite_are_an_error() {
+    for (what, nv, nh, values) in [
+        ("descending vertical", "3", "1", "90 45 0\n0\n0 50 100"),
+        ("descending horizontal", "2", "2", "0 90\n90 0\n100 0 100 0"),
+        ("NaN vertical", "3", "1", "0 nan 90\n0\n100 50 0"),
+        ("infinite horizontal", "2", "2", "0 90\n0 inf\n100 0 100 0"),
+    ] {
+        let e = Ies::parse(&ies(nv, nh, "1", values)).expect_err(what);
+        assert!(e.contains("angle"), "{what}: {e}");
+    }
+}
+
+#[test]
+fn ies_candela_that_is_negative_or_not_finite_is_an_error() {
+    for (what, multiplier, values) in [
+        ("NaN candela", "1", "0 45 90\n0\n100 nan 0"),
+        ("negative candela", "1", "0 45 90\n0\n100 -5 0"),
+        ("NaN multiplier", "nan", "0 45 90\n0\n100 50 0"),
+        ("overflowing product", "1e30", "0 45 90\n0\n1e30 50 0"),
+    ] {
+        let e = Ies::parse(&ies("3", "1", multiplier, values)).expect_err(what);
+        assert!(e.contains("candela"), "{what}: {e}");
+    }
+}
+
+#[test]
+fn ies_sampled_in_an_undefined_direction_is_dark() {
+    let profile = Ies::parse(&ies("3", "1", "1", "0 45 90\n0\n100 50 0")).expect("a valid profile");
+    for (theta, phi) in [(f32::NAN, 0.0), (0.0, f32::NAN), (f32::INFINITY, 0.0), (10.0, f32::NEG_INFINITY)] {
+        assert_eq!(profile.sample(theta, phi), 0.0, "({theta}, {phi})");
+    }
+    // a profile built by hand without a table has no light in it, rather than a panic
+    let empty = Ies { vertical: vec![], horizontal: vec![], candela: vec![] };
+    assert_eq!(empty.sample(10.0, 0.0), 0.0);
+    assert!(empty.bake(4, 2).iter().all(|v| *v == 0.0));
 }

@@ -33,6 +33,7 @@ ALLOWED = {
     # test code: a #[global_allocator] that counts allocations and forwards them to System
     ("crates/sr-eval/tests/crater_memory.rs", "unsafe impl GlobalAlloc for ObservedSystem"): "allocation count",
     ("crates/sr-eval/tests/terrain_memory.rs", "unsafe impl GlobalAlloc for ObservedSystem"): "allocation count",
+    ("crates/sr-fuzz/tests/parsers.rs", "unsafe impl GlobalAlloc for Counting"): "allocation count",
     ("crates/sr-geo/tests/pmtiles_memory.rs", "unsafe impl GlobalAlloc for ObservedSystem"): "allocation count",
     ("crates/sr-gpu/tests/drape_memory.rs", "unsafe impl GlobalAlloc for Counting"): "allocation count",
     ("crates/sr-sim/src/pyro/voxel_memory.rs", "unsafe impl GlobalAlloc for Counting"): "allocation count",

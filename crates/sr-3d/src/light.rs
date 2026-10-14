@@ -50,36 +50,63 @@ impl Ies {
             return Err("truncated photometric data".into());
         }
         let multiplier = nums[2];
-        let (nv, nh) = (nums[3] as usize, nums[4] as usize);
+        // a count is a whole number of at least one, and the table it implies must be in the file before anything is
+        // sized from it
+        let count = |what: &str, n: f32| -> Result<usize, String> {
+            if n.is_finite() && n >= 1.0 && n.fract() == 0.0 && n <= nums.len() as f32 {
+                Ok(n as usize)
+            } else {
+                Err(format!("{what} angle count {n} is not a whole number from 1 to the values in the file"))
+            }
+        };
+        let (nv, nh) = (count("vertical", nums[3])?, count("horizontal", nums[4])?);
         let mut k = 13;
-        let need = nv + nh + nv * nh;
-        if nums.len() < k + need {
-            return Err(format!("expected {need} values after the header, found {}", nums.len() - k));
+        let need = nv.checked_mul(nh).and_then(|t| t.checked_add(nv + nh));
+        if need.filter(|n| nums.len() - k >= *n).is_none() {
+            return Err(format!(
+                "{nv} vertical by {nh} horizontal angles need more values than the {} after the header",
+                nums.len() - k
+            ));
         }
         let vertical = nums[k..k + nv].to_vec();
         k += nv;
         let horizontal = nums[k..k + nh].to_vec();
         k += nh;
-        let candela =
+        for (what, axis) in [("vertical", &vertical), ("horizontal", &horizontal)] {
+            if axis.iter().any(|a| !a.is_finite()) || axis.windows(2).any(|w| w[1] < w[0]) {
+                return Err(format!("{what} angles must be finite and in ascending order"));
+            }
+        }
+        let candela: Vec<Vec<f32>> =
             (0..nh).map(|h| nums[k + h * nv..k + (h + 1) * nv].iter().map(|c| c * multiplier).collect()).collect();
+        if candela.iter().flatten().any(|c| !c.is_finite() || *c < 0.0) {
+            return Err(format!("candela values (times the multiplier {multiplier}) must be finite and not negative"));
+        }
         Ok(Ies { vertical, horizontal, candela })
     }
 
+    /// The two entries of `axis` around `v` and the fraction between them; the end entry outside the axis, and the
+    /// first for an axis of fewer than two angles or an angle that is not a number.
     fn interp(axis: &[f32], v: f32) -> (usize, usize, f32) {
-        if axis.len() < 2 || v <= axis[0] {
+        use std::cmp::Ordering::{Greater, Less};
+        let n = axis.len();
+        if n < 2 || v.partial_cmp(&axis[0]) != Some(Greater) {
             return (0, 0, 0.0);
         }
-        if v >= axis[axis.len() - 1] {
-            let l = axis.len() - 1;
-            return (l, l, 0.0);
+        if v.partial_cmp(&axis[n - 1]) != Some(Less) {
+            return (n - 1, n - 1, 0.0);
         }
-        let i = axis.partition_point(|&a| a <= v) - 1;
+        let i = axis.partition_point(|&a| a <= v).clamp(1, n - 1) - 1;
         (i, i + 1, (v - axis[i]) / (axis[i + 1] - axis[i]).max(1e-6))
     }
 
     /// Candela towards vertical angle `theta` and horizontal angle `phi` (degrees),
     /// with the profile's symmetry (0, 0–90, 0–180 or full) unfolded.
     pub fn sample(&self, theta: f32, phi: f32) -> f32 {
+        // no direction, no light; nor past the last vertical angle
+        if !theta.is_finite() || !phi.is_finite() || theta > self.vertical.last().copied().unwrap_or(180.0) {
+            return 0.0;
+        }
         let last = self.horizontal.last().copied().unwrap_or(0.0);
         let mut p = phi.rem_euclid(360.0);
         if last <= 0.0 {
@@ -92,13 +119,16 @@ impl Ies {
         }
         let (h0, h1, hu) = Self::interp(&self.horizontal, p);
         let (v0, v1, vu) = Self::interp(&self.vertical, theta);
-        let at = |h: usize, v: usize| self.candela[h][v];
+        // a profile built by hand may have a table smaller than its axes: what it lacks is dark
+        let at = |h: usize, v: usize| self.candela.get(h).and_then(|row| row.get(v)).copied().unwrap_or(0.0);
         let a = at(h0, v0) + (at(h0, v1) - at(h0, v0)) * vu;
         let b = at(h1, v0) + (at(h1, v1) - at(h1, v0)) * vu;
-        if theta > self.vertical.last().copied().unwrap_or(180.0) {
-            return 0.0;
+        let c = a + (b - a) * hu;
+        if c.is_finite() {
+            c
+        } else {
+            0.0
         }
-        a + (b - a) * hu
     }
 
     /// A `w`×`h` table over θ ∈ [0, 180] (columns) and φ ∈ [0, 360) (rows), normalised to a peak of 1.
