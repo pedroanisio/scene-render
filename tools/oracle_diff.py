@@ -76,7 +76,7 @@ def main():
         docs.append((p, data))
     out = subprocess.run([str(BIN), "validate", "--no-assets", "--format", "json", *[str(p) for p, _ in docs]],
                          capture_output=True, text=True)
-    report = {f["file"]: f for f in json.loads(out.stdout)["files"]}
+    report = {f["file"]: f for f in json.loads(out.stdout)["result"]["files"]}
     mismatches = 0
     stats = collections.Counter()
     for p, data in docs:

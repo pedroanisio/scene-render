@@ -220,6 +220,33 @@ class EncodedFrameTests(unittest.TestCase):
         probe["streams"][0]["nb_read_frames"] = "1327"
         self.assertAlmostEqual(gate.check_video(report, "short.mp4", probe), 1327 / 30)
 
+    def test_the_encode_report_is_the_cli_envelope(self):
+        envelope = {"format": "scene-render-cli/1", "schema_version": "1.0.0", "command": "encode", "ok": True,
+                    "exit_code": 0, "result": {"outputs": [{"path": "film.mp4", "frames": 3}]},
+                    "diagnostics": [], "error": None}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "encode.json"
+            path.write_text(json.dumps(envelope) + "\n")
+            self.assertEqual(gate.reports(path), [{"path": "film.mp4", "frames": 3}])
+            failed = dict(envelope, ok=False, exit_code=1, result=None,
+                          error={"kind": "failed", "message": "1 construct not drawn", "codes": []})
+            path.write_text(json.dumps(failed))
+            with self.assertRaisesRegex(gate.GateError, "not a successful encode: 1 construct not drawn"):
+                gate.reports(path)
+            path.write_text(json.dumps(dict(envelope, command="render")))
+            with self.assertRaisesRegex(gate.GateError, "not a successful encode"):
+                gate.reports(path)
+            path.write_text(json.dumps(dict(envelope, result={"outputs": "film.mp4"})))
+            with self.assertRaisesRegex(gate.GateError, "result.outputs"):
+                gate.reports(path)
+            # the line-per-output report of earlier releases, and anything else, is refused
+            path.write_text('{"path": "a.mp4", "frames": 3}\n{"path": "b.mp4", "frames": 3}\n')
+            with self.assertRaisesRegex(gate.GateError, "not one JSON document"):
+                gate.reports(path)
+            path.write_text(json.dumps([{"path": "film.mp4"}]))
+            with self.assertRaisesRegex(gate.GateError, "scene-render-cli/1 envelope"):
+                gate.reports(path)
+
     def test_degraded_output_is_not_certified(self):
         with self.assertRaisesRegex(gate.GateError, "unsupported"):
             gate.check_video({"unsupported": ["missing shader"]}, "film.mp4", {})

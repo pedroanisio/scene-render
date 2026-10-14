@@ -114,13 +114,25 @@ def successful(argv, *, env=None):
     return result
 
 
+CLI_FORMAT = "scene-render-cli/1"
+
+
 def reports(path):
-    text = Path(path).read_text()
+    """The per-output reports of a saved `encode --json` standard output: the envelope scene-render-cli/1 of a
+    successful encode, whose result.outputs holds one report per delivered output."""
     try:
-        data = json.loads(text)
-        return data if isinstance(data, list) else [data]
-    except json.JSONDecodeError:
-        return [json.loads(line) for line in text.splitlines() if line.strip()]
+        data = json.loads(Path(path).read_text())
+    except json.JSONDecodeError as e:
+        raise GateError(f"Encode report is not one JSON document: {e}") from e
+    require(isinstance(data, dict) and data.get("format") == CLI_FORMAT,
+            f"Encode report must be the {CLI_FORMAT} envelope of `scene-render encode --json`")
+    error = data.get("error") or {}
+    require(data.get("ok") is True and data.get("command") == "encode",
+            f"Encode report is not a successful encode: {error.get('message', 'no error recorded')}")
+    outputs = (data.get("result") or {}).get("outputs")
+    require(isinstance(outputs, list) and all(isinstance(r, dict) for r in outputs),
+            "Encode report has no result.outputs list")
+    return outputs
 
 
 def probe(path):

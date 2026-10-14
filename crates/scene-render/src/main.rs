@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod changes;
+mod output;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -11,6 +12,8 @@ use std::process::ExitCode;
 use anstream::{AutoStream, ColorChoice};
 use anstyle::{AnsiColor, Style};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use output::{style, ErrorKind, Out};
+use serde_json::{json, Value};
 use sr_model::diag::LineIndex;
 use sr_model::{codes, Diagnostic, LoadError, LoadOptions, Report, Severity};
 
@@ -18,12 +21,15 @@ const EXAMPLES: &str = "\
 Examples:
   scene-render validate promo.scene.xml
   scene-render validate scenes/*.xml --format json > report.json
+  scene-render inspect promo.scene.xml --json
   scene-render validate promo.scene.xml --no-assets --deny-warnings
   scene-render inspect promo.scene.xml
   scene-render eval promo.scene.xml --time 2.5 --variant dark --param headline=Hi
   scene-render eval promo.scene.xml --bench
   scene-render captions promo.scene.xml --at 1.5,3
   scene-render explain C21
+
+Output: text by default; with --format json (or --json) every command prints one JSON document,\nthe envelope scene-render-cli/1 (format, schema_version, command, ok, exit_code, result,\ndiagnostics, error), and messages go to standard error.
 
 Exit status: 0 valid, 1 invalid (or warnings with --deny-warnings; render/encode: anything\nnot rendered as authored with --strict), 2 usage, I/O or internal error.";
 
@@ -47,6 +53,15 @@ struct Cli {
     /// The environment variable SR_GPU_DEBUG (any value but empty or 0) does the same; the GPU layer reads it itself.
     #[arg(long, global = true)]
     debug_gpu: bool,
+
+    /// Output format: text for a person, or json: one JSON document on standard output (the envelope
+    /// scene-render-cli/1 with the command's result, its diagnostics and its error), messages on standard error.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text, global = true)]
+    format: OutputFormat,
+
+    /// The same as --format json.
+    #[arg(long, global = true)]
+    json: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -75,9 +90,6 @@ struct BakeArgs {
     /// Parameter value, repeatable: --param id=value.
     #[arg(long="param", value_name="ID=VALUE", value_parser=parse_param)]
     params: Vec<(String, String)>,
-    /// Print the receipt as JSON.
-    #[arg(long)]
-    json: bool,
 }
 
 /// Quality tier (overrides the document's `project@quality`).
@@ -108,19 +120,22 @@ enum Color {
     Never,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum Format {
-    /// Diagnostics with source excerpts.
-    Human,
-    /// One JSON document on stdout.
-    Json,
+impl Color {
+    fn choice(self) -> ColorChoice {
+        match self {
+            Color::Auto => ColorChoice::Auto,
+            Color::Always => ColorChoice::Always,
+            Color::Never => ColorChoice::Never,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum EvalFormat {
-    /// One line per node.
-    Summary,
-    /// The full FrameGraph as JSON.
+enum OutputFormat {
+    /// Text for a person: diagnostics with source excerpts, summaries (formerly `human` and `summary`).
+    #[value(alias = "human", alias = "summary")]
+    Text,
+    /// One JSON document on standard output: the envelope scene-render-cli/1.
     Json,
 }
 
@@ -149,9 +164,6 @@ enum Command {
         /// Scene documents to validate.
         #[arg(required = true, value_name = "FILE")]
         files: Vec<PathBuf>,
-        /// Output format.
-        #[arg(long, value_enum, default_value_t = Format::Human)]
-        format: Format,
         /// Skip file existence and SHA-256 checks.
         #[arg(long)]
         no_assets: bool,
@@ -166,13 +178,12 @@ enum Command {
         quiet: bool,
     },
     /// Load a document and summarise the typed model.
+    ///
+    /// With --format json the result carries the summary and the whole typed model under `model`.
     Inspect {
         /// Scene document.
         #[arg(value_name = "FILE")]
         file: PathBuf,
-        /// Print the full typed model as JSON.
-        #[arg(long)]
-        json: bool,
         /// Skip file existence and SHA-256 checks.
         #[arg(long)]
         no_assets: bool,
@@ -203,9 +214,6 @@ enum Command {
         /// Data source of --row (default: the first one).
         #[arg(long, requires = "row")]
         data: Option<String>,
-        /// Output format.
-        #[arg(long, value_enum, default_value_t = EvalFormat::Summary)]
-        format: EvalFormat,
         /// Evaluate every frame and report timing instead of printing a frame.
         #[arg(long)]
         bench: bool,
@@ -369,9 +377,6 @@ enum Command {
         /// Data source of --row (default: the first one).
         #[arg(long, requires = "row")]
         data: Option<String>,
-        /// Print each report as JSON.
-        #[arg(long)]
-        json: bool,
         /// Exit 1 if anything was not rendered as authored: unsupported content, shader fallbacks
         /// (pass-through effects, crossfaded transitions), evaluator warnings or, when encoding,
         /// accessibility findings. Output files are still written.
@@ -421,16 +426,9 @@ enum Command {
         /// Do not read or write the shared result store.
         #[arg(long)]
         no_store: bool,
-        /// Print the results as JSON.
-        #[arg(long)]
-        json: bool,
     },
     /// List the GPU adapters found and mark the one renders use (see SR_GPU_ADAPTER, SR_GPU_BACKEND).
-    Gpus {
-        /// Print the list as JSON.
-        #[arg(long)]
-        json: bool,
-    },
+    Gpus,
     /// Print this engine's capability manifest (scene-render-capabilities/1, SREP 22): the constructs of the scene
     /// format it does not draw exactly.
     Capabilities,
@@ -447,66 +445,25 @@ enum Command {
     },
 }
 
-struct Out {
-    w: AutoStream<std::io::Stdout>,
-}
-
-fn style(c: AnsiColor, bold: bool) -> Style {
-    let s = Style::new().fg_color(Some(c.into()));
-    if bold {
-        s.bold()
-    } else {
-        s
-    }
-}
-
-impl Out {
-    fn new(color: Color) -> Self {
-        let choice = match color {
-            Color::Auto => ColorChoice::Auto,
-            Color::Always => ColorChoice::Always,
-            Color::Never => ColorChoice::Never,
-        };
-        Out { w: AutoStream::new(std::io::stdout(), choice) }
-    }
-
-    fn diagnostic(&mut self, file: &Path, lines: &LineIndex, d: &Diagnostic) -> std::io::Result<()> {
-        let (label, color) = match d.severity {
-            Severity::Error => ("error", AnsiColor::Red),
-            Severity::Warning => ("warning", AnsiColor::Yellow),
-            Severity::Info => ("info", AnsiColor::Cyan),
-        };
-        let head = style(color, true);
-        let bold = Style::new().bold();
-        let blue = style(AnsiColor::Blue, true);
-        writeln!(self.w, "{head}{label}[{}]{head:#}{bold}: {}{bold:#}", d.code, d.message)?;
-        let gutter = d.loc.line.max(1).to_string().len();
-        let pad = " ".repeat(gutter);
-        writeln!(self.w, "{pad}{blue}-->{blue:#} {}:{}:{}", file.display(), d.loc.line, d.loc.column)?;
-        let text = lines.line_text(d.loc.line);
-        if d.loc.line > 0 && !text.is_empty() {
-            let shown: String = text.chars().map(|c| if c == '\t' { ' ' } else { c }).collect();
-            writeln!(self.w, "{pad} {blue}|{blue:#}")?;
-            writeln!(self.w, "{blue}{}{blue:#} {blue}|{blue:#} {shown}", d.loc.line)?;
-            let col = d.loc.column.max(1) as usize - 1;
-            let span =
-                shown.chars().skip(col).take_while(|c| !c.is_whitespace() && *c != '>' && *c != '/').count().max(1);
-            writeln!(self.w, "{pad} {blue}|{blue:#} {}{head}{}{head:#}", " ".repeat(col), "^".repeat(span))?;
+impl Command {
+    /// The subcommand as it is typed, the envelope's `command`.
+    fn name(&self) -> &'static str {
+        match self {
+            Command::Validate { .. } => "validate",
+            Command::Inspect { .. } => "inspect",
+            Command::Eval { .. } => "eval",
+            Command::Captions { .. } => "captions",
+            Command::Render { .. } => "render",
+            Command::Watch { .. } => "watch",
+            Command::Encode { .. } => "encode",
+            Command::Simulate { .. } => "simulate",
+            Command::BakeVolume(_) => "bake-volume",
+            Command::Resolve { .. } => "resolve",
+            Command::Gpus => "gpus",
+            Command::Capabilities => "capabilities",
+            Command::Explain { .. } => "explain",
+            Command::Completions { .. } => "completions",
         }
-        if let Some(h) = &d.help {
-            writeln!(self.w, "{pad} {blue}={blue:#} {bold}help{bold:#}: {h}")?;
-        }
-        writeln!(self.w, "{pad} {blue}={blue:#} at {}", d.path)?;
-        writeln!(self.w)
-    }
-
-    fn summary(&mut self, file: &Path, report: &Report, deny_warnings: bool) -> std::io::Result<()> {
-        let (e, w, i) = (report.error_count(), report.warning_count(), report.info_count());
-        let ok = e == 0 && !(deny_warnings && w > 0);
-        let (mark, st) =
-            if ok { ("valid", style(AnsiColor::Green, true)) } else { ("invalid", style(AnsiColor::Red, true)) };
-        let info = if i > 0 { format!(", {i} info") } else { String::new() };
-        writeln!(self.w, "{st}{mark}{st:#} {}: {e} error(s), {w} warning(s){info}", file.display())
     }
 }
 
@@ -633,13 +590,12 @@ fn compile_findings(text: &str, opts: &LoadOptions) -> (Vec<Diagnostic>, Vec<Str
 
 fn validate(
     files: &[PathBuf],
-    format: Format,
     no_assets: bool,
     base_dir: Option<PathBuf>,
     deny_warnings: bool,
     quiet: bool,
     out: &mut Out,
-) -> std::io::Result<ExitCode> {
+) -> std::io::Result<u8> {
     let opts = LoadOptions { verify_assets: !no_assets, base_dir };
     let mut worst = 0u8;
     let mut json_files = Vec::new();
@@ -683,11 +639,13 @@ fn validate(
         }
         reports.push((file, Some((text, report)), None));
     }
+    let (mut invalid, mut codes) = (0usize, Vec::new());
     for (file, result, io) in &reports {
         match (result, io) {
             (_, Some(err)) => {
                 worst = 2;
-                if format == Format::Json {
+                let message = format!("cannot read {}: {err}", file.display());
+                if out.json() {
                     json_files.push(FileReport {
                         file: file.display().to_string(),
                         valid: false,
@@ -697,18 +655,25 @@ fn validate(
                         info: Vec::new(),
                         diagnostics: &[],
                     });
+                    out.fail(ErrorKind::Io, message);
                 } else {
                     let st = style(AnsiColor::Red, true);
                     let mut e = AutoStream::auto(std::io::stderr());
-                    writeln!(e, "{st}error{st:#}: cannot read {}: {err}", file.display())?;
+                    writeln!(e, "{st}error{st:#}: {message}")?;
+                    out.record(ErrorKind::Io, message, Vec::new());
                 }
             }
             (Some((text, report)), None) => {
                 let ok = !(report.has_errors() || deny_warnings && report.warning_count() > 0);
                 if !ok {
                     worst = worst.max(1);
+                    invalid += 1;
+                    let counted = |d: &&Diagnostic| {
+                        d.severity == Severity::Error || deny_warnings && d.severity == Severity::Warning
+                    };
+                    codes.extend(report.diagnostics.iter().filter(counted).map(|d| d.code.clone()));
                 }
-                if format == Format::Json {
+                if out.json() {
                     json_files.push(FileReport {
                         file: file.display().to_string(),
                         valid: ok,
@@ -734,21 +699,38 @@ fn validate(
             (None, None) => unreachable!(),
         }
     }
-    if format == Format::Json {
-        let doc = serde_json::json!({ "valid": worst == 0, "files": json_files });
-        writeln!(out.w, "{}", serde_json::to_string_pretty(&doc).expect("serialisable"))?;
+    if invalid > 0 {
+        out.record(ErrorKind::Invalid, format!("{invalid} of {} file(s) invalid", files.len()), codes);
     }
-    Ok(ExitCode::from(worst))
+    out.set_result(json!({ "valid": worst == 0, "files": json_files }));
+    Ok(worst)
 }
 
-fn simulate(file: &Path, output: Option<PathBuf>, out: &mut Out) -> std::io::Result<ExitCode> {
+fn simulate(file: &Path, output: Option<PathBuf>, out: &mut Out) -> std::io::Result<u8> {
     use sha2::Digest;
     // the cache being regenerated may differ from its recorded digest, so assets are not verified
     let doc = match sr_model::load_file(file, &LoadOptions::without_assets()) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("error: {}: {e}", file.display());
-            return Ok(ExitCode::from(1));
+            let codes = match &e {
+                LoadError::Invalid(report) => {
+                    if out.json() {
+                        for d in &report.diagnostics {
+                            out.note(file, d);
+                        }
+                    }
+                    report.diagnostics.iter().filter(|d| d.is_error()).map(|d| d.code.clone()).collect()
+                }
+                LoadError::Io { .. } => Vec::new(),
+            };
+            let message = format!("{}: {e}", file.display());
+            if out.echo() {
+                eprintln!("error: {message}");
+            }
+            // an unreadable document has always exited 1 here, like an invalid one
+            let kind = if codes.is_empty() { ErrorKind::Failed } else { ErrorKind::Invalid };
+            out.record(kind, message, codes);
+            return Ok(1);
         }
     };
     let dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -756,38 +738,51 @@ fn simulate(file: &Path, output: Option<PathBuf>, out: &mut Out) -> std::io::Res
     {
         Some(t) => t,
         None => {
-            eprintln!("error: {} has no physics@cache; name the cache file with -o", file.display());
-            return Ok(ExitCode::from(2));
+            return Ok(out.fail(
+                ErrorKind::Usage,
+                format!("{} has no physics@cache; name the cache file with -o", file.display()),
+            ))
         }
     };
     let ev = match sr_eval::Evaluator::new(&doc, &sr_eval::EvalOptions::default()) {
         Ok(ev) => ev,
-        Err(report) => {
-            for d in &report.diagnostics {
-                eprintln!("error[{}]: {}", d.code, d.message);
-            }
-            return Ok(ExitCode::from(1));
-        }
+        Err(report) => return evaluator_errors(file, &report, out),
     };
     let bytes = match ev.physics_cache() {
         Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: {}: {e}", file.display());
-            return Ok(ExitCode::from(1));
-        }
+        Err(e) => return Ok(out.fail(ErrorKind::Failed, format!("{}: {e}", file.display()))),
     };
-    std::fs::write(&target, &bytes)?;
+    if let Err(e) = std::fs::write(&target, &bytes) {
+        return Ok(out.fail(ErrorKind::Io, format!("cannot write {}: {e}", target.display())));
+    }
     let sha: String = sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
     writeln!(out.w, "wrote {} ({} bytes)", target.display(), bytes.len())?;
     writeln!(out.w, "cacheSha256=\"{sha}\"")?;
-    Ok(ExitCode::SUCCESS)
+    out.set_result(json!({ "cache": target.display().to_string(), "bytes": bytes.len(), "sha256": sha }));
+    Ok(0)
 }
 
-fn bake_volume(args: BakeArgs, out: &mut Out) -> std::io::Result<ExitCode> {
-    let BakeArgs { file, object, output, first, end, max_mib, params, json } = args;
+/// Errors compiling a document for evaluation: one `error[CODE]: message` line each on standard error (and the
+/// envelope's diagnostics), and the failure.
+fn evaluator_errors(file: &Path, report: &Report, out: &mut Out) -> std::io::Result<u8> {
+    for d in &report.diagnostics {
+        if out.json() {
+            out.note(file, d);
+        } else {
+            eprintln!("error[{}]: {}", d.code, d.message);
+        }
+    }
+    let codes = report.diagnostics.iter().filter(|d| d.is_error()).map(|d| d.code.clone()).collect();
+    out.record(ErrorKind::Invalid, format!("{}: {} error(s)", file.display(), report.error_count()), codes);
+    Ok(1)
+}
+
+fn bake_volume(args: BakeArgs, out: &mut Out) -> std::io::Result<u8> {
+    let BakeArgs { file, object, output, first, end, max_mib, params } = args;
     if std::fs::symlink_metadata(&output).is_ok() {
-        eprintln!("error: {} already exists; choose a new cache directory", output.display());
-        return Ok(ExitCode::from(2));
+        return Ok(
+            out.fail(ErrorKind::Usage, format!("{} already exists; choose a new cache directory", output.display()))
+        );
     }
     let result = (|| -> Result<sr_volume::bake::BakeReceipt, String> {
         let bytes = max_mib
@@ -820,103 +815,130 @@ fn bake_volume(args: BakeArgs, out: &mut Out) -> std::io::Result<ExitCode> {
     })();
     match result {
         Ok(receipt) => {
-            if json {
-                writeln!(
-                    out.w,
-                    "{}",
-                    serde_json::json!({"manifest":receipt.manifest,"sha256":receipt.sha256,"frames":receipt.frames,"bytes":receipt.bytes,"clock":"composition","object":object})
-                )?;
-            } else {
-                writeln!(
-                    out.w,
-                    "wrote {} ({} frames, {} bytes)",
-                    receipt.manifest.display(),
-                    receipt.frames,
-                    receipt.bytes
-                )?;
-                writeln!(out.w, "sha256=\"{}\"", receipt.sha256)?;
-                writeln!(out.w,"Use a volume asset with format=\"srvseq\" and this manifest/digest; replace {object}'s pyro child with the asset reference. Playback uses composition time.")?;
-            }
-            Ok(ExitCode::SUCCESS)
+            writeln!(
+                out.w,
+                "wrote {} ({} frames, {} bytes)",
+                receipt.manifest.display(),
+                receipt.frames,
+                receipt.bytes
+            )?;
+            writeln!(out.w, "sha256=\"{}\"", receipt.sha256)?;
+            writeln!(out.w,"Use a volume asset with format=\"srvseq\" and this manifest/digest; replace {object}'s pyro child with the asset reference. Playback uses composition time.")?;
+            out.set_result(json!({
+                "manifest": receipt.manifest,
+                "sha256": receipt.sha256,
+                "frames": receipt.frames,
+                "bytes": receipt.bytes,
+                "clock": "composition",
+                "object": object,
+            }));
+            Ok(0)
         }
-        Err(e) => {
-            eprintln!("error: {e}");
-            Ok(ExitCode::from(1))
-        }
+        Err(e) => Ok(out.fail(ErrorKind::Failed, e)),
     }
 }
 
-fn resolve(file: &Path, o: &sr_resolve::Options, json: bool, out: &mut Out) -> std::io::Result<ExitCode> {
+fn resolve(file: &Path, o: &sr_resolve::Options, out: &mut Out) -> std::io::Result<u8> {
     use sr_resolve::Status;
     let rows = match sr_resolve::resolve(file, o) {
         Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return Ok(ExitCode::from(2));
-        }
+        Err(e) => return Ok(out.fail(ErrorKind::Io, e.to_string())),
     };
-    if json {
-        writeln!(out.w, "{}", serde_json::to_string_pretty(&rows).unwrap_or_default())?;
-    } else {
-        for r in &rows {
-            let (label, color) = match r.status {
-                Status::UpToDate => ("up to date", AnsiColor::Green),
-                Status::Pinned => ("pinned", AnsiColor::Green),
-                Status::Restored => ("restored", AnsiColor::Green),
-                Status::Made => ("made", AnsiColor::Green),
-                Status::Stale => ("stale", AnsiColor::Yellow),
-                Status::Error => ("error", AnsiColor::Red),
-            };
-            let st = style(color, true);
-            let sha = r.sha256.as_deref().map(|s| &s[..12.min(s.len())]).unwrap_or("");
-            write!(out.w, "{st}{label:>10}{st:#}  {} ({}, {})  {}", r.id, r.element, r.provider, r.cache)?;
-            if !sha.is_empty() {
-                write!(out.w, "  {sha}…")?;
-            }
-            writeln!(out.w)?;
-            if !r.message.is_empty() {
-                writeln!(out.w, "            {}", r.message)?;
-            }
-            for n in &r.notes {
-                writeln!(out.w, "            note: {n}")?;
-            }
+    for r in &rows {
+        let (label, color) = match r.status {
+            Status::UpToDate => ("up to date", AnsiColor::Green),
+            Status::Pinned => ("pinned", AnsiColor::Green),
+            Status::Restored => ("restored", AnsiColor::Green),
+            Status::Made => ("made", AnsiColor::Green),
+            Status::Stale => ("stale", AnsiColor::Yellow),
+            Status::Error => ("error", AnsiColor::Red),
+        };
+        let st = style(color, true);
+        let sha = r.sha256.as_deref().map(|s| &s[..12.min(s.len())]).unwrap_or("");
+        write!(out.w, "{st}{label:>10}{st:#}  {} ({}, {})  {}", r.id, r.element, r.provider, r.cache)?;
+        if !sha.is_empty() {
+            write!(out.w, "  {sha}…")?;
         }
-        if rows.is_empty() {
-            writeln!(out.w, "nothing to resolve: no <generated> or <pdf> assets or transcribed caption tracks")?;
+        writeln!(out.w)?;
+        if !r.message.is_empty() {
+            writeln!(out.w, "            {}", r.message)?;
+        }
+        for n in &r.notes {
+            writeln!(out.w, "            note: {n}")?;
         }
     }
-    let failed = rows.iter().any(|r| r.status == Status::Error || (o.check && r.status == Status::Stale));
-    Ok(if failed { ExitCode::from(1) } else { ExitCode::SUCCESS })
+    if rows.is_empty() {
+        writeln!(out.w, "nothing to resolve: no <generated> or <pdf> assets or transcribed caption tracks")?;
+    }
+    let errors = rows.iter().filter(|r| r.status == Status::Error).count();
+    let stale = rows.iter().filter(|r| o.check && r.status == Status::Stale).count();
+    if errors > 0 {
+        out.record(ErrorKind::Failed, format!("{errors} target(s) could not be made"), Vec::new());
+    }
+    if stale > 0 {
+        out.record(ErrorKind::Failed, format!("{stale} target(s) stale"), Vec::new());
+    }
+    out.set_result(json!({ "targets": rows }));
+    Ok(u8::from(errors + stale > 0))
 }
 
-fn inspect(file: &Path, json: bool, no_assets: bool, out: &mut Out) -> std::io::Result<ExitCode> {
+fn inspect(file: &Path, no_assets: bool, out: &mut Out) -> std::io::Result<u8> {
     let opts = if no_assets { LoadOptions::without_assets() } else { LoadOptions::default() };
     let doc = match sr_model::load_file(file, &opts) {
         Ok(d) => d,
         Err(LoadError::Io { path, source }) => {
-            eprintln!("error: cannot read {}: {source}", path.display());
-            return Ok(ExitCode::from(2));
+            return Ok(out.fail(ErrorKind::Io, format!("cannot read {}: {source}", path.display())))
         }
         Err(LoadError::Invalid(report)) => {
             let text = sr_model::read_document(file).unwrap_or_default();
-            let lines = LineIndex::new(&text);
-            for d in &report.diagnostics {
-                out.diagnostic(file, &lines, d)?;
-            }
-            out.summary(file, &report, false)?;
-            return Ok(ExitCode::from(1));
+            return out.report_invalid(file, &LineIndex::new(&text), &report);
         }
     };
-    if json {
-        writeln!(out.w, "{}", serde_json::to_string_pretty(&doc.scene).expect("serialisable"))?;
-        return Ok(ExitCode::SUCCESS);
-    }
     let s = &doc.scene;
     let (w, h) = doc.frame_size();
+    let fps = doc.fps();
+    let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
+    if let Some(a) = &s.assets {
+        for c in &a.children {
+            *kinds.entry(c.element_name()).or_default() += 1;
+        }
+    }
+    let nodes = doc.composition_nodes();
+    let depth = nodes.iter().map(|(d, _)| d + 1).max().unwrap_or(0);
+    let symbols = s.symbols.as_ref().map_or(0, |x| x.symbols.len());
+    let effects = s.effects.as_ref().map_or(0, |x| x.effects.len());
+    if out.json() {
+        for d in doc.warnings() {
+            out.note(file, d);
+        }
+        out.set_result(json!({
+            "file": file.display().to_string(),
+            "version": doc.version().to_string(),
+            "width": w,
+            "height": h,
+            "fps": fps.to_string(),
+            "fps_ratio": { "num": fps.num, "den": fps.den },
+            "duration": doc.duration(),
+            "frames": doc.frame_count(),
+            "background": s.project.background.to_string(),
+            "working_color_space": s.project.working_color_space.to_string(),
+            "linear_light": s.project.linear_light,
+            "assets": kinds,
+            "nodes": nodes.len(),
+            "depth": depth,
+            "symbols": symbols,
+            "effects": effects,
+            "outputs": s.outputs.iter().map(|o| json!({ "id": o.id, "path": o.path, "codec": o.codec.to_string() })).collect::<Vec<_>>(),
+            "ids": doc.index().len(),
+            "warnings": doc.warnings().len(),
+            "model": &doc.scene,
+        }));
+        return Ok(0);
+    }
     let bold = Style::new().bold();
     writeln!(out.w, "{bold}{}{bold:#}", file.display())?;
     writeln!(out.w, "  version      {}", doc.version())?;
-    writeln!(out.w, "  frame        {w}x{h} @ {} fps", doc.fps())?;
+    writeln!(out.w, "  frame        {w}x{h} @ {fps} fps")?;
     writeln!(out.w, "  duration     {} s = {} frames", doc.duration(), doc.frame_count())?;
     writeln!(out.w, "  background   {}", s.project.background)?;
     writeln!(
@@ -925,19 +947,11 @@ fn inspect(file: &Path, json: bool, no_assets: bool, out: &mut Out) -> std::io::
         s.project.working_color_space,
         if s.project.linear_light { " (linear light)" } else { "" }
     )?;
-    let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
-    if let Some(a) = &s.assets {
-        for c in &a.children {
-            *kinds.entry(c.element_name()).or_default() += 1;
-        }
-    }
     let kinds: Vec<String> = kinds.iter().map(|(k, v)| format!("{v} {k}")).collect();
     writeln!(out.w, "  assets       {}", if kinds.is_empty() { "none".into() } else { kinds.join(", ") })?;
-    let nodes = doc.composition_nodes();
-    let depth = nodes.iter().map(|(d, _)| d + 1).max().unwrap_or(0);
     writeln!(out.w, "  nodes        {} in the composition, depth {depth}", nodes.len())?;
-    writeln!(out.w, "  symbols      {}", s.symbols.as_ref().map_or(0, |x| x.symbols.len()))?;
-    writeln!(out.w, "  effects      {}", s.effects.as_ref().map_or(0, |x| x.effects.len()))?;
+    writeln!(out.w, "  symbols      {symbols}")?;
+    writeln!(out.w, "  effects      {effects}")?;
     writeln!(out.w, "  outputs      {}", s.outputs.len())?;
     for o in &s.outputs {
         writeln!(out.w, "    {} ({})", o.path, o.codec)?;
@@ -946,123 +960,142 @@ fn inspect(file: &Path, json: bool, no_assets: bool, out: &mut Out) -> std::io::
     if !doc.warnings().is_empty() {
         writeln!(out.w, "  warnings     {}", doc.warnings().len())?;
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(0)
 }
 
-fn gpus(json: bool, out: &mut Out) -> std::io::Result<ExitCode> {
+fn gpus(out: &mut Out) -> std::io::Result<u8> {
     let (found, chosen) = sr_gpu::gpu::adapters(&sr_gpu::gpu::GpuOptions::from_env());
     if found.is_empty() {
-        eprintln!("error: {}", sr_gpu::GpuError::NoAdapter("no adapter was found".into()));
-        return Ok(ExitCode::from(2));
+        let e = sr_gpu::GpuError::NoAdapter("no adapter was found".into());
+        out.set_result(json!({ "adapters": [] }));
+        return Ok(out.fail(ErrorKind::Unavailable, e.to_string()));
     }
-    let chosen = chosen.map_err(|e| eprintln!("error: {e}")).ok();
-    if json {
-        let list: Vec<_> = found
-            .iter()
-            .enumerate()
-            .map(|(i, a)| {
-                serde_json::json!({
-                    "name": a.name,
-                    "backend": format!("{:?}", a.backend),
-                    "device_type": format!("{:?}", a.device_type),
-                    "driver": a.driver,
-                    "software": sr_gpu::gpu::is_software(a),
-                    "chosen": chosen == Some(i),
-                })
-            })
-            .collect();
-        let doc = serde_json::json!({ "adapters": list });
-        writeln!(out.w, "{}", serde_json::to_string_pretty(&doc).expect("serialisable"))?;
-    } else {
-        for (i, a) in found.iter().enumerate() {
-            let mark = if chosen == Some(i) { '*' } else { ' ' };
-            let soft = if sr_gpu::gpu::is_software(a) { ", software" } else { "" };
-            writeln!(out.w, "{mark} {} ({:?}, {:?}{soft})", a.name, a.backend, a.device_type)?;
+    let chosen = match chosen {
+        Ok(i) => Some(i),
+        Err(e) => {
+            out.fail(ErrorKind::Unavailable, e.to_string());
+            None
         }
+    };
+    let list: Vec<_> = found
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            json!({
+                "name": a.name,
+                "backend": format!("{:?}", a.backend),
+                "device_type": format!("{:?}", a.device_type),
+                "driver": a.driver,
+                "software": sr_gpu::gpu::is_software(a),
+                "chosen": chosen == Some(i),
+            })
+        })
+        .collect();
+    out.set_result(json!({ "adapters": list }));
+    for (i, a) in found.iter().enumerate() {
+        let mark = if chosen == Some(i) { '*' } else { ' ' };
+        let soft = if sr_gpu::gpu::is_software(a) { ", software" } else { "" };
+        writeln!(out.w, "{mark} {} ({:?}, {:?}{soft})", a.name, a.backend, a.device_type)?;
     }
-    Ok(if chosen.is_some() { ExitCode::SUCCESS } else { ExitCode::from(2) })
+    Ok(if chosen.is_some() { 0 } else { ErrorKind::Unavailable.exit() })
 }
 
-fn explain(code: Option<&str>, out: &mut Out) -> std::io::Result<ExitCode> {
+fn explain(code: Option<&str>, out: &mut Out) -> std::io::Result<u8> {
     let bold = Style::new().bold();
+    let entry = |code: &str, stage: &str, summary: &str| json!({ "code": code, "stage": stage, "summary": summary });
     match code {
         None => {
+            let mut list = Vec::new();
             for c in codes::all() {
                 writeln!(out.w, "{bold}{:<16}{bold:#} {:<9} {}", c.code, c.stage, c.summary)?;
+                list.push(entry(c.code, c.stage, c.summary));
             }
             for (c, summary) in sr_eval::codes::CODES {
                 writeln!(out.w, "{bold}{c:<16}{bold:#} {:<9} {summary}", "eval")?;
+                list.push(entry(c, "eval", summary));
             }
-            Ok(ExitCode::SUCCESS)
+            out.set_result(json!({ "codes": list }));
+            Ok(0)
         }
         Some(code) if sr_eval::codes::CODES.iter().any(|(c, _)| c.eq_ignore_ascii_case(code)) => {
             let (c, summary) = sr_eval::codes::CODES.iter().find(|(c, _)| c.eq_ignore_ascii_case(code)).unwrap();
             writeln!(out.w, "{bold}{c}{bold:#} (eval)\n{summary}")?;
-            Ok(ExitCode::SUCCESS)
+            out.set_result(json!({ "codes": [entry(c, "eval", summary)] }));
+            Ok(0)
         }
         Some(code) => match codes::lookup(code) {
             Some(c) => {
                 writeln!(out.w, "{bold}{}{bold:#} ({})", c.code, c.stage)?;
                 writeln!(out.w, "{}", c.summary)?;
+                let mut e = entry(c.code, c.stage, c.summary);
                 if let Some((ctx, test)) = c.rule {
                     writeln!(out.w, "\n  context: {ctx}\n  test:    {test}")?;
+                    e["context"] = ctx.into();
+                    e["test"] = test.into();
                 }
-                Ok(ExitCode::SUCCESS)
+                out.set_result(json!({ "codes": [e] }));
+                Ok(0)
             }
             None => {
-                let all: Vec<&str> = codes::all().iter().map(|c| c.code).collect();
-                eprintln!("error: unknown code {code:?}; `scene-render explain` lists all {} codes", all.len());
-                Ok(ExitCode::from(2))
+                let all = codes::all().len();
+                Ok(out.fail(
+                    ErrorKind::Usage,
+                    format!("unknown code {code:?}; `scene-render explain` lists all {all} codes"),
+                ))
             }
         },
     }
 }
 
-/// `scene-render captions`: the caption dump of `sr_gpu::caption_dump` on standard output, one JSON document.
+/// `scene-render captions`: the caption dump of `sr_gpu::caption_dump`, one JSON document on standard output (the
+/// envelope's result with --format json).
 fn captions(
     file: &Path,
     at: &[f64],
     opts: sr_eval::EvalOptions,
     no_assets: bool,
     out: &mut Out,
-) -> std::io::Result<ExitCode> {
+) -> std::io::Result<u8> {
     let lopts = if no_assets { LoadOptions::without_assets() } else { LoadOptions::default() };
-    let report = |r: &Report| {
+    let report = |out: &mut Out, r: &Report| {
         for d in &r.diagnostics {
-            eprintln!("{}[{}]: {}", d.severity, d.code, d.message);
+            out.note(file, d);
         }
-        eprintln!("invalid {}: {} error(s)", file.display(), r.error_count());
+        let message = format!("invalid {}: {} error(s)", file.display(), r.error_count());
+        if out.echo() {
+            eprintln!("{message}");
+        }
+        let codes = r.diagnostics.iter().filter(|d| d.is_error()).map(|d| d.code.clone()).collect();
+        out.record(ErrorKind::Invalid, message, codes);
+        1
     };
     let doc = match sr_model::load_file(file, &lopts) {
         Ok(d) => d,
         Err(LoadError::Io { path, source }) => {
-            eprintln!("error: cannot read {}: {source}", path.display());
-            return Ok(ExitCode::from(2));
+            return Ok(out.fail(ErrorKind::Io, format!("cannot read {}: {source}", path.display())))
         }
-        Err(LoadError::Invalid(r)) => {
-            report(&r);
-            return Ok(ExitCode::from(1));
-        }
+        Err(LoadError::Invalid(r)) => return Ok(report(out, &r)),
     };
     let ev = match sr_eval::Evaluator::new(&doc, &opts) {
         Ok(e) => e,
-        Err(r) => {
-            report(&r);
-            return Ok(ExitCode::from(1));
-        }
+        Err(r) => return Ok(report(out, &r)),
     };
-    // JSON owns standard output: warnings and track errors go to standard error, one line each
+    // the dump owns standard output: warnings and track errors go to standard error, one line each
     for w in ev.warnings() {
-        eprintln!("{}[{}]: {}", w.severity, w.code, w.message);
+        out.note(file, w);
     }
     let dump = sr_gpu::caption_dump::dump(ev.program(), at);
     for t in &dump.tracks {
         if let Some(e) = &t.error {
-            eprintln!("error: caption track {}: {e}", t.id);
+            out.fail(ErrorKind::Failed, format!("caption track {}: {e}", t.id));
         }
     }
-    writeln!(out.w, "{}", serde_json::to_string_pretty(&dump).expect("serialisable"))?;
-    Ok(if dump.is_complete() { ExitCode::SUCCESS } else { ExitCode::from(1) })
+    if out.json() {
+        out.set_result(serde_json::to_value(&dump).expect("serialisable"));
+    } else {
+        writeln!(out.w, "{}", serde_json::to_string_pretty(&dump).expect("serialisable"))?;
+    }
+    Ok(if dump.is_complete() { 0 } else { 1 })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1071,48 +1104,32 @@ fn eval(
     time: Option<f64>,
     frame: Option<u64>,
     opts: sr_eval::EvalOptions,
-    format: EvalFormat,
     bench: bool,
     no_assets: bool,
     out: &mut Out,
-) -> std::io::Result<ExitCode> {
+) -> std::io::Result<u8> {
     let lopts = if no_assets { LoadOptions::without_assets() } else { LoadOptions::default() };
     let text = match sr_model::read_document(file) {
         Ok(t) => t,
         // past the document size limit: loading reports it
         Err(LoadError::Invalid(_)) => String::new(),
-        Err(e) => {
-            eprintln!("error: {e}");
-            return Ok(ExitCode::from(2));
-        }
+        Err(e) => return Ok(out.fail(ErrorKind::Io, e.to_string())),
     };
     let lines = LineIndex::new(&text);
-    let report_errors = |out: &mut Out, report: &Report| -> std::io::Result<ExitCode> {
-        for d in &report.diagnostics {
-            out.diagnostic(file, &lines, d)?;
-        }
-        out.summary(file, report, false)?;
-        Ok(ExitCode::from(1))
-    };
     let doc = match sr_model::load_file(file, &lopts) {
         Ok(d) => d,
         Err(LoadError::Io { path, source }) => {
-            eprintln!("error: cannot read {}: {source}", path.display());
-            return Ok(ExitCode::from(2));
+            return Ok(out.fail(ErrorKind::Io, format!("cannot read {}: {source}", path.display())))
         }
-        Err(LoadError::Invalid(r)) => return report_errors(out, &r),
+        Err(LoadError::Invalid(r)) => return out.report_invalid(file, &lines, &r),
     };
     let ev = match sr_eval::Evaluator::new(&doc, &opts) {
         Ok(e) => e,
-        Err(r) => return report_errors(out, &r),
+        Err(r) => return out.report_invalid(file, &lines, &r),
     };
-    // JSON owns standard output: warnings go to standard error then, one line each
+    // in JSON mode warnings go to the envelope and to standard error, one line each
     for w in ev.warnings() {
-        if matches!(format, EvalFormat::Json) {
-            eprintln!("{}[{}]: {}", w.severity, w.code, w.message);
-        } else {
-            out.diagnostic(file, &lines, w)?;
-        }
+        out.diagnostic(file, &lines, w)?;
     }
     if bench {
         let n = ev.frame_count().max(1);
@@ -1125,28 +1142,35 @@ fn eval(
             .collect();
         times.sort_by(f64::total_cmp);
         let (nodes, slots, channels, exprs) = ev.stats();
+        let (median, p95, max) =
+            (times[times.len() / 2], times[(times.len() * 95 / 100).min(times.len() - 1)], times[times.len() - 1]);
         writeln!(
             out.w,
             "{}: {nodes} nodes, {slots} properties, {channels} keyframe channels, {exprs} expressions",
             file.display()
         )?;
-        writeln!(
-            out.w,
-            "{n} frames: median {:.3} ms, p95 {:.3} ms, max {:.3} ms per frame on one core",
-            times[times.len() / 2],
-            times[(times.len() * 95 / 100).min(times.len() - 1)],
-            times[times.len() - 1]
-        )?;
-        return Ok(ExitCode::SUCCESS);
+        writeln!(out.w, "{n} frames: median {median:.3} ms, p95 {p95:.3} ms, max {max:.3} ms per frame on one core")?;
+        out.set_result(json!({
+            "file": file.display().to_string(),
+            "nodes": nodes,
+            "properties": slots,
+            "channels": channels,
+            "expressions": exprs,
+            "frames": n,
+            "median_ms": median,
+            "p95_ms": p95,
+            "max_ms": max,
+        }));
+        return Ok(0);
     }
     let g = match (time, frame) {
         (Some(t), _) => ev.evaluate(t),
         (None, Some(f)) => ev.evaluate_frame(f),
         (None, None) => ev.evaluate(0.0),
     };
-    if format == EvalFormat::Json {
-        writeln!(out.w, "{}", serde_json::to_string_pretty(&g).expect("serialisable"))?;
-        return Ok(ExitCode::SUCCESS);
+    if out.json() {
+        out.set_result(serde_json::to_value(&g).expect("serialisable"));
+        return Ok(0);
     }
     let bold = Style::new().bold();
     let dim = Style::new().dimmed();
@@ -1193,7 +1217,7 @@ fn eval(
     for e in &g.elements {
         writeln!(out.w, "{} <{}> {}", e.key, e.element, serde_json::to_string(&e.props).unwrap_or_default())?;
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(0)
 }
 
 fn parse_range(s: &str) -> Result<(u64, u64), String> {
@@ -1251,35 +1275,24 @@ fn render(
     quality: Option<sr_model::model::ProjectQuality>,
     inc: Incremental,
     out: &mut Out,
-) -> std::io::Result<ExitCode> {
+) -> std::io::Result<u8> {
     let text = match sr_model::read_document(file) {
         Ok(t) => t,
         // past the document size limit: loading reports it
         Err(LoadError::Invalid(_)) => String::new(),
-        Err(e) => {
-            eprintln!("error: {e}");
-            return Ok(ExitCode::from(2));
-        }
+        Err(e) => return Ok(out.fail(ErrorKind::Io, e.to_string())),
     };
     let lines = LineIndex::new(&text);
-    let report_errors = |out: &mut Out, report: &Report| -> std::io::Result<ExitCode> {
-        for d in &report.diagnostics {
-            out.diagnostic(file, &lines, d)?;
-        }
-        out.summary(file, report, false)?;
-        Ok(ExitCode::from(1))
-    };
     let doc = match sr_model::load_file(file, &LoadOptions::default()) {
         Ok(d) => d,
         Err(LoadError::Io { path, source }) => {
-            eprintln!("error: cannot read {}: {source}", path.display());
-            return Ok(ExitCode::from(2));
+            return Ok(out.fail(ErrorKind::Io, format!("cannot read {}: {source}", path.display())))
         }
-        Err(LoadError::Invalid(r)) => return report_errors(out, &r),
+        Err(LoadError::Invalid(r)) => return out.report_invalid(file, &lines, &r),
     };
     let ev = match sr_eval::Evaluator::new(&doc, &opts) {
         Ok(e) => e,
-        Err(r) => return report_errors(out, &r),
+        Err(r) => return out.report_invalid(file, &lines, &r),
     };
     for w in doc.warnings().iter().chain(ev.warnings()) {
         out.diagnostic(file, &lines, w)?;
@@ -1299,7 +1312,7 @@ fn render(
         }
     };
     if safe.iter().any(|d| d.is_error()) {
-        return report_errors(out, &Report { diagnostics: safe });
+        return out.report_invalid(file, &lines, &Report { diagnostics: safe });
     }
     for d in &safe {
         out.diagnostic(file, &lines, d)?;
@@ -1309,6 +1322,7 @@ fn render(
     let persistent = sr_gpu::shader::has_persistent(ev.program(), doc.base_dir());
     let setup = changes::setup_key(&text, &inputs);
     let mut keep = inc.keep;
+    let mut notes: Vec<String> = Vec::new();
     // Feedback checkpoints contain pixels from the previous document, even when renderer
     // setup is unchanged. Rebuild them on a watch run before replaying edited history.
     let kept = keep.as_mut().and_then(|k| k.take()).filter(|(key, _)| *key == setup && !persistent).map(|(_, r)| r);
@@ -1317,13 +1331,11 @@ fn render(
         None => {
             let gpu = match sr_gpu::Gpu::new_for(ev.program().uses_3d()) {
                 Ok(g) => g,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    return Ok(ExitCode::from(2));
-                }
+                Err(e) => return Ok(out.fail(ErrorKind::Unavailable, e.to_string())),
             };
             if let Some(w) = sr_gpu::gpu::software_warning(&gpu.info) {
                 writeln!(out.w, "warning: {w}")?;
+                notes.push(format!("warning: {w}"));
             }
             sr_gpu::Renderer::new(gpu, ev.program())
         }
@@ -1335,6 +1347,7 @@ fn render(
     r.time_gpu = stats;
     let graphs = |f: u64| ev.evaluate_frame(f);
     let mut unsupported = std::collections::BTreeSet::new();
+    let mut result = serde_json::Map::new();
     if bench {
         let frames = if frames.is_empty() { (0..ev.frame_count().max(1)).collect() } else { frames };
         let warm = frames.len().min(2);
@@ -1342,8 +1355,7 @@ fn render(
             let mut sub = |st: f64| ev.evaluate(st);
             let frame = r.render_with(&graphs(f), ev.program(), Some(&mut sub));
             if !frame.stats.errors.is_empty() {
-                report_frame_errors(&format!("frame {f}"), &frame.stats);
-                return Ok(ExitCode::from(1));
+                return Ok(report_frame_errors(out, &format!("frame {f}"), &frame.stats));
             }
             unsupported.extend(frame.stats.unsupported.iter().cloned());
             r.gpu().wait();
@@ -1361,8 +1373,7 @@ fn render(
             let mut sub = |st: f64| ev.evaluate(st);
             last = r.render_with(&g, ev.program(), Some(&mut sub)).stats;
             if !last.errors.is_empty() {
-                report_frame_errors(&format!("frame {f}"), &last);
-                return Ok(ExitCode::from(1));
+                return Ok(report_frame_errors(out, &format!("frame {f}"), &last));
             }
             submit_ms.push(t1.elapsed().as_secs_f64() * 1e3);
             if pipelined {
@@ -1394,6 +1405,35 @@ fn render(
         };
         let (times, eval_ms, submit_ms, gpu_ms) = (sorted(times), sorted(eval_ms), sorted(submit_ms), sorted(gpu_ms));
         let med = times[times.len() / 2];
+        let p95 = |v: &[f64]| v[(v.len() * 95 / 100).min(v.len() - 1)];
+        result.insert("file".into(), json!(file.display().to_string()));
+        result.insert("frames".into(), json!(frames.len()));
+        result.insert("adapter".into(), json!(adapter));
+        result.insert("pipelined".into(), json!(pipelined));
+        result.insert("median_ms".into(), json!(med));
+        result.insert("fps".into(), json!(1e3 / med));
+        result.insert("p95_ms".into(), json!(p95(&times)));
+        result.insert("submit_ms".into(), json!(submit_ms[submit_ms.len() / 2]));
+        result.insert("eval_ms".into(), json!(eval_ms[eval_ms.len() / 2]));
+        if !gpu_ms.is_empty() {
+            result.insert("gpu_median_ms".into(), json!(gpu_ms[gpu_ms.len() / 2]));
+            result.insert("gpu_p95_ms".into(), json!(p95(&gpu_ms)));
+        }
+        result.insert(
+            "last".into(),
+            json!({
+                "draws": last.draws,
+                "targets": last.targets,
+                "cache_hits": last.cache_hits,
+                "prefix_restored": last.prefix_restored,
+                "backdrop_copies": last.backdrop_copies,
+                "fx_passes": last.fx_passes,
+                "subframes": last.subframes,
+                "objects3d": last.objects3d,
+                "triangles": last.triangles,
+                "splats": last.splats,
+            }),
+        );
         writeln!(
             out.w,
             "{}: {} frames on {adapter}{}",
@@ -1452,13 +1492,11 @@ fn render(
         };
         let mut recorded = std::time::Instant::now();
         let mut rendered = 0usize;
+        let mut written = Vec::new();
         for (f, t) in list {
             let path = match frame_path(&output, f.unwrap_or(0), several) {
                 Ok(p) => p,
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    return Ok(ExitCode::from(2));
-                }
+                Err(e) => return Ok(out.fail(ErrorKind::Usage, e)),
             };
             let g = ev.evaluate(t);
             let print = prints.as_ref().map(|p| format!("{:016x}", p.frame(&text, &g)));
@@ -1470,13 +1508,11 @@ fn render(
             let frame = r.render_with(&g, ev.program(), Some(&mut sub));
             unsupported.extend(frame.stats.unsupported.iter().cloned());
             if !frame.stats.errors.is_empty() {
-                report_frame_errors(&format!("frame at {:.3} s", g.time), &frame.stats);
-                return Ok(ExitCode::from(1));
+                return Ok(report_frame_errors(out, &format!("frame at {:.3} s", g.time), &frame.stats));
             }
             let px = r.read(&frame.texture);
             if let Err(e) = r.gpu().take_error() {
-                eprintln!("error: frame at {:.3} s: {e}", g.time);
-                return Ok(ExitCode::from(1));
+                return Ok(out.fail(ErrorKind::Failed, format!("frame at {:.3} s: {e}", g.time)));
             }
             if stats {
                 let gpu = r.gpu_times();
@@ -1502,10 +1538,10 @@ fn render(
                 image::RgbaImage::from_raw(w, h, r.to_srgb8(&px)).expect("sized").save(&path)
             };
             if let Err(e) = res {
-                eprintln!("error: cannot write {}: {e}", path.display());
-                return Ok(ExitCode::from(2));
+                return Ok(out.fail(ErrorKind::Io, format!("cannot write {}: {e}", path.display())));
             }
             writeln!(out.w, "wrote {} (t = {:.4} s, {} draws)", path.display(), g.time, frame.stats.draws)?;
+            written.push(json!({ "path": path.display().to_string(), "time": g.time, "draws": frame.stats.draws }));
             rendered += 1;
             // Unsupported output must be rendered again so --strict cannot lose diagnostics,
             // including when a prior invocation did not request strict validation.
@@ -1522,33 +1558,46 @@ fn render(
         if let Some(prints) = &prints {
             if let Some(why) = &prints.whole {
                 writeln!(out.w, "note: {why}: an edit to the composition renders every frame")?;
+                notes.push(format!("{why}: an edit to the composition renders every frame"));
             }
             writeln!(out.w, "rendered {rendered} of {total} frames ({} unchanged)", total - rendered)?;
         }
+        result.insert("written".into(), json!(written));
+        result.insert("rendered".into(), json!(rendered));
+        result.insert("total".into(), json!(total));
     }
     if let Some(k) = keep {
         *k = Some((setup, r));
     }
     let problems = unsupported.len() + eval_warnings;
-    for u in unsupported {
+    for u in &unsupported {
         writeln!(out.w, "note: not rendered yet: {u}")?;
     }
+    result.insert("unsupported".into(), json!(unsupported));
+    result.insert("notes".into(), json!(notes));
+    result.insert("warnings".into(), json!(eval_warnings));
+    out.set_result(Value::Object(result));
     if strict && problems > 0 {
-        eprintln!("error: --strict: {problems} item(s) not rendered as authored (see the notes and warnings above)");
-        return Ok(ExitCode::from(1));
+        return Ok(out.fail(
+            ErrorKind::Failed,
+            format!("--strict: {problems} item(s) not rendered as authored (see the notes and warnings above)"),
+        ));
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(0)
 }
 
 /// Every error of a frame that cannot be written, and the notes about what else was not rendered as
-/// authored, so that the cause of a failure is never left out.
-fn report_frame_errors(label: &str, stats: &sr_gpu::RenderStats) {
+/// authored, so that the cause of a failure is never left out; the exit status of the failure.
+fn report_frame_errors(out: &mut Out, label: &str, stats: &sr_gpu::RenderStats) -> u8 {
     for error in &stats.errors {
-        eprintln!("error: {label}: {error}");
+        out.fail(ErrorKind::Failed, format!("{label}: {error}"));
     }
     for note in &stats.unsupported {
-        eprintln!("note: not rendered yet: {note}");
+        if out.echo() {
+            eprintln!("note: not rendered yet: {note}");
+        }
     }
+    ErrorKind::Failed.exit()
 }
 
 /// Incremental rendering: only changed frames, and a renderer kept between renders (watch).
@@ -1577,7 +1626,7 @@ fn watch(
     interval: u64,
     max_runs: Option<u32>,
     out: &mut Out,
-) -> std::io::Result<ExitCode> {
+) -> std::io::Result<u8> {
     let mut keep: Option<(u64, sr_gpu::Renderer)> = None;
     let mut runs = 0u32;
     loop {
@@ -1608,6 +1657,10 @@ fn watch(
         runs += 1;
         if max_runs.is_some_and(|m| runs >= m) {
             return Ok(code);
+        }
+        // in JSON mode each render is one envelope, on its own line, as it finishes
+        if out.json() {
+            out.emit(Some("watch"), code);
         }
         writeln!(out.w, "watching {} for changes (Ctrl-C stops)", file.display())?;
         out.w.flush()?;
@@ -1666,18 +1719,14 @@ fn encode(
     path: Option<String>,
     codec: Option<String>,
     opts: sr_deliver::Options,
-    json: bool,
     strict: bool,
     report_to: Option<&Path>,
     out: &mut Out,
-) -> std::io::Result<ExitCode> {
+) -> std::io::Result<u8> {
     use sr_deliver::render_report::{self, Finding, OutputInfo, ReportWriter};
     let bytes = match sr_model::limits::read_capped(file, sr_model::limits::MAX_DOCUMENT_BYTES) {
         Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: cannot read {}: {e}", file.display());
-            return Ok(ExitCode::from(2));
-        }
+        Err(e) => return Ok(out.fail(ErrorKind::Io, format!("cannot read {}: {e}", file.display()))),
     };
     let text = String::from_utf8_lossy(&bytes).into_owned();
     let folder = match file.parent() {
@@ -1690,22 +1739,20 @@ fn encode(
         // one path for several outputs would keep only the last report
         let n = sr_model::load_file(file, &LoadOptions::without_assets()).map(|d| d.scene.outputs.len()).unwrap_or(2);
         if n > 1 {
-            eprintln!("error: --report {}: the document has {n} outputs; include {{id}} in the path", r.display());
-            return Ok(ExitCode::from(2));
+            return Ok(out.fail(
+                ErrorKind::Usage,
+                format!("--report {}: the document has {n} outputs; include {{id}} in the path", r.display()),
+            ));
         }
     }
     let lines = LineIndex::new(&text);
     let doc = match sr_model::load_file(file, &LoadOptions::default()) {
         Ok(d) => d,
         Err(LoadError::Io { path, source }) => {
-            eprintln!("error: cannot read {}: {source}", path.display());
-            return Ok(ExitCode::from(2));
+            return Ok(out.fail(ErrorKind::Io, format!("cannot read {}: {source}", path.display())))
         }
         Err(LoadError::Invalid(r)) => {
-            for d in &r.diagnostics {
-                out.diagnostic(file, &lines, d)?;
-            }
-            out.summary(file, &r, false)?;
+            let exit = out.report_invalid(file, &lines, &r)?;
             // a render that stops on an error still writes its report, with the error among the findings (SREP 18)
             let findings: Vec<Finding> = r.diagnostics.iter().map(Finding::of_diagnostic).collect();
             let mut targets: Vec<(PathBuf, OutputInfo)> = Vec::new();
@@ -1733,7 +1780,7 @@ fn encode(
             for (rp, info) in targets {
                 write_render_report(&writer.report(info, findings.clone()), &rp);
             }
-            return Ok(ExitCode::from(1));
+            return Ok(exit);
         }
     };
     let outputs: Vec<sr_model::model::Output> = match path {
@@ -1741,10 +1788,7 @@ fn encode(
             let c = codec.unwrap_or_else(|| codec_for_path(&p).to_string());
             match sr_deliver::adhoc_output(&p, &c) {
                 Ok(o) => vec![o],
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    return Ok(ExitCode::from(2));
-                }
+                Err(e) => return Ok(out.fail(ErrorKind::Usage, e.to_string())),
             }
         }
         None => doc
@@ -1784,12 +1828,12 @@ fn encode(
     };
     if outputs.is_empty() {
         let message = format!("{} defines no matching <output>; pass -o PATH for an ad-hoc output", file.display());
-        eprintln!("error: {message}");
+        let exit = out.fail(ErrorKind::Usage, message.clone());
         if let Some(rp) = report_to {
             let info = OutputInfo { id: None, width: 0, height: 0, start: 0.0, end: 0.0 };
             stop_early(vec![(cli_report_path(rp, None), info)], message);
         }
-        return Ok(ExitCode::from(2));
+        return Ok(exit);
     }
     // the adapter is chosen from the document: one that cannot run the 3D pass is skipped when an output draws in 3D
     let needs_3d = outputs
@@ -1803,17 +1847,17 @@ fn encode(
             outputs.iter().any(|o| o.codec.as_str() != "audio-only").then(|| sr_gpu::Gpu::new_for(needs_3d)).transpose()
         }
         Err(e) => {
-            eprintln!("error: {e}");
+            let exit = out.fail(ErrorKind::Usage, e.to_string());
             stop_early(report_targets(&outputs), e.to_string());
-            return Ok(ExitCode::from(2));
+            return Ok(exit);
         }
     };
     let gpu = match gpu {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("error: {e}");
+            let exit = out.fail(ErrorKind::Unavailable, e.to_string());
             stop_early(report_targets(&outputs), e.to_string());
-            return Ok(ExitCode::from(2));
+            return Ok(exit);
         }
     };
     let tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
@@ -1828,6 +1872,7 @@ fn encode(
         }
     }
     let mut failed = false;
+    let mut delivered = Vec::new();
     for o in &outputs {
         // On a terminal: a live counter. Otherwise (a log file, a CI job) a line about every 10 s with the
         // rate and the time left, so a long encode never runs blind.
@@ -1913,7 +1958,14 @@ fn encode(
             let report = writer.report(info, findings);
             counted = report.findings.iter().filter(|f| f.severity != Severity::Info).count();
             for rp in &report_paths {
-                failed |= !write_render_report(&report, rp);
+                if !write_render_report(&report, rp) {
+                    out.record(
+                        ErrorKind::Failed,
+                        format!("cannot write the render report {}", rp.display()),
+                        Vec::new(),
+                    );
+                    failed = true;
+                }
             }
         }
         match outcome.map(|()| r) {
@@ -1922,14 +1974,17 @@ fn encode(
                 // warnings, unsupported content, accessibility and legibility, safe area, text fit, fonts, engine
                 // support; information (inert attributes) is not counted (SREP 18)
                 if strict && counted > 0 {
-                    eprintln!(
-                        "error: --strict: {}: {counted} finding(s) at warning or error severity (the render report's findings; information is not counted)",
-                        o.path
+                    out.fail(
+                        ErrorKind::Failed,
+                        format!(
+                            "--strict: {}: {counted} finding(s) at warning or error severity (the render report's findings; information is not counted)",
+                            o.path
+                        ),
                     );
                     failed = true;
                 }
-                if json {
-                    writeln!(out.w, "{}", serde_json::to_string(&r).expect("serialisable"))?;
+                if out.json() {
+                    delivered.push(serde_json::to_value(&r).expect("serialisable"));
                     continue;
                 }
                 let bold = Style::new().bold();
@@ -2013,12 +2068,13 @@ fn encode(
                 }
             }
             Err(e) => {
-                eprintln!("error: {}: {e}", o.path);
+                out.fail(ErrorKind::Failed, format!("{}: {e}", o.path));
                 failed = true;
             }
         }
     }
-    Ok(if failed { ExitCode::from(1) } else { ExitCode::SUCCESS })
+    out.set_result(json!({ "outputs": delivered }));
+    Ok(u8::from(failed))
 }
 
 thread_local! {
@@ -2065,49 +2121,42 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
     }
 }
 
-/// The process exit status of a command's outcome; a panic was already reported by the hook.
-fn exit_code(res: std::thread::Result<std::io::Result<ExitCode>>) -> ExitCode {
+/// Runs a command: its exit status, with an I/O error or a panic recorded as its failure.
+fn run(command: Command, out: &mut Out) -> u8 {
+    // nothing the closure touches is used after a panic but the record of the failure
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(command, out)));
+    let code = settle(res, out);
+    out.exit_status(code)
+}
+
+/// The exit status of a command's outcome: a closed pipe ends the run quietly, an I/O error is the failure of a
+/// run that could not complete, and a panic (already reported by the hook) is an internal error.
+fn settle(res: std::thread::Result<std::io::Result<u8>>, out: &mut Out) -> u8 {
     match res {
         Ok(Ok(code)) => code,
-        Ok(Err(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
-        Ok(Err(e)) => {
-            eprintln!("error: {e}");
-            ExitCode::from(COULD_NOT_RUN)
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => 0,
+        Ok(Err(e)) => out.fail(ErrorKind::Io, e.to_string()),
+        Err(payload) => {
+            out.record(ErrorKind::Internal, internal_error(panic_message(&*payload), None), Vec::new());
+            COULD_NOT_RUN
         }
-        Err(_) => ExitCode::from(COULD_NOT_RUN),
     }
 }
 
-fn main() -> ExitCode {
-    install_panic_hook();
-    let cli = Cli::parse();
-    if cli.debug_gpu {
-        std::env::set_var("SR_GPU_DEBUG", "1");
-    }
-    // on WSL2 the GPU is reachable only through Mesa's D3D12 driver; Mesa reads these
-    // variables when a GL display opens, so set them before any thread starts
-    sr_gpu::gpu::prepare_environment();
-    if let Some(n) = cli.threads.filter(|&n| n > 0) {
-        sr_vector::set_threads(n);
-        if std::env::var_os("RAYON_NUM_THREADS").is_none() {
-            std::env::set_var("RAYON_NUM_THREADS", n.to_string());
+fn dispatch(command: Command, out: &mut Out) -> std::io::Result<u8> {
+    match command {
+        Command::Validate { files, no_assets, base_dir, deny_warnings, quiet } => {
+            validate(&files, no_assets, base_dir, deny_warnings, quiet, out)
         }
-    }
-    let mut out = Out::new(cli.color);
-    // nothing the closure touches is used after a panic: the process reports it and exits
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || match cli.command {
-        Command::Validate { files, format, no_assets, base_dir, deny_warnings, quiet } => {
-            validate(&files, format, no_assets, base_dir, deny_warnings, quiet, &mut out)
-        }
-        Command::Inspect { file, json, no_assets } => inspect(&file, json, no_assets, &mut out),
-        Command::Eval { file, time, frame, variant, layout, params, row, data, format, bench, no_assets } => {
+        Command::Inspect { file, no_assets } => inspect(&file, no_assets, out),
+        Command::Eval { file, time, frame, variant, layout, params, row, data, bench, no_assets } => {
             let opts =
                 sr_eval::EvalOptions { variant, layout, params, row: row.map(|r| (data, r)), ..Default::default() };
-            eval(&file, time, frame, opts, format, bench, no_assets, &mut out)
+            eval(&file, time, frame, opts, bench, no_assets, out)
         }
         Command::Captions { file, at, variant, layout, params, no_assets } => {
             let opts = sr_eval::EvalOptions { variant, layout, params, ..Default::default() };
-            captions(&file, &at, opts, no_assets, &mut out)
+            captions(&file, &at, opts, no_assets, out)
         }
         Command::Render {
             file,
@@ -2148,11 +2197,11 @@ fn main() -> ExitCode {
                 strict,
                 quality.map(QualityArg::model),
                 Incremental { changed_only, keep: None },
-                &mut out,
+                out,
             )
         }
         Command::Watch { file, frames, output, quality, interval, max_runs } => {
-            watch(&file, frames, output, quality.map(QualityArg::model), interval, max_runs, &mut out)
+            watch(&file, frames, output, quality.map(QualityArg::model), interval, max_runs, out)
         }
         Command::Encode {
             file,
@@ -2169,7 +2218,6 @@ fn main() -> ExitCode {
             params,
             row,
             data,
-            json,
             strict,
             quality,
             report,
@@ -2187,23 +2235,94 @@ fn main() -> ExitCode {
                 quality: quality.map(QualityArg::model),
                 report: false,
             };
-            encode(&file, &outputs, path, codec, opts, json, strict, report.as_deref(), &mut out)
+            encode(&file, &outputs, path, codec, opts, strict, report.as_deref(), out)
         }
-        Command::Simulate { file, output } => simulate(&file, output, &mut out),
-        Command::BakeVolume(args) => bake_volume(args, &mut out),
-        Command::Resolve { file, check, force, only, allow_cloud, no_store, json } => {
+        Command::Simulate { file, output } => simulate(&file, output, out),
+        Command::BakeVolume(args) => bake_volume(args, out),
+        Command::Resolve { file, check, force, only, allow_cloud, no_store } => {
             let o = sr_resolve::Options { check, force, only, allow_cloud, store: no_store.then(PathBuf::new) };
-            resolve(&file, &o, json, &mut out)
+            resolve(&file, &o, out)
         }
-        Command::Gpus { json } => gpus(json, &mut out),
-        Command::Capabilities => write!(out.w, "{}", sr_deliver::capabilities::MANIFEST).map(|()| ExitCode::SUCCESS),
-        Command::Explain { code } => explain(code.as_deref(), &mut out),
+        Command::Gpus => gpus(out),
+        Command::Capabilities => {
+            let manifest = sr_deliver::capabilities::MANIFEST;
+            if out.json() {
+                match serde_json::from_str::<Value>(manifest) {
+                    Ok(v) => out.set_result(v),
+                    Err(e) => return Ok(out.fail(ErrorKind::Internal, format!("the capabilities manifest: {e}"))),
+                }
+            }
+            write!(out.w, "{manifest}").map(|()| 0)
+        }
+        Command::Explain { code } => explain(code.as_deref(), out),
         Command::Completions { shell } => {
-            clap_complete::generate(shell, &mut Cli::command(), "scene-render", &mut std::io::stdout());
-            Ok(ExitCode::SUCCESS)
+            if out.json() {
+                let mut script = Vec::new();
+                clap_complete::generate(shell, &mut Cli::command(), "scene-render", &mut script);
+                let script = String::from_utf8_lossy(&script).into_owned();
+                out.set_result(json!({ "shell": shell.to_string(), "script": script }));
+            } else {
+                clap_complete::generate(shell, &mut Cli::command(), "scene-render", &mut std::io::stdout());
+            }
+            Ok(0)
         }
-    }));
-    exit_code(res)
+    }
+}
+
+/// Whether a command line asks for JSON output, read before it could be parsed.
+fn wants_json(args: &[String]) -> bool {
+    args.iter().take_while(|a| *a != "--").enumerate().any(|(i, a)| {
+        a == "--json" || a == "--format=json" || (a == "--format" && args.get(i + 1).is_some_and(|v| v == "json"))
+    })
+}
+
+/// The subcommand a command line names, if any: the first argument that is one.
+fn named_command(args: &[String]) -> Option<String> {
+    let cli = Cli::command();
+    args.iter().take_while(|a| *a != "--").find_map(|a| {
+        cli.get_subcommands()
+            .find(|c| c.get_name() == a || c.get_all_aliases().any(|x| x == a))
+            .map(|c| c.get_name().to_string())
+    })
+}
+
+/// A command line that cannot be parsed: clap's message, and with JSON output asked for, a usage envelope.
+fn parse_failure(e: clap::Error, args: &[String]) -> u8 {
+    if !e.use_stderr() || !wants_json(args) {
+        e.exit()
+    }
+    let _ = e.print();
+    let text = e.to_string();
+    let message = text.lines().next().unwrap_or_default().trim_start_matches("error: ").trim().to_string();
+    let mut out = Out::new(ColorChoice::Never, true);
+    out.record(ErrorKind::Usage, message, Vec::new());
+    out.emit(named_command(args).as_deref(), ErrorKind::Usage.exit())
+}
+
+fn main() -> ExitCode {
+    install_panic_hook();
+    let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => return ExitCode::from(parse_failure(e, &args)),
+    };
+    if cli.debug_gpu {
+        std::env::set_var("SR_GPU_DEBUG", "1");
+    }
+    // on WSL2 the GPU is reachable only through Mesa's D3D12 driver; Mesa reads these
+    // variables when a GL display opens, so set them before any thread starts
+    sr_gpu::gpu::prepare_environment();
+    if let Some(n) = cli.threads.filter(|&n| n > 0) {
+        sr_vector::set_threads(n);
+        if std::env::var_os("RAYON_NUM_THREADS").is_none() {
+            std::env::set_var("RAYON_NUM_THREADS", n.to_string());
+        }
+    }
+    let json = cli.json || cli.format == OutputFormat::Json;
+    let mut out = Out::new(cli.color.choice(), json);
+    let name = cli.command.name();
+    let code = run(cli.command, &mut out);
+    ExitCode::from(if json { out.emit(Some(name), code) } else { code })
 }
 
 #[cfg(test)]
@@ -2212,18 +2331,38 @@ mod exit_tests {
 
     #[test]
     fn a_panic_exits_like_a_run_that_could_not_complete() {
-        let res = std::panic::catch_unwind(|| -> std::io::Result<ExitCode> { panic!("cannot continue") });
-        assert_eq!(exit_code(res), ExitCode::from(COULD_NOT_RUN));
+        let mut out = Out::capture();
+        let res = std::panic::catch_unwind(|| -> std::io::Result<u8> { panic!("cannot continue") });
+        assert_eq!(settle(res, &mut out), COULD_NOT_RUN);
         assert_eq!(COULD_NOT_RUN, 2, "the documented exit status");
+        let (doc, exit) = out.finish(Some("render"), COULD_NOT_RUN);
+        assert_eq!(exit, 2);
+        assert_eq!(doc["error"]["kind"], "internal");
+        assert_eq!(doc["error"]["message"], "internal error: cannot continue");
     }
 
     #[test]
     fn outcomes_keep_their_exit_status() {
-        assert_eq!(exit_code(Ok(Ok(ExitCode::from(1)))), ExitCode::from(1));
+        let mut out = Out::capture();
+        assert_eq!(settle(Ok(Ok(1)), &mut out), 1);
         let pipe = std::io::Error::from(std::io::ErrorKind::BrokenPipe);
-        assert_eq!(exit_code(Ok(Err(pipe))), ExitCode::SUCCESS);
+        assert_eq!(settle(Ok(Err(pipe)), &mut out), 0);
         let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
-        assert_eq!(exit_code(Ok(Err(missing))), ExitCode::from(COULD_NOT_RUN));
+        assert_eq!(settle(Ok(Err(missing)), &mut out), COULD_NOT_RUN);
+        let (doc, _) = out.finish(Some("inspect"), COULD_NOT_RUN);
+        assert_eq!(doc["error"]["kind"], "io");
+    }
+
+    #[test]
+    fn json_is_asked_for_by_either_spelling_but_not_after_the_end_of_options() {
+        let args = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        assert!(wants_json(&args("inspect --json a.xml")));
+        assert!(wants_json(&args("--format json inspect a.xml")));
+        assert!(wants_json(&args("inspect --format=json a.xml")));
+        assert!(!wants_json(&args("inspect --format text a.xml")));
+        assert!(!wants_json(&args("validate -- --json")));
+        assert_eq!(named_command(&args("--color never validate --bogus")).as_deref(), Some("validate"));
+        assert_eq!(named_command(&args("--format json --bogus")), None);
     }
 
     #[test]

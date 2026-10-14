@@ -46,6 +46,12 @@ fn validate(tag: &str, body: &str, extra: &[&str]) -> Output {
     o
 }
 
+/// The result of the `--format json` envelope a run printed.
+fn result(o: &Output) -> serde_json::Value {
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("json");
+    v["result"].clone()
+}
+
 #[test]
 fn a_written_id_equal_to_a_namespaced_one_fails_validation_with_prg14() {
     // SREP 87: program p1 emits g1 as p1.g1, which the document also writes
@@ -57,7 +63,7 @@ fn a_written_id_equal_to_a_namespaced_one_fails_validation_with_prg14() {
 
     let j = validate("collide-json", &body, &["--format", "json"]);
     assert_eq!(j.status.code(), Some(1));
-    let v: serde_json::Value = serde_json::from_slice(&j.stdout).expect("json");
+    let v = result(&j);
     let f = &v["files"][0];
     assert_eq!(f["valid"], false, "{v}");
     let codes: Vec<&str> = f["diagnostics"].as_array().unwrap().iter().filter_map(|d| d["code"].as_str()).collect();
@@ -78,7 +84,7 @@ fn validate_reports_w13_and_prg17_for_bare_references() {
     let follower =
         r#"<shape id="f" shape="rect" width="1" height="1"><expression property="x">prop("g1.x")</expression></shape>"#;
     let one = validate("w13", &(program("p1", "srep66-rect") + follower), &["--format", "json"]);
-    let v: serde_json::Value = serde_json::from_slice(&one.stdout).expect("json");
+    let v = result(&one);
     let f = &v["files"][0];
     assert_eq!(f["valid"], true, "{v}");
     let codes: Vec<&str> = f["diagnostics"].as_array().unwrap().iter().filter_map(|d| d["code"].as_str()).collect();
@@ -106,7 +112,7 @@ fn an_idref_to_an_emitted_id_validates_with_w13() {
         &(program("p1", "srep66-rect") + r#"<shape id="f" shape="rect" width="1" height="1" matte="g1"/>"#),
         &["--format", "json"],
     );
-    let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("json");
+    let v = result(&o);
     let f = &v["files"][0];
     assert_eq!(f["valid"], true, "{v}");
     let codes: Vec<&str> = f["diagnostics"].as_array().unwrap().iter().filter_map(|d| d["code"].as_str()).collect();
@@ -117,7 +123,7 @@ fn an_idref_to_an_emitted_id_validates_with_w13() {
         &(program("p1", "srep66-rect") + r#"<shape id="f" shape="rect" width="1" height="1" matte="g9"/>"#),
         &["--format", "json"],
     );
-    let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("json");
+    let v = result(&o);
     let codes: Vec<&str> =
         v["files"][0]["diagnostics"].as_array().unwrap().iter().filter_map(|d| d["code"].as_str()).collect();
     assert!(codes.contains(&"S10"), "{v}");

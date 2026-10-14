@@ -136,8 +136,19 @@ def parse_bench(stdout, stderr):
     return rec
 
 
+def encode_report(stdout):
+    """The last output report with timings in the envelope `encode --json` printed, or None."""
+    envelope = last_json(stdout, "result")
+    result = envelope.get("result") if envelope else None
+    outputs = result.get("outputs") if isinstance(result, dict) else None
+    if not isinstance(outputs, list):
+        return None
+    timed = [o for o in outputs if isinstance(o, dict) and "seconds" in o]
+    return timed[-1] if timed else None
+
+
 def parse_encode(stdout, stderr):
-    j = last_json(stdout, "seconds")
+    j = encode_report(stdout)
     if j is None:
         raise RunError("no JSON report on stdout: " + pc.tail(stdout + "\n" + stderr))
     stages = j.get("stage_seconds") or []
