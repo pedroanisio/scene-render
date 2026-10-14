@@ -3030,6 +3030,8 @@ mod tests {
     /// driver may contract or reorder them differently once a constant is folded in (naga marks no SPIR-V result
     /// `NoContraction`): llvmpipe, the adapter CI pins, renders both identically and is held to that, while the NVIDIA
     /// driver (615.71, RTX 3050) differs by one half-float step in some channels, the bound for a hardware adapter.
+    /// Two engines built apart from each other are held to the same bound: with a cold shader cache that driver does
+    /// not render two compilations of the same shaders bit-identically either.
     fn assert_same_render(info: &wgpu::AdapterInfo, actual: &[[f32; 4]], expected: &[[f32; 4]], what: &str) {
         let bound = if info.name.to_lowercase().contains("llvmpipe") { 0 } else { 1 };
         let steps = half_steps(actual, expected);
@@ -3314,7 +3316,8 @@ mod tests {
             };
             let actual = engine.render_now(&scene, None);
             assert!(actual.iter().any(|p| p[0] > 0.01 && p[3] > 0.01));
-            assert_eq!(actual, rgba_reference.render_now(&scene, None), "depth format: feature bits {feature}");
+            let rgba_render = rgba_reference.render_now(&scene, None);
+            assert_same_render(&gpu.info, &actual, &rgba_render, &format!("depth format: feature bits {feature}"));
         }
         scene.draws[0].material = MaterialParams::default();
         assert!(plain_material(&scene.draws[0]));
@@ -3531,11 +3534,9 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
                 scene.encode_srgb = case % 2 == 0;
                 scene.lens_k1 = if case % 3 == 0 { 0.035 } else { 0.0 };
                 let actual = engine.render_now(&scene, None);
-                assert_eq!(
-                    actual,
-                    rgba_reference.render_now(&scene, None),
-                    "depth format: blades={blades}, max_coc={max_coc}"
-                );
+                let rgba_render = rgba_reference.render_now(&scene, None);
+                let what = format!("depth format: blades={blades}, max_coc={max_coc}");
+                assert_same_render(&gpu.info, &actual, &rgba_render, &what);
                 std::mem::swap(&mut engine.dof_pipe, &mut reference);
                 let expected = engine.render_now(&scene, None);
                 std::mem::swap(&mut engine.dof_pipe, &mut reference);
@@ -3583,11 +3584,9 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
                 scene.encode_srgb = case % 2 == 0;
                 scene.lens_k1 = if case % 3 == 0 { 0.035 } else { 0.0 };
                 let actual = engine.render_now(&scene, None);
-                assert_eq!(
-                    actual,
-                    rgba_reference.render_now(&scene, None),
-                    "depth format: blades={blades}, max_coc={max_coc}"
-                );
+                let rgba_render = rgba_reference.render_now(&scene, None);
+                let what = format!("depth format: blades={blades}, max_coc={max_coc}");
+                assert_same_render(&gpu.info, &actual, &rgba_render, &what);
                 std::mem::swap(&mut engine.dof_pipe, &mut reference);
                 let expected = engine.render_now(&scene, None);
                 std::mem::swap(&mut engine.dof_pipe, &mut reference);
@@ -3633,7 +3632,8 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
             let expected = engine.render_now(&scene, None);
             std::mem::swap(&mut engine.dof_pipe, &mut reference);
             assert_same_render(&gpu.info, &actual, &expected, "uniform-region boundary");
-            assert_eq!(actual, rgba_reference.render_now(&scene, None), "depth format at uniform-region boundary");
+            let rgba_render = rgba_reference.render_now(&scene, None);
+            assert_same_render(&gpu.info, &actual, &rgba_render, "depth format at uniform-region boundary");
             std::mem::swap(&mut engine.dof_pipe, &mut classification);
             let mask = engine.render_now(&scene, None);
             std::mem::swap(&mut engine.dof_pipe, &mut classification);
