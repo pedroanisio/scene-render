@@ -12,6 +12,8 @@ const CONTEXT_LOCK_TIMEOUT_SECS: u64 = 6;
 const EGL_CONTEXT_FLAGS_KHR: i32 = 0x30FC;
 const EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR: i32 = 0x0001;
 const EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT: i32 = 0x30BF;
+/// The desktop OpenGL versions a context is asked for, newest first.
+const DESKTOP_GL_VERSIONS: [(i32, i32); 5] = [(4, 6), (4, 5), (4, 4), (4, 3), (3, 3)];
 const EGL_PLATFORM_WAYLAND_KHR: u32 = 0x31D8;
 const EGL_PLATFORM_X11_KHR: u32 = 0x31D5;
 const EGL_PLATFORM_XCB_EXT: u32 = 0x31DC;
@@ -467,12 +469,7 @@ impl Inner {
         let supports_khr_context = display_extensions.contains("EGL_KHR_create_context");
 
         let mut context_attributes = vec![];
-        let mut gl_context_attributes = vec![];
         let mut gles_context_attributes = vec![];
-        gl_context_attributes.push(khronos_egl::CONTEXT_MAJOR_VERSION);
-        gl_context_attributes.push(3);
-        gl_context_attributes.push(khronos_egl::CONTEXT_MINOR_VERSION);
-        gl_context_attributes.push(3);
         if supports_opengl && force_gles_minor_version != wgt::Gles3MinorVersion::Automatic {
             log::warn!("Ignoring specified GLES minor version as OpenGL is used");
         }
@@ -505,7 +502,22 @@ impl Inner {
             context_attributes.push(khr_context_flags);
         }
 
-        gl_context_attributes.extend(&context_attributes);
+        // Desktop OpenGL is asked for newest version first: the NVIDIA driver gives exactly the version requested,
+        // and its 3.3 context has neither storage buffers nor compute shaders, where Mesa gives its newest version
+        // whatever is asked. A version the driver does not have fails, and the next is tried.
+        let gl_context_attributes = DESKTOP_GL_VERSIONS
+            .iter()
+            .map(|&(major, minor)| {
+                let mut attributes = vec![
+                    khronos_egl::CONTEXT_MAJOR_VERSION,
+                    major,
+                    khronos_egl::CONTEXT_MINOR_VERSION,
+                    minor,
+                ];
+                attributes.extend(&context_attributes);
+                attributes
+            })
+            .collect::<Vec<_>>();
         gles_context_attributes.extend(&context_attributes);
 
         let context = {
@@ -590,7 +602,14 @@ impl Inner {
             };
 
             let result = if supports_opengl {
-                create_context(khronos_egl::OPENGL_API, &gl_context_attributes).or_else(
+                let mut desktop = Err(khronos_egl::Error::BadMatch);
+                for attributes in &gl_context_attributes {
+                    desktop = create_context(khronos_egl::OPENGL_API, attributes);
+                    if desktop.is_ok() {
+                        break;
+                    }
+                }
+                desktop.or_else(
                     |gl_error| {
                         log::debug!("Failed to create desktop OpenGL context: {gl_error}, falling back to OpenGL ES");
                         create_context(khronos_egl::OPENGL_ES_API, &gles_context_attributes)

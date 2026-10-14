@@ -72,6 +72,13 @@ rejects with `GL_INVALID_ENUM`: the texture has no storage, every framebuffer th
 OpenGL was rejected because its frames would no longer match the Vulkan ones, and wrapping a texture created
 outside wgpu needs unsafe code, which `sr-gpu` forbids.
 
-**When wgpu is upgraded**, vendor the wgpu-hal version it asks for and carry the change over, or drop this
-directory once upstream allocates sampled multisampled textures on the multisampled target.
-`tools/tests/test_vendor.py` fails if the patch entry or the change is missing.
+**The second change** is in `src/gles/egl.rs`: a desktop OpenGL context is asked for at 4.6, 4.5, 4.4, 4.3 and
+then 3.3, newest first, instead of at 3.3 only. Released, the backend asks for 3.3; Mesa gives its newest version for
+that, but the NVIDIA driver gives exactly 3.3, whose shading language has neither storage buffers nor compute shaders,
+so `sr-gpu` refuses the GPU on OpenGL (`GpuError::OpenGlVersion`). The OpenGL test
+`every_opengl_adapter_gets_a_context_new_enough_for_the_shaders` in `crates/sr-gpu/tests/adapters/hardening.rs` checks
+the version every OpenGL adapter gets.
+
+**When wgpu is upgraded**, vendor the wgpu-hal version it asks for and carry both changes over, or drop each once
+upstream allocates sampled multisampled textures on the multisampled target, or asks for the newest desktop context.
+`tools/tests/test_vendor.py` fails if the patch entry or either change is missing.

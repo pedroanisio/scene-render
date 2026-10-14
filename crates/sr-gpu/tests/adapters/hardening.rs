@@ -406,9 +406,9 @@ fn emitters_sharing_a_sprite_id_keep_their_own_textures() {
 
 #[test]
 fn an_opengl_adapter_too_old_for_the_shaders_is_refused_before_its_device_opens() {
-    // the NVIDIA driver gives wgpu's OpenGL backend the desktop 3.3 context it asks for, whose shading language has
-    // neither storage buffers nor compute shaders: opening it is a typed refusal that names them, not a device that
-    // fails its first pipeline
+    // a driver whose newest context is older than OpenGL 4.3 (or OpenGL ES 3.1) has a shading language without storage
+    // buffers or compute shaders: opening it is a typed refusal that names them, not a device that fails its first
+    // pipeline
     use sr_gpu::gpu::{adapters, check_gl_version, GpuOptions};
     let (found, _) = adapters(&GpuOptions { backends: wgpu::Backends::GL, adapter: None });
     for info in found.iter().filter(|i| check_gl_version(i).is_err()) {
@@ -419,6 +419,22 @@ fn an_opengl_adapter_too_old_for_the_shaders_is_refused_before_its_device_opens(
             Ok(_) => panic!("{} ({}) opened", info.name, info.driver_info),
         }
     }
+}
+
+#[test]
+fn every_opengl_adapter_gets_a_context_new_enough_for_the_shaders() {
+    // the NVIDIA driver gives exactly the desktop version asked for, so a request for 3.3 left the GPU without storage
+    // buffers and compute shaders on OpenGL; Mesa gives its newest version whatever is asked
+    use sr_gpu::gpu::{adapters, check_gl_version, GpuOptions};
+    let (found, _) = adapters(&GpuOptions { backends: wgpu::Backends::GL, adapter: None });
+    let probe = if found.is_empty() { Err("none found") } else { Ok(found) };
+    let Some(found) = sr_testkit::gl(probe, "OpenGL context versions") else { return };
+    let old = found
+        .iter()
+        .filter(|i| check_gl_version(i).is_err())
+        .map(|i| format!("{} ({})", i.name, i.driver_info))
+        .collect::<Vec<_>>();
+    assert!(old.is_empty(), "contexts older than OpenGL 4.3 or OpenGL ES 3.1: {old:?}");
 }
 
 #[test]

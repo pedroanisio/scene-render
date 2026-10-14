@@ -192,8 +192,9 @@ pub fn require_3d(info: &wgpu::AdapterInfo) -> Result<(), GpuError> {
 /// [`GpuError::OpenGlVersion`]. wgpu gives OpenGL's `GL_VERSION` as the driver info, and from OpenGL 3.3 and OpenGL ES 3.0
 /// on the shading language a driver compiles has the version of OpenGL itself, which is the one wgpu writes the shaders
 /// for: below 4.3 (ES 3.1) its GLSL has no storage buffers or compute shaders, and the device opens and then fails its
-/// first pipeline. wgpu asks EGL for a desktop 3.3 context when EGL offers desktop OpenGL; Mesa gives 4.5 for it, the NVIDIA
-/// driver exactly 3.3. A version this cannot read is left to the probe of the device.
+/// first pipeline. The OpenGL backend (vendor/wgpu-hal) asks EGL for the newest desktop context first, because the NVIDIA
+/// driver gives exactly the version asked for; this refuses what a driver without 4.3 still gives. A version this cannot
+/// read is left to the probe of the device.
 pub fn check_gl_version(info: &wgpu::AdapterInfo) -> Result<(), GpuError> {
     if info.backend != wgpu::Backend::Gl {
         return Ok(());

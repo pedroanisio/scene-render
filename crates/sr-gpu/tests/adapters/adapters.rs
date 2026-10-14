@@ -274,7 +274,7 @@ fn an_opengl_driver_older_than_4_3_or_es_3_1_is_refused_naming_what_its_shaders_
         driver_info: version.into(),
         ..info("GPU", DeviceType::DiscreteGpu, Backend::Gl)
     };
-    // the first is what the NVIDIA driver gives wgpu's OpenGL backend, which asks EGL for a desktop 3.3 context
+    // the first is what the NVIDIA driver gives an EGL request for a desktop 3.3 context
     for version in [
         "3.3.0 NVIDIA 615.71.09",
         "4.2.0 NVIDIA 615.71.09",

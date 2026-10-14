@@ -51,6 +51,12 @@ class VendoredHalTests(unittest.TestCase):
         )
         self.assertIn("glow::TEXTURE_2D | glow::TEXTURE_2D_MULTISAMPLE => target,", (gles / "queue.rs").read_text())
 
+    def test_a_desktop_context_is_asked_for_newest_version_first(self):
+        # the NVIDIA driver gives exactly the version asked for, and 3.3 has no storage buffers or compute shaders
+        egl = (self.HAL / "src/gles/egl.rs").read_text()
+        self.assertIn("const DESKTOP_GL_VERSIONS: [(i32, i32); 5] = [(4, 6), (4, 5), (4, 4), (4, 3), (3, 3)];", egl)
+        self.assertIn("for attributes in &gl_context_attributes {", egl)
+
 
 if __name__ == "__main__":
     unittest.main()
