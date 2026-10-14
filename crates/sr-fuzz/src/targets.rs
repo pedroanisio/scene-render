@@ -3,8 +3,11 @@
 //! Each [`Target`] takes arbitrary bytes and must never panic: captions
 //! (SRT, WebVTT, ASS, TTML, SCC, transcripts), Lottie JSON and dotLottie
 //! archives, SVG and path data, formulas, text layout, PMTiles, vector
-//! tiles, GeoJSON/TopoJSON/KML/GPX, PLY and splats, USD, glTF, and the
-//! document pipeline with asset verification on. Inputs are built-in seeds
+//! tiles, GeoJSON/TopoJSON/KML/GPX, PLY and splats, USD, glTF, the document
+//! pipeline with asset verification on, LUTs (.cube, .3dl, .clf), ICC
+//! profiles and the colour boxes of HEIF/AVIF files, OpenVDB volumes, SRVOL
+//! simulation caches, MagicaVoxel VOX models, font files, Hershey stroke
+//! fonts and IES photometric profiles. Inputs are built-in seeds
 //! and the repository's fixtures, mutated by bit flips, boundary bytes and
 //! integers, span deletion and duplication, splices between seeds, inserted
 //! number tokens and truncation; text formats also get the document
@@ -47,6 +50,14 @@ pub const TARGETS: &[Target] = &[
     Target { name: "usd", text: false, seeds: seeds_usd, run: run_usd },
     Target { name: "gltf", text: false, seeds: seeds_gltf, run: run_gltf },
     Target { name: "document-assets", text: true, seeds: seeds_documents, run: run_doc_assets },
+    Target { name: "lut", text: true, seeds: seeds_lut, run: run_lut },
+    Target { name: "icc", text: false, seeds: seeds_icc, run: run_icc },
+    Target { name: "openvdb", text: false, seeds: seeds_openvdb, run: run_openvdb },
+    Target { name: "srvol", text: false, seeds: seeds_srvol, run: run_srvol },
+    Target { name: "vox", text: false, seeds: seeds_vox, run: run_vox },
+    Target { name: "font", text: false, seeds: seeds_font, run: run_font },
+    Target { name: "stroke-font", text: true, seeds: seeds_stroke_font, run: run_stroke_font },
+    Target { name: "ies", text: true, seeds: seeds_ies, run: run_ies },
 ];
 
 /// The target called `name`.
@@ -537,6 +548,329 @@ pub fn run_gltf(data: &[u8]) {
     if let Some(file) = Scratch::new("in.gltf", data) {
         let _ = sr_3d::import::gltf(&file.0);
     }
+}
+
+// ------------------------------------------------------------------ colour
+
+const CUBE_1D: &str = "TITLE \"shaper\"\n# a comment\nDOMAIN_MIN -0.25 0 0\nDOMAIN_MAX 1.5 1 2\nLUT_1D_SIZE 3\n0 0 0\n0.5 0.4 0.3\n1 1 1\n";
+const LUT_3DL: &str =
+    "0 341 682 1023\n0 0 0\n0 0 1023\n0 1023 0\n0 1023 1023\n1023 0 0\n1023 0 1023\n1023 1023 0\n1023 1023 1023\n";
+const CLF_CHAIN: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ProcessList id="chain" compCLFversion="3">
+  <Description>every node the reader takes</Description>
+  <Matrix inBitDepth="32f" outBitDepth="32f"><Array dim="3 4">1.1 0 0 0.01 0 0.9 0 0 0 0 1 -0.02</Array></Matrix>
+  <LUT1D inBitDepth="32f" outBitDepth="10i"><Array dim="3 1">0 512 1023</Array></LUT1D>
+  <Range inBitDepth="10i" outBitDepth="32f"><minInValue>64</minInValue><maxInValue>940</maxInValue><minOutValue>0</minOutValue><maxOutValue>1</maxOutValue></Range>
+  <ASC_CDL><SOPNode><Slope>1.1 1 0.9</Slope><Offset>0.01 0 -0.01</Offset><Power>1 1.2 1</Power></SOPNode><SatNode><Saturation>0.8</Saturation></SatNode></ASC_CDL>
+  <LUT3D inBitDepth="32f" outBitDepth="32f"><Array dim="2 2 2 3">0 0 0 0 0 1 0 1 0 0 1 1 1 0 0 1 0 1 1 1 0 1 1 1</Array></LUT3D>
+</ProcessList>"#;
+const CLF_LUT3D: &str = r#"<ProcessList id="one"><LUT3D outBitDepth="12i"><Array dim="2 2 2 3">0 0 0 0 0 4095 0 4095 0 0 4095 4095 4095 0 0 4095 0 4095 4095 4095 0 4095 4095 4095</Array></LUT3D></ProcessList>"#;
+
+fn seeds_lut() -> Vec<Vec<u8>> {
+    with_files(
+        &[CUBE_1D.as_bytes(), LUT_3DL.as_bytes(), CLF_CHAIN.as_bytes(), CLF_LUT3D.as_bytes()],
+        &["tests/corpus/media/grade.cube"],
+    )
+}
+
+/// Reads the text as a .cube, .3dl and .clf LUT: a table read is n³ entries.
+pub fn run_lut(data: &[u8]) {
+    let text = String::from_utf8_lossy(data);
+    for ext in ["cube", "3dl", "clf"] {
+        if let Ok((n, t)) = sr_gpu::fx::parse_lut(&text, ext, "fuzz") {
+            assert_eq!(Some(t.len()), (n as usize).checked_pow(3), "a {ext} LUT of side {n} has {} entries", t.len());
+        }
+    }
+}
+
+/// A matrix/TRC profile of the ICC layout: a 128-byte header, the tag count and table, then the tags.
+fn icc_profile(gray: bool, curve: &[u8]) -> Vec<u8> {
+    let fixed = |v: f64| ((v * 65536.0).round() as i32).to_be_bytes();
+    let mut tags: Vec<([u8; 4], Vec<u8>)> = Vec::new();
+    if gray {
+        tags.push((*b"kTRC", curve.to_vec()));
+    } else {
+        let colorants = [[0.5151, 0.2412, -0.0011], [0.2920, 0.6922, 0.0419], [0.1571, 0.0666, 0.7841]];
+        for (sig, c) in [(*b"rXYZ", colorants[0]), (*b"gXYZ", colorants[1]), (*b"bXYZ", colorants[2])] {
+            let mut t = b"XYZ \0\0\0\0".to_vec();
+            c.iter().for_each(|v| t.extend(fixed(*v)));
+            tags.push((sig, t));
+        }
+        for sig in [*b"rTRC", *b"gTRC", *b"bTRC"] {
+            tags.push((sig, curve.to_vec()));
+        }
+        tags.push((*b"cicp", b"cicp\0\0\0\0\x0c\x0d\0\x01".to_vec()));
+    }
+    let mut desc = b"mluc\0\0\0\0\0\0\0\x01\0\0\0\x0cenUS\0\0\0\x08\0\0\0\x1c".to_vec();
+    desc.extend("fuzz".encode_utf16().flat_map(u16::to_be_bytes));
+    tags.push((*b"desc", desc));
+    let base = 132 + 12 * tags.len();
+    let (mut table, mut body) = (Vec::new(), Vec::new());
+    for (sig, t) in &tags {
+        table.extend(sig);
+        table.extend(((base + body.len()) as u32).to_be_bytes());
+        table.extend((t.len() as u32).to_be_bytes());
+        body.extend(t);
+        body.resize(body.len().next_multiple_of(4), 0);
+    }
+    let mut out = vec![0u8; 128];
+    out[8] = 4;
+    out[12..16].copy_from_slice(b"mntr");
+    out[16..20].copy_from_slice(if gray { b"GRAY" } else { b"RGB " });
+    out[20..24].copy_from_slice(b"XYZ ");
+    out[36..40].copy_from_slice(b"acsp");
+    out.extend((tags.len() as u32).to_be_bytes());
+    out.extend(table);
+    out.extend(body);
+    let n = out.len() as u32;
+    out[0..4].copy_from_slice(&n.to_be_bytes());
+    out
+}
+
+fn seeds_icc() -> Vec<Vec<u8>> {
+    let mut para = b"para\0\0\0\0\0\x03\0\0".to_vec();
+    for v in [2.4, 1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045] {
+        para.extend(((v * 65536.0f64).round() as i32).to_be_bytes());
+    }
+    let curv = b"curv\0\0\0\0\0\0\0\x05\0\0\x20\0\x50\0\xa0\0\xff\xff".to_vec();
+    let mut out = vec![icc_profile(false, &para), icc_profile(true, &curv)];
+    out.extend(with_files(
+        &[],
+        &[
+            "crates/sr-media/tests/fixtures/still/p3.icc",
+            "crates/sr-media/tests/fixtures/still/p3-icc.heic",
+            "crates/sr-media/tests/fixtures/still/p3-nclx.heic",
+            "crates/sr-media/tests/fixtures/still/pattern.avif",
+        ],
+    ));
+    out
+}
+
+/// Reads the bytes as an ICC profile and as a HEIF/AVIF file's colour boxes, with every embedded profile read
+/// and its curves evaluated.
+pub fn run_icc(data: &[u8]) {
+    use sr_media::{heif, icc};
+    let mut profiles = vec![data.to_vec()];
+    if heif::is_heif(data) {
+        profiles.extend(heif::colour(data).into_iter().filter_map(|c| match c {
+            heif::Colr::Icc(p) => Some(p),
+            heif::Colr::Nclx(..) => None,
+        }));
+    }
+    for p in profiles {
+        if let Ok(p) = icc::parse(&p) {
+            for c in &p.curves {
+                for x in [-1.0, 0.0, 0.04, 0.25, 0.5, 1.0, 2.0, f64::NAN, f64::INFINITY] {
+                    let _ = c.eval(x);
+                }
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------ volumes
+
+/// The decoder budgets of the volume targets: room for every fixture and the OpenVDB reader's 4 MiB workspace.
+const VOLUME_LIMITS: sr_volume::CacheLimits =
+    sr_volume::CacheLimits { max_bytes: 16 << 20, max_bricks: 4096, max_grids: 8 };
+
+fn seeds_openvdb() -> Vec<Vec<u8>> {
+    let fixtures = [
+        "large-tile",
+        "unsupported-bool",
+        "render-0",
+        "double",
+        "affine-background",
+        "vector-double",
+        "dense-zip",
+        "dense-blosc",
+        "density-zip",
+        "density-half",
+        "density-blosc",
+        "tiles",
+        "instanced",
+        "vector",
+    ]
+    .map(|f| format!("crates/sr-volume/tests/data/openvdb/{f}.vdb"));
+    let mut files: Vec<&str> = fixtures.iter().map(String::as_str).collect();
+    files.push("tests/corpus/media/impact-0.vdb");
+    with_files(&[], &files)
+}
+
+/// Samples every grid of a volume read within `limits`, and checks it holds to them.
+fn probe_volume(v: &sr_volume::Volume, limits: sr_volume::CacheLimits) {
+    let grids: Vec<_> = v.grids().collect();
+    assert!(grids.len() <= limits.max_grids, "{} grids read, over {}", grids.len(), limits.max_grids);
+    let bricks: usize = grids.iter().map(|(_, g)| g.brick_count()).sum();
+    assert!(bricks <= limits.max_bricks, "{bricks} bricks read, over {}", limits.max_bricks);
+    for (name, g) in grids {
+        assert!(v.grid(name).is_some(), "the grid {name:?} is listed but not found");
+        for p in [[0.0; 3], [0.5, -1.25, 3.75], [1e9, -1e9, 1e30], [f64::NAN, 0.0, f64::INFINITY]] {
+            let _ = g.sample_world(p);
+            let _ = g.sample_index(p);
+        }
+        let _ = g.background();
+        if let Some((key, _)) = g.bricks().next() {
+            let at = key.map(|k| k.saturating_mul(sr_volume::BRICK_SIDE));
+            let _ = g.value(at);
+            let _ = g.sample_index(at.map(|k| f64::from(k) + 3.5));
+        }
+    }
+}
+
+/// Reads the bytes as an OpenVDB file within [`VOLUME_LIMITS`] and samples what it holds.
+pub fn run_openvdb(data: &[u8]) {
+    if let Ok(v) = sr_volume::openvdb::read(std::io::Cursor::new(data), VOLUME_LIMITS) {
+        probe_volume(&v, VOLUME_LIMITS);
+    }
+}
+
+fn seeds_srvol() -> Vec<Vec<u8>> {
+    with_files(
+        &[],
+        &[
+            "tests/corpus/media/advected-0.srvol",
+            "tests/corpus/media/advected-1.srvol",
+            "tests/corpus/media/uniform.srvol",
+            "tests/corpus/media/uniform-00.srvol",
+        ],
+    )
+}
+
+/// The cell budget of the voxel targets.
+const VOXEL_LIMITS: sr_3d::occupancy::Limits =
+    sr_3d::occupancy::Limits { max_bricks: 1024, max_cells: 1 << 20, max_bytes: 16 << 20 };
+
+/// Checks an occupancy read within [`VOXEL_LIMITS`] holds to them.
+fn within_voxel_limits(o: &sr_3d::occupancy::Occupancy) {
+    assert!(o.count() <= VOXEL_LIMITS.max_cells, "{} cells read, over {}", o.count(), VOXEL_LIMITS.max_cells);
+    assert!(o.bytes() <= VOXEL_LIMITS.max_bytes, "{} bytes built, over {}", o.bytes(), VOXEL_LIMITS.max_bytes);
+}
+
+/// Reads the bytes as a simulation cache (SRVOL) and as a model in one, writes what it read and reads that back.
+pub fn run_srvol(data: &[u8]) {
+    use sr_3d::voxel::srvol;
+    if let Ok(v) = sr_volume::Volume::read(data, VOLUME_LIMITS) {
+        probe_volume(&v, VOLUME_LIMITS);
+        let mut out = Vec::new();
+        v.write(&mut out).expect("a volume read writes to memory");
+        let back = sr_volume::Volume::read(out.as_slice(), VOLUME_LIMITS).expect("a volume written reads back");
+        assert_eq!(back.grids().count(), v.grids().count(), "a volume read back has other grids");
+    }
+    if let Ok(model) = srvol::import(data, srvol::GRID, VOXEL_LIMITS, VOLUME_LIMITS) {
+        within_voxel_limits(&model.occupancy);
+    }
+}
+
+fn seeds_vox() -> Vec<Vec<u8>> {
+    with_files(&[], &["tests/corpus/media/voxels.vox", "tests/corpus/media/block.vox"])
+}
+
+/// Reads the bytes as a MagicaVoxel file and builds the cells of its first model, of an absent model and of its
+/// scene; a model that builds within the limits round-trips through a cache.
+pub fn run_vox(data: &[u8]) {
+    use sr_3d::voxel::{srvol, vox};
+    let bounds = vox::Bounds {
+        max_file_bytes: MAX_INPUT,
+        max_models: 64,
+        max_nodes: 4096,
+        max_depth: 64,
+        max_placements: 4096,
+        max_placed_cells: 1 << 20,
+        max_built_bytes: 16 << 20,
+    };
+    let Ok(file) = vox::parse(data, &bounds) else { return };
+    for model in [Some(0), Some(usize::MAX), None] {
+        if let Ok(imported) = file.occupancy(model, VOXEL_LIMITS, &bounds) {
+            within_voxel_limits(&imported.occupancy);
+            let cache = srvol::write(&imported.occupancy, 0.5).expect("cells built write as a cache");
+            let back =
+                srvol::import(&cache, srvol::GRID, VOXEL_LIMITS, VOLUME_LIMITS).expect("a cache written reads back");
+            assert_eq!(back.occupancy.count(), imported.occupancy.count(), "a model read back has other cells");
+        }
+    }
+}
+
+// ------------------------------------------------------------------ fonts
+
+fn seeds_font() -> Vec<Vec<u8>> {
+    with_files(&[], &["crates/sr-eval/tests/fixtures/solid.ttf", "crates/sr-gpu/tests/fixtures/fonts/wght-test.ttf"])
+}
+
+/// Loads the bytes as a font file, pins it and as the style's own file, then lays out and draws text in it at a
+/// variation of its weight axis.
+pub fn run_font(data: &[u8]) {
+    let Some(file) = Scratch::new("in.ttf", data) else { return };
+    // declared after the file, so the library lets go of it first
+    let mut lib = sr_text::FontLib::pinned();
+    let _ = lib.pin(&file.0, 0, "fuzz", 400, false);
+    let style = sr_text::Style {
+        families: vec!["fuzz".into()],
+        file: Some((file.0.clone(), 0)),
+        size: 24.0,
+        variations: vec![(*b"wght", 700.0)],
+        ..Default::default()
+    };
+    let para = Para {
+        runs: vec![Run { text: "Hamburgefonstiv 0123 ffi \u{e9}\u{301} \u{5d0}\u{5d1}".into(), style: 0, role: None }],
+        styles: vec![style],
+        opts: Opts { width: 200.0, ..Default::default() },
+    };
+    let lay = layout::layout(&mut lib, &para);
+    let _ = sr_text::glyph::draw(&lib, &lay, None, &Default::default(), 0.5);
+}
+
+const JHF_GLYPHS: &str = "    1  1JZ\n    2  9MWRFRT RRYQZR[SZRY\n    3  9I[NFN[ RVFV[ RNPVP\n";
+
+fn seeds_stroke_font() -> Vec<Vec<u8>> {
+    with_files(&[JHF_GLYPHS.as_bytes()], &["tests/corpus/media/test.jhf"])
+}
+
+/// Reads the text as a Hershey stroke font and sets a line in it: what it sets is path data.
+pub fn run_stroke_font(data: &[u8]) {
+    use sr_eval::stroke_font;
+    let Ok(font) = stroke_font::parse_jhf(&String::from_utf8_lossy(data)) else { return };
+    let (d, _missing) = stroke_font::layout(&font, "Hello, World!\n0123 ~\u{7f}\u{1f}\u{e9}", 24.0);
+    if !d.is_empty() {
+        if let Err(e) = sr_vector::Path::parse(&d) {
+            panic!("a stroke font set path data that does not parse: {e:?}");
+        }
+    }
+}
+
+// ------------------------------------------------------------------ lights
+
+const IES_AXIAL: &str =
+    "IESNA:LM-63-2002\n[TEST] axial\nTILT=NONE\n1 1000 1 3 1 1 2 0 0 0\n1 1 100\n0 45 90\n0\n100 50 0\n";
+const IES_QUADRANT: &str = "IESNA:LM-63-2019\n[MANUFAC] fuzz\nTILT=NONE\n1,-1,1.5,5,3,1,1,0.1,0.1,0\n1,1,40\n\
+0 22.5 45 67.5 90\n0 45 90\n900 800 500 200 0\n850 700 400 150 0\n800 600 300 100 0\n";
+const IES_FULL: &str = "IESNA91\nTILT=NONE\n1 2000 0.5 4 5 1 2 0 0 0\n1 1 60\n0 60 120 180\n0 90 180 270 360\n\
+400 300 100 0\n380 280 90 0\n360 260 80 0\n380 280 90 0\n400 300 100 0\n";
+
+fn seeds_ies() -> Vec<Vec<u8>> {
+    with_files(&[IES_AXIAL.as_bytes(), IES_QUADRANT.as_bytes(), IES_FULL.as_bytes()], &[])
+}
+
+/// Reads the text as an IES profile: a profile read has finite ascending angles of each kind and a candela per
+/// pair, every direction samples to a finite intensity, and its table bakes to values in [0, 1].
+pub fn run_ies(data: &[u8]) {
+    let Ok(ies) = sr_3d::light::Ies::parse(&String::from_utf8_lossy(data)) else { return };
+    for axis in [&ies.vertical, &ies.horizontal] {
+        assert!(!axis.is_empty(), "a profile read has no angles of one kind");
+        assert!(axis.iter().all(|a| a.is_finite()), "a profile read has an angle that is not finite: {axis:?}");
+        assert!(axis.windows(2).all(|w| w[0] <= w[1]), "a profile read has angles out of order: {axis:?}");
+    }
+    assert_eq!(ies.candela.len(), ies.horizontal.len(), "a profile read has a row per horizontal angle");
+    assert!(ies.candela.iter().all(|row| row.len() == ies.vertical.len()), "a row has a candela per vertical angle");
+    for theta in [-10.0, 0.0, 12.5, 90.0, 179.0, 180.0, 500.0, f32::NAN, f32::INFINITY] {
+        for phi in [-90.0, 0.0, 45.0, 135.0, 270.0, 359.0, f32::NAN] {
+            let c = ies.sample(theta, phi);
+            assert!(c.is_finite() && c >= 0.0, "a profile read samples to {c} at ({theta}, {phi})");
+        }
+    }
+    let table = ies.bake(16, 8);
+    assert_eq!(table.len(), 16 * 8, "a table baked has its size");
+    assert!(table.iter().all(|v| (0.0..=1.0).contains(v)), "a table baked holds a value outside [0, 1]");
 }
 
 // ------------------------------------------------------------------ documents
