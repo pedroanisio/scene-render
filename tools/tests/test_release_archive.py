@@ -111,12 +111,17 @@ class ReleaseArchiveTests(unittest.TestCase):
         self.assertTrue(any("CHANGELOG.md" in f for f in found), found)
 
     def test_an_exemption_the_notes_have_outgrown_is_reported(self):
-        notes = NOTES.read_text().replace("README, licence", "README, changelog, disclaimer, licence")
-        found = problems(ACTION.read_text(), notes)
+        # the exemptions are passed in, so the check holds whichever release the working notes name
+        omitted = {"CHANGELOG.md", "DISCLAIMER.md"}
+        notes = ("The Linux archive contains the executable, source commit identifier, capability manifest, README, "
+                 "changelog, disclaimer, licence, notice, commercial-licence page and third-party notices.")
+        found = problems(ACTION.read_text(), notes, omissions=omitted)
         self.assertEqual(len(found), 2, found)
         self.assertTrue(all("drop the exemption" in f for f in found))
-        found = problems(ACTION.read_text().replace(" CHANGELOG.md", "").replace(" DISCLAIMER.md", ""), NOTES.read_text())
+        action = ACTION.read_text().replace(" CHANGELOG.md", "").replace(" DISCLAIMER.md", "")
+        found = problems(action, notes.replace(" changelog, disclaimer,", ""), omissions=omitted)
         self.assertEqual(len(found), 2, found)
+        self.assertTrue(all("drop the exemption" in f for f in found))
 
 
 if __name__ == "__main__":
