@@ -79,6 +79,12 @@ python3 -m unittest discover -s tools/tests -v
   allowed only on the items listed in `ALLOWED` in `tools/tests/test_unsafe_policy.py`, each with
   `#[allow(unsafe_code)]` on the narrowest item and a `// SAFETY:` comment above each block. To request an exception,
   add the item there with its reason in the same pull request and explain why safe code cannot do the same.
+- **Panics:** each crate listed in `tools/no_panic_crates.json` denies `clippy::unwrap_used`, `expect_used`, `panic`,
+  `unreachable`, `todo` and `unimplemented` outside tests, with `#![cfg_attr(not(test), deny(...))]` on its library
+  root and on each `src/bin` root. Return a typed error, or write the code so it cannot fail. Where a panic marks a
+  genuine invariant, put `#[expect(clippy::<lint>, reason = "...")]` on the narrowest item and name the test that
+  holds the invariant. The list only grows: `tools/tests/test_no_panic_crates.py` checks the attributes and compares
+  the list with every committed version of it, so it needs a full-history checkout (`git fetch --unshallow`).
 
 ## Commits
 
