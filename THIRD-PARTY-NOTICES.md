@@ -421,9 +421,10 @@ scene-render uses them under the MIT License. Copyright (c) 2026 ArtCraft Team a
 Each adapted file names its FilmCraft source at the top.
 
 - `crates/sr-audio/src/loudness.rs`: the loudness-range percentiles (EBU Tech 3342) and the Tech 3342 test
-  programmes, from FilmCraft's `crates/audio-dsp/src/loudness.rs`.
+  programmes, from `loudness.rs` in the `src` directory of FilmCraft's `audio-dsp` crate.
 - `crates/sr-audio/tests/ebur128_oracle.rs`: the FFmpeg `ebur128` runner and parser and the pink-noise, speech-like
-  and gated test signals, from FilmCraft's `crates/audio-dsp/tests/loudness_oracle.rs`.
+  and gated test signals, from `loudness_oracle.rs` in the `tests` directory of
+  FilmCraft's `audio-dsp` crate.
 
 ```text
 MIT License
