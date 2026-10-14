@@ -7,6 +7,8 @@ usage: tools/changelog.py           rewrite CHANGELOG.md
 RELEASE_NOTES.md holds the notes of one release and is rewritten for the next. This keeps every earlier release's
 notes: one entry per tag vMAJOR.MINOR.PATCH, newest first, each the RELEASE_NOTES.md of that tag with its headings
 one level down. When the working tree's RELEASE_NOTES.md names a version that has no tag yet, it is the first entry.
+An optional `## Unreleased` section in the working notes appears before the release history, even when the title
+already names a tagged release.
 Releases up to v0.4.1 were tagged in the previous repository (github.com/pedroanisio/rs-scene-render, MIT); their
 entries are kept as released in tools/changelog-history.md and follow the tagged entries.
 """
@@ -57,13 +59,23 @@ def tagged_entries():
     return out
 
 
+def split_unreleased(notes):
+    """Separates the optional Unreleased section, preserving the released notes."""
+    match = re.search(r"^## Unreleased\n.*?(?=^## |\Z)", notes, re.M | re.S)
+    if not match:
+        return notes, ""
+    released = (notes[:match.start()].rstrip() + "\n\n" + notes[match.end():].lstrip()).rstrip() + "\n"
+    return released, match.group().rstrip() + "\n"
+
+
 def render():
     entries = tagged_entries()
-    current, text = entry((ROOT / "RELEASE_NOTES.md").read_text(), "unreleased")
+    notes, pending = split_unreleased((ROOT / "RELEASE_NOTES.md").read_text())
+    current, text = entry(notes, "unreleased")
     if current not in {v for v, _ in entries}:
         entries.insert(0, (current, text))
     history = HISTORY.read_text() if HISTORY.exists() else ""
-    return HEADER + "".join("\n" + t for _, t in entries) + ("\n" + history if history else "")
+    return HEADER + ("\n" + pending if pending else "") + "".join("\n" + t for _, t in entries) + ("\n" + history if history else "")
 
 
 def main(argv=None):

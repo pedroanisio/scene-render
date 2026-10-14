@@ -62,7 +62,7 @@ fn cut_from(pts: &[P], a: f64, b: f64, at: &mut (usize, f64)) -> Vec<P> {
 }
 
 /// Visible ranges `[a, b]` of a unit interval for trim start, end and offset (fractions).
-fn ranges(start: f64, end: f64, offset: f64) -> Vec<(f64, f64)> {
+pub fn ranges(start: f64, end: f64, offset: f64) -> Vec<(f64, f64)> {
     let (mut s, mut e) = (start.min(end), start.max(end));
     if e - s >= 1.0 - 1e-12 {
         return vec![(0.0, 1.0)];

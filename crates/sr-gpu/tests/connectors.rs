@@ -160,3 +160,11 @@ fn group_box() {
     let Some(r) = render(&scene(&format!("{R}{b}{}", conn("")))) else { return };
     near(green_box(&r), [180.0, 177.0, 400.0, 183.0]);
 }
+
+#[test]
+fn curved_half_trim_arrow_ends_at_the_measured_apex() {
+    let d = scene(&format!("{R}{B}{}", conn(r#"route="curved" bend="30" markerEnd="arrow" trimEnd="0.5""#)));
+    let r = render_times_on(gpu().expect("connector regression requires a GPU"), &d, &[0.0]).unwrap();
+    assert!(green(&r, 318, 127), "arrow reaches the true cubic's apex (320, 127.15)");
+    assert!(!green(&r, 325, 127), "no stroke beyond the trimmed endpoint");
+}

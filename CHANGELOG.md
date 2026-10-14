@@ -18,6 +18,11 @@ Versions up to v0.4.1 were released under the MIT License from github.com/pedroa
 - Caption label and kind reach sidecars and reports; SRT names distinguish SDH and forced captions.
 - Container bytes and explicitly authored sidecars can change; rendered pixels and default caption sidecars do not.
   No image goldens or frame hashes changed.
+- Mesh-gradient points now honour animated box-relative `x` and `y` coordinates, defaulting independently to `col/(cols-1)` and `row/(rows-1)`. Geometry and colour share the Catmull–Rom surface; absent coordinates preserve existing pixels.
+- Inline vector assets (primitives and paths) now honour `strokePosition` and `paintOrder` through the shape stroke implementation. No existing corpus, example or golden vector asset sets these attributes.
+- Curved connectors use the shared SREP 58 32-sample length table and evaluate outline cuts, labels, gaps and trimmed endpoints on the true cubic. Curved output can change away from the symmetric apex, including `tests/corpus/valid/connector-points.scene.xml`; straight and orthogonal routes retain their geometry.
+- Trim shape modifiers default to simultaneous, matching `shape/@trimMode`.
+- Mesh-warp and soft-body grid dimensions share the schema's defensive 2–16 clamp before allocation.
 
 ## v0.5.0 — 2026-10-12
 

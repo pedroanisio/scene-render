@@ -74,6 +74,16 @@ pub struct ParticleFrame {
 
 // ------------------------------------------------------------------ attributes
 
+/// A `rows` or `cols` count of a lattice (a soft body's, a mesh-warp deformer's): the schema's `gridSizeType`,
+/// 2 to 16. A value outside it is brought to the bound, so that an unvalidated document never sizes an allocation.
+pub fn grid_size(v: f64) -> usize {
+    if v.is_nan() {
+        2
+    } else {
+        v.clamp(2.0, 16.0) as usize
+    }
+}
+
 pub(crate) fn num(e: &dyn Element, n: &str, d: f64) -> f64 {
     match e.get_attr(n) {
         Some(AttrValue::Num(v)) => v,
@@ -689,8 +699,7 @@ fn build_physics(
                         Some("rope") => SoftKind::Rope,
                         _ => SoftKind::Jelly,
                     };
-                    let (rows, cols) =
-                        (num(c, "rows", 4.0).clamp(2.0, 16.0) as usize, num(c, "cols", 4.0).clamp(2.0, 16.0) as usize);
+                    let (rows, cols) = (grid_size(num(c, "rows", 4.0)), grid_size(num(c, "cols", 4.0)));
                     // jelly and cloth: a lattice of (rows + 1) × (cols + 1) points;
                     // a rope is one chain of `cols` points
                     let (rows, cols) = if kind == SoftKind::Rope { (rows, cols) } else { (rows + 1, cols + 1) };
@@ -2265,6 +2274,17 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grid_size_is_the_schema_range_two_to_sixteen() {
+        assert_eq!(grid_size(1000.0), 16);
+        assert_eq!(grid_size(16.0), 16);
+        assert_eq!(grid_size(4.0), 4);
+        assert_eq!(grid_size(2.0), 2);
+        assert_eq!(grid_size(-3.0), 2);
+        assert_eq!(grid_size(f64::NAN), 2);
+        assert_eq!(grid_size(f64::INFINITY), 16);
+    }
 
     fn program(body: &str) -> crate::Evaluator {
         let xml = format!(

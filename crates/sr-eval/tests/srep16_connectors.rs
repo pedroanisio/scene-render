@@ -300,3 +300,64 @@ fn group_box_case_stops_at_the_rectangle_its_content_spans() {
     let p = path(&frame(&d, 0.0), "c").expect("drawn");
     ends(&p, [180.0, 180.0], [400.0, 180.0], EPS);
 }
+
+#[test]
+fn curved_label_uses_the_shared_measure_and_exact_curve() {
+    let d = load(
+        r##"<connector id="c" fromX="0" fromY="180" toX="400" toY="180" route="curved" bend="60" labelAt="0.317" label="t"/>"##,
+    );
+    let g = frame(&d, 0.0);
+    let n = g.nodes.iter().find(|n| &*n.id == "c").unwrap();
+    let label = n.connector.as_ref().unwrap().label.unwrap();
+    let l = 0.3915 * 400.0;
+    let x = l * 60f64.to_radians().cos();
+    let y = 180.0 - l * 60f64.to_radians().sin();
+    let curve = sr_eval::path::MotionPath::parse(&format!("M0 180 C{x} {y} {} {y} 400 180", 400.0 - x)).unwrap();
+    let expected = curve.sample(0.317, true).0;
+    assert!(near(label.center, expected, 1e-9), "{:?} vs {expected:?}", label.center);
+}
+
+#[test]
+fn curved_trim_and_gaps_evaluate_the_true_curve_including_wrapped_ranges() {
+    let d = load(
+        r##"<connector id="c" fromX="0" fromY="180" toX="400" toY="180" route="curved" bend="60" fromGap="17" toGap="9" markerEnd="arrow"/>"##,
+    );
+    let g = frame(&d, 0.0);
+    let n = g.nodes.iter().find(|n| &*n.id == "c").unwrap();
+    let geom = n.connector.as_ref().unwrap();
+    let l = 0.3915 * 400.0;
+    let x = l * 60f64.to_radians().cos();
+    let y = 180.0 - l * 60f64.to_radians().sin();
+    let curve = sr_eval::path::MotionPath::parse(&format!("M0 180 C{x} {y} {} {y} 400 180", 400.0 - x)).unwrap();
+    let total = curve.length();
+    let at = |u| curve.sample((17.0 + u * (total - 26.0)) / total, true).0;
+    ends(&geom.path, at(0.0), at(1.0), 1e-9);
+    for u in [0.317, 0.5] {
+        let paths = geom.trimmed_path(0.0, u, 0.0);
+        assert_eq!(paths.len(), 1);
+        ends(&paths[0], at(0.0), at(u), 1e-9);
+        let dirs = geom.trimmed_directions(0.0, u, 0.0).unwrap();
+        let angle = curve.sample((17.0 + u * (total - 26.0)) / total, true).1.to_radians();
+        assert!(near(dirs[1], [angle.cos(), angle.sin()], 1e-9));
+    }
+    let paths = geom.trimmed_path(0.0, 0.5, 0.75);
+    assert_eq!(paths.len(), 2);
+    ends(&paths[0], at(0.75), at(1.0), 1e-9);
+    ends(&paths[1], at(0.0), at(0.25), 1e-9);
+    assert!(geom.trimmed_path(0.3, 0.3, 0.0).is_empty());
+}
+
+#[test]
+fn curved_clipped_ends_lie_on_the_true_curve_and_box_boundary() {
+    let d = load(&format!("{R}{B}{}", conn(r#"route="curved" bend="60""#)));
+    let pts = path(&frame(&d, 0.0), "c").expect("drawn");
+    let l = 0.3915 * 360.0;
+    let h = l * 60f64.to_radians().sin();
+    let x = l * 60f64.to_radians().cos();
+    let data = format!("M140 180 C{} {} {} {} 500 180", 140.0 + x, 180.0 - h, 500.0 - x, 180.0 - h);
+    let curve = sr_eval::path::MotionPath::parse(&data).unwrap();
+    // y(t) = 180 - 3*h*t*(1-t): both ends leave their boxes through the top edge y=150.
+    let t = (1.0 - (1.0 - 4.0 * 30.0 / (3.0 * h)).sqrt()) / 2.0;
+    ends(&pts, curve.sample(t, false).0, curve.sample(1.0 - t, false).0, 1e-9);
+    assert!((pts[0][1] - 150.0).abs() < 1e-9);
+}

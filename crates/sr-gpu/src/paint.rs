@@ -221,6 +221,15 @@ impl PaintTable {
                 let off = self.stops.len() as u32;
                 let mut grid = vec![[0.0f64; 4]; rows * cols];
                 let mut known = vec![false; rows * cols];
+                // each point's position in the painted box in box-relative units; a point without x or y sits on the
+                // regular grid (col/(cols-1), row/(rows-1)). A document that moves no point keeps the regular
+                // grid, which the shader maps without a search.
+                let regular = |r: usize, c: usize| {
+                    let p = sr_vector::geom::grid_position(r, c, rows, cols);
+                    [p.x, p.y]
+                };
+                let mut at: Vec<[f64; 2]> = (0..rows * cols).map(|i| regular(i / cols, i % cols)).collect();
+
                 let mut k = 0;
                 for c in &mg.children {
                     if let m::MeshGradientChild::Point(pt) = c {
@@ -232,6 +241,12 @@ impl PaintTable {
                                 .and_then(value_color)
                                 .unwrap_or_else(|| literal(&pt.color, tokens));
                             known[r * cols + cc] = true;
+                            let d = regular(r, cc);
+                            let finite = |v: f64, fallback: f64| if v.is_finite() { v } else { fallback };
+                            at[r * cols + cc] = [
+                                finite(num(prop(g, &pk, "x"), pt.x.unwrap_or(d[0])), d[0]),
+                                finite(num(prop(g, &pk, "y"), pt.y.unwrap_or(d[1])), d[1]),
+                            ];
                         }
                     }
                 }
@@ -246,14 +261,21 @@ impl PaintTable {
                         grid[i] = grid[j];
                     }
                 }
-                for col in grid {
-                    self.stops.push(Stop { color: w.from_literal(col).map(|x| x as f32), ..Default::default() });
+                let warped = at.iter().enumerate().any(|(i, p)| *p != regular(i / cols, i % cols));
+                for (col, pos) in grid.into_iter().zip(at) {
+                    // the stop's offset and midpoint carry the point's x and y (a mesh point has no use for either)
+                    self.stops.push(Stop {
+                        color: w.from_literal(col).map(|x| x as f32),
+                        offset: pos[0] as f32,
+                        midpoint: pos[1] as f32,
+                        ..Default::default()
+                    });
                 }
                 let x = object_xform(box_rect, 0.0, true);
                 PaintDesc {
                     xform0: f32x4([x[0], x[1], x[2], x[3]]),
                     xform1: f32x4([x[4], x[5], 0.0, 0.0]),
-                    p0: [rows as f32, cols as f32, 0.0, 0.0],
+                    p0: [rows as f32, cols as f32, f32::from(u8::from(warped)), 0.0],
                     kind: 4,
                     space: match mg.interpolation_space {
                         m::MeshGradientInterpolationSpace::Linear => 0,

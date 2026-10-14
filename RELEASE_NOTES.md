@@ -23,3 +23,11 @@ This release moves the engine to a new repository, https://github.com/pedroanisi
 The Linux archive contains the executable, source commit identifier, capability manifest, README, licence, notice, commercial-licence page and third-party notices. Its executable comes from the successful CI run for the release commit and is checksum-verified and smoke-tested before packaging.
 
 Verify the download with `sha256sum -c scene-render-v0.5.0-linux-x86_64.tar.gz.sha256`, extract it, then run `./scene-render --help`.
+
+## Unreleased
+
+- Mesh-gradient points now honour animated box-relative `x` and `y` coordinates, defaulting independently to `col/(cols-1)` and `row/(rows-1)`. Geometry and colour share the Catmull–Rom surface; absent coordinates preserve existing pixels.
+- Inline vector assets (primitives and paths) now honour `strokePosition` and `paintOrder` through the shape stroke implementation. No existing corpus, example or golden vector asset sets these attributes.
+- Curved connectors use the shared SREP 58 32-sample length table and evaluate outline cuts, labels, gaps and trimmed endpoints on the true cubic. Curved output can change away from the symmetric apex, including `tests/corpus/valid/connector-points.scene.xml`; straight and orthogonal routes retain their geometry.
+- Trim shape modifiers default to simultaneous, matching `shape/@trimMode`.
+- Mesh-warp and soft-body grid dimensions share the schema's defensive 2–16 clamp before allocation.

@@ -130,6 +130,20 @@ fn marker(m: Marker, at: P, dir: P, l: f64, style: &Style, tol: f64, out: &mut M
 /// Applies markers to the drawn `outline` (after trimming): the first point of the first subpath carries `start`, the last
 /// point of the last subpath `end`, each only when that subpath is open. `size` is in stroke widths of `style`.
 pub fn apply(outline: &[Poly], start: Marker, end: Marker, size: f64, style: &Style, tol: f64) -> Marked {
+    apply_with_directions(outline, start, end, size, style, tol, None)
+}
+
+/// Like [`apply`], with optional unit directions of travel at the first and last endpoints, for callers
+/// retaining an exact curve behind the flattened outline. Start markers face against the direction of travel.
+pub fn apply_with_directions(
+    outline: &[Poly],
+    start: Marker,
+    end: Marker,
+    size: f64,
+    style: &Style,
+    tol: f64,
+    directions: Option<(P, P)>,
+) -> Marked {
     let u = style.width;
     let l = size * u;
     let mut out = Marked { outline: outline.to_vec(), fills: Vec::new(), stroked: Vec::new() };
@@ -143,7 +157,7 @@ pub fn apply(outline: &[Poly], start: Marker, end: Marker, size: f64, style: &St
     let mut jobs: Vec<(Marker, P, P, usize, bool)> = Vec::new();
     if let (Some(i), true) = (last, end != Marker::None) {
         if let Some(q) = [&out.outline[i]].into_iter().find(live) {
-            if let Some(d) = end_direction(&q.pts) {
+            if let Some(d) = directions.map(|(_, end)| end).or_else(|| end_direction(&q.pts)) {
                 jobs.push((end, *q.pts.last().unwrap(), d, i, true));
             }
         }
@@ -151,7 +165,7 @@ pub fn apply(outline: &[Poly], start: Marker, end: Marker, size: f64, style: &St
     if let (Some(i), true) = (first, start != Marker::None) {
         if let Some(q) = [&out.outline[i]].into_iter().find(live) {
             let rev: Vec<P> = q.pts.iter().rev().copied().collect();
-            if let Some(d) = end_direction(&rev) {
+            if let Some(d) = directions.map(|(start, _)| p(-start.x, -start.y)).or_else(|| end_direction(&rev)) {
                 jobs.push((start, q.pts[0], d, i, false));
             }
         }

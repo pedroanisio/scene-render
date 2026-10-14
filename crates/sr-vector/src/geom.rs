@@ -14,6 +14,12 @@ pub const fn p(x: f64, y: f64) -> P {
     P { x, y }
 }
 
+/// Regular mesh point in box-relative coordinates: columns run along x, rows along y.
+/// Mesh grids have at least two points on each axis.
+pub fn grid_position(row: usize, col: usize, rows: usize, cols: usize) -> P {
+    p(col as f64 / cols.saturating_sub(1).max(1) as f64, row as f64 / rows.saturating_sub(1).max(1) as f64)
+}
+
 impl P {
     /// Dot product.
     pub fn dot(self, o: P) -> f64 {

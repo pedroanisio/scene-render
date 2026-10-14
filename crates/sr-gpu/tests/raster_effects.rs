@@ -3,6 +3,8 @@
 
 mod common;
 
+#[path = "raster_effects/a3_vector.rs"]
+mod a3_vector;
 #[path = "raster_effects/cache_regressions.rs"]
 mod cache_regressions;
 #[path = "raster_effects/caches.rs"]

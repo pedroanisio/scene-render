@@ -172,6 +172,53 @@ fn catmull_rom_param(t: f32, i: u32, n: u32) -> f32 {
   return u;
 }
 
+fn cross2(a: vec2<f32>, b: vec2<f32>) -> f32 { return a.x * b.y - a.y * b.x; }
+
+// Position and parameter derivatives of one Catmull-Rom patch (edge controls repeated).
+fn mesh_position(pd: PaintDesc, cell: vec2<u32>, uv: vec2<f32>) -> mat3x2<f32> {
+  let wx = catmull_rom(uv.x); let wy = catmull_rom(uv.y);
+  let u = uv.x; let v = uv.y;
+  let dx = 0.5 * vec4(-3.0*u*u+4.0*u-1.0, 9.0*u*u-10.0*u, -9.0*u*u+8.0*u+1.0, 3.0*u*u-2.0*u);
+  let dy = 0.5 * vec4(-3.0*v*v+4.0*v-1.0, 9.0*v*v-10.0*v, -9.0*v*v+8.0*v+1.0, 3.0*v*v-2.0*v);
+  var pos = vec2(0.0); var du = vec2(0.0); var dv = vec2(0.0);
+  let rows = u32(pd.p0.x); let cols = u32(pd.p0.y);
+  for (var j = 0u; j < 4u; j++) {
+    let r = u32(clamp(i32(cell.y) + i32(j) - 1, 0, i32(rows) - 1));
+    for (var k = 0u; k < 4u; k++) {
+      let c = u32(clamp(i32(cell.x) + i32(k) - 1, 0, i32(cols) - 1));
+      let st = stops[pd.stop_off + r * cols + c];
+      let q = vec2(st.offset, st.midpoint);
+      pos += q * wx[k] * wy[j]; du += q * dx[k] * wy[j]; dv += q * wx[k] * dy[j];
+    }
+  }
+  return mat3x2(pos, du, dv);
+}
+
+// Invert the surface using bounded Newton iterations per patch. Outside the surface, keep the closest
+// candidate on its boundary; overlapping patches are resolved in row-major order.
+fn mesh_coordinates(pd: PaintDesc, p: vec2<f32>) -> vec4<f32> {
+  let rows = u32(pd.p0.x); let cols = u32(pd.p0.y);
+  var best = vec4(0.0); var distance = 1e30;
+  for (var r = 0u; r + 1u < rows; r++) {
+    for (var c = 0u; c + 1u < cols; c++) {
+      var uv = vec2(0.5);
+      for (var it = 0u; it < 12u; it++) {
+        let surface = mesh_position(pd, vec2(c, r), uv);
+        let err = surface[0] - p;
+        let det = cross2(surface[1], surface[2]);
+        if (abs(det) < 1e-12) { break; }
+        let step = vec2(cross2(err, surface[2]), cross2(surface[1], err)) / det;
+        uv = clamp(uv - clamp(step, vec2(-0.25), vec2(0.25)), vec2(0.0), vec2(1.0));
+      }
+      let delta = mesh_position(pd, vec2(c, r), uv)[0] - p;
+      let d = dot(delta, delta);
+      if (d < distance) { best = vec4(f32(c), f32(r), uv); distance = d; }
+      if (d < 1e-12) { return best; }
+    }
+  }
+  return best;
+}
+
 // straight colour of paint `i` at local position `p`
 fn eval_paint(i: u32, p: vec2<f32>, pixel: vec2<u32>) -> vec4<f32> {
   let pd = paints[i];
@@ -212,8 +259,13 @@ fn eval_paint(i: u32, p: vec2<f32>, pixel: vec2<u32>) -> vec4<f32> {
     let rows = u32(pd.p0.x); let cols = u32(pd.p0.y);
     let gx = clamp(g.x, 0.0, 1.0) * f32(cols - 1u);
     let gy = clamp(g.y, 0.0, 1.0) * f32(rows - 1u);
-    let c0 = min(u32(floor(gx)), cols - 2u); let r0 = min(u32(floor(gy)), rows - 2u);
-    let wx = catmull_rom(catmull_rom_param(gx, c0, cols)); let wy = catmull_rom(catmull_rom_param(gy, r0, rows));
+    var c0 = min(u32(floor(gx)), cols - 2u); var r0 = min(u32(floor(gy)), rows - 2u);
+    var u = catmull_rom_param(gx, c0, cols); var v = catmull_rom_param(gy, r0, rows);
+    if (pd.p0.z > 0.5) {
+      let coords = mesh_coordinates(pd, g);
+      c0 = u32(coords.x); r0 = u32(coords.y); u = coords.z; v = coords.w;
+    }
+    let wx = catmull_rom(u); let wy = catmull_rom(v);
     var acc = vec4(0.0);
     for (var i = 0; i < 4; i = i + 1) {
       let r = u32(clamp(i32(r0) + i - 1, 0, i32(rows) - 1));

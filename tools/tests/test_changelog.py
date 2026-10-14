@@ -19,12 +19,23 @@ class ChangelogTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             changelog.entry("Release notes\n", "2026-01-02")
 
+    def test_unreleased_is_separate_from_the_tagged_release(self):
+        notes = "# scene-render v1.2.3\n\nOld body.\n\n## Unreleased\n\n- New fix.\n"
+        released, pending = changelog.split_unreleased(notes)
+        self.assertEqual(released, "# scene-render v1.2.3\n\nOld body.\n")
+        self.assertEqual(pending, "## Unreleased\n\n- New fix.\n")
+        self.assertEqual(changelog.split_unreleased(released), (released, ""))
+
     def test_first_entry_is_the_current_release_notes(self):
         # Works on shallow clones without tags: only the working tree is compared.
         notes = (ROOT / "RELEASE_NOTES.md").read_text()
+        notes, pending = changelog.split_unreleased(notes)
         version, text = changelog.entry(notes, "DATE")
         body = text.split("\n", 1)[1]
         log = (ROOT / "CHANGELOG.md").read_text()
+        if pending:
+            self.assertIn("\n" + pending, log)
+            log = log.replace("\n" + pending, "", 1)
         first = log.split("\n## ", 2)[1]
         self.assertTrue(first.startswith(f"{version} — "), f"CHANGELOG.md does not start with {version}")
         self.assertEqual(first.split("\n", 1)[1].rstrip(), body.rstrip())

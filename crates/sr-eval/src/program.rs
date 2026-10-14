@@ -2889,7 +2889,7 @@ impl Builder {
 
     fn doc_globals(&mut self, doc: u16) {
         let (scene, ns) = (self.doc(doc).scene.clone(), self.doc(doc).ns.clone());
-        let mut stack: Vec<(&dyn Element, String)> = Vec::new();
+        let mut stack: Vec<(&dyn Element, String, Option<sr_vector::geom::P>)> = Vec::new();
         for c in children(&*scene) {
             let name = c.element_name();
             let merged = match doc {
@@ -2897,12 +2897,12 @@ impl Builder {
                 _ => matches!(name, "assetsType" | "effectsType" | "materialsType"),
             };
             if merged {
-                stack.push((c, if doc == 0 { name.to_string() } else { format!("{ns}/{name}") }));
+                stack.push((c, if doc == 0 { name.to_string() } else { format!("{ns}/{name}") }, None));
             }
         }
         // an include's expressions resolve in the include's scope, which is its namespace
         let root: Arc<str> = if doc == 0 { "".into() } else { ns.clone() };
-        while let Some((e, path)) = stack.pop() {
+        while let Some((e, path, mesh_default)) = stack.pop() {
             let key = match e.element_id() {
                 Some(id) if doc == 0 || ns.is_empty() => id.to_string(),
                 Some(id) => format!("{ns}/{id}"),
@@ -2910,6 +2910,17 @@ impl Builder {
             };
             if children(e).iter().any(|g| ANIM.contains(&g.element_name())) {
                 let t = self.add_element(key.as_str().into(), e, None, doc);
+                if let Some(p) = mesh_default {
+                    for (name, _, base) in &mut self.elements[t as usize].attrs {
+                        if e.get_attr(name).is_none() {
+                            match &**name {
+                                "x" => *base = Value::Num(p.x),
+                                "y" => *base = Value::Num(p.y),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
                 self.animate(Owner::Element(t), e, None, doc, &root, &key);
             }
             let mut counts: HashMap<&str, usize> = HashMap::new();
@@ -2919,7 +2930,15 @@ impl Builder {
                     continue;
                 }
                 let k = counts.entry(name).or_default();
-                stack.push((c, format!("{key}/{name}[{k}]")));
+                let mesh_default = e.as_any().downcast_ref::<m::MeshGradient>().map(|mg| {
+                    sr_vector::geom::grid_position(
+                        attr_num(c, "row").unwrap_or(0.0) as usize,
+                        attr_num(c, "col").unwrap_or(0.0) as usize,
+                        mg.rows.get() as usize,
+                        mg.cols.get() as usize,
+                    )
+                });
+                stack.push((c, format!("{key}/{name}[{k}]"), mesh_default));
                 *k += 1;
             }
         }

@@ -248,7 +248,8 @@ fn modifier_of(a: &Attrs) -> Option<Modifier> {
         "trim" => Modifier::Trim {
             amount: a.num("amount", 0.0),
             offset: a.num("offset", 0.0),
-            mode: if mode.as_deref() == Some("simultaneous") { TrimMode::Simultaneous } else { TrimMode::Sequential },
+            // absent is simultaneous, as `shape/@trimMode` is
+            mode: if mode.as_deref() == Some("sequential") { TrimMode::Sequential } else { TrimMode::Simultaneous },
         },
         _ => return None,
     })
@@ -290,20 +291,7 @@ pub fn shape_scene(n: &FrameNode, paint: &mut PaintFn, tol: f64) -> Result<Scene
     let fill = if kind == "stroke-text" { None } else { a.paint("fill").and_then(|v| paint(&v, box_rect)) };
     let stroke_paint = a.paint("stroke").and_then(|v| paint(&v, box_rect));
     let sw = a.num("strokeWidth", 0.0);
-    let style = Style {
-        width: sw,
-        cap: match a.str("strokeCap").as_deref() {
-            Some("round") => Cap::Round,
-            Some("square") => Cap::Square,
-            _ => Cap::Butt,
-        },
-        join: match a.str("strokeJoin").as_deref() {
-            Some("round") => Join::Round,
-            Some("bevel") => Join::Bevel,
-            _ => Join::Miter,
-        },
-        miter_limit: a.num("miterLimit", 4.0),
-    };
+    let style = stroke_style(&a, sw);
     let dash = a.nums("dash").unwrap_or_default();
     let dash_off = a.num("dashOffset", 0.0);
     let marker_of = |k: &str| a.str(k).map_or(Marker::None, |v| Marker::parse(&v));
@@ -370,43 +358,107 @@ pub fn shape_scene(n: &FrameNode, paint: &mut PaintFn, tol: f64) -> Result<Scene
             });
         }
     };
+    let stroke = stroke_paint.map(|sp| StrokeSpec {
+        paint: sp,
+        style,
+        position,
+        dash,
+        dash_off,
+        ends: (marker_start, marker_end, a.num("markerSize", 4.0)),
+    });
     let draw_stroke = |scene: &mut Scene, it: &Item, fp: &[Poly], outline: &[Poly]| {
-        let Some(sp) = &stroke_paint else { return };
-        if sw <= 0.0 || outline.is_empty() {
+        if let Some(st) = &stroke {
+            st.draw(scene, it.opacity, fp, rule_, outline, tol);
+        }
+    };
+    for (it, fp, outline) in &per_item {
+        paint_in_order(&mut scene, stroke_first, |s| draw_fill(s, it, fp), |s| draw_stroke(s, it, fp, outline));
+    }
+    Ok(scene)
+}
+
+/// Shared fill/stroke ordering for shapes and inline vector assets.
+fn paint_in_order(
+    scene: &mut Scene,
+    stroke_first: bool,
+    fill: impl FnOnce(&mut Scene),
+    stroke: impl FnOnce(&mut Scene),
+) {
+    if stroke_first {
+        stroke(scene);
+        fill(scene);
+    } else {
+        fill(scene);
+        stroke(scene);
+    }
+}
+
+/// The stroke style of a shape or a vector asset: width `sw`, caps, joins and miter limit.
+fn stroke_style(a: &Attrs, sw: f64) -> Style {
+    Style {
+        width: sw,
+        cap: match a.str("strokeCap").as_deref() {
+            Some("round") => Cap::Round,
+            Some("square") => Cap::Square,
+            _ => Cap::Butt,
+        },
+        join: match a.str("strokeJoin").as_deref() {
+            Some("round") => Join::Round,
+            Some("bevel") => Join::Bevel,
+            _ => Join::Miter,
+        },
+        miter_limit: a.num("miterLimit", 4.0),
+    }
+}
+
+/// How a shape or a vector asset strokes its outline: the one place that places the stroke (`strokePosition`),
+/// dashes it and puts the markers on it.
+struct StrokeSpec {
+    paint: Paint,
+    style: Style,
+    /// `center`, `inside` or `outside`.
+    position: String,
+    dash: Vec<f64>,
+    dash_off: f64,
+    ends: (Marker, Marker, f64),
+}
+
+impl StrokeSpec {
+    /// Draws the stroke of `outline` into `scene`. An inside or outside stroke is drawn twice as wide and clipped
+    /// to (or away from) the filled area `fill_polys` under `fill_rule`.
+    fn draw(
+        &self,
+        scene: &mut Scene,
+        opacity: f64,
+        fill_polys: &[Poly],
+        fill_rule: FillRule,
+        outline: &[Poly],
+        tol: f64,
+    ) {
+        if self.style.width <= 0.0 || outline.is_empty() {
             return;
         }
-        let clip = position != "center";
-        let st = Style { width: if clip { sw * 2.0 } else { sw }, ..style };
-        let ends = (marker_start, marker_end, a.num("markerSize", 4.0));
-        let polys = stroke_marked(outline, &style, &st, &dash, dash_off, ends, tol);
+        let clip = self.position != "center";
+        let st = Style { width: if clip { self.style.width * 2.0 } else { self.style.width }, ..self.style };
+        let polys = stroke_marked(outline, &self.style, &st, &self.dash, self.dash_off, self.ends, tol);
         if polys.is_empty() {
             return;
         }
         if clip {
             scene.cmds.push(Cmd::Push { mask_init: 0.0 });
-            scene.cmds.push(Cmd::Fill { polys, rule: FillRule::NonZero, paint: sp.clone(), opacity: it.opacity });
+            scene.cmds.push(Cmd::Fill { polys, rule: FillRule::NonZero, paint: self.paint.clone(), opacity });
             scene.cmds.push(Cmd::Mask {
-                polys: fp.to_vec(),
-                rule: rule_,
+                polys: fill_polys.to_vec(),
+                rule: fill_rule,
                 op: MaskOp::Add,
                 opacity: 1.0,
-                invert: position == "outside",
+                invert: self.position == "outside",
             });
             scene.cmds.push(Cmd::Pop { opacity: 1.0 });
         } else {
-            scene.cmds.push(Cmd::Fill { polys, rule: FillRule::NonZero, paint: sp.clone(), opacity: it.opacity });
-        }
-    };
-    for (it, fp, outline) in &per_item {
-        if stroke_first {
-            draw_stroke(&mut scene, it, fp, outline);
-            draw_fill(&mut scene, it, fp);
-        } else {
-            draw_fill(&mut scene, it, fp);
-            draw_stroke(&mut scene, it, fp, outline);
+            scene.cmds.push(Cmd::Fill { polys, rule: FillRule::NonZero, paint: self.paint.clone(), opacity });
         }
     }
-    Ok(scene)
 }
 
 /// Strokes the drawn `outline` with `stroke_style`, dashed by `dash` from `dash_off`, carrying the markers `ends`
@@ -421,9 +473,23 @@ pub fn stroke_marked(
     ends: (Marker, Marker, f64),
     tol: f64,
 ) -> Vec<Poly> {
+    stroke_marked_with_directions(outline, style, stroke_style, dash, dash_off, ends, tol, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stroke_marked_with_directions(
+    outline: &[Poly],
+    style: &Style,
+    stroke_style: &Style,
+    dash: &[f64],
+    dash_off: f64,
+    ends: (Marker, Marker, f64),
+    tol: f64,
+    directions: Option<(sr_vector::geom::P, sr_vector::geom::P)>,
+) -> Vec<Poly> {
     let (start, end, size) = ends;
-    let marked =
-        (start != Marker::None || end != Marker::None).then(|| markers::apply(outline, start, end, size, style, tol));
+    let marked = (start != Marker::None || end != Marker::None)
+        .then(|| markers::apply_with_directions(outline, start, end, size, style, tol, directions));
     let outline = marked.as_ref().map_or(outline, |m| &m.outline[..]);
     let dashed = if dash.iter().any(|v| *v > 0.0) { measure::dash(outline, dash, dash_off) } else { outline.to_vec() };
     let mut polys = stroke::stroke(&dashed, stroke_style, tol);
@@ -456,73 +522,59 @@ pub fn connector_scene(n: &FrameNode, paint: &mut PaintFn, tol: f64) -> Scene {
     if sw <= 0.0 {
         return scene;
     }
-    let v = vec![Poly { pts: geom.path.iter().map(|q| p(q[0], q[1])).collect(), closed: false }];
     let (ts, te, to) = (a.num("trimStart", 0.0), a.num("trimEnd", 1.0), a.num("trimOffset", 0.0));
-    let mode =
-        if a.str("trimMode").as_deref() == Some("sequential") { TrimMode::Sequential } else { TrimMode::Simultaneous };
-    let outline = if ts > 0.0 || te < 1.0 { measure::trim(&v, ts, te, to / 360.0, mode) } else { v };
+    let outline: Vec<Poly> = geom
+        .trimmed_path(ts, te, to / 360.0)
+        .into_iter()
+        .map(|pts| Poly { pts: pts.into_iter().map(|q| p(q[0], q[1])).collect(), closed: false })
+        .collect();
     if outline.iter().all(|q| q.pts.len() < 2) {
         return scene;
     }
-    let style = Style {
-        width: sw,
-        cap: match a.str("strokeCap").as_deref() {
-            Some("round") => Cap::Round,
-            Some("square") => Cap::Square,
-            _ => Cap::Butt,
-        },
-        join: match a.str("strokeJoin").as_deref() {
-            Some("round") => Join::Round,
-            Some("bevel") => Join::Bevel,
-            _ => Join::Miter,
-        },
-        miter_limit: a.num("miterLimit", 4.0),
-    };
+    let style = stroke_style(&a, sw);
     let marker_of = |k: &str| a.str(k).map_or(Marker::None, |v| Marker::parse(&v));
     let ends = (marker_of("markerStart"), marker_of("markerEnd"), a.num("markerSize", 4.0));
     let dash = a.nums("dash").unwrap_or_default();
-    let polys = stroke_marked(&outline, &style, &style, &dash, a.num("dashOffset", 0.0), ends, tol);
+    let directions = geom.trimmed_directions(ts, te, to / 360.0).map(|[a, b]| (p(a[0], a[1]), p(b[0], b[1])));
+    let polys =
+        stroke_marked_with_directions(&outline, &style, &style, &dash, a.num("dashOffset", 0.0), ends, tol, directions);
     if !polys.is_empty() {
         scene.cmds.push(Cmd::Fill { polys, rule: FillRule::NonZero, paint: sp, opacity: 1.0 });
     }
     scene
 }
 
-/// Vector asset (primitive or SVG outline attributes) scene in its `w`×`h` space.
+/// Vector asset (primitive or SVG outline attributes) scene in its `w`×`h` space. Fill and stroke are drawn as a
+/// shape's are: `strokePosition` places the stroke, `paintOrder` orders it against the fill.
 pub fn vector_asset_scene(a: &Attrs, paint: &mut PaintFn, tol: f64) -> Result<Scene, String> {
     let (w, h) = (a.num("width", 1.0), a.num("height", 1.0));
     let kind = a.str("shape").unwrap_or_else(|| "rect".into());
     let path = primitive(a, &kind, w, h)?;
     let box_rect = [0.0, 0.0, w, h];
     let mut s = Scene::default();
-    if let Some(f) = a.paint("fill").and_then(|v| paint(&v, box_rect)) {
-        s.fill(&path, rule(a.str("fillRule"), FillRule::EvenOdd), f, 1.0, tol);
-    }
+    let rule_ = rule(a.str("fillRule"), FillRule::EvenOdd);
+    let fp = path.flatten(tol);
+    let fill = a.paint("fill").and_then(|v| paint(&v, box_rect));
     let sw = a.num("strokeWidth", 0.0);
-    if let (Some(sp), true) = (a.paint("stroke").and_then(|v| paint(&v, box_rect)), sw > 0.0) {
-        let style = Style {
-            width: sw,
-            cap: match a.str("strokeCap").as_deref() {
-                Some("round") => Cap::Round,
-                Some("square") => Cap::Square,
-                _ => Cap::Butt,
-            },
-            join: match a.str("strokeJoin").as_deref() {
-                Some("round") => Join::Round,
-                Some("bevel") => Join::Bevel,
-                _ => Join::Miter,
-            },
-            miter_limit: a.num("miterLimit", 4.0),
-        };
-        let mut polys = path.flatten(tol);
-        if let Some(d) = a.nums("dash") {
-            polys = measure::dash(&polys, &d, a.num("dashOffset", 0.0));
+    let stroke = a.paint("stroke").and_then(|v| paint(&v, box_rect)).map(|sp| StrokeSpec {
+        paint: sp,
+        style: stroke_style(a, sw),
+        position: a.str("strokePosition").unwrap_or_else(|| "center".into()),
+        dash: a.nums("dash").unwrap_or_default(),
+        dash_off: a.num("dashOffset", 0.0),
+        ends: (Marker::None, Marker::None, 0.0),
+    });
+    let draw_fill = |s: &mut Scene| {
+        if let (Some(f), false) = (&fill, fp.is_empty()) {
+            s.cmds.push(Cmd::Fill { polys: fp.clone(), rule: rule_, paint: f.clone(), opacity: 1.0 });
         }
-        let out = stroke::stroke(&polys, &style, tol);
-        if !out.is_empty() {
-            s.cmds.push(Cmd::Fill { polys: out, rule: FillRule::NonZero, paint: sp, opacity: 1.0 });
+    };
+    let draw_stroke = |s: &mut Scene| {
+        if let Some(st) = &stroke {
+            st.draw(s, 1.0, &fp, rule_, &fp, tol);
         }
-    }
+    };
+    paint_in_order(&mut s, a.str("paintOrder").as_deref() == Some("stroke-fill"), draw_fill, draw_stroke);
     Ok(s)
 }
 
@@ -575,7 +627,8 @@ pub fn deformers(n: &FrameNode, g: &FrameGraph, size: [f64; 2]) -> Vec<Deformer>
                 "squash" => Deformer::Squash { amount, axis, center },
                 "stretch" => Deformer::Squash { amount: -amount, axis, center },
                 "mesh-warp" => {
-                    let (rows, cols) = (a.num("rows", 4.0).max(2.0) as usize, a.num("cols", 4.0).max(2.0) as usize);
+                    let grid = |k: &str| sr_eval::sim::grid_size(a.num(k, 4.0));
+                    let (rows, cols) = (grid("rows"), grid("cols"));
                     let mut offsets = vec![p(0.0, 0.0); rows * cols];
                     for (pt, _) in sub("point") {
                         let (r, c) = (pt.num("row", 0.0) as usize, pt.num("col", 0.0) as usize);
