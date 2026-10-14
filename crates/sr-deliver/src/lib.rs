@@ -24,6 +24,7 @@ pub mod audio;
 pub mod capabilities;
 pub mod captions;
 pub mod ceiling;
+mod child;
 pub mod destinations;
 pub mod legibility;
 pub mod overlay;

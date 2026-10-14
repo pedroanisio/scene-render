@@ -1915,9 +1915,8 @@ fn replay(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| sr_media::MediaError::Spawn { tool: sr_media::ffmpeg(), source: e })?;
-    let (Some(mut out), Some(mut err)) = (dec.stdout.take(), dec.stderr.take()) else {
-        let _ = dec.kill();
-        let _ = dec.wait();
+    let Some((mut out, mut err)) = crate::child::take_or_reap(&mut dec, |c| c.stdout.take().zip(c.stderr.take()))
+    else {
         return Err(DeliverError::Invalid("ffmpeg was started without its output pipes".into()));
     };
     let said = std::thread::spawn(move || {

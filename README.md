@@ -941,7 +941,7 @@ crates/sr-fuzz/src/         mutators, targets and the sr-fuzz campaign runner
 crates/sr-testkit/src/      test-only: skip a test whose GPU, FFmpeg or HEIC decoder is missing, or fail it under SR_REQUIRE_*;
                             property (property tests that draw the same cases on every run)
 crates/sr-deliver/src/      audio (scene mix, analysis table), pipeline, destinations, access (flash analysis); capabilities (the manifest, SREP 22), captions, segments and segment_audio (output segments, SREP 13),
-                            overlay, ceiling (true-peak), legibility (SREP 19), render_report (SREP 18)
+                            overlay, ceiling (true-peak), legibility (SREP 19), render_report (SREP 18), child (reaping a tool spawned without its pipes)
 crates/scene-render/        CLI
 crates/*/tests/             per-crate test suites, fixtures and golden frames
 tests/corpus/               conformance documents, media fixtures, manifest.json
