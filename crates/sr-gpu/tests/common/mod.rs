@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use sr_gpu::{Gpu, RenderStats, Renderer};
 
@@ -22,27 +22,48 @@ pub fn gpu() -> Option<Gpu> {
     sr_testkit::gpu(G.get_or_init(|| Gpu::new().map_err(|e| e.to_string())).clone(), "GPU tests")
 }
 
-/// A device on the first adapter of `backends` (`GL` or `PRIMARY`), created once per process and never dropped; without
-/// one, None, saying why. Tests that opened a device each and dropped it at their end deadlocked the NVIDIA driver for
+/// A device on the best-ranked adapter of `backends` (`GL` or `VULKAN`), or on the first whose name contains
+/// `SR_GPU_ADAPTER` when that is set (`llvmpipe` names Mesa's software rasteriser on both), created once per process and
+/// never dropped. Without one, None after a `SKIPPED` line, or a failure under `SR_REQUIRE_GL=1` or
+/// `SR_REQUIRE_VULKAN=1`. Tests that opened a device each and dropped it at their end deadlocked the NVIDIA driver for
 /// good: `vkDestroyDevice` on one test thread, device creation and thread-exit destructors on others, all waiting on the
 /// driver's own lock. So tests share a device per backend, as they share [`gpu`].
-pub fn gpu_on(backends: wgpu::Backends) -> Option<Gpu> {
+///
+/// The OpenGL device comes with a lease that the test holds until it ends: wgpu runs every OpenGL call under the one
+/// context lock of the device and gives up on it after 6 s, which a frame of another test thread on llvmpipe outlasts,
+/// so the tests that use OpenGL take turns. A test takes the lease once (a second call on the same thread waits for
+/// itself).
+pub fn gpu_on(backends: wgpu::Backends) -> Option<OnBackend> {
     static GL: OnceLock<Result<Gpu, String>> = OnceLock::new();
-    static PRIMARY: OnceLock<Result<Gpu, String>> = OnceLock::new();
-    let cell = match backends {
-        b if b == wgpu::Backends::GL => &GL,
-        b if b == wgpu::Backends::PRIMARY => &PRIMARY,
-        b => panic!("no shared test device for {b:?}: use GL or PRIMARY"),
+    static VULKAN: OnceLock<Result<Gpu, String>> = OnceLock::new();
+    static GL_TURN: Mutex<()> = Mutex::new(());
+    let (cell, requirement) = match backends {
+        b if b == wgpu::Backends::GL => (&GL, sr_testkit::GL),
+        b if b == wgpu::Backends::VULKAN => (&VULKAN, sr_testkit::VULKAN),
+        b => panic!("no shared test device for {b:?}: use GL or VULKAN"),
     };
+    // the turn is taken before the device is opened, so that opening it is a turn too; a test that failed while it held
+    // the turn leaves nothing behind that the next one must not use
+    let turn = (backends == wgpu::Backends::GL).then(|| GL_TURN.lock().unwrap_or_else(PoisonError::into_inner));
     let opened = cell.get_or_init(|| {
-        Gpu::with_options(&sr_gpu::gpu::GpuOptions { backends, adapter: None }).map_err(|e| e.to_string())
+        let adapter = sr_gpu::gpu::GpuOptions::from_env().adapter;
+        Gpu::with_options(&sr_gpu::gpu::GpuOptions { backends, adapter }).map_err(|e| e.to_string())
     });
-    match opened {
-        Ok(g) => Some(g.clone()),
-        Err(e) => {
-            eprintln!("skipping: no {backends:?} adapter ({e})");
-            None
-        }
+    let gpu = requirement.require(&format!("tests on {backends:?}"), opened.clone())?;
+    Some(OnBackend { gpu, _turn: turn })
+}
+
+/// The shared device of one backend ([`gpu_on`]), and on OpenGL the turn of the test that holds it. It derefs to the
+/// device; `clone()` gives the device itself, for a renderer.
+pub struct OnBackend {
+    gpu: Gpu,
+    _turn: Option<MutexGuard<'static, ()>>,
+}
+
+impl std::ops::Deref for OnBackend {
+    type Target = Gpu;
+    fn deref(&self) -> &Gpu {
+        &self.gpu
     }
 }
 

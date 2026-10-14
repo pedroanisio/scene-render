@@ -405,7 +405,40 @@ fn emitters_sharing_a_sprite_id_keep_their_own_textures() {
 }
 
 #[test]
-fn a_3d_document_on_opengl_reports_how_to_render_it() {
+fn an_opengl_adapter_too_old_for_the_shaders_is_refused_before_its_device_opens() {
+    // a driver whose newest context is older than OpenGL 4.3 (or OpenGL ES 3.1) has a shading language without storage
+    // buffers or compute shaders: opening it is a typed refusal that names them, not a device that fails its first
+    // pipeline
+    use sr_gpu::gpu::{adapters, check_gl_version, GpuOptions};
+    let (found, _) = adapters(&GpuOptions { backends: wgpu::Backends::GL, adapter: None });
+    for info in found.iter().filter(|i| check_gl_version(i).is_err()) {
+        let opts = GpuOptions { backends: wgpu::Backends::GL, adapter: Some(info.name.clone()) };
+        match sr_gpu::Gpu::with_options(&opts) {
+            Err(e @ sr_gpu::GpuError::OpenGlVersion { .. }) => eprintln!("refused {}: {e}", info.name),
+            Err(e) => panic!("{} ({}): another refusal: {e}", info.name, info.driver_info),
+            Ok(_) => panic!("{} ({}) opened", info.name, info.driver_info),
+        }
+    }
+}
+
+#[test]
+fn every_opengl_adapter_gets_a_context_new_enough_for_the_shaders() {
+    // the NVIDIA driver gives exactly the desktop version asked for, so a request for 3.3 left the GPU without storage
+    // buffers and compute shaders on OpenGL; Mesa gives its newest version whatever is asked
+    use sr_gpu::gpu::{adapters, check_gl_version, GpuOptions};
+    let (found, _) = adapters(&GpuOptions { backends: wgpu::Backends::GL, adapter: None });
+    let probe = if found.is_empty() { Err("none found") } else { Ok(found) };
+    let Some(found) = sr_testkit::gl(probe, "OpenGL context versions") else { return };
+    let old = found
+        .iter()
+        .filter(|i| check_gl_version(i).is_err())
+        .map(|i| format!("{} ({})", i.name, i.driver_info))
+        .collect::<Vec<_>>();
+    assert!(old.is_empty(), "contexts older than OpenGL 4.3 or OpenGL ES 3.1: {old:?}");
+}
+
+#[test]
+fn a_3d_document_draws_on_opengl() {
     let Some(g) = gpu_on(wgpu::Backends::GL) else { return };
     let d = doc_with(
         r##"background="#00000000""##,
@@ -413,25 +446,34 @@ fn a_3d_document_on_opengl_reports_how_to_render_it() {
         r#"<object3D id="ball" primitive="sphere" radius="10" x="32" y="16"/><object3D id="b2" primitive="sphere" radius="4" x="8" y="8"/>"#,
         "",
     );
-    let r = render_times_on(g, &d, &[0.0]).expect("OpenGL renders the rest");
-    let notes: Vec<&String> = r.stats.unsupported.iter().filter(|m| m.contains("3D objects are not drawn")).collect();
-    assert_eq!(notes.len(), 1, "one warning for the 3D pass: {:?}", r.stats.unsupported);
-    assert!(notes[0].starts_with("ball: ") && notes[0].contains("SR_GPU_BACKEND=vulkan"), "{}", notes[0]);
+    let r = render_times_on(g.clone(), &d, &[0.0]).expect("OpenGL renders");
+    assert!(r.stats.unsupported.is_empty(), "nothing is left out: {:?}", r.stats.unsupported);
+    assert!(r.at(32, 16)[3] > 0.9, "the ball covers its centre: {:?}", r.at(32, 16));
+    assert!(r.at(8, 8)[3] > 0.9, "the small ball covers its centre: {:?}", r.at(8, 8));
+    assert!(r.at(60, 30)[3] < 0.01, "the background stays clear: {:?}", r.at(60, 30));
 }
 
 #[test]
-fn every_kind_the_3d_pass_draws_reaches_the_3d_pass() {
-    // the list the adapter choice reads (sr_eval::THREE_D_DRAWN) and the renderer's 3D pass agree: on an OpenGL
-    // device each kind is turned back by the 3D pass's own note, so none is drawn by the pass yet missed by the choice
+fn every_kind_the_3d_pass_draws_is_drawn_on_opengl() {
+    // each kind sr_eval::THREE_D_DRAWN lists reaches the 3D pass on an OpenGL device, which draws it and leaves
+    // nothing out
     let cases = [
         ("object3D", r#"<object3D id="n" primitive="sphere" radius="10" x="32" y="16"/>"#),
         ("particles3D", r#"<particles3D id="n" rate="50" lifetime="1" dt="0.05" x="32" y="16"/>"#),
-        ("ocean", r#"<ocean id="n" width="8" depth="8" bottomDepth="2" x="32" y="16"/>"#),
-        ("blackHole", r#"<blackHole id="n" mass="1"/>"#),
+        // the default camera sees the flat water edge-on, so this one looks down at it
+        (
+            "ocean",
+            r#"<camera id="cam" x="0" y="-6" z="-8" target="n"/><ocean id="n" width="8" depth="8" bottomDepth="2"/>"#,
+        ),
+        // a black hole and its disk are drawn only through a camera that traces geodesics
+        (
+            "blackHole",
+            r#"<blackHole id="n" mass="1"/><camera id="cam" x="0" y="-5" z="-60" target="n" fov="40" pathSamples="1" geodesics="true"/>"#,
+        ),
         // the disk comes first in the document so that it is the pass's first member
         (
             "accretionDisk",
-            r##"<accretionDisk id="n" blackHole="h" outerRadius="12" temperatureScale="6000"/><blackHole id="h" mass="1"/>"##,
+            r##"<accretionDisk id="n" blackHole="h" outerRadius="12" temperatureScale="6000"/><blackHole id="h" mass="1"/><camera id="cam" x="0" y="-5" z="-60" target="h" fov="40" pathSamples="1" geodesics="true"/>"##,
         ),
     ];
     let mut covered: Vec<&str> = cases.iter().map(|c| c.0).collect();
@@ -445,12 +487,9 @@ fn every_kind_the_3d_pass_draws_reaches_the_3d_pass() {
             r##"<scene version="1.3"><project width="64" height="32" fps="10" duration="4" background="#00000000"/><composition>{xml}</composition></scene>"##
         );
         let d = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
-        let r = render_times_on(g, &d, &[0.5]).expect("OpenGL renders the rest");
-        assert!(
-            r.stats.unsupported.iter().any(|m| m.starts_with("n: ") && m.contains("3D objects are not drawn")),
-            "{kind}: {:?}",
-            r.stats.unsupported
-        );
+        let r = render_times_on(g.clone(), &d, &[0.5]).expect("OpenGL renders");
+        assert!(r.stats.unsupported.is_empty(), "{kind}: {:?}", r.stats.unsupported);
+        assert!(r.px.iter().any(|p| p[3] > 0.0), "{kind}: nothing was drawn");
     }
 }
 
@@ -459,4 +498,186 @@ fn a_second_device_opens_on_the_same_adapter() {
     let Some(g) = gpu() else { return };
     let twin = g.open_like().expect("the same adapter opens again");
     assert_eq!((twin.info.name, twin.info.backend, twin.info.device), (g.info.name, g.info.backend, g.info.device));
+}
+
+#[test]
+fn a_multisampled_texture_is_sampled_on_opengl() {
+    // the 3D pass draws into multisampled colour and depth textures that it also reads (the depth resolve loads each
+    // sample): on OpenGL such a texture needs the multisampled texture target, without which it has no storage and
+    // every pass that draws into it or reads it is dropped by the driver
+    let Some(g) = gpu_on(wgpu::Backends::GL) else { return };
+    let d = &g.device;
+    let ms_texture = |format, label| {
+        d.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: 8, height: 8, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 4,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+    };
+    let color = ms_texture(wgpu::TextureFormat::Rgba8Unorm, "ms-color");
+    let depth = ms_texture(wgpu::TextureFormat::Depth32Float, "ms-depth");
+    let (color_view, depth_view) = (color.create_view(&Default::default()), depth.create_view(&Default::default()));
+    let out = d.create_texture(&wgpu::TextureDescriptor {
+        label: Some("resolved"),
+        size: wgpu::Extent3d { width: 8, height: 8, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let entry = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: true,
+        },
+        count: None,
+    };
+    let bgl = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("ms-read"),
+        entries: &[entry(0), entry(1)],
+    });
+    let bind = d.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("ms-read"),
+        layout: &bgl,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&color_view) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&depth_view) },
+        ],
+    });
+    let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("ms-read"),
+        source: wgpu::ShaderSource::Wgsl(
+            r"
+@group(0) @binding(0) var color_ms: texture_multisampled_2d<f32>;
+@group(0) @binding(1) var depth_ms: texture_multisampled_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let uv = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    let at = vec2<i32>(p.xy);
+    var c = vec4<f32>(0.0);
+    var z = 0.0;
+    for (var s = 0; s < 4; s++) {
+        c += textureLoad(color_ms, at, s);
+        z += textureLoad(depth_ms, at, s).r;
+    }
+    return vec4<f32>(c.r / 4.0, c.g / 4.0, z / 4.0, c.a / 4.0);
+}
+"
+            .into(),
+        ),
+    });
+    let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
+    });
+    let pipe = d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("ms-read"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: Default::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    let mut enc = d.create_command_encoder(&Default::default());
+    // the multisampled targets are cleared and kept: (1, 0.5, 0.25, 1) and a depth of 0.75 in every sample
+    drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("ms-clear"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &color_view,
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 0.5, b: 0.25, a: 1.0 }),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: &depth_view,
+            depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.75), store: wgpu::StoreOp::Store }),
+            stencil_ops: None,
+        }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    }));
+    {
+        let out_view = out.create_view(&Default::default());
+        let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("ms-read"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &out_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        rp.set_pipeline(&pipe);
+        rp.set_bind_group(0, &bind, &[]);
+        rp.draw(0..3, 0..1);
+    }
+    let buf = d.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 256 * 8,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &out,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buf,
+            layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256), rows_per_image: Some(8) },
+        },
+        wgpu::Extent3d { width: 8, height: 8, depth_or_array_layers: 1 },
+    );
+    g.queue.submit([enc.finish()]);
+    buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    g.wait();
+    g.take_error().expect("no device error");
+    let data = buf.slice(..).get_mapped_range().expect("mapped");
+    let want = [255u8, 128, 191, 255];
+    for (x, y) in [(0usize, 0usize), (4, 4), (7, 7)] {
+        let px = &data[y * 256 + x * 4..][..4];
+        assert!(
+            px.iter().zip(want).all(|(a, b)| a.abs_diff(b) <= 2),
+            "({x}, {y}) is the samples' colour with the depth in blue: {px:?}, want {want:?}"
+        );
+    }
 }

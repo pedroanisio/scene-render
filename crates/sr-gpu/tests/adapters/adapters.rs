@@ -3,7 +3,8 @@
 //! its GPU through Mesa's D3D12 driver.
 
 use sr_gpu::gpu::{
-    can_run_3d, choose_adapter, choose_adapter_for, is_software, software_warning, wsl_environment, WslProbe,
+    can_run_3d, check_gl_version, choose_adapter, choose_adapter_for, is_software, software_warning, wsl_environment,
+    WslProbe,
 };
 use sr_gpu::GpuError;
 use wgpu::{AdapterInfo, Backend, DeviceType};
@@ -150,15 +151,19 @@ fn a_device_reopens_on_exactly_its_own_adapter() {
 }
 
 #[test]
-fn an_adapter_that_cannot_draw_3d_says_how_to_get_one_that_can() {
+fn every_backend_draws_3d_and_none_warns_about_it() {
     use sr_gpu::gpu::three_d_warning;
-    let gl = info("D3D12 (NVIDIA GeForce RTX 4050 Laptop GPU)", DeviceType::Other, Backend::Gl);
-    let w = three_d_warning(&gl).expect("OpenGL adapters do not draw 3D");
-    assert!(w.contains("SR_GPU_BACKEND=vulkan"), "{w}");
-    assert!(w.contains("D3D12 (NVIDIA GeForce RTX 4050 Laptop GPU)") && w.contains("not drawn"), "{w}");
-    assert!(w.contains("scene-render gpus"), "{w}");
-    assert!(three_d_warning(&lavapipe()).is_none());
-    assert!(three_d_warning(&info("RTX 4050", DeviceType::DiscreteGpu, Backend::Dx12)).is_none());
+    for a in [
+        rtx_through_gl(),
+        info("llvmpipe (LLVM 19.1.7, 256 bits)", DeviceType::Cpu, Backend::Gl),
+        lavapipe(),
+        info("RTX 4050", DeviceType::DiscreteGpu, Backend::Dx12),
+        info("Apple M2", DeviceType::IntegratedGpu, Backend::Metal),
+    ] {
+        assert!(can_run_3d(&a), "{} ({:?})", a.name, a.backend);
+        assert_eq!(three_d_warning(&a), None, "{} ({:?})", a.name, a.backend);
+        assert!(sr_gpu::gpu::require_3d(&a).is_ok(), "{} ({:?})", a.name, a.backend);
+    }
 }
 
 fn rtx_through_gl() -> AdapterInfo {
@@ -166,36 +171,31 @@ fn rtx_through_gl() -> AdapterInfo {
 }
 
 #[test]
-fn a_document_with_3d_gets_an_adapter_that_can_draw_it() {
-    // WSL2 with Mesa's D3D12 driver: the GPU is reachable only through OpenGL, which cannot run the 3D pass;
-    // lavapipe (Vulkan) can. A flat document still takes the GPU, a 3D one must not take the adapter that drops its objects.
+fn a_document_with_3d_takes_the_gpu_behind_opengl_before_software_vulkan() {
+    // WSL2 with Mesa's D3D12 driver: the GPU is reachable only through OpenGL, and it draws the 3D pass, so a 3D
+    // document takes it like a flat one rather than lavapipe
     let found = [rtx_through_gl(), lavapipe()];
     assert_eq!(choose_adapter_for(&found, None, false).unwrap(), 0);
-    assert_eq!(choose_adapter_for(&found, None, true).unwrap(), 1);
+    assert_eq!(choose_adapter_for(&found, None, true).unwrap(), 0);
 }
 
 #[test]
-fn a_3d_document_picks_the_best_adapter_among_those_that_can_run_it() {
+fn a_3d_document_picks_the_best_ranked_adapter() {
     let found = [rtx_through_gl(), lavapipe(), info("Radeon 780M", DeviceType::IntegratedGpu, Backend::Vulkan)];
-    assert_eq!(choose_adapter_for(&found, None, true).unwrap(), 2, "hardware Vulkan beats software Vulkan");
+    assert_eq!(choose_adapter_for(&found, None, true).unwrap(), 2, "an integrated GPU beats an unknown one");
+    assert_eq!(choose_adapter_for(&found, None, true).unwrap(), choose_adapter(&found, None).unwrap());
 }
 
 #[test]
-fn a_3d_document_with_only_opengl_adapters_is_an_error_that_says_what_to_do() {
-    let e = choose_adapter_for(&[rtx_through_gl()], None, true).unwrap_err();
-    assert!(matches!(e, GpuError::NoThreeD { .. }), "{e:?}");
-    let text = e.to_string();
-    assert!(text.contains("3D") && text.contains("Vulkan") && text.contains("scene-render gpus"), "{text}");
-    assert!(text.contains("D3D12 (NVIDIA GeForce RTX 4050 Laptop GPU)"), "the adapter found is named: {text}");
-    // no 3D: the same adapter is fine
-    assert_eq!(choose_adapter_for(&[rtx_through_gl()], None, false).unwrap(), 0);
+fn a_3d_document_with_only_opengl_adapters_takes_one() {
+    assert_eq!(choose_adapter_for(&[rtx_through_gl()], None, true).unwrap(), 0);
+    assert!(matches!(choose_adapter_for(&[], None, true), Err(GpuError::NoAdapter(_))));
 }
 
 #[test]
-fn naming_an_opengl_adapter_for_a_3d_document_is_refused_and_naming_a_capable_one_works() {
+fn naming_an_opengl_adapter_for_a_3d_document_takes_it() {
     let found = [rtx_through_gl(), lavapipe()];
-    let e = choose_adapter_for(&found, Some("RTX"), true).unwrap_err();
-    assert!(matches!(e, GpuError::NoThreeD { .. }), "{e:?}");
+    assert_eq!(choose_adapter_for(&found, Some("RTX"), true).unwrap(), 0);
     assert_eq!(choose_adapter_for(&found, Some("llvmpipe"), true).unwrap(), 1);
     assert_eq!(choose_adapter_for(&found, Some("RTX"), false).unwrap(), 0);
     // an unknown name is still reported as unknown
@@ -208,4 +208,102 @@ fn can_run_3d_agrees_with_the_3d_warning() {
     for a in [rtx_through_gl(), lavapipe(), info("RTX 4050", DeviceType::DiscreteGpu, Backend::Dx12)] {
         assert_eq!(can_run_3d(&a), three_d_warning(&a).is_none(), "{}", a.name);
     }
+}
+
+/// Format features with every usage and flag, except `usages` and `flags`, which `format` lacks.
+fn features_without(
+    format: wgpu::TextureFormat,
+    usages: wgpu::TextureUsages,
+    flags: wgpu::TextureFormatFeatureFlags,
+) -> impl Fn(wgpu::TextureFormat) -> wgpu::TextureFormatFeatures {
+    move |f| {
+        let mut all = wgpu::TextureFormatFeatures {
+            allowed_usages: wgpu::TextureUsages::all(),
+            flags: wgpu::TextureFormatFeatureFlags::all(),
+        };
+        if f == format {
+            all.allowed_usages.remove(usages);
+            all.flags.remove(flags);
+        }
+        all
+    }
+}
+
+#[test]
+fn an_adapter_with_every_format_feature_can_run_the_3d_pass() {
+    use sr_gpu::gpu::check_3d_formats;
+    let none = (wgpu::TextureUsages::empty(), wgpu::TextureFormatFeatureFlags::empty());
+    assert!(check_3d_formats(features_without(wgpu::TextureFormat::Depth32Float, none.0, none.1)).is_ok());
+    // a format the 3D pass does not multisample is not asked for anything
+    let unused = features_without(
+        wgpu::TextureFormat::Rgba8Unorm,
+        wgpu::TextureUsages::all(),
+        wgpu::TextureFormatFeatureFlags::all(),
+    );
+    assert!(check_3d_formats(unused).is_ok());
+}
+
+#[test]
+fn an_adapter_without_the_multisampled_depth_or_colour_the_3d_pass_needs_is_refused() {
+    use sr_gpu::gpu::check_3d_formats;
+    use wgpu::{TextureFormat as F, TextureFormatFeatureFlags as Flag, TextureUsages as U};
+    let cases = [
+        (F::Depth32Float, U::empty(), Flag::MULTISAMPLE_X4),
+        (F::Depth32Float, U::TEXTURE_BINDING, Flag::empty()),
+        (F::Depth32Float, U::RENDER_ATTACHMENT, Flag::empty()),
+        (F::Rgba16Float, U::empty(), Flag::MULTISAMPLE_X4),
+        (F::Rgba16Float, U::empty(), Flag::MULTISAMPLE_RESOLVE),
+        (F::Rgba16Float, U::RENDER_ATTACHMENT, Flag::empty()),
+    ];
+    for (format, usages, flags) in cases {
+        match check_3d_formats(features_without(format, usages, flags)) {
+            Err(e @ GpuError::Format { format: refused, .. }) => {
+                assert_eq!(refused, format, "{format:?} without {usages:?} {flags:?}");
+                let message = e.to_string();
+                assert!(message.contains(&format!("{format:?}")), "{message}");
+                assert!(message.contains("3D"), "{message}");
+            }
+            other => panic!("{format:?} without {usages:?} {flags:?}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn an_opengl_driver_older_than_4_3_or_es_3_1_is_refused_naming_what_its_shaders_lack() {
+    let gl = |version: &str| AdapterInfo {
+        driver_info: version.into(),
+        ..info("GPU", DeviceType::DiscreteGpu, Backend::Gl)
+    };
+    // the first is what the NVIDIA driver gives an EGL request for a desktop 3.3 context
+    for version in [
+        "3.3.0 NVIDIA 615.71.09",
+        "4.2.0 NVIDIA 615.71.09",
+        "3.3 (Core Profile) Mesa 25.0.7",
+        "OpenGL ES 3.0 Mesa 25.0.7",
+        "OpenGL ES 3.0.0 (ANGLE 2.1.0)",
+    ] {
+        match check_gl_version(&gl(version)) {
+            Err(e @ GpuError::OpenGlVersion { .. }) => {
+                let message = e.to_string();
+                assert!(message.contains(version), "{message}");
+                assert!(message.contains("storage buffers") && message.contains("compute shaders"), "{message}");
+                assert!(message.contains("SR_GPU_ADAPTER"), "{message}");
+            }
+            other => panic!("{version}: {other:?}"),
+        }
+    }
+    for version in [
+        "4.5 (Core Profile) Mesa 25.0.7",
+        "4.6.0 NVIDIA 615.71.09",
+        "4.3.0",
+        "OpenGL ES 3.1 Mesa 25.0.7",
+        "OpenGL ES 3.2 NVIDIA 615.71.09",
+    ] {
+        assert!(check_gl_version(&gl(version)).is_ok(), "{version}");
+    }
+    // another backend's driver version says nothing of OpenGL, and a version this cannot read is left to the probe of
+    // the device
+    let vulkan = AdapterInfo { driver_info: "3.3.0".into(), ..info("RTX", DeviceType::DiscreteGpu, Backend::Vulkan) };
+    assert!(check_gl_version(&vulkan).is_ok());
+    assert!(check_gl_version(&gl("")).is_ok());
 }

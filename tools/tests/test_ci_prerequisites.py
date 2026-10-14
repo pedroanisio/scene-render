@@ -1,8 +1,8 @@
 """The CI job that runs these Python tests has what they import: the corpus regeneration test needs lxml, which only
 the runtime action's `evidence` option installs, and the setup action only passes that on when `runtime` is not
 switched off for the job. That job also installs the toolchain the maze.wasm rebuild check pins and runs the tests
-with SR_REQUIRE_WASM=1, and the runtime action makes a missing GPU or FFmpeg fail the renderer tests instead of
-skipping them."""
+with SR_REQUIRE_WASM=1, and the runtime action makes a missing GPU, Vulkan or OpenGL adapter, or FFmpeg fail the renderer
+tests instead of skipping them."""
 import pathlib
 import re
 import unittest
@@ -56,7 +56,7 @@ def requirement_problems(ci, runtime, toolchain):
         out.append(f"job {holders[0]} runs tools/tests without SR_REQUIRE_WASM: 1")
     if not re.search(r'^targets = \[[^\]]*"wasm32-unknown-unknown"', toolchain, flags=re.M):
         out.append("the maze toolchain file does not list the wasm32-unknown-unknown target")
-    for name in ["SR_REQUIRE_GPU", "SR_REQUIRE_FFMPEG"]:
+    for name in ["SR_REQUIRE_GPU", "SR_REQUIRE_FFMPEG", "SR_REQUIRE_VULKAN", "SR_REQUIRE_GL"]:
         if not re.search(r'^\s+echo "' + name + r'=1" >> "\$GITHUB_ENV"$', runtime, flags=re.M):
             out.append(f"the runtime action does not set {name}=1")
     if not re.search(r"runtime_packages=\([^)]*\bffmpeg\b", runtime):
@@ -115,7 +115,7 @@ class CiRequirementTests(unittest.TestCase):
 
     def test_a_dropped_requirement_in_the_runtime_action_is_found(self):
         ci, runtime, toolchain = self.files()
-        for name in ["SR_REQUIRE_GPU", "SR_REQUIRE_FFMPEG"]:
+        for name in ["SR_REQUIRE_GPU", "SR_REQUIRE_FFMPEG", "SR_REQUIRE_VULKAN", "SR_REQUIRE_GL"]:
             broken = runtime.replace(f'echo "{name}=1"', f'echo "{name}=0"')
             self.assertNotEqual(broken, runtime)
             found = requirement_problems(ci, broken, toolchain)

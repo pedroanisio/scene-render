@@ -1332,24 +1332,23 @@ fn has_gl_adapter() -> bool {
 }
 
 #[test]
-fn a_3d_document_is_not_rendered_without_its_3d_on_an_opengl_adapter() {
-    // asking for OpenGL only, a document with a 3D object cannot be drawn: that is an error by default,
-    // not a frame without the object and exit 0
+fn a_3d_document_renders_on_an_opengl_adapter() {
+    // asking for OpenGL only, a document with a 3D object is drawn whole, as on Vulkan
     if !has_gl_adapter() {
         eprintln!("skipping: no OpenGL adapter");
         return;
     }
     let dir = three_d_fixture("render-gl");
     let scene = dir.join("r.scene.xml").display().to_string();
-    let o = run_env(&["render", &scene, "--bench", "--frames", "0..1"], &[("SR_GPU_BACKEND", "gl")]);
+    let o = run_env(&["render", &scene, "--bench", "--frames", "0..1", "--strict"], &[("SR_GPU_BACKEND", "gl")]);
     let (out, err) = (String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
-    assert_eq!(o.status.code(), Some(2), "{out}{err}");
-    assert!(err.contains("3D") && err.contains("Vulkan") && err.contains("scene-render gpus"), "{err}");
+    assert_eq!(o.status.code(), Some(0), "{out}{err}");
+    assert!(!format!("{out}{err}").contains("not drawn"), "{out}{err}");
 }
 
 #[test]
-fn encoding_a_3d_document_on_an_opengl_adapter_fails_and_writes_nothing() {
-    if !has_gl_adapter() {
+fn encoding_a_3d_document_on_an_opengl_adapter_writes_its_frames() {
+    if !crate::common::ffmpeg("encoding_a_3d_document_on_an_opengl_adapter_writes_its_frames") || !has_gl_adapter() {
         eprintln!("skipping: no OpenGL adapter");
         return;
     }
@@ -1358,10 +1357,9 @@ fn encoding_a_3d_document_on_an_opengl_adapter_fails_and_writes_nothing() {
     let pattern = dir.join("gl_%03d.png");
     let o = run_env(&["encode", &scene, "-o", pattern.to_str().unwrap(), "--end", "0.2"], &[("SR_GPU_BACKEND", "gl")]);
     let (out, err) = (String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
-    // the same exit code as render: scripts test one number for "this adapter cannot draw the document"
-    assert_eq!(o.status.code(), Some(2), "{out}{err}");
-    assert!(format!("{out}{err}").contains("3D"), "{out}{err}");
-    assert!(!dir.join("gl_000.png").exists(), "no frame without the 3D object is written");
+    assert_eq!(o.status.code(), Some(0), "{out}{err}");
+    assert!(!format!("{out}{err}").contains("not drawn"), "{out}{err}");
+    assert!(dir.join("gl_000.png").is_file(), "{out}{err}");
 }
 
 #[test]
@@ -1383,36 +1381,31 @@ fn a_flat_document_still_renders_on_opengl() {
 }
 
 #[test]
-fn a_3d_document_takes_an_adapter_that_can_draw_it_by_default() {
-    // on a machine that offers OpenGL only for the GPU and Vulkan for lavapipe (WSL2), the default
-    // adapter would drop the 3D object; the choice now moves to the Vulkan one
+fn a_3d_document_renders_on_the_default_adapter() {
+    // every backend draws 3D, so the default adapter is the best ranked one whatever the document holds
     let o = run(&["gpus", "--json"]);
     let Ok(r) = serde_json::from_slice::<serde_json::Value>(&o.stdout).map(|v| v["result"].clone()) else { return };
-    let list = r["adapters"].as_array().cloned().unwrap_or_default();
-    if !list.iter().any(|a| a["backend"] != "Gl") {
-        eprintln!("skipping: no non-OpenGL adapter");
+    if r["adapters"].as_array().is_none_or(|a| a.is_empty()) {
+        eprintln!("skipping: no adapter");
         return;
     }
     let dir = three_d_fixture("default");
     let scene = dir.join("r.scene.xml").display().to_string();
-    let o = run(&["render", &scene, "--bench", "--frames", "0..1"]);
+    let o = run(&["render", &scene, "--bench", "--frames", "0..1", "--strict"]);
     let (out, err) = (String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
     assert_eq!(o.status.code(), Some(0), "{out}{err}");
-    assert!(!out.contains("3D objects are not drawn"), "{out}");
-    assert!(!out.contains("(Gl,"), "the render adapter must not be an OpenGL one: {out}");
+    assert!(!format!("{out}{err}").contains("not drawn"), "{out}{err}");
 }
 
 #[test]
-fn encoding_a_3d_document_by_default_takes_an_adapter_that_can_draw_it() {
-    if !crate::common::ffmpeg("encoding_a_3d_document_by_default_takes_an_adapter_that_can_draw_it") {
+fn encoding_a_3d_document_on_the_default_adapter_writes_its_frames() {
+    if !crate::common::ffmpeg("encoding_a_3d_document_on_the_default_adapter_writes_its_frames") {
         return;
     }
-    // encode builds its own adapter, so it needs the same document-driven choice as render
     let o = run(&["gpus", "--json"]);
     let Ok(r) = serde_json::from_slice::<serde_json::Value>(&o.stdout).map(|v| v["result"].clone()) else { return };
-    let list = r["adapters"].as_array().cloned().unwrap_or_default();
-    if !list.iter().any(|a| a["backend"] != "Gl") {
-        eprintln!("skipping: no non-OpenGL adapter");
+    if r["adapters"].as_array().is_none_or(|a| a.is_empty()) {
+        eprintln!("skipping: no adapter");
         return;
     }
     let dir = three_d_fixture("encode-default");
@@ -1421,10 +1414,7 @@ fn encoding_a_3d_document_by_default_takes_an_adapter_that_can_draw_it() {
     let o = run(&["encode", &scene, "-o", pattern.to_str().unwrap(), "--end", "0.2"]);
     let (out, err) = (String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
     assert_eq!(o.status.code(), Some(0), "{out}{err}");
-    assert!(
-        err.contains("rendering on") && !err.contains("(Gl,"),
-        "the encode adapter must not be an OpenGL one: {err}"
-    );
+    assert!(!format!("{out}{err}").contains("not drawn"), "{out}{err}");
     assert!(dir.join("d_000.png").is_file(), "{out}{err}");
 }
 

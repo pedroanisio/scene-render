@@ -52,3 +52,33 @@ checks remain as released upstream.
 `crates/sr-wasm/tests/runtime.rs` checks exact budgets for straight-line code, loops,
 nested functions and host calls. Preserve those boundaries when upgrading Wasmtime,
 and drop the patch if upstream provides a configurable function-entry cost.
+
+## wgpu-hal 30.0.1
+
+wgpu's backends, from <https://github.com/gfx-rs/wgpu>, MIT OR Apache-2.0 (both licence files are kept).
+
+**The change** is in the OpenGL backend, `src/gles`. A two-dimensional texture of one layer with more than one
+sample that shaders also read (a texture that is only a render target is a renderbuffer and is unchanged) gets
+the `GL_TEXTURE_2D_MULTISAMPLE` target in `Texture::get_info_from_desc` (`mod.rs`) instead of `GL_TEXTURE_2D`;
+`create_texture` (`device.rs`) sets no filtering state on it, which a multisampled texture does not have;
+`is_layered_target` (`conv.rs`) and `get_2d_target` (`queue.rs`) accept the target, where they would otherwise
+reach `unreachable!()`; and the view-dimension heuristic that logs a mismatch accepts it for a `D2` view.
+
+**Why.** The 3D pass draws into multisampled colour and depth textures and its depth resolve loads each sample.
+Released, the backend allocates such a texture with `glTexStorage2DMultisample(GL_TEXTURE_2D, …)`, which Mesa
+rejects with `GL_INVALID_ENUM`: the texture has no storage, every framebuffer that uses it is incomplete, and the
+3D pass draws nothing on OpenGL. The OpenGL test `a_multisampled_texture_is_sampled_on_opengl` in
+`crates/sr-gpu/tests/adapters/hardening.rs` reads back what such textures hold. Rendering without multisampling on
+OpenGL was rejected because its frames would no longer match the Vulkan ones, and wrapping a texture created
+outside wgpu needs unsafe code, which `sr-gpu` forbids.
+
+**The second change** is in `src/gles/egl.rs`: a desktop OpenGL context is asked for at 4.6, 4.5, 4.4, 4.3 and
+then 3.3, newest first, instead of at 3.3 only. Released, the backend asks for 3.3; Mesa gives its newest version for
+that, but the NVIDIA driver gives exactly 3.3, whose shading language has neither storage buffers nor compute shaders,
+so `sr-gpu` refuses the GPU on OpenGL (`GpuError::OpenGlVersion`). The OpenGL test
+`every_opengl_adapter_gets_a_context_new_enough_for_the_shaders` in `crates/sr-gpu/tests/adapters/hardening.rs` checks
+the version every OpenGL adapter gets.
+
+**When wgpu is upgraded**, vendor the wgpu-hal version it asks for and carry both changes over, or drop each once
+upstream allocates sampled multisampled textures on the multisampled target, or asks for the newest desktop context.
+`tools/tests/test_vendor.py` fails if the patch entry or either change is missing.

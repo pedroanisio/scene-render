@@ -1,9 +1,10 @@
 //! Test helpers shared by the scene-render crates, as a dev-dependency only.
 //!
-//! A test that needs a GPU adapter, FFmpeg, a HEIC decoder or an adapter verified against golden references skips
-//! itself with a `SKIPPED (<test>): <reason>` line when the requirement is missing, unless the environment requires
-//! it: `SR_REQUIRE_GPU=1`, `SR_REQUIRE_FFMPEG=1` (both as in renderer CI), `SR_REQUIRE_HEIC=1` or
-//! `SR_REQUIRE_GOLDEN_ADAPTER=1` turn the skip into a failure that names the reason.
+//! A test that needs a GPU adapter, an adapter of one backend (Vulkan, OpenGL), FFmpeg, a HEIC decoder or an adapter
+//! verified against golden references skips itself with a `SKIPPED (<test>): <reason>` line when the requirement is
+//! missing, unless the environment requires it: `SR_REQUIRE_GPU=1`, `SR_REQUIRE_VULKAN=1`, `SR_REQUIRE_GL=1`,
+//! `SR_REQUIRE_FFMPEG=1` (as in renderer CI), `SR_REQUIRE_HEIC=1` or `SR_REQUIRE_GOLDEN_ADAPTER=1` turn the skip into
+//! a failure that names the reason.
 //!
 //! A test that stands in a fake tool (`curl`, `ffmpeg`) writes its script with [`executable`], never `std::fs::write`.
 //!
@@ -29,6 +30,10 @@ pub struct Requirement {
 
 /// A GPU adapter: `SR_REQUIRE_GPU=1`.
 pub const GPU: Requirement = Requirement { var: "SR_REQUIRE_GPU", needs: "a GPU adapter" };
+/// An adapter of the Vulkan backend, for a test that compares backends: `SR_REQUIRE_VULKAN=1`.
+pub const VULKAN: Requirement = Requirement { var: "SR_REQUIRE_VULKAN", needs: "a Vulkan adapter" };
+/// An adapter of the OpenGL backend, for a test that compares backends: `SR_REQUIRE_GL=1`.
+pub const GL: Requirement = Requirement { var: "SR_REQUIRE_GL", needs: "an OpenGL adapter" };
 /// FFmpeg, ffprobe and the encoders a test uses: `SR_REQUIRE_FFMPEG=1`.
 pub const FFMPEG: Requirement = Requirement { var: "SR_REQUIRE_FFMPEG", needs: "FFmpeg" };
 /// A decoder for HEIC stills: `SR_REQUIRE_HEIC=1`.
@@ -70,6 +75,16 @@ pub fn gpu<T, E: Display>(probe: Result<T, E>, context: &str) -> Option<T> {
     GPU.require(context, probe)
 }
 
+/// The Vulkan adapter a probe found, or nothing after skipping `context` (see [`VULKAN`]).
+pub fn vulkan<T, E: Display>(probe: Result<T, E>, context: &str) -> Option<T> {
+    VULKAN.require(context, probe)
+}
+
+/// The OpenGL adapter a probe found, or nothing after skipping `context` (see [`GL`]).
+pub fn gl<T, E: Display>(probe: Result<T, E>, context: &str) -> Option<T> {
+    GL.require(context, probe)
+}
+
 /// The decoder a HEIC probe found, or nothing after skipping `context` (see [`HEIC`]).
 pub fn heic<T, E: Display>(probe: Result<T, E>, context: &str) -> Option<T> {
     HEIC.require(context, probe)
@@ -100,7 +115,6 @@ pub fn ffmpeg_encoder<S: AsRef<str>>(context: &str, tools: &[S], name: &str, wor
     works
 }
 
-/// The adapter a GPU probe (`Result<T, impl Display>`) found; returns from the test after [`gpu`] skipped it.
 /// Writes `script` to `path` as an executable (mode 0700) that a test can run at once, from any thread.
 ///
 /// Linux refuses to run a file that any process holds open for writing (ETXTBSY). A test that writes the file itself
@@ -130,10 +144,33 @@ pub fn executable(path: &Path, script: &str) {
         .unwrap_or_else(|e| panic!("cannot make {} executable: {e}", path.display()));
 }
 
+/// The adapter a GPU probe (`Result<T, impl Display>`) found; returns from the test after [`gpu`] skipped it.
 #[macro_export]
 macro_rules! require_gpu {
     ($probe:expr, $context:expr $(,)?) => {
         match $crate::gpu($probe, $context) {
+            ::core::option::Option::Some(value) => value,
+            ::core::option::Option::None => return,
+        }
+    };
+}
+
+/// The Vulkan adapter a probe (`Result<T, impl Display>`) found; returns from the test after [`vulkan`] skipped it.
+#[macro_export]
+macro_rules! require_vulkan {
+    ($probe:expr, $context:expr $(,)?) => {
+        match $crate::vulkan($probe, $context) {
+            ::core::option::Option::Some(value) => value,
+            ::core::option::Option::None => return,
+        }
+    };
+}
+
+/// The OpenGL adapter a probe (`Result<T, impl Display>`) found; returns from the test after [`gl`] skipped it.
+#[macro_export]
+macro_rules! require_gl {
+    ($probe:expr, $context:expr $(,)?) => {
+        match $crate::gl($probe, $context) {
             ::core::option::Option::Some(value) => value,
             ::core::option::Option::None => return,
         }
