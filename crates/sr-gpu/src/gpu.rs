@@ -226,7 +226,10 @@ pub fn describe(info: &wgpu::AdapterInfo) -> String {
 /// Every adapter the backends in `opts` expose, in enumeration order, and the index
 /// `Gpu::with_options` would choose (or why none would be).
 pub fn adapters(opts: &GpuOptions) -> (Vec<wgpu::AdapterInfo>, Result<usize, GpuError>) {
-    let found = enumerate(opts.backends).into_iter().map(|a| a.get_info()).collect::<Vec<_>>();
+    let found = {
+        let creation = creation_lock();
+        enumerate(opts.backends, &creation).into_iter().map(|a| a.get_info()).collect::<Vec<_>>()
+    };
     let chosen = choose_adapter(&found, opts.adapter.as_deref());
     (found, chosen)
 }
@@ -266,13 +269,17 @@ pub(crate) fn test_gpu() -> Result<Gpu, String> {
     SHARED.get_or_init(|| Gpu::new().map_err(|e| e.to_string())).clone()
 }
 
-/// The process-wide lock held while a device or a pipeline is created. Several renderers are created at once by a parallel
-/// delivery, and creating pipelines concurrently on a software adapter crashed the Vulkan loader; rendering takes no lock.
+/// The process-wide lock held while an instance lists its adapters, a device opens or a pipeline is created. Several
+/// renderers are created at once by a parallel delivery, and creating pipelines concurrently on a software adapter crashed
+/// the Vulkan loader; so did creating instances concurrently (each scans the Vulkan drivers and loads EGL). Rendering takes
+/// no lock.
 pub fn creation_lock() -> std::sync::MutexGuard<'static, ()> {
     CREATION.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn enumerate(backends: wgpu::Backends) -> Vec<wgpu::Adapter> {
+/// The adapters of a new instance. The caller holds [`creation_lock`], and still holds it when the adapters it does not
+/// keep are dropped (the last one drops the instance).
+fn enumerate(backends: wgpu::Backends, _creation: &std::sync::MutexGuard<'static, ()>) -> Vec<wgpu::Adapter> {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = backends;
     desc.flags = instance_flags();
@@ -451,16 +458,21 @@ impl Gpu {
 
     /// Opens the adapter `opts` selects for a document that does or does not need the 3D pass.
     pub fn with_options_for(opts: &GpuOptions, needs_3d: bool) -> Result<Gpu, GpuError> {
-        let mut found = enumerate(opts.backends);
+        let creation = creation_lock();
+        let mut found = enumerate(opts.backends, &creation);
         let infos = found.iter().map(|a| a.get_info()).collect::<Vec<_>>();
         let i = choose_adapter_for(&infos, opts.adapter.as_deref(), needs_3d).map_err(|e| match e {
             GpuError::NoAdapter(_) => GpuError::NoAdapter(format!("none on {:?}", opts.backends)),
             e => e,
         })?;
-        Gpu::open(found.swap_remove(i))
+        let adapter = found.swap_remove(i);
+        drop(found);
+        Gpu::open(creation, adapter)
     }
 
-    fn open(adapter: wgpu::Adapter) -> Result<Gpu, GpuError> {
+    /// Opens a device on `adapter` with [`creation_lock`] held throughout. Parameters drop in reverse order of
+    /// declaration, so the adapter is dropped before the lock is released.
+    fn open(_creation: std::sync::MutexGuard<'static, ()>, adapter: wgpu::Adapter) -> Result<Gpu, GpuError> {
         #[cfg(test)]
         assert!(
             OPENED.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0,
@@ -475,7 +487,6 @@ impl Gpu {
             & (wgpu::Features::TIMESTAMP_QUERY
                 | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
                 | crate::resources::F32_FEATURES);
-        let _creation = creation_lock();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("scene-render"),
             required_features: features,
@@ -528,13 +539,16 @@ impl Gpu {
 
     /// A new device on the same adapter, for work that needs a device of its own.
     pub fn open_like(&self) -> Result<Gpu, GpuError> {
-        let mut found = enumerate(wgpu::Backends::from(self.info.backend));
+        let creation = creation_lock();
+        let mut found = enumerate(wgpu::Backends::from(self.info.backend), &creation);
         let infos = found.iter().map(|a| a.get_info()).collect::<Vec<_>>();
         let i = same_adapter(&infos, &self.info).ok_or_else(|| GpuError::NoMatch {
             wanted: describe(&self.info),
             available: infos.iter().map(describe).collect(),
         })?;
-        Gpu::open(found.swap_remove(i))
+        let adapter = found.swap_remove(i);
+        drop(found);
+        Gpu::open(creation, adapter)
     }
 
     /// True when this device rasterises on the CPU.
