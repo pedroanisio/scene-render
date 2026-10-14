@@ -122,6 +122,10 @@ impl<'a> Construct<'a> {
 }
 
 /// The engine's manifest, parsed.
+#[expect(
+    clippy::expect_used,
+    reason = "MANIFEST is capabilities.json embedded at build time, and tests/capabilities.rs parses it"
+)]
 pub fn manifest() -> Manifest {
     serde_json::from_str(MANIFEST).expect("capabilities.json is checked by the test suite")
 }

@@ -186,6 +186,13 @@ fn curl_with_deadline(
         timeout.as_secs_f64(),
         timeout.as_secs_f64()
     );
+    // A signed query or URI password must not be repeated in an error either.
+    let safe_uri = uri.split(['?', '#']).next().unwrap_or(uri);
+    let safe_uri = match safe_uri.split_once("://") {
+        Some((scheme, rest)) => format!("{scheme}://{}", rest.rsplit_once('@').map_or(rest, |(_, host)| host)),
+        None => safe_uri.to_string(),
+    };
+    let error = |message| DeliverError::Destination { uri: safe_uri.clone(), message };
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let option = match arg.as_str() {
@@ -204,16 +211,11 @@ fn curl_with_deadline(
                 continue;
             }
         };
-        let value = args.next().expect("internal curl option has a value");
+        let Some(value) = args.next() else {
+            return Err(error(format!("the curl {option} option has no value")));
+        };
         config.push_str(&format!("{option} = \"{}\"\n", quote(value)));
     }
-    // A signed query or URI password must not be repeated in an error either.
-    let safe_uri = uri.split(['?', '#']).next().unwrap_or(uri);
-    let safe_uri = match safe_uri.split_once("://") {
-        Some((scheme, rest)) => format!("{scheme}://{}", rest.rsplit_once('@').map_or(rest, |(_, host)| host)),
-        None => safe_uri.to_string(),
-    };
-    let error = |message| DeliverError::Destination { uri: safe_uri.clone(), message };
     // Upload responses are unused. Discard both streams without allocating or
     // retaining server-controlled data (which may also reflect credentials).
     let mut command = Command::new(tool);
@@ -225,7 +227,11 @@ fn curl_with_deadline(
     }
     let start = std::time::Instant::now();
     let mut child = command.spawn().map_err(|e| error(format!("cannot run curl: {e}")))?;
-    let mut stdin = child.stdin.take().expect("piped");
+    let Some(mut stdin) = child.stdin.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error("curl was started without its standard input".into()));
+    };
     let (tx, written) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(stdin.write_all(config.as_bytes()));
@@ -622,6 +628,23 @@ assert ' ' not in url, url
         let response = curl_with_tool(tool.to_str().unwrap(), &[], "https://example.test").unwrap();
         assert!(response.is_empty(), "delivery does not consume response bodies");
         std::fs::remove_dir_all(tool.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn an_option_without_its_value_is_an_error_before_curl_runs() {
+        let result = curl_with_deadline(
+            "/nonexistent/curl-must-not-run",
+            &["-H".into()],
+            "https://user:secret@example.test/upload?token=secret",
+            std::time::Duration::from_secs(1),
+        );
+        match result {
+            Err(DeliverError::Destination { uri, message }) => {
+                assert_eq!(uri, "https://example.test/upload");
+                assert!(message.contains("header") && message.contains("no value"), "{message}");
+            }
+            other => panic!("expected a destination error, got {other:?}"),
+        }
     }
 
     #[test]

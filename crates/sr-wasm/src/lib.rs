@@ -25,6 +25,17 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -136,19 +147,27 @@ impl Rng {
 
 // ------------------------------------------------------------------ the engine
 
-fn engine() -> &'static Engine {
-    static E: OnceLock<Engine> = OnceLock::new();
-    E.get_or_init(|| {
-        let mut c = Config::new();
-        c.consume_fuel(true);
-        c.cranelift_nan_canonicalization(true);
-        c.wasm_relaxed_simd(false);
-        c.wasm_simd(true);
-        c.wasm_multi_memory(false);
-        c.wasm_memory64(false);
-        c.max_wasm_stack(STACK);
-        Engine::new(&c).expect("the WebAssembly engine configuration is valid")
-    })
+/// The engine's configuration: fuel, canonical NaNs, SIMD without its relaxed form, one 32-bit memory.
+fn config() -> Config {
+    let mut c = Config::new();
+    c.consume_fuel(true);
+    c.cranelift_nan_canonicalization(true);
+    c.wasm_relaxed_simd(false);
+    c.wasm_simd(true);
+    c.wasm_multi_memory(false);
+    c.wasm_memory64(false);
+    c.max_wasm_stack(STACK);
+    c
+}
+
+fn start_engine(c: &Config) -> Result<Engine, Error> {
+    Engine::new(c).map_err(|e| err(Code::Prg11, format!("host: the WebAssembly engine cannot start: {e:#}")))
+}
+
+/// The engine every program runs on, started once; a host that cannot start it fails every program alike.
+fn engine() -> Result<&'static Engine, Error> {
+    static E: OnceLock<Result<Engine, Error>> = OnceLock::new();
+    E.get_or_init(|| start_engine(&config())).as_ref().map_err(Clone::clone)
 }
 
 /// Compiled modules by the SHA-256 of their bytes.
@@ -159,7 +178,7 @@ fn compiled(bytes: &[u8]) -> Result<Module, Error> {
     if let Some(m) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return Ok(m.clone());
     }
-    let m = Module::new(engine(), bytes).map_err(|e| err(Code::Prg11, format!("invalid module: {e:#}")))?;
+    let m = Module::new(engine()?, bytes).map_err(|e| err(Code::Prg11, format!("invalid module: {e:#}")))?;
     cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, m.clone());
     Ok(m)
 }
@@ -206,7 +225,7 @@ impl ResourceLimiter for Host {
 const IMPORTS: [&str; 4] = ["rand_u64", "rand_f64", "param_f64", "param_str"];
 
 fn linker() -> Result<Linker<Host>, Error> {
-    let mut l = Linker::new(engine());
+    let mut l = Linker::new(engine()?);
     let wire = |e: wasmtime::Error| err(Code::Prg11, format!("host: {e}"));
     l.func_wrap("sr", "rand_u64", |mut c: Caller<'_, Host>| c.data_mut().rng.next() as i64).map_err(wire)?;
     l.func_wrap("sr", "rand_f64", |mut c: Caller<'_, Host>| (c.data_mut().rng.next() >> 11) as f64 * (-53f64).exp2())
@@ -348,7 +367,7 @@ impl Live {
             memory_bytes,
             failure: None,
         };
-        let mut store = Store::new(engine(), host);
+        let mut store = Store::new(engine()?, host);
         store.limiter(|h| h as &mut dyn ResourceLimiter);
         for export in module.exports().filter(|e| e.name() == "memory") {
             if let ExternType::Memory(mt) = export.ty() {
@@ -509,6 +528,16 @@ mod tests {
         let mut r = Rng(0);
         assert_eq!(r.next(), 0xE220_A839_7B1D_CDAF);
         assert_eq!(r.next(), 0x6E78_9E6A_A1B9_65F4);
+    }
+
+    #[test]
+    fn the_engine_starts_and_a_configuration_it_refuses_is_a_host_error() {
+        assert!(start_engine(&config()).is_ok());
+        let mut c = config();
+        c.max_wasm_stack(0);
+        let e = start_engine(&c).err().unwrap();
+        assert_eq!(e.code, Code::Prg11);
+        assert!(e.message.starts_with("host: the WebAssembly engine cannot start: "), "{}", e.message);
     }
 
     #[test]

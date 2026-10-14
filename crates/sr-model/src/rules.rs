@@ -2969,7 +2969,8 @@ fn components(next: &[Vec<usize>]) -> Vec<usize> {
             continue;
         }
         work.push((start, 0));
-        while let Some(&(v, edge)) = work.last() {
+        while let Some(top) = work.last_mut() {
+            let (v, edge) = *top;
             if edge == 0 {
                 order[v] = visited;
                 low[v] = visited;
@@ -2977,7 +2978,7 @@ fn components(next: &[Vec<usize>]) -> Vec<usize> {
                 stack.push(v);
             }
             if let Some(&w) = next[v].get(edge) {
-                work.last_mut().expect("non-empty").1 += 1;
+                top.1 += 1;
                 if order[w] == NONE {
                     work.push((w, 0));
                 } else if group[w] == NONE {

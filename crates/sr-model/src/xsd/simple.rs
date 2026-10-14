@@ -16,6 +16,10 @@ fn preserves_whitespace(ty: usize) -> bool {
     matches!(super::root_builtin(ty), Some(Builtin::String))
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "the patterns are the vendored schema's, compiled into the binary; a unit test compiles every one"
+)]
 fn patterns() -> &'static HashMap<usize, Regex> {
     static P: OnceLock<HashMap<usize, Regex>> = OnceLock::new();
     P.get_or_init(|| {
@@ -395,6 +399,17 @@ mod tests {
 
     fn ty(name: &str) -> usize {
         SIMPLE_TYPES.iter().position(|t| t.name == name).unwrap()
+    }
+
+    #[test]
+    fn every_schema_pattern_compiles() {
+        warm_up();
+        let with_pattern = SIMPLE_TYPES
+            .iter()
+            .filter(|t| matches!(t.kind, SimpleKind::Restriction(Restriction { pattern: Some(_), .. })))
+            .count();
+        assert!(with_pattern > 0);
+        assert_eq!(patterns().len(), with_pattern);
     }
 
     #[test]

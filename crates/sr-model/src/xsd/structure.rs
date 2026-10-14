@@ -411,14 +411,10 @@ impl<'a, 'i> Walker<'a, 'i> {
                     };
                     let k = kids[bad];
                     let name = k.tag_name().name();
-                    let mut d = if k.tag_name().namespace().is_some() {
+                    let mut d = if let Some(ns) = k.tag_name().namespace() {
                         Diagnostic::error(
                             "S11",
-                            format!(
-                                "<{}> is in namespace {}; scene-render elements have no namespace",
-                                name,
-                                k.tag_name().namespace().unwrap()
-                            ),
+                            format!("<{name}> is in namespace {ns}; scene-render elements have no namespace"),
                             Loc::of(k),
                             element_path(k),
                         )

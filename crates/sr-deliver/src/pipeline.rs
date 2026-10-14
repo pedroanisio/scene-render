@@ -494,7 +494,7 @@ impl Video<'_> {
     /// Completes the accessibility checks over an output and records their findings in `report`.
     /// `judge` has observed every frame of `times`, in order; text the inline probe could not reach is
     /// measured here, then the verdicts are given.
-    fn judge(&mut self, mut judge: Judge, times: &[f64], report: &mut Report) {
+    fn judge(&mut self, mut judge: Judge, times: &[f64], report: &mut Report) -> Result<(), DeliverError> {
         three_d_findings(report);
         let p = self.ev.program();
         let checks = Checks::of(p);
@@ -512,7 +512,7 @@ impl Video<'_> {
                 let g = ev.evaluate(t);
                 let mut sub = |st: f64| ev.evaluate(st);
                 renderer.contrasts_with_without(&g, p, missing, &mut sub)
-            });
+            })?;
             for ((id, opacity), ratio) in targets.into_iter().zip(ratios) {
                 if let Some(ratio) = ratio {
                     judge.contrast(&id, opacity, ratio, t);
@@ -560,6 +560,7 @@ impl Video<'_> {
                 fail(&checks.contrast, msg, finding, report);
             }
         }
+        Ok(())
     }
 }
 
@@ -674,7 +675,10 @@ impl Feeder {
 
     fn send(&mut self, frame: Vec<u8>) -> Result<f64, DeliverError> {
         let t = Instant::now();
-        if self.tx.as_ref().expect("open").send(frame).is_err() {
+        let Some(tx) = self.tx.as_ref() else {
+            return Err(DeliverError::Invalid("a frame was sent after the encode was finished".into()));
+        };
+        if tx.send(frame).is_err() {
             // the encoder thread stopped: surface its error
             return Err(self.finish().err().unwrap_or_else(|| DeliverError::Invalid("encoder stopped".into())));
         }
@@ -1288,7 +1292,7 @@ fn run_delivery(
                 }
             }
             // the checks' post pass runs once the file is written: a check that fails, or takes long, leaves it whole
-            video.judge(judge, &times, report);
+            video.judge(judge, &times, report)?;
         } else if plan.chunks > 1 {
             // Each worker renders contiguous chunks with its own encoder. Accessibility-enabled
             // chunks fit one bounded observation batch, so ordering does not serialize the workers.
@@ -1492,7 +1496,7 @@ fn run_delivery(
             // measure in place is measured by this thread's renderer
             progress(n, n);
             spec.join(&parts, &tmp.join("segments.txt"))?;
-            video.judge(judge, &times, report);
+            video.judge(judge, &times, report)?;
             report.frames = n;
             report.passes = 1;
             report.segments = workers as u32;
@@ -1509,7 +1513,7 @@ fn run_delivery(
             })?;
             // the file is closed before the checks' post pass: a check that fails, or takes long, leaves it whole
             report.encoder = feeder.finish()?;
-            video.judge(judge, &times, report);
+            video.judge(judge, &times, report)?;
             report.frames = n;
             report.passes = 1;
         }
@@ -1898,8 +1902,11 @@ fn replay(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| sr_media::MediaError::Spawn { tool: sr_media::ffmpeg(), source: e })?;
-    let mut out = dec.stdout.take().expect("piped");
-    let mut err = dec.stderr.take().expect("piped");
+    let (Some(mut out), Some(mut err)) = (dec.stdout.take(), dec.stderr.take()) else {
+        let _ = dec.kill();
+        let _ = dec.wait();
+        return Err(DeliverError::Invalid("ffmpeg was started without its output pipes".into()));
+    };
     let said = std::thread::spawn(move || {
         let mut v = Vec::new();
         let _ = err.read_to_end(&mut v);
@@ -2158,22 +2165,28 @@ impl ContrastPrefetch {
         time: f64,
         targets: &[sr_gpu::ContrastTarget],
         mut fallback: impl FnMut(&[sr_gpu::ContrastTarget]) -> Vec<Option<f64>>,
-    ) -> Vec<Option<f64>> {
+    ) -> Result<Vec<Option<f64>>, DeliverError> {
         let missing: Vec<_> = targets
             .iter()
             .filter(|id| !self.measured.contains_key(&(time.to_bits(), (*id).clone())))
             .cloned()
             .collect();
-        let mut found = if missing.is_empty() { Vec::new() } else { fallback(&missing) }.into_iter();
-        targets
+        let found = if missing.is_empty() { Vec::new() } else { fallback(&missing) };
+        if found.len() != missing.len() {
+            return Err(DeliverError::Invalid(format!(
+                "contrastCheck at {time:.3} s: {} measurements for {} texts",
+                found.len(),
+                missing.len()
+            )));
+        }
+        let mut found = found.into_iter();
+        Ok(targets
             .iter()
-            .map(|id| {
-                self.measured
-                    .get(&(time.to_bits(), id.clone()))
-                    .copied()
-                    .unwrap_or_else(|| found.next().expect("one contrast result per missing target"))
+            .map(|id| match self.measured.get(&(time.to_bits(), id.clone())) {
+                Some(&ratio) => ratio,
+                None => found.next().flatten(),
             })
-            .collect()
+            .collect())
     }
 }
 
@@ -2364,13 +2377,34 @@ mod tests {
         cache.measured.insert((time.to_bits(), extra), Some(1.0));
         cache.measured.insert(((time + 0.01).to_bits(), b.clone()), Some(9.0));
         let mut requested = Vec::new();
-        let ratios = cache.resolve(time, &[b.clone(), hidden, a], |missing| {
-            requested = missing.to_vec();
-            vec![Some(5.0); missing.len()]
-        });
+        let ratios = cache
+            .resolve(time, &[b.clone(), hidden, a], |missing| {
+                requested = missing.to_vec();
+                vec![Some(5.0); missing.len()]
+            })
+            .unwrap();
         assert_eq!(requested, vec![b], "only an absent exact sample needs a fallback");
         assert_eq!(ratios, vec![Some(5.0), None, Some(3.0)]);
-        assert!(cache.resolve(time, &[], |_| panic!("no selected targets")).is_empty());
+        assert!(cache.resolve(time, &[], |_| panic!("no selected targets")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_frame_sent_to_a_finished_encode_is_an_error() {
+        let mut feeder =
+            Feeder { tx: None, handle: None, complete: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        let error = feeder.send(vec![0; 4]).unwrap_err().to_string();
+        assert!(error.contains("after the encode was finished"), "{error}");
+    }
+
+    #[test]
+    fn a_contrast_fallback_with_the_wrong_number_of_results_is_an_error() {
+        use sr_gpu::ContrastTarget::Node;
+        let (a, b) = (Node("a".into()), Node("b".into()));
+        for results in [vec![Some(2.0)], vec![Some(2.0), None, Some(4.0)]] {
+            let mut cache = ContrastPrefetch::default();
+            let error = cache.resolve(1.0, &[a.clone(), b.clone()], |_| results.clone()).unwrap_err().to_string();
+            assert!(error.contains(&format!("{} measurements for 2 texts", results.len())), "{error}");
+        }
     }
 
     #[test]
@@ -2397,17 +2431,19 @@ mod tests {
         for (k, targets) in actual {
             let ids: Vec<_> = targets.into_iter().map(|(id, _)| id).collect();
             assert_eq!(
-                cache.resolve(times[k], &ids, |_| {
-                    calls += 1;
-                    vec![Some(1.0)]
-                }),
+                cache
+                    .resolve(times[k], &ids, |_| {
+                        calls += 1;
+                        vec![Some(1.0)]
+                    })
+                    .unwrap(),
                 vec![Some(1.0)]
             );
         }
         assert_eq!(calls, 1);
         cache.prepare(&times, Default::default());
         assert!(cache.planned.is_empty() && cache.measured.is_empty());
-        assert_eq!(cache.resolve(times[10], &[id], |_| vec![Some(7.0)]), vec![Some(7.0)]);
+        assert_eq!(cache.resolve(times[10], &[id], |_| vec![Some(7.0)]).unwrap(), vec![Some(7.0)]);
     }
 
     #[test]

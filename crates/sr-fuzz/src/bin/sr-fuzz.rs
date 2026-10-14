@@ -6,6 +6,17 @@
 //! `--report FILE` writes its counters as JSON for CI coverage verification.
 
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
 
 use std::time::{Duration, Instant};
 
