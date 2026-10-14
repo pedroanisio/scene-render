@@ -1,18 +1,21 @@
 //! Backend parity: the OpenGL backend (how WSL2 reaches its GPU, through Mesa's D3D12
-//! driver) must draw what the native backend draws. Each test renders on the native
-//! adapter and on a GL adapter and skips when the machine lacks one of them.
+//! driver) must draw what the Vulkan backend draws, 3D included. Each test renders on a
+//! Vulkan adapter and on an OpenGL one, and skips when the machine lacks one of them
+//! unless `SR_REQUIRE_VULKAN=1` or `SR_REQUIRE_GL=1` makes that a failure.
+//! `SR_GPU_ADAPTER` picks the adapter of both (`llvmpipe` is Mesa's software rasteriser
+//! on each backend).
 
 mod common;
 
 use common::*;
 use sr_gpu::Gpu;
 
-fn gl() -> Option<Gpu> {
+fn gl() -> Option<OnBackend> {
     gpu_on(wgpu::Backends::GL)
 }
 
-fn native() -> Option<Gpu> {
-    gpu_on(wgpu::Backends::PRIMARY)
+fn native() -> Option<OnBackend> {
+    gpu_on(wgpu::Backends::VULKAN)
 }
 
 /// Peak signal-to-noise ratio of two linear RGBA frames, in dB (colour and alpha, clamped to [0, 1]).
@@ -46,7 +49,7 @@ fn gl_draws_pattern_paints() {
     // a pattern samples its tile with a repeating sampler, which GL cannot pair with the
     // clamping one on the same texture binding, so the texture is bound a second time for it
     let Some(g) = gl() else { return };
-    let r = render_times_on(g, &pattern_scene(), &[0.0]).expect("GL renders");
+    let r = render_times_on(g.clone(), &pattern_scene(), &[0.0]).expect("GL renders");
     // the tile (left half red, right half blue) repeats every 16 px across and 8 px down
     let (red, blue) = ([1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]);
     for y in (4..64).step_by(8) {
@@ -60,7 +63,7 @@ fn gl_draws_pattern_paints() {
 fn gl_matches_the_native_backend_on_pattern_paints() {
     let (Some(g), Some(n)) = (gl(), native()) else { return };
     let d = pattern_scene();
-    let (a, b) = (render_times_on(g, &d, &[0.0]).unwrap(), render_times_on(n, &d, &[0.0]).unwrap());
+    let (a, b) = (render_times_on(g.clone(), &d, &[0.0]).unwrap(), render_times_on(n.clone(), &d, &[0.0]).unwrap());
     let db = psnr(&a, &b);
     assert!(db >= 40.0, "GL vs native: {db:.1} dB");
 }
@@ -91,9 +94,56 @@ fn gl_matches_the_native_backend_on_a_mixed_scene() {
     let d = sr_model::load_str(&xml, &opts).unwrap_or_else(|e| panic!("{e:?}"));
     let (Some(g), Some(n)) = (gl(), native()) else { return };
     let ts = [0.0, 0.3, 0.6];
-    let (a, b) = (render_times_on(g, &d, &ts).unwrap(), render_times_on(n, &d, &ts).unwrap());
+    let (a, b) = (render_times_on(g.clone(), &d, &ts).unwrap(), render_times_on(n.clone(), &d, &ts).unwrap());
     let db = psnr(&a, &b);
     assert!(db >= 40.0, "GL vs native: {db:.1} dB");
+}
+
+/// Spheres and boxes on a floor, of lit, rough and metallic materials under ambient, directional and point lights,
+/// seen through a camera with depth of field: the 3D pass, its depth resolve and the blur that reads it.
+fn lit_3d_scene(depth_of_field: bool) -> sr_model::Document {
+    let dof = if depth_of_field { r#"depthOfField="true" fStop="1.4" focusTarget="crate""# } else { "" };
+    let xml = format!(
+        r##"<scene version="1.3"><project width="128" height="96" fps="10" duration="2" background="#101820"/>
+<materials>
+  <material id="clay" baseColor="#D8C8B0" roughness="0.9"/>
+  <material id="red" baseColor="#E03020" roughness="0.4"/>
+  <material id="steel" baseColor="#B0B8C0" roughness="0.25" metallic="0.85"/>
+</materials>
+<composition>
+  <camera id="cam" fov="50" x="64" y="40" z="-160" pitch="-8" {dof}/>
+  <object3D id="floor" primitive="box" width="600" height="6" depth="600" x="64" y="90" z="120" material="clay"/>
+  <object3D id="near" primitive="sphere" radius="18" segments="32" x="38" y="66" z="-40" material="red"/>
+  <object3D id="far" primitive="sphere" radius="30" segments="32" x="96" y="56" z="200" material="steel"/>
+  <object3D id="crate" primitive="box" width="24" height="24" depth="24" x="64" y="70" z="60" material="clay">
+    <animate property="rotationY"><key time="0" value="30"/><key time="2" value="120"/></animate>
+  </object3D>
+</composition>
+<lights>
+  <light id="sky" type="ambient" intensity="0.2"/>
+  <light id="sun" type="directional" yaw="35" pitch="-40" intensity="2"/>
+  <light id="lamp" type="point" x="10" y="-40" z="-120" intensity="20" range="1000"/>
+</lights>
+</scene>"##
+    );
+    sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap_or_else(|e| panic!("{e:?}\n{xml}"))
+}
+
+#[test]
+fn gl_matches_vulkan_on_a_lit_3d_scene() {
+    let (Some(g), Some(n)) = (gl(), native()) else { return };
+    for depth_of_field in [false, true] {
+        let d = lit_3d_scene(depth_of_field);
+        let ts = [0.0, 1.0];
+        let (a, b) = (render_times_on(g.clone(), &d, &ts).unwrap(), render_times_on(n.clone(), &d, &ts).unwrap());
+        assert!(a.stats.unsupported.is_empty(), "OpenGL left out: {:?}", a.stats.unsupported);
+        assert!(b.stats.unsupported.is_empty(), "Vulkan left out: {:?}", b.stats.unsupported);
+        // the objects are drawn, not merely the background on both
+        let lit = |r: &Rendered| r.px.iter().filter(|p| (p[0] - p[2]).abs() > 0.05).count();
+        assert!(lit(&b) > 128 * 96 / 10, "the Vulkan frame shows the objects: {} pixels", lit(&b));
+        let db = psnr(&a, &b);
+        assert!(db >= 40.0, "GL vs Vulkan, depth of field {depth_of_field}: {db:.1} dB");
+    }
 }
 
 /// Renders `d` at `t` on `gpu`, with a sub-frame provider.
@@ -147,7 +197,7 @@ fn compare_corpus(paths: Vec<std::path::PathBuf>, stop_after_first: bool) -> Opt
     // every valid corpus document that loads here (remote assets may not), at its start and
     // its middle
     let (Some(g), Some(n)) = (gl(), native()) else { return None };
-    let (mut compared, mut failures, mut declared) = (0, Vec::new(), Vec::new());
+    let (mut compared, mut failures) = (0, Vec::new());
     'documents: for path in paths {
         let doc = match sr_model::load_file(&path, &sr_model::LoadOptions::default()) {
             Ok(d) => d,
@@ -158,26 +208,24 @@ fn compare_corpus(paths: Vec<std::path::PathBuf>, stop_after_first: bool) -> Opt
         };
         for t in [0.0, doc.duration() / 2.0] {
             let (Some(a), Some(b)) = (render_doc_on(&g, &doc, t), render_doc_on(&n, &doc, t)) else { continue };
-            // what GL cannot draw it must say (so --strict fails); such frames are not compared
+            // OpenGL draws what Vulkan draws: a note only one backend gives is a gap, and a failure
+            let name = path.file_name().unwrap().to_string_lossy();
             let gaps: Vec<&String> = a.stats.unsupported.iter().filter(|m| !b.stats.unsupported.contains(m)).collect();
             if !gaps.is_empty() {
-                declared.push(format!("{}: {gaps:?}", path.file_name().unwrap().to_string_lossy()));
+                failures.push(format!("{name} at {t:.2} s: OpenGL leaves out {gaps:?}"));
                 continue;
             }
             compared += 1;
             let db = common::psnr(&a.px, &b.px);
             if db < 40.0 {
-                failures.push(format!("{} at {t:.2} s: {db:.1} dB", path.file_name().unwrap().to_string_lossy()));
+                failures.push(format!("{name} at {t:.2} s: {db:.1} dB"));
             }
             if stop_after_first {
                 break 'documents;
             }
         }
     }
-    for d in &declared {
-        eprintln!("declared GL gap, not compared: {d}");
-    }
-    assert!(failures.is_empty(), "GL vs native:\n{}", failures.join("\n"));
+    assert!(failures.is_empty(), "GL vs Vulkan:\n{}", failures.join("\n"));
     Some(compared)
 }
 

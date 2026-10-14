@@ -26,12 +26,35 @@ pub enum GpuError {
     #[error("the GPU adapter refused to create a device: {0}")]
     Device(String),
     /// The document has 3D objects, and no adapter that can run the 3D pass was chosen or found.
-    #[error("the document has 3D objects, which need a Vulkan, Metal or DirectX 12 adapter, but {why}; \
-             SR_GPU_BACKEND=vulkan selects Vulkan (on WSL2 that is Mesa lavapipe, a software renderer: complete but slow); \
-             `scene-render gpus` lists the adapters found")]
+    #[error(
+        "the document has 3D objects, but {why}; `scene-render gpus` lists the adapters found and SR_GPU_ADAPTER \
+         names another"
+    )]
     NoThreeD {
         /// What was wrong with the choice.
         why: String,
+    },
+    /// The adapter lacks a capability of a texture format the 3D pass draws into: 4× multisampled depth or colour.
+    #[error(
+        "the GPU adapter cannot give {format:?} textures {missing}, which the 3D pass needs; \
+         `scene-render gpus` lists the adapters found and SR_GPU_ADAPTER names another"
+    )]
+    Format {
+        /// The texture format.
+        format: wgpu::TextureFormat,
+        /// The capabilities it lacks.
+        missing: String,
+    },
+    /// The adapter's OpenGL driver is older than the renderer's shaders: they read storage buffers and run compute shaders,
+    /// which OpenGL has from 4.3 and OpenGL ES from 3.1.
+    #[error(
+        "the GPU adapter's OpenGL driver is version \"{version}\", which lacks the storage buffers and compute shaders \
+         that the renderer's shaders need (OpenGL 4.3 or OpenGL ES 3.1); `scene-render gpus` lists the adapters found and \
+         SR_GPU_ADAPTER names another"
+    )]
+    OpenGlVersion {
+        /// The version the driver reports (`GL_VERSION`).
+        version: String,
     },
     /// The device reported an error outside an error scope (a validation error, or memory it could not allocate):
     /// the work that raised it was not done.
@@ -113,17 +136,18 @@ pub fn choose_adapter(found: &[wgpu::AdapterInfo], name: Option<&str>) -> Result
     }
 }
 
-/// True when the 3D pass can run on the adapter.
+/// True when the 3D pass can run on the adapter: on every backend, Vulkan, Metal, DirectX 12 and OpenGL alike. An
+/// adapter without the texture formats the pass draws into is refused when its device is opened ([`GpuError::Format`]).
 pub fn can_run_3d(info: &wgpu::AdapterInfo) -> bool {
-    // the 3D pass resolves multisampled depth, which OpenGL shaders cannot read
-    info.backend != wgpu::Backend::Gl
+    let _ = info;
+    true
 }
 
 /// Like [`choose_adapter`], for a document that does (`needs_3d`) or does not need the 3D pass.
 ///
-/// A document with 3D objects takes the best-ranked adapter that can run them (so, on WSL2 where the GPU is
-/// reachable only through OpenGL, the Vulkan one: lavapipe, slow but complete) instead of one that would drop the objects
-/// without a word. When none can, or the adapter named cannot, that is [`GpuError::NoThreeD`].
+/// A document with 3D objects takes the best-ranked adapter that can run them ([`can_run_3d`]; so, on WSL2 where the GPU
+/// is reachable only through OpenGL, the GPU before lavapipe) instead of one that would drop the objects without a word.
+/// When none can, or the adapter named cannot, that is [`GpuError::NoThreeD`].
 pub fn choose_adapter_for(found: &[wgpu::AdapterInfo], name: Option<&str>, needs_3d: bool) -> Result<usize, GpuError> {
     if !needs_3d {
         return choose_adapter(found, name);
@@ -164,6 +188,56 @@ pub fn require_3d(info: &wgpu::AdapterInfo) -> Result<(), GpuError> {
     }
 }
 
+/// `Ok` unless `info` is an OpenGL adapter whose driver reports a version below OpenGL 4.3 or OpenGL ES 3.1, which is
+/// [`GpuError::OpenGlVersion`]. wgpu gives OpenGL's `GL_VERSION` as the driver info, and from OpenGL 3.3 and OpenGL ES 3.0
+/// on the shading language a driver compiles has the version of OpenGL itself, which is the one wgpu writes the shaders
+/// for: below 4.3 (ES 3.1) its GLSL has no storage buffers or compute shaders, and the device opens and then fails its
+/// first pipeline. wgpu asks EGL for a desktop 3.3 context when EGL offers desktop OpenGL; Mesa gives 4.5 for it, the NVIDIA
+/// driver exactly 3.3. A version this cannot read is left to the probe of the device.
+pub fn check_gl_version(info: &wgpu::AdapterInfo) -> Result<(), GpuError> {
+    if info.backend != wgpu::Backend::Gl {
+        return Ok(());
+    }
+    let (rest, needed) = match info.driver_info.strip_prefix("OpenGL ES ") {
+        Some(rest) => (rest, (3, 1)),
+        None => (info.driver_info.as_str(), (4, 3)),
+    };
+    let mut numbers = rest.split_whitespace().next().unwrap_or("").split('.').map(str::parse::<u32>);
+    match (numbers.next(), numbers.next()) {
+        (Some(Ok(major)), Some(Ok(minor))) if (major, minor) < needed => {
+            Err(GpuError::OpenGlVersion { version: info.driver_info.clone() })
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `Ok` when `features` (an adapter's, `|f| adapter.get_texture_format_features(f)`) gives the texture formats the 3D
+/// pass draws into everything it asks of them, else [`GpuError::Format`] for the first that lacks something.
+pub fn check_3d_formats(features: impl Fn(wgpu::TextureFormat) -> wgpu::TextureFormatFeatures) -> Result<(), GpuError> {
+    use wgpu::{TextureFormatFeatureFlags as Flag, TextureUsages as U};
+    let names = [
+        (Flag::MULTISAMPLE_X4, U::empty(), "4x multisampling"),
+        (Flag::MULTISAMPLE_RESOLVE, U::empty(), "multisample resolve"),
+        (Flag::empty(), U::RENDER_ATTACHMENT, "use as a render attachment"),
+        (Flag::empty(), U::TEXTURE_BINDING, "binding to a shader"),
+    ];
+    for (format, usages, flags) in crate::three::MULTISAMPLED {
+        let have = features(format);
+        let missing = names
+            .iter()
+            .filter(|(flag, usage, _)| {
+                (flags.contains(*flag) && !have.flags.contains(*flag))
+                    || (usages.contains(*usage) && !have.allowed_usages.contains(*usage))
+            })
+            .map(|(_, _, name)| *name)
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(GpuError::Format { format, missing: missing.join(", ") });
+        }
+    }
+    Ok(())
+}
+
 /// A warning for renders on a software adapter, `None` on a GPU.
 pub fn software_warning(info: &wgpu::AdapterInfo) -> Option<String> {
     is_software(info).then(|| {
@@ -175,12 +249,13 @@ pub fn software_warning(info: &wgpu::AdapterInfo) -> Option<String> {
     })
 }
 
-/// Why 3D objects are left out on this adapter and how to get them drawn; `None` where they draw.
+/// Why 3D objects are left out on this adapter and how to get them drawn; `None` where they draw, which is on every
+/// adapter ([`can_run_3d`]).
 pub fn three_d_warning(info: &wgpu::AdapterInfo) -> Option<String> {
-    // the 3D pass resolves multisampled depth, which OpenGL shaders cannot read
-    (info.backend == wgpu::Backend::Gl).then(|| {
+    (!can_run_3d(info)).then(|| {
         format!(
-            "3D objects are not drawn: the adapter in use ({}) is an OpenGL one, which cannot run the 3D pass.              Set SR_GPU_BACKEND=vulkan to render them (on WSL2 that is Mesa lavapipe, a software renderer:              complete but slow), or name a Vulkan, Metal or DirectX 12 adapter with SR_GPU_ADAPTER;              `scene-render gpus` lists the adapters found",
+            "3D objects are not drawn: the adapter in use ({}) cannot run the 3D pass; \
+             `scene-render gpus` lists the adapters found and SR_GPU_ADAPTER names another",
             info.name
         )
     })
@@ -480,6 +555,8 @@ impl Gpu {
              once by the threads of one process have deadlocked the Vulkan driver"
         );
         let info = adapter.get_info();
+        check_gl_version(&info)?;
+        check_3d_formats(|f| adapter.get_texture_format_features(f))?;
         let limits = device_limits(&adapter.limits());
         // timestamp queries, where the adapter has them, so renders can report GPU time; and blending into and
         // filtering 32-bit float textures, where it has them, for project/@precision="f32" (SREP 72)

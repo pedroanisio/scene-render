@@ -23,6 +23,22 @@ use wgpu::util::DeviceExt;
 use crate::resources::FORMAT;
 
 const MSAA: u32 = 4;
+const _: () = assert!(MSAA == 4, "MULTISAMPLED asks for 4x multisampling");
+
+/// The multisampled targets of the 3D pass: each format, the usages it is created with and the capabilities it is
+/// drawn with (4x multisampling, and resolving the colour into a single-sampled texture).
+pub(crate) const MULTISAMPLED: [(wgpu::TextureFormat, wgpu::TextureUsages, wgpu::TextureFormatFeatureFlags); 2] = [
+    (
+        FORMAT,
+        wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING),
+        wgpu::TextureFormatFeatureFlags::MULTISAMPLE_X4.union(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE),
+    ),
+    (
+        wgpu::TextureFormat::Depth32Float,
+        wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING),
+        wgpu::TextureFormatFeatureFlags::MULTISAMPLE_X4,
+    ),
+];
 const TILE: u32 = 16;
 const MAX_PER_TILE: usize = 63;
 const UNIFORM_ALIGN: u64 = 256;
@@ -960,7 +976,13 @@ impl ThreeEngine {
         );
         let bgl_depth = bgl(
             &[
-                tex_entry(0, wgpu::ShaderStages::FRAGMENT, wgpu::TextureSampleType::Depth, D2, true),
+                tex_entry(
+                    0,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::TextureSampleType::Float { filterable: false },
+                    D2,
+                    true,
+                ),
                 buf_entry(1, wgpu::ShaderStages::FRAGMENT, uni, false),
             ],
             "three-depth",

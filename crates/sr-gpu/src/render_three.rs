@@ -3177,12 +3177,6 @@ impl Renderer {
         let g = ctx.g;
         let n = &g.nodes[i];
         let members = Self::three_members(g, i);
-        if let Some(why) = crate::gpu::three_d_warning(&self.gpu.info) {
-            if members.first() == Some(&i) {
-                plan.stats.unsupported.push(format!("{}: {why}", n.id));
-            }
-            return;
-        }
         if members.first() != Some(&i) || !visible3(g, i) {
             return;
         }
