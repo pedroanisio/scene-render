@@ -194,10 +194,10 @@ pub fn integrated_in(buf: &Planar, ext: Extent, rate: f64, weights: &[f64]) -> f
     gated(gating_blocks(buf, ext, rate, weights))
 }
 
-/// The energies of the 400 ms gating blocks, a quarter block apart.
+/// The energies of the 400 ms gating blocks, 100 ms (75 % overlap) apart:
+/// the same windows as [`momentary`] every 100 ms, sample for sample.
 fn gating_blocks(buf: &Planar, ext: Extent, rate: f64, weights: &[f64]) -> Vec<f64> {
-    let block = (0.4 * rate).round() as usize;
-    block_energies(buf, ext, rate, weights, block, block / 4)
+    windows(buf, ext, rate, weights, 0.4, 0.1)
 }
 
 /// Integrated loudness of gating-block energies: −70 LUFS absolute gate,
@@ -297,7 +297,7 @@ pub fn measure(buf: &Planar, rate: f64, weights: &[f64]) -> Measurement {
 
 /// [`measure`] of a buffer that is zero outside `ext`.
 pub fn measure_in(buf: &Planar, ext: Extent, rate: f64, weights: &[f64]) -> Measurement {
-    // the gating blocks are the momentary windows: 400 ms, a quarter block (100 ms) apart
+    // the gating blocks are the momentary windows: 400 ms, every 100 ms
     let blocks = gating_blocks(buf, ext, rate, weights);
     let momentary_max = loudest(&blocks);
     let short = windows(buf, ext, rate, weights, 3.0, 0.1);
@@ -676,6 +676,21 @@ mod tests {
             assert_eq!(got.short_term_max.to_bits(), smax.to_bits(), "{rate}");
             assert!((got.momentary_max + 20.0).abs() < 0.02, "{got:?}");
             assert!(got.range > 5.0, "{got:?}");
+        }
+    }
+
+    #[test]
+    fn the_momentary_maximum_is_the_loudest_momentary_window_at_any_rate() {
+        // at 11025 Hz a quarter of the 400 ms block (1102 samples) is not the rounded 100 ms (1103)
+        for rate in [8000.0, 11025.0, 22050.0, 32000.0, 44100.0, 48000.0, 88200.0] {
+            let buf = segments(rate, &[(2.0, -30.0), (1.5, -18.0), (2.5, -24.0)]);
+            let w = [1.0, 1.0];
+            let m = momentary(&buf, rate, &w, 0.1);
+            let blocks: Vec<f64> = gating_blocks(&buf, Extent::of(&buf), rate, &w).into_iter().map(lufs).collect();
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&blocks), bits(&m), "the gating blocks are the momentary windows at {rate}");
+            let mmax = m.into_iter().fold(-200.0, f64::max);
+            assert_eq!(measure(&buf, rate, &w).momentary_max.to_bits(), mmax.to_bits(), "{rate}");
         }
     }
 
