@@ -279,23 +279,31 @@ impl Fps {
 
     /// Index of the frame displayed at time `t` (seconds). Times within one
     /// nanosecond below a frame boundary belong to the next frame, which
-    /// absorbs rounding in times written as decimals.
+    /// absorbs rounding in times written as decimals; when frames are shorter
+    /// than two nanoseconds the window is half a frame.
     pub fn frame_at(self, t: f64) -> u64 {
         let f = t * self.num as f64 / self.den as f64;
-        (f + 1e-9 * self.as_f64()).floor().max(0.0) as u64
+        (f + self.snap()).floor().max(0.0) as u64
     }
 
     /// Number of frames needed to cover `duration` seconds: the count is
-    /// rounded to the nearest frame when within one nanosecond of it and
-    /// rounded up otherwise, so the last partial frame is rendered.
+    /// rounded to the nearest frame when within one nanosecond of it (half a
+    /// frame when frames are shorter than two nanoseconds) and rounded up
+    /// otherwise, so the last partial frame is rendered.
     pub fn frame_count(self, duration: f64) -> u64 {
         let f = duration * self.num as f64 / self.den as f64;
         let r = f.round();
-        if (f - r).abs() <= 1e-9 * self.as_f64() {
+        if (f - r).abs() <= self.snap() {
             r as u64
         } else {
             f.ceil() as u64
         }
+    }
+
+    /// The distance, in frames, within which a time counts as a frame boundary: one nanosecond, but never more than
+    /// half a frame, so a boundary never captures a time nearer the next one.
+    fn snap(self) -> f64 {
+        (1e-9 * self.as_f64()).min(0.5)
     }
 
     /// Nominal integer rate used by timecode (e.g. 30 for 30000/1001).
@@ -354,7 +362,11 @@ impl Timecode {
             )));
         }
         let (h, m, s, f) = (self.hours as u64, self.minutes as u64, self.seconds as u64, self.frames as u64);
-        let base = ((h * 60 + m) * 60 + s) * nominal + f;
+        // fields below 2^32 keep the seconds below 2^44, but the frame number need not fit in 64 bits
+        let base = ((h * 60 + m) * 60 + s)
+            .checked_mul(nominal)
+            .and_then(|b| b.checked_add(f))
+            .ok_or_else(|| ValueError::new(format!("timecode {self} at {fps} fps is past the last frame number")))?;
         if !self.drop_frame {
             return Ok(base);
         }
@@ -368,6 +380,7 @@ impl Timecode {
             )));
         }
         let total_minutes = h * 60 + m;
+        // the dropped labels number at most nominal/15 per minute, fewer than the minute's frames in `base`
         Ok(base - drop * (total_minutes - total_minutes / 10))
     }
 
@@ -568,5 +581,251 @@ mod tests {
         assert!(Timecode::parse_value("00:01:00;00").unwrap().to_frame(ntsc).is_err());
         assert_eq!(Timecode::parse_value("00:10:00;00").unwrap().to_frame(ntsc).unwrap(), 17982);
         assert_eq!(Timecode::parse_value("01:00:00:00").unwrap().to_frame(Fps::new(25, 1).unwrap()).unwrap(), 90000);
+    }
+
+    #[test]
+    fn a_frame_shorter_than_a_nanosecond_starts_at_its_own_time() {
+        let fast = Fps::new(4_000_000_000, 1).unwrap();
+        assert_eq!(fast.frame_at(fast.frame_time(1)), 1);
+        assert_eq!(fast.frame_at(fast.frame_time(1_000_000)), 1_000_000);
+        assert_eq!(fast.frame_count(fast.frame_time(7)), 7);
+        // a time just below a boundary still belongs to the next frame
+        assert_eq!(fast.frame_at(fast.frame_time(8) * (1.0 - 1e-12)), 8);
+    }
+
+    #[test]
+    fn a_timecode_past_the_last_frame_number_is_an_error() {
+        let fast = Fps::new(4_200_000_000, 1).unwrap();
+        let far = Timecode { hours: 1_300_000, minutes: 0, seconds: 0, frames: 0, drop_frame: false };
+        let message = far.to_frame(fast).unwrap_err().to_string();
+        assert!(message.contains("1300000:00:00:00") && message.contains("4200000000"), "{message}");
+        assert!(Timecode { drop_frame: true, ..far }.to_frame(fast).is_err());
+        assert!(far.to_seconds(fast).is_err());
+        let last = Timecode { hours: u32::MAX, minutes: u32::MAX, seconds: u32::MAX, frames: 0, drop_frame: false };
+        assert!(last.to_frame(Fps::new(u32::MAX, 1).unwrap()).is_err());
+        // the same hours fit at a broadcast rate
+        assert_eq!(far.to_frame(Fps::new(30, 1).unwrap()), Ok(1_300_000 * 3600 * 30));
+    }
+
+    mod properties {
+        //! Frame-rate maths over the whole range of rates and times: conversions round-trip, order is kept, and no
+        //! input panics.
+
+        use super::super::*;
+
+        use sr_testkit::property::{self, proptest};
+
+        use proptest::prelude::*;
+        use proptest::sample::select;
+
+        /// The seconds over which a frame number survives the trip through a time (about 11.6 days): each of the
+        /// four roundings in `frame_at(frame_time(i))` is within 2^-53 of `i`, which the nanosecond snap absorbs up
+        /// to a million seconds.
+        const SPAN_SECONDS: f64 = 1e6;
+        /// Frames whose round trip stays below a quarter of a frame at any rate: 2^48 times 2^-51.
+        const MAX_TRIP_FRAME: u64 = 1 << 48;
+
+        const BROADCAST: [(u32, u32); 10] = [
+            (24, 1),
+            (25, 1),
+            (30, 1),
+            (48, 1),
+            (50, 1),
+            (60, 1),
+            (24000, 1001),
+            (30000, 1001),
+            (60000, 1001),
+            (120_000, 1001),
+        ];
+
+        fn fps((num, den): (u32, u32)) -> Fps {
+            Fps::new(num, den).expect("a non-zero rate")
+        }
+
+        /// Any rate: broadcast rates, small ratios and the extremes of `u32`.
+        fn rate() -> impl Strategy<Value = Fps> {
+            prop_oneof![
+                select(BROADCAST.to_vec()).prop_map(fps),
+                (1..=240u32, 1..=1001u32).prop_map(fps),
+                (1..=u32::MAX, 1..=u32::MAX).prop_map(fps),
+                (u32::MAX - 16..=u32::MAX, 1..=2u32).prop_map(fps),
+                (1..=2u32, u32::MAX - 16..=u32::MAX).prop_map(fps),
+            ]
+        }
+
+        /// A rate whose nominal rate counts drop-frame timecode.
+        fn drop_rate() -> impl Strategy<Value = Fps> {
+            select(vec![(30000, 1001), (60000, 1001), (120_000, 1001), (30, 1), (60, 1)]).prop_map(fps)
+        }
+
+        /// A time anywhere on the line, the non-finite values included.
+        fn time() -> impl Strategy<Value = f64> {
+            prop_oneof![any::<f64>(), -1e3..1e7f64, Just(f64::NAN), Just(f64::INFINITY), Just(f64::NEG_INFINITY)]
+        }
+
+        /// The last frame number whose round trip through a time is exact at `fps`.
+        fn last_trip_frame(fps: Fps) -> u64 {
+            ((SPAN_SECONDS * fps.as_f64()).floor() as u64).min(MAX_TRIP_FRAME)
+        }
+
+        /// `a` against `b` as exact ratios.
+        fn order(a: Fps, b: Fps) -> std::cmp::Ordering {
+            (u64::from(a.num) * u64::from(b.den)).cmp(&(u64::from(b.num) * u64::from(a.den)))
+        }
+
+        #[test]
+        fn a_rate_prints_and_parses_back() {
+            property::check("rate text", 2048, rate(), |fps| {
+                prop_assert_eq!(Fps::parse_value(&fps.to_string()), Ok(fps));
+                prop_assert_eq!(Fps::parse_value(&format!(" {}/{} ", fps.num, fps.den)), Ok(fps));
+                Ok(())
+            });
+        }
+
+        #[test]
+        fn a_frame_number_survives_the_trip_through_its_start_time() {
+            property::check("frame trip", 4096, (rate(), any::<u64>()), |(fps, draw)| {
+                let i = draw % (last_trip_frame(fps) + 1);
+                let t = fps.frame_time(i);
+                prop_assert_eq!(fps.frame_at(t), i, "frame_at({}) at {}", t, fps);
+                prop_assert_eq!(fps.frame_count(t), i, "frame_count({}) at {}", t, fps);
+                Ok(())
+            });
+        }
+
+        #[test]
+        fn later_times_never_map_to_earlier_frames() {
+            property::check(
+                "frame order",
+                4096,
+                (rate(), time(), time(), any::<u64>(), any::<u64>()),
+                |(fps, a, b, i, j)| {
+                    if a <= b {
+                        prop_assert!(fps.frame_at(a) <= fps.frame_at(b), "frame_at {} {} at {}", a, b, fps);
+                        prop_assert!(fps.frame_count(a) <= fps.frame_count(b), "frame_count {} {} at {}", a, b, fps);
+                    }
+                    let (lo, hi) = (i.min(j), i.max(j));
+                    prop_assert!(fps.frame_time(lo) <= fps.frame_time(hi));
+                    Ok(())
+                },
+            );
+        }
+
+        #[test]
+        fn a_faster_rate_is_never_slower_as_a_float() {
+            property::check("rate order", 4096, (rate(), rate(), any::<u64>()), |(a, b, draw)| {
+                let (slow, fast) = if order(a, b).is_le() { (a, b) } else { (b, a) };
+                prop_assert!(slow.as_f64() <= fast.as_f64());
+                prop_assert!(slow.frame_duration() >= fast.frame_duration());
+                // while both numerators `i * den` are exact, each start time is the correctly rounded exact ratio
+                let i = draw % ((1u64 << 53) / u64::from(slow.den.max(fast.den)) + 1);
+                prop_assert!(slow.frame_time(i) >= fast.frame_time(i), "frame {} at {} and {}", i, slow, fast);
+                prop_assert!(slow.nominal() <= fast.nominal());
+                Ok(())
+            });
+        }
+
+        #[test]
+        fn equal_ratios_are_the_same_rate() {
+            let scaled = (1..=65_535u32, 1..=65_535u32, 1..=65_536u32, any::<u64>());
+            property::check("equal ratios", 4096, scaled, |(num, den, k, draw)| {
+                let (Some(n), Some(d)) = (num.checked_mul(k), den.checked_mul(k)) else { return Ok(()) };
+                let (base, big) = (fps((num, den)), fps((n, d)));
+                prop_assert!(order(base, big).is_eq());
+                prop_assert_eq!(base.as_f64(), big.as_f64());
+                prop_assert_eq!(base.nominal(), big.nominal());
+                // below 2^53 both numerators are exact, so both quotients round the same real number
+                let i = draw % ((1u64 << 53) / u64::from(d) + 1);
+                prop_assert_eq!(base.frame_time(i), big.frame_time(i));
+                Ok(())
+            });
+        }
+
+        #[test]
+        fn no_rate_and_time_panic() {
+            property::check("frame maths total", 4096, (rate(), time(), any::<u64>()), |(fps, t, i)| {
+                let _ = (fps.frame_at(t), fps.frame_count(t), fps.frame_time(i), fps.nominal(), fps.frame_duration());
+                Ok(())
+            });
+        }
+
+        fn timecode(hours: u32, minutes: u32, seconds: u32, frames: u32, drop_frame: bool) -> Timecode {
+            Timecode { hours, minutes, seconds, frames, drop_frame }
+        }
+
+        #[test]
+        fn a_timecode_prints_and_parses_back() {
+            let labels = (0..=99u32, 0..=59u32, 0..=59u32, 0..=99u32, any::<bool>());
+            property::check("timecode text", 2048, labels, |(h, m, s, f, d)| {
+                let tc = timecode(h, m, s, f, d);
+                prop_assert_eq!(Timecode::parse_value(&tc.to_string()), Ok(tc));
+                Ok(())
+            });
+        }
+
+        #[test]
+        fn no_timecode_panics() {
+            let fields = (any::<u32>(), any::<u32>(), any::<u32>(), any::<u32>(), any::<bool>());
+            property::check("timecode total", 4096, (fields, rate()), |((h, m, s, f, d), fps)| {
+                let tc = timecode(h, m, s, f, d);
+                let _ = (tc.to_frame(fps), tc.to_seconds(fps));
+                Ok(())
+            });
+        }
+
+        /// The label after `tc` at nominal rate `nominal`, skipping the labels drop-frame counting leaves out.
+        fn next_label(tc: Timecode, nominal: u32) -> Timecode {
+            let mut next = tc;
+            next.frames += 1;
+            if next.frames == nominal {
+                next.frames = 0;
+                next.seconds += 1;
+            }
+            if next.seconds == 60 {
+                next.seconds = 0;
+                next.minutes += 1;
+            }
+            if next.minutes == 60 {
+                next.minutes = 0;
+                next.hours += 1;
+            }
+            if next.drop_frame && next.seconds == 0 && !next.minutes.is_multiple_of(10) && next.frames < nominal / 15 {
+                next.frames = nominal / 15;
+            }
+            next
+        }
+
+        #[test]
+        fn consecutive_labels_are_consecutive_frames() {
+            let rates = prop_oneof![rate().prop_map(|r| (r, false)), drop_rate().prop_map(|r| (r, true))];
+            let labels = (0..=99u32, 0..=59u32, 0..=59u32, any::<u32>(), rates);
+            property::check("timecode succession", 4096, labels, |(h, m, s, f, (fps, d))| {
+                let nominal = fps.nominal();
+                if nominal == 0 {
+                    return Ok(());
+                }
+                let mut tc = timecode(h, m, s, f % nominal, d);
+                if d && s == 0 && !m.is_multiple_of(10) {
+                    tc.frames = tc.frames.max(nominal / 15);
+                }
+                let next = next_label(tc, nominal);
+                let frame = |label: Timecode| {
+                    label.to_frame(fps).map_err(|e| TestCaseError::fail(format!("{label} at {fps}: {e}")))
+                };
+                prop_assert_eq!(frame(next)?, frame(tc)? + 1, "{} then {} at {}", tc, next, fps);
+                Ok(())
+            });
+        }
+
+        #[test]
+        fn ten_drop_frame_minutes_are_ten_minutes_of_frames_less_nine_skips() {
+            property::check("drop-frame ten minutes", 1024, (drop_rate(), 0..=99u32, 0..=5u32), |(fps, h, tens)| {
+                let nominal = u64::from(fps.nominal());
+                let per_ten = 600 * nominal - 9 * (nominal / 15);
+                let mark = timecode(h, tens * 10, 0, 0, true);
+                prop_assert_eq!(mark.to_frame(fps), Ok((u64::from(h) * 6 + u64::from(tens)) * per_ten));
+                Ok(())
+            });
+        }
     }
 }

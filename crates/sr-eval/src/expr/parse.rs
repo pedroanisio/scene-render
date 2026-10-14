@@ -678,4 +678,534 @@ mod tests {
             assert!(e.message.contains(msg), "{src}: {}", e.message);
         }
     }
+
+    mod round_trip {
+        //! A printed syntax tree parses back to itself, and no text makes the parser panic.
+
+        use super::super::*;
+
+        use sr_testkit::property::{self, proptest};
+
+        use proptest::collection::vec;
+        use proptest::option;
+        use proptest::prelude::*;
+        use proptest::sample::select;
+
+        /// Words the parser reads as something other than a variable.
+        const KEYWORDS: [&str; 19] = [
+            "function",
+            "new",
+            "class",
+            "this",
+            "for",
+            "while",
+            "do",
+            "let",
+            "const",
+            "var",
+            "if",
+            "else",
+            "return",
+            "true",
+            "false",
+            "null",
+            "undefined",
+            "NaN",
+            "Infinity",
+        ];
+        /// Variables a program may read and assign but not declare.
+        const BUILT_INS: [&str; 10] =
+            ["time", "frame", "value", "index", "count", "seed", "textIndex", "textTotal", "Math", "duration"];
+
+        fn identifier() -> impl Strategy<Value = String> {
+            "[a-zA-Z_$\u{e9}\u{3c0}\u{6570}][a-zA-Z0-9_$\u{e9}\u{3c0}\u{6570}]{0,5}"
+                .prop_filter("a keyword", |n| !KEYWORDS.contains(&n.as_str()))
+        }
+
+        fn variable() -> impl Strategy<Value = String> {
+            prop_oneof![identifier(), select(BUILT_INS.to_vec()).prop_map(String::from)]
+        }
+
+        fn declarable() -> impl Strategy<Value = String> {
+            identifier().prop_filter("a built-in", |n| !BUILT_INS.contains(&n.as_str()))
+        }
+
+        fn property_name() -> impl Strategy<Value = String> {
+            prop_oneof![identifier(), select(KEYWORDS.to_vec()).prop_map(String::from)]
+        }
+
+        fn number() -> impl Strategy<Value = f64> {
+            use proptest::num::f64::{NORMAL, POSITIVE, SUBNORMAL, ZERO};
+            prop_oneof![
+                (0u64..=1 << 53).prop_map(|n| n as f64),
+                POSITIVE | NORMAL | SUBNORMAL | ZERO,
+                Just(f64::INFINITY),
+                Just(f64::NAN),
+            ]
+        }
+
+        fn text() -> impl Strategy<Value = Arc<str>> {
+            let special = select(vec!['\\', '\'', '"', '\n', '\r', '\t', '\0', 'n', '0']);
+            vec(prop_oneof![any::<char>(), special], 0..6).prop_map(|c| c.into_iter().collect::<String>().into())
+        }
+
+        fn expression() -> impl Strategy<Value = Expr> {
+            use BinOp::*;
+            let leaf = prop_oneof![
+                number().prop_map(Expr::Num),
+                text().prop_map(Expr::Str),
+                any::<bool>().prop_map(Expr::Bool),
+                Just(Expr::Undefined),
+                variable().prop_map(|n| Expr::Ident(n, 0)),
+            ];
+            leaf.prop_recursive(4, 32, 3, |inner| {
+                let binary = select(vec![Add, Sub, Mul, Div, Rem, Pow, Lt, Le, Gt, Ge, Eq, Ne, StrictEq, StrictNe]);
+                let unary = select(vec![UnOp::Neg, UnOp::Plus, UnOp::Not]);
+                let logic = select(vec![Logic::And, Logic::Or, Logic::Nullish]);
+                prop_oneof![
+                    vec(inner.clone(), 0..3).prop_map(Expr::Array),
+                    (unary, inner.clone()).prop_map(|(op, e)| Expr::Unary(op, Box::new(e))),
+                    (binary, inner.clone(), inner.clone()).prop_map(|(op, l, r)| Expr::Binary(
+                        op,
+                        Box::new(l),
+                        Box::new(r)
+                    )),
+                    (logic, inner.clone(), inner.clone()).prop_map(|(op, l, r)| Expr::Logical(
+                        op,
+                        Box::new(l),
+                        Box::new(r)
+                    )),
+                    (inner.clone(), inner.clone(), inner.clone()).prop_map(|(c, a, b)| Expr::Cond(
+                        Box::new(c),
+                        Box::new(a),
+                        Box::new(b)
+                    )),
+                    (inner.clone(), vec(inner.clone(), 0..3)).prop_map(|(f, args)| Expr::Call(Box::new(f), args, 0)),
+                    (inner.clone(), property_name()).prop_map(|(e, n)| Expr::Member(Box::new(e), n, 0)),
+                    (inner.clone(), inner).prop_map(|(e, i)| Expr::Index(Box::new(e), Box::new(i))),
+                ]
+            })
+        }
+
+        /// Whether `s` ends in an `if` without `else`, which would take the `else` of an `if` around it.
+        fn open(s: &Stmt) -> bool {
+            match s {
+                Stmt::If(_, _, None) => true,
+                Stmt::If(_, _, Some(e)) => open(e),
+                _ => false,
+            }
+        }
+
+        fn if_statement(c: Expr, then: Stmt, els: Option<Stmt>) -> Stmt {
+            let then = if els.is_some() && open(&then) { Stmt::Block(vec![then]) } else { then };
+            Stmt::If(c, Box::new(then), els.map(Box::new))
+        }
+
+        fn statement() -> impl Strategy<Value = Stmt> {
+            use BinOp::*;
+            let compound = option::of(select(vec![Add, Sub, Mul, Div, Rem, Pow]));
+            let leaf = prop_oneof![
+                (declarable(), expression()).prop_map(|(n, e)| Stmt::Let(n, e, 0)),
+                (variable(), compound, expression()).prop_map(|(n, op, e)| Stmt::Assign(n, op, e, 0)),
+                option::of(expression()).prop_map(Stmt::Return),
+                expression().prop_map(Stmt::Expr),
+            ];
+            leaf.prop_recursive(3, 12, 3, |inner| {
+                prop_oneof![
+                    vec(inner.clone(), 0..3).prop_map(Stmt::Block),
+                    (expression(), inner.clone(), option::of(inner)).prop_map(|(c, t, e)| if_statement(c, t, e)),
+                ]
+            })
+        }
+
+        /// Where an expression is printed, which decides whether it needs parentheses.
+        #[derive(Clone, Copy)]
+        enum Slot {
+            /// Anywhere `expr(0)` parses: a statement, an argument, an item, an index, a middle branch.
+            Free,
+            /// The last branch of a conditional, parsed by `expr(2)`.
+            Else,
+            /// The condition of a conditional.
+            Test,
+            /// The left operand of a binary operator with this left binding power; `**` when it is 18.
+            Left(u8),
+            /// The right operand of a binary operator with this right binding power.
+            Right(u8),
+            /// The operand of a unary operator.
+            Operand,
+            /// What a call, index or (when `true`) member access applies to.
+            Base(bool),
+        }
+
+        /// The left and right binding powers of a logical operator.
+        fn logic_power(op: Logic) -> (u8, u8) {
+            match op {
+                Logic::Nullish => (3, 4),
+                Logic::Or => (5, 6),
+                Logic::And => (7, 8),
+            }
+        }
+
+        /// The left and right binding powers of a binary operator.
+        fn binary_power(op: BinOp) -> (u8, u8) {
+            use BinOp::*;
+            match op {
+                Eq | Ne | StrictEq | StrictNe => (9, 10),
+                Lt | Le | Gt | Ge => (11, 12),
+                Add | Sub => (13, 14),
+                Mul | Div | Rem => (15, 16),
+                Pow => (18, 17),
+            }
+        }
+
+        fn binding(e: &Expr) -> Option<(u8, u8)> {
+            match e {
+                Expr::Logical(op, ..) => Some(logic_power(*op)),
+                Expr::Binary(op, ..) => Some(binary_power(*op)),
+                _ => None,
+            }
+        }
+
+        /// Whether `e` reads back as itself in `slot` without parentheses.
+        fn bare(e: &Expr, slot: Slot) -> bool {
+            match (e, slot) {
+                (Expr::Cond(..), Slot::Free | Slot::Else) => true,
+                (Expr::Cond(..), _) => false,
+                (Expr::Unary(..), Slot::Left(18) | Slot::Base(_)) => false,
+                (Expr::Unary(..), _) => true,
+                (Expr::Num(_), Slot::Base(true)) => false,
+                _ => match (binding(e), slot) {
+                    (None, _) | (_, Slot::Free | Slot::Else | Slot::Test) => true,
+                    (Some((_, r)), Slot::Left(parent)) => r > parent,
+                    (Some((l, _)), Slot::Right(parent)) => l >= parent,
+                    (Some(_), Slot::Operand | Slot::Base(_)) => false,
+                },
+            }
+        }
+
+        /// Prints a syntax tree as source text, choosing among equivalent spellings by `style`.
+        struct Printer<'s> {
+            out: String,
+            style: &'s [u8],
+            next: usize,
+        }
+
+        impl Printer<'_> {
+            fn pick(&mut self, n: u8) -> u8 {
+                let s = self.style[self.next % self.style.len()];
+                self.next += 1;
+                s % n
+            }
+
+            fn number(&mut self, v: f64) {
+                let text = if v.is_nan() {
+                    "NaN".to_string()
+                } else if v.is_infinite() {
+                    if self.pick(2) == 0 { "Infinity" } else { "1e999" }.to_string()
+                } else if v.fract() == 0.0 && v <= (1u64 << 53) as f64 && self.pick(3) == 0 {
+                    if self.pick(2) == 0 {
+                        format!("0x{:x}", v as u64)
+                    } else {
+                        format!("0X{:X}", v as u64)
+                    }
+                } else {
+                    match self.pick(3) {
+                        0 => format!("{v:e}"),
+                        1 => format!("{v}")
+                            .strip_prefix('0')
+                            .filter(|t| t.starts_with('.'))
+                            .map_or(format!("{v}"), String::from),
+                        _ => format!("{v}"),
+                    }
+                };
+                self.out.push_str(&text);
+            }
+
+            fn string(&mut self, s: &str) {
+                let quote = if self.pick(2) == 0 { '\'' } else { '"' };
+                self.out.push(quote);
+                for c in s.chars() {
+                    let escaped = match c {
+                        '\\' => Some('\\'),
+                        '\n' => Some('n'),
+                        c if c == quote => Some(c),
+                        '\r' | '\t' | '\0' | '\'' | '"' if self.pick(2) == 0 => Some(match c {
+                            '\r' => 'r',
+                            '\t' => 't',
+                            '\0' => '0',
+                            other => other,
+                        }),
+                        _ => None,
+                    };
+                    match escaped {
+                        Some(e) => {
+                            self.out.push('\\');
+                            self.out.push(e);
+                        }
+                        None => self.out.push(c),
+                    }
+                }
+                self.out.push(quote);
+            }
+
+            fn list(&mut self, items: &[Expr]) {
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        self.out.push_str(", ");
+                    }
+                    self.expr(item, Slot::Free);
+                }
+            }
+
+            /// `e` where `slot` puts it: in parentheses when it needs them, and now and then when it does not.
+            fn expr(&mut self, e: &Expr, slot: Slot) {
+                if !bare(e, slot) || self.pick(16) == 0 {
+                    self.out.push('(');
+                    self.term(e);
+                    self.out.push(')');
+                } else {
+                    self.term(e);
+                }
+            }
+
+            /// `e` without parentheses of its own; an expression is bare in [`Slot::Free`], so this is also the
+            /// inside of a parenthesised one.
+            fn term(&mut self, e: &Expr) {
+                match e {
+                    Expr::Num(v) => self.number(*v),
+                    Expr::Str(s) => self.string(s),
+                    Expr::Bool(b) => self.out.push_str(if *b { "true" } else { "false" }),
+                    Expr::Undefined => {
+                        let word = if self.pick(2) == 0 { "null" } else { "undefined" };
+                        self.out.push_str(word);
+                    }
+                    Expr::Array(items) => {
+                        self.out.push('[');
+                        self.list(items);
+                        self.out.push(']');
+                    }
+                    Expr::Ident(n, _) => self.out.push_str(n),
+                    Expr::Unary(op, x) => {
+                        self.out.push(match op {
+                            UnOp::Neg => '-',
+                            UnOp::Plus => '+',
+                            UnOp::Not => '!',
+                        });
+                        self.expr(x, Slot::Operand);
+                    }
+                    Expr::Binary(op, l, r) => self.infix(binary_text(*op), binary_power(*op), l, r),
+                    Expr::Logical(op, l, r) => {
+                        let text = match op {
+                            Logic::And => "&&",
+                            Logic::Or => "||",
+                            Logic::Nullish => "??",
+                        };
+                        self.infix(text, logic_power(*op), l, r);
+                    }
+                    Expr::Cond(c, a, b) => {
+                        self.expr(c, Slot::Test);
+                        self.out.push_str(" ? ");
+                        self.expr(a, Slot::Free);
+                        self.out.push_str(" : ");
+                        self.expr(b, Slot::Else);
+                    }
+                    Expr::Call(f, args, _) => {
+                        self.expr(f, Slot::Base(false));
+                        self.out.push('(');
+                        self.list(args);
+                        self.out.push(')');
+                    }
+                    Expr::Member(x, n, _) => {
+                        self.expr(x, Slot::Base(true));
+                        let access = if self.pick(2) == 0 { "." } else { "?." };
+                        self.out.push_str(access);
+                        self.out.push_str(n);
+                    }
+                    Expr::Index(x, i) => {
+                        self.expr(x, Slot::Base(false));
+                        self.out.push('[');
+                        self.expr(i, Slot::Free);
+                        self.out.push(']');
+                    }
+                }
+            }
+
+            fn infix(&mut self, op: &str, (lbp, rbp): (u8, u8), l: &Expr, r: &Expr) {
+                self.expr(l, Slot::Left(lbp));
+                self.out.push(' ');
+                self.out.push_str(op);
+                self.out.push(' ');
+                self.expr(r, Slot::Right(rbp));
+            }
+
+            fn separator(&mut self) {
+                let gap = ["", " ", "\n", " /* note */ ", " // note\n"][usize::from(self.pick(5))];
+                self.out.push_str(gap);
+            }
+
+            fn declaration(&mut self, name: &str, value: &Expr) {
+                self.out.push_str(name);
+                self.out.push_str(" = ");
+                self.expr(value, Slot::Free);
+            }
+
+            fn stmt(&mut self, s: &Stmt) {
+                match s {
+                    Stmt::Let(n, e, _) => {
+                        let keyword = ["let ", "const ", "var "][usize::from(self.pick(3))];
+                        self.out.push_str(keyword);
+                        self.declaration(n, e);
+                        self.out.push(';');
+                    }
+                    Stmt::Assign(n, op, e, _) => {
+                        self.out.push_str(n);
+                        self.out.push(' ');
+                        self.out.push_str(op.map_or("", binary_text));
+                        self.out.push_str("= ");
+                        self.expr(e, Slot::Free);
+                        self.out.push(';');
+                    }
+                    Stmt::If(c, then, els) => {
+                        self.out.push_str("if (");
+                        self.expr(c, Slot::Free);
+                        self.out.push_str(") ");
+                        self.stmt(then);
+                        if let Some(els) = els {
+                            self.out.push_str(" else ");
+                            self.stmt(els);
+                        }
+                    }
+                    Stmt::Block(body) => {
+                        let declarations: Vec<_> = body
+                            .iter()
+                            .filter_map(|s| match s {
+                                Stmt::Let(n, e, _) => Some((n, e)),
+                                _ => None,
+                            })
+                            .collect();
+                        if declarations.len() > 1 && declarations.len() == body.len() && self.pick(2) == 0 {
+                            // `let a = 1, b = 2` declares into a block of its own
+                            self.out.push_str("let ");
+                            for (i, (n, e)) in declarations.into_iter().enumerate() {
+                                if i > 0 {
+                                    self.out.push_str(", ");
+                                }
+                                self.declaration(n, e);
+                            }
+                            self.out.push(';');
+                        } else {
+                            self.out.push('{');
+                            self.program(body);
+                            self.out.push('}');
+                        }
+                    }
+                    Stmt::Return(e) => {
+                        self.out.push_str("return");
+                        if let Some(e) = e {
+                            self.out.push(' ');
+                            self.expr(e, Slot::Free);
+                        }
+                        self.out.push(';');
+                    }
+                    Stmt::Expr(e) => {
+                        self.expr(e, Slot::Free);
+                        self.out.push(';');
+                    }
+                }
+            }
+
+            fn program(&mut self, body: &[Stmt]) {
+                for s in body {
+                    self.separator();
+                    self.stmt(s);
+                }
+                self.separator();
+            }
+        }
+
+        fn binary_text(op: BinOp) -> &'static str {
+            use BinOp::*;
+            match op {
+                Add => "+",
+                Sub => "-",
+                Mul => "*",
+                Div => "/",
+                Rem => "%",
+                Pow => "**",
+                Lt => "<",
+                Le => "<=",
+                Gt => ">",
+                Ge => ">=",
+                Eq => "==",
+                Ne => "!=",
+                StrictEq => "===",
+                StrictNe => "!==",
+            }
+        }
+
+        fn print(program: &[Stmt], style: &[u8]) -> String {
+            let mut printer = Printer { out: String::new(), style, next: 0 };
+            printer.program(program);
+            printer.out
+        }
+
+        /// `e` with its source offsets cleared.
+        fn strip(e: &Expr) -> Expr {
+            let all = |items: &[Expr]| items.iter().map(strip).collect();
+            let one = |e: &Expr| Box::new(strip(e));
+            match e {
+                Expr::Array(items) => Expr::Array(all(items)),
+                Expr::Ident(n, _) => Expr::Ident(n.clone(), 0),
+                Expr::Unary(op, x) => Expr::Unary(*op, one(x)),
+                Expr::Binary(op, l, r) => Expr::Binary(*op, one(l), one(r)),
+                Expr::Logical(op, l, r) => Expr::Logical(*op, one(l), one(r)),
+                Expr::Cond(c, a, b) => Expr::Cond(one(c), one(a), one(b)),
+                Expr::Call(f, args, _) => Expr::Call(one(f), all(args), 0),
+                Expr::Member(x, n, _) => Expr::Member(one(x), n.clone(), 0),
+                Expr::Index(x, i) => Expr::Index(one(x), one(i)),
+                leaf => leaf.clone(),
+            }
+        }
+
+        /// `s` with its source offsets cleared.
+        fn strip_stmt(s: &Stmt) -> Stmt {
+            match s {
+                Stmt::Let(n, e, _) => Stmt::Let(n.clone(), strip(e), 0),
+                Stmt::Assign(n, op, e, _) => Stmt::Assign(n.clone(), *op, strip(e), 0),
+                Stmt::If(c, t, e) => {
+                    Stmt::If(strip(c), Box::new(strip_stmt(t)), e.as_ref().map(|e| Box::new(strip_stmt(e))))
+                }
+                Stmt::Block(body) => Stmt::Block(body.iter().map(strip_stmt).collect()),
+                Stmt::Return(e) => Stmt::Return(e.as_ref().map(strip)),
+                Stmt::Expr(e) => Stmt::Expr(strip(e)),
+            }
+        }
+
+        #[test]
+        fn a_printed_program_parses_back_to_its_tree() {
+            let cases = (vec(statement(), 1..4), vec(any::<u8>(), 1..32));
+            property::check("expression round trip", 1024, cases, |(program, style)| {
+                let text = print(&program, &style);
+                let parsed = parse(&text).map_err(|e| TestCaseError::fail(format!("{text:?}: {e}")))?;
+                // Debug tells every float apart, NaN and -0.0 included, where `==` would not
+                let parsed = format!("{:?}", parsed.iter().map(strip_stmt).collect::<Vec<_>>());
+                prop_assert_eq!(parsed, format!("{program:?}"), "printed as {:?}", text);
+                Ok(())
+            });
+        }
+
+        #[test]
+        fn no_text_makes_the_parser_panic() {
+            let token = select(vec![
+                "let", "x", "time", "=", "+=", "1", "0x", "0xg", "1e", "1e+", ".5", "1.2.3", "'", "\"", "\\", "(", ")",
+                "[", "]", "{", "}", "?", "?.", ".", ":", ",", ";", "**", "-", "!", "if", "else", "return", "for", "/*",
+                "*/", "//", "\n", " ", "\u{e9}", "`", "=>", "...",
+            ]);
+            let text = prop_oneof![any::<String>(), vec(token, 0..48).prop_map(|t| t.concat())];
+            property::check("parse never panics", 2048, text, |src| {
+                let _ = parse(&src);
+                Ok(())
+            });
+        }
+    }
 }
