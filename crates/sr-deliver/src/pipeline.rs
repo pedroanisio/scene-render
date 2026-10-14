@@ -137,6 +137,12 @@ pub struct Report {
     pub loudness: Option<f64>,
     /// True peak of the delivered mix, dBTP.
     pub true_peak: Option<f64>,
+    /// Loudness range of the delivered mix (EBU Tech 3342), LU; absent when no 3-second window reaches −70 LUFS.
+    pub loudness_range: Option<f64>,
+    /// Loudest 400 ms window of the delivered mix, LUFS; absent for a programme shorter than one window or silent.
+    pub momentary_max: Option<f64>,
+    /// Loudest 3-second window of the delivered mix, LUFS; absent for a programme shorter than one window or silent.
+    pub short_term_max: Option<f64>,
     /// The decoded-AAC check of the master's true-peak ceiling: what it measured and any gain it applied.
     pub audio_ceiling: Option<crate::ceiling::Held>,
     /// Content not rendered by this batch, per node.
@@ -787,6 +793,18 @@ pub fn deliver_reporting(
     (report, outcome)
 }
 
+/// Records what the meter read of the delivered mix. A value at the meter's floor (−200) means the programme had
+/// no window of that length above silence and is left out: integrated loudness needs one 400 ms gating block, and
+/// the loudness range one 3-second window at or above −70 LUFS.
+fn record_loudness(report: &mut Report, m: &sr_audio::loudness::Measurement) {
+    let read = |v: f64| (v > -150.0).then_some(v);
+    report.loudness = read(m.integrated);
+    report.true_peak = Some(m.true_peak);
+    report.momentary_max = read(m.momentary_max);
+    report.short_term_max = read(m.short_term_max);
+    report.loudness_range = (m.short_term_max >= -70.0).then_some(m.range);
+}
+
 fn run_delivery(
     doc: &sr_model::Document,
     output: &m::Output,
@@ -933,10 +951,7 @@ fn run_delivery(
         let master = programme.as_ref().map(|a| &a.master).unwrap_or(&sa.mixed.master);
         let mut part = audio::slice(master, sa.mix.rate, start - origin, end - origin);
         let weights = sa.mix.layout.loudness_weights();
-        // integrated loudness needs at least one 400 ms gating block
-        let l = sr_audio::loudness::integrated(&part, sa.mix.rate as f64, &weights);
-        report.loudness = (l > -150.0).then_some(l);
-        report.true_peak = Some(sr_audio::loudness::true_peak(&part, sa.mix.rate as f64));
+        record_loudness(report, &sr_audio::loudness::measure(&part, sa.mix.rate as f64, &weights));
         let container = output
             .container
             .map(|c| c.as_str().to_string())
@@ -955,9 +970,7 @@ fn run_delivery(
                 &tmp,
             )?;
             if !held.passes.is_empty() {
-                report.true_peak = Some(sr_audio::loudness::true_peak(&part, sa.mix.rate as f64));
-                let l = sr_audio::loudness::integrated(&part, sa.mix.rate as f64, &weights);
-                report.loudness = (l > -150.0).then_some(l);
+                record_loudness(report, &sr_audio::loudness::measure(&part, sa.mix.rate as f64, &weights));
             }
             report.audio_ceiling = Some(held);
         }

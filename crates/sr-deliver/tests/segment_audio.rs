@@ -94,6 +94,10 @@ fn loudness_is_normalised_on_the_output_programme() {
     );
     let l = r.loudness.unwrap();
     assert!((l + 14.0).abs() < 0.5, "{l} LUFS");
+    // under 3 s: a momentary maximum, no short-term window and so no loudness range
+    let m = r.momentary_max.unwrap();
+    assert!(m >= l && m < l + 3.0, "momentary max {m}, integrated {l}");
+    assert_eq!((r.short_term_max, r.loudness_range), (None, None));
 }
 
 #[test]

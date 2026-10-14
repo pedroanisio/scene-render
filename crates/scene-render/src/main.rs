@@ -1964,7 +1964,12 @@ fn encode(
                         .loudness
                         .map(|l| format!("{l:.1} LUFS integrated"))
                         .unwrap_or_else(|| "too short for integrated loudness".into());
-                    writeln!(out.w, "  audio: {l}, {tp:.1} dBTP true peak, mixed in {:.2} s", r.audio_seconds)?;
+                    let mut parts = vec![l];
+                    parts.extend(r.loudness_range.map(|v| format!("{v:.1} LU loudness range")));
+                    parts.extend(r.momentary_max.map(|v| format!("{v:.1} LUFS momentary max")));
+                    parts.extend(r.short_term_max.map(|v| format!("{v:.1} LUFS short-term max")));
+                    parts.push(format!("{tp:.1} dBTP true peak"));
+                    writeln!(out.w, "  audio: {}, mixed in {:.2} s", parts.join(", "), r.audio_seconds)?;
                     if let Some(h) = &r.audio_ceiling {
                         if h.passes.is_empty() {
                             writeln!(

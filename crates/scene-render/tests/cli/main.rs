@@ -6,5 +6,6 @@ mod cli;
 mod common;
 mod debug_gpu_flag;
 mod eval_json_warnings;
+mod loudness_report;
 mod program_findings;
 mod solver_failures;
