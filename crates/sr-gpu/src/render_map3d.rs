@@ -243,6 +243,7 @@ impl Renderer {
                 n,
                 base,
                 tol: 0.25 / scale.max(1e-6),
+                projection: None,
                 paint: &mut pf,
                 tokens: &tokens,
                 unsupported: &mut unsupported,

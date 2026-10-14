@@ -35,6 +35,8 @@ impl CaptionDump {
 #[serde(rename_all = "camelCase")]
 pub struct TrackDump {
     pub id: String,
+    /// Composition stacking value; equal values preserve document order.
+    pub z: i32,
     /// Whether the track is burned into the picture (`mode` other than `sidecar`).
     pub burn: bool,
     /// The preset the layout applies (an unknown name is `classic`).
@@ -59,6 +61,8 @@ pub struct TrackDump {
 /// A cue and the words the pages show for it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CueDump {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<String>,
     pub start: f64,
     pub end: f64,
     pub words: Vec<WordDump>,
@@ -67,6 +71,7 @@ pub struct CueDump {
 /// A word of a cue: its index in the cue, its text and its time.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WordDump {
+    pub emphasis: bool,
     pub index: usize,
     pub text: String,
     pub start: f64,
@@ -120,6 +125,7 @@ pub fn dump(p: &Program, at: &[f64]) -> CaptionDump {
             let line_breaks = if m.line_breaks.as_str() == "source" { "source" } else { "greedy" };
             let mut out = TrackDump {
                 id: m.id.clone(),
+                z: m.z,
                 burn: true,
                 preset: captions::Preset::Classic.name(),
                 line_breaks,
@@ -163,11 +169,16 @@ fn fill(out: &mut TrackDump, tr: &Track, at: &[f64]) {
             i
         })
         .collect();
-    out.cues = tr.cues.iter().map(|c| CueDump { start: c.start, end: c.end, words: Vec::new() }).collect();
+    out.cues = tr
+        .cues
+        .iter()
+        .map(|c| CueDump { start: c.start, end: c.end, position: c.position.clone(), words: Vec::new() })
+        .collect();
     for (pg, &f) in tr.pages.iter().zip(&first) {
         let words = &mut out.cues[pg.cue].words;
         words.extend(pg.words().into_iter().enumerate().map(|(k, w)| WordDump {
             index: f + k,
+            emphasis: w.emphasis,
             text: w.text.clone(),
             start: w.start,
             end: w.end,

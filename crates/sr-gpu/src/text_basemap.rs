@@ -548,6 +548,7 @@ impl Cell<'_> {
             xf: Xf([qx[0], qx[1], qy[0], qy[1], q0[0], q0[1]]),
             opacity: self.opacity,
             uv: [ox + a * s, oy + b * s, ox + c * s, oy + d * s],
+            tilt: None,
             below: true,
         });
     }

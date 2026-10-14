@@ -38,6 +38,32 @@ pub struct PairState {
     pub targets: Vec<(String, [u32; 2], Vec<[f32; 4]>)>,
 }
 
+/// Human labels keyed by structural path. Names may repeat; they never replace resume/cache keys.
+pub fn labels(p: &sr_eval::Program) -> std::collections::BTreeMap<String, String> {
+    fn visit(e: &dyn Element, path: String, index: usize, out: &mut std::collections::BTreeMap<String, String>) {
+        if e.element_id().is_some()
+            || e.get_attr("name").is_some()
+            || matches!(e.element_name(), "textAnimator" | "pin")
+        {
+            out.insert(path.clone(), sr_model::diag::element_label(e, index));
+        }
+        let mut counts = std::collections::HashMap::new();
+        for child in sr_model::element::children(e) {
+            let i = counts.entry(child.element_name().to_string()).or_insert(0usize);
+            visit(child, format!("{path}/{}[{}]", child.element_name(), *i + 1), *i, out);
+            *i += 1;
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    for doc in 0..=p.includes.len() as u16 {
+        if let Some(scene) = p.doc_scene(doc) {
+            let root = if doc == 0 { "/scene".into() } else { format!("/include[{doc}]/scene") };
+            visit(scene, root, 0, &mut out);
+        }
+    }
+    out
+}
+
 /// A checkpoint directory for one document.
 pub struct Store {
     dir: PathBuf,
@@ -67,6 +93,17 @@ impl Store {
         field(p.scene.project.seed.to_string().as_bytes());
         let fps = &p.scene.project.fps;
         field(format!("{}/{}", fps.num, fps.den).as_bytes());
+        // A readable companion to opaque checkpoint filenames, shared by frames of this document/build.
+        let key = hex(&Sha256::digest(&prefix).into());
+        let path = dir.join(format!("{key}.labels.json"));
+        if !path.is_file() {
+            static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let tmp = path.with_extension(format!("part-{}-{serial}", std::process::id()));
+            let bytes = serde_json::to_vec_pretty(&labels(p)).map_err(std::io::Error::other)?;
+            std::fs::write(&tmp, bytes)?;
+            std::fs::rename(tmp, path)?;
+        }
         Ok(Store { dir: dir.to_path_buf(), prefix })
     }
 

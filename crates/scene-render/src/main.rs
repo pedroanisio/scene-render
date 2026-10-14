@@ -984,6 +984,11 @@ fn inspect(file: &Path, no_assets: bool, out: &mut Out) -> std::io::Result<u8> {
     writeln!(out.w, "  assets       {}", if kinds.is_empty() { "none".into() } else { kinds.join(", ") })?;
     writeln!(out.w, "  nodes        {} in the composition, depth {depth}", nodes.len())?;
     writeln!(out.w, "  symbols      {symbols}")?;
+    if let Some(symbols) = &s.symbols {
+        for (i, symbol) in symbols.symbols.iter().enumerate() {
+            writeln!(out.w, "    {} [{}]", sr_model::diag::element_label(symbol, i), symbol.id)?;
+        }
+    }
     writeln!(out.w, "  effects      {effects}")?;
     writeln!(out.w, "  outputs      {}", s.outputs.len())?;
     for o in &s.outputs {

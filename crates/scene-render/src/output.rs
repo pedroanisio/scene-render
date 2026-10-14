@@ -20,7 +20,7 @@ pub const FORMAT: &str = "scene-render-cli/1";
 
 /// The envelope's `schema_version` (semantic versioning): a new optional key is a minor change, a key removed or
 /// whose meaning changes is a new `FORMAT`.
-pub const SCHEMA_VERSION: &str = "1.0.0";
+pub const SCHEMA_VERSION: &str = "1.1.0";
 
 /// Why a command did not succeed; the exit status follows from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -144,7 +144,8 @@ impl Out {
         let head = style(color, true);
         let bold = Style::new().bold();
         let blue = style(AnsiColor::Blue, true);
-        writeln!(self.w, "{head}{label}[{}]{head:#}{bold}: {}{bold:#}", d.code, d.message)?;
+        let context = d.label.as_ref().map(|s| format!(" ({s})")).unwrap_or_default();
+        writeln!(self.w, "{head}{label}[{}]{head:#}{bold}{context}: {}{bold:#}", d.code, d.message)?;
         let gutter = d.loc.line.max(1).to_string().len();
         let pad = " ".repeat(gutter);
         writeln!(self.w, "{pad}{blue}-->{blue:#} {}:{}:{}", file.display(), d.loc.line, d.loc.column)?;

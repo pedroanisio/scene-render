@@ -640,3 +640,84 @@ fn caption_presets_have_their_schema_names() {
     }
     assert_eq!(CapPreset::parse("no-such-preset").name(), "classic", "unknown names are classic");
 }
+
+#[test]
+fn a4_easing_has_independent_endpoint_slopes() {
+    let f = animate::ease_ends;
+    for i in 0..=100 {
+        let x = i as f64 / 100.0;
+        assert!((f(x, 100.0, 0.0) + f(1.0 - x, 0.0, 100.0) - 1.0).abs() < 1e-12);
+        assert_eq!(f(x, 0.0, 0.0), x);
+        assert!((f(x, 100.0, 100.0) - x * x * (3.0 - 2.0 * x)).abs() < 1e-12);
+    }
+    let e = 1e-6;
+    assert!((f(e, 100.0, 0.0) / e - 1.0).abs() < 1e-5);
+    assert!((1.0 - f(1.0 - e, 100.0, 0.0)) / e < 1e-5);
+    assert!(f(0.25, 100.0, 0.0) > 0.25 && f(0.25, 0.0, 100.0) < 0.25);
+}
+
+#[test]
+fn a4_caption_settings_roundtrip_and_unsupported_alignment() {
+    let input = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000 line:10% position:30%,line-left align:start\nhello\n\n";
+    let cues = captions::parse(input, "vtt").unwrap();
+    assert_eq!(captions::parse(&captions::to_vtt(&cues), "vtt").unwrap()[0].position, cues[0].position);
+    let settings = captions::CueSettings::parse(cues[0].position.as_deref().unwrap());
+    assert_eq!((settings.line, settings.position), (Some(10.0), Some(30.0)));
+    assert!(settings.ignored.iter().any(|s| s.contains("line-left")), "unsupported alignment must be reported");
+}
+
+#[test]
+fn a4_emphasis_lights_future_words() {
+    let mut lib = lib();
+    let cue = captions::Cue {
+        start: 0.0,
+        end: 2.0,
+        text: "aa bb".into(),
+        words: vec![
+            captions::Word { start: 0.0, end: 1.0, text: "aa".into(), emphasis: false },
+            captions::Word { start: 1.0, end: 2.0, text: "bb".into(), emphasis: true },
+        ],
+        ..Default::default()
+    };
+    let page = &captions::paginate(&[cue], None, 32, 2, false)[0];
+    let l = lay(&mut lib, &[(&page.text(), None)]);
+    let paint = Paint::Solid { rgba: [1.0, 0.0, 0.0, 1.0], srgb: true };
+    for preset in [CapPreset::Karaoke, CapPreset::Highlight, CapPreset::Pop, CapPreset::Enlarge] {
+        let fx = captions::effects(preset, &l, page, 0.1, &paint);
+        assert!(fx
+            .iter()
+            .zip(&l.glyphs)
+            .filter(|(_, g)| g.word == 1)
+            .all(|(f, _)| f.fill_mix == 1.0 && f.fill == Some(paint.clone())));
+    }
+}
+
+#[test]
+fn a4_rotation_projects_strokes_and_decoration_with_glyph() {
+    use sr_vector::geom::Xf;
+    let mut lib = lib();
+    let mut l = lay(&mut lib, &[("M", None)]);
+    l.styles[0].decoration = sr_text::style::Decoration::Underline;
+    l.styles[0].stroke = Some((Paint::Solid { rgba: [1.0; 4], srgb: true }, 3.0, sr_text::style::StrokePos::Outside));
+    let tilt = glyph::Tilt {
+        rx: 35.0,
+        ry: 50.0,
+        z: 0.0,
+        eye: Some(100.0),
+        projection: None,
+        pre: Xf::translate(-15.0, -30.0),
+        post: Xf::translate(15.0, 30.0),
+    };
+    let mut expected = glyph::draw(&lib, &l, None, &Decor::default(), 0.05).scene;
+    expected.map_points(&|p| tilt.map(p));
+    let f = vec![glyph::GlyphFx { tilt: Some(tilt), ..Default::default() }; l.glyphs.len()];
+    let actual = glyph::draw(&lib, &l, Some(&f), &Decor::default(), 0.05).scene;
+    for (a, b) in actual.bounds().0.iter().zip(expected.bounds().0) {
+        assert!(
+            (a - b).abs() < 0.05,
+            "full glyph geometry must rotate together: {:?} vs {:?}",
+            actual.bounds(),
+            expected.bounds()
+        );
+    }
+}

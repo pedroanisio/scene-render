@@ -3002,11 +3002,46 @@ impl Renderer {
         Plane { k, to_sheet: space.xform, hash }
     }
 
+    /// Project text-space xyz through the layer camera, then back onto the layer's flat plane.
+    /// The compositor projects that plane once more, giving the same screen point as the 3D glyph.
+    pub(super) fn text_projection(
+        &self,
+        ctx: &Ctx,
+        n: &FrameNode,
+        space: &Space,
+        to_local: &Xf,
+    ) -> Option<[[f64; 4]; 3]> {
+        let projection = if n.three_d.is_some() {
+            let i = ctx.g.nodes.iter().position(|node| node.id == n.id)?;
+            self.plane_of(ctx, i, space).k
+        } else if !self.planes.is_empty() {
+            self.proj25(ctx.g, ctx.p, space).as_dmat4()
+        } else {
+            // Ordinary 2D text has no layer camera: use the engine's implicit 60-degree view.
+            let frame = ctx.g.size.map(|v| v as f32);
+            let cam = camera::resolve(&CameraParams::default(), frame[0], frame[1]);
+            (Self::clip_fix(&space.xform, space.size, frame)
+                * cam.view_proj()
+                * space.xform.inverse().map(|a| embed(&a)).unwrap_or(Mat4::IDENTITY))
+            .as_dmat4()
+        };
+        let k = projection * embed(&space.xform.then(&n.world).then(&Affine(to_local.0))).as_dmat4();
+        let column = |v: DVec4| DVec3::new(v.x, v.y, v.w);
+        let hom = DMat3::from_cols(column(k.x_axis), column(k.y_axis), column(k.w_axis));
+        let det = hom.determinant();
+        if !det.is_finite() || det.abs() < 1e-15 {
+            return None;
+        }
+        let back = hom.inverse();
+        let columns = [k.x_axis, k.y_axis, k.z_axis, k.w_axis].map(|v| back * column(v));
+        Some(std::array::from_fn(|r| std::array::from_fn(|c| columns[c][r])))
+    }
+
     /// Whether a node below node `i` is placed in 2.5D (and so depends on the plane `i` is placed in).
     pub(super) fn places_inside(ctx: &Ctx, i: usize) -> bool {
         let mut stack = ctx.kids[i].clone();
         while let Some(k) = stack.pop() {
-            if ctx.g.nodes[k].three_d.is_some() {
+            if ctx.g.nodes[k].three_d.is_some() || Self::glyph_depth(&ctx.g.nodes[k]) {
                 return true;
             }
             stack.extend_from_slice(&ctx.kids[k]);

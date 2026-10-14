@@ -72,7 +72,7 @@ fn validate_reports_each_file_and_a_typed_failure() {
     let v = envelope(&o, Some("validate"));
     assert_eq!(v["ok"], true);
     assert_eq!(v["error"], Value::Null);
-    assert_eq!(v["schema_version"], "1.0.0");
+    assert_eq!(v["schema_version"], "1.1.0");
 
     let o = run(&["validate", "--format=json", "/nonexistent/scene.xml"]);
     assert_eq!(o.status.code(), Some(2));

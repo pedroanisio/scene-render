@@ -161,6 +161,10 @@ pub struct FrameNode {
     pub transform_parent: Option<u32>,
     /// Tree depth.
     pub depth: u32,
+    /// The node's stacking `z` at this frame (0 for the 3D kinds): siblings paint in this order, and captions take
+    /// their place among the top-level nodes by it.
+    #[serde(skip)]
+    pub z: i32,
     /// Local transform.
     pub local: Affine,
     /// Node space to frame space.
@@ -1127,13 +1131,16 @@ impl<'p> Frame<'p> {
     /// Siblings in this frame's paint order: document order stably sorted by the current `z`
     /// (an integer property, so its animated value is already rounded).
     fn stacked(&self, doc: &[u32]) -> Cow<'p, [u32]> {
-        let z = |k: u32| {
-            let n = &self.p.nodes[k as usize];
-            n.z_slot.and_then(|s| self.values[s as usize].as_num()).filter(|z| z.is_finite()).map_or(n.z, |z| z as i32)
-        };
         let mut v = doc.to_vec();
-        v.sort_by_key(|&k| z(k));
+        v.sort_by_key(|&k| self.z_of(k));
         Cow::Owned(v)
+    }
+
+    /// The current stacking `z` of node `k`: its animated value (an integer property, so already rounded), else its
+    /// written one.
+    fn z_of(&self, k: u32) -> i32 {
+        let n = &self.p.nodes[k as usize];
+        n.z_slot.and_then(|s| self.values[s as usize].as_num()).filter(|z| z.is_finite()).map_or(n.z, |z| z as i32)
     }
 
     fn props(&self, slots: &[u32]) -> Props {
@@ -1249,6 +1256,7 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
             parent: parent_out,
             transform_parent: parent_out,
             depth,
+            z: f.z_of(n),
             local,
             world,
             opacity,

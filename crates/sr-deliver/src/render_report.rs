@@ -79,6 +79,9 @@ pub struct Finding {
     /// The element's `id`, when it has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    /// The element's human label (`nodeName`), when it has a `name`: for people, it has no effect on the picture.
+    #[serde(rename = "nodeName", skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
     /// `[start, end]` in composition seconds, when the finding concerns a time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<[f64; 2]>,
@@ -116,6 +119,7 @@ impl Finding {
             severity,
             path: String::new(),
             node: None,
+            node_name: None,
             time: None,
             measured: None,
             limit: None,
@@ -132,6 +136,7 @@ impl Finding {
             severity,
             path: "/scene".into(),
             node: None,
+            node_name: None,
             time: None,
             measured: None,
             limit: None,
@@ -163,6 +168,7 @@ impl Finding {
             severity: d.severity,
             path: if xpath { d.path.clone() } else { String::new() },
             node: None,
+            node_name: None,
             time: None,
             measured: d.measured.as_ref().map(|m| m.value),
             limit: d.measured.as_ref().and_then(|m| m.limit),
@@ -378,6 +384,8 @@ impl<'a> ReportWriter<'a> {
                     f.path = sr_model::diag::element_path(n);
                 }
                 f.node = n.attribute("id").map(str::to_string);
+                f.node_name =
+                    n.attribute("name").filter(|v| !v.trim().is_empty()).map(|_| sr_model::diag::node_label(n));
             }
             None if !f.path.starts_with('/') => f.path = "/scene".into(),
             None => {}
@@ -467,6 +475,7 @@ mod tests {
             severity: Severity::Warning,
             path: "/scene".into(),
             node: None,
+            node_name: None,
             time,
             measured,
             limit,

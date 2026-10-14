@@ -168,6 +168,9 @@ pub enum Selector {
 /// One animator with its values at this frame.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Animator {
+    /// The animator's human label (`name`, else its position, see `sr_model::diag::label`) for diagnostics; it has
+    /// no effect on the picture.
+    pub name: Option<String>,
     pub unit: Unit,
     /// `unit` was given explicitly (it overrides a preset's unit).
     pub unit_set: bool,
@@ -190,6 +193,7 @@ pub struct Animator {
 impl Default for Animator {
     fn default() -> Animator {
         Animator {
+            name: None,
             unit: Unit::Char,
             unit_set: false,
             role: None,
@@ -217,9 +221,21 @@ impl Default for Animator {
     }
 }
 
-fn smooth(x: f64) -> f64 {
-    let x = x.clamp(0.0, 1.0);
-    x * x * (3.0 - 2.0 * x)
+/// The range selector's amount `v` (0 to 1) with its two ends eased separately. `ease_high` and `ease_low` are
+/// percentages: each is the share by which the curve's slope at its end is taken from 1 (a straight ramp) toward 0
+/// (a flat end). The curve is the cubic Hermite spline through (0, 0) and (1, 1) with slope `1 - ease_low / 100` at 0
+/// and `1 - ease_high / 100` at 1. So `ease_high` flattens the top of the falloff (v near 1) and leaves v = 0 and
+/// the slope at 0 alone, `ease_low` does the same at the bottom, both at 100 give the smoothstep, both at 0 leave `v`
+/// unchanged, and swapping the two mirrors the curve (`1 - f(1 - v)`).
+pub fn ease_ends(v: f64, ease_high: f64, ease_low: f64) -> f64 {
+    let (h, l) = ((ease_high / 100.0).clamp(0.0, 1.0), (ease_low / 100.0).clamp(0.0, 1.0));
+    if h == 0.0 && l == 0.0 {
+        return v;
+    }
+    let x = v.clamp(0.0, 1.0);
+    let (x2, x3) = (x * x, x * x * x);
+    let (m0, m1) = (1.0 - l, 1.0 - h);
+    (x3 - 2.0 * x2 + x) * m0 + (-2.0 * x3 + 3.0 * x2) + (x3 - x2) * m1
 }
 
 /// Easing curves of the preset table (the Penner curves).
@@ -383,9 +399,7 @@ fn range_amount(sel: &Selector, i: usize, n: usize, t: f64) -> f64 {
                 Shape::Smooth if (0.0..=1.0).contains(&u) => 0.5 - 0.5 * libm::cos(std::f64::consts::TAU * u),
                 _ => 0.0,
             };
-            let ease = ((ease_high + ease_low) / 200.0).clamp(0.0, 1.0);
-            let v = v + (smooth(v) - v) * ease;
-            v * amount / 100.0
+            ease_ends(v, *ease_high, *ease_low) * amount / 100.0
         }
     }
 }
@@ -792,14 +806,38 @@ fn gl_style(lay: &Layout, g: usize) -> usize {
     lay.glyphs[g].style
 }
 
-/// Per-glyph effects of `anims` at layer time `t`; `counter` text replaces digits for the counter preset.
-/// `roles` gives each span's role.
+/// The distance in pixels from the eye of the engine's default 2.5D camera to the plane z = 0 of a picture
+/// `frame_width` pixels wide: `frame_width / 2 / tan(30°)`, the camera's 60° horizontal field of view across the frame.
+pub fn default_eye_distance(frame_width: f64) -> f64 {
+    frame_width * 0.5 / libm::tan(30f64.to_radians())
+}
+
+/// Per-glyph effects using the default 60-degree camera for the layout width.
 pub fn apply(
     lib: &FontLib,
     lay: &Layout,
     roles: &[Option<String>],
     anims: &[Animator],
     t: f64,
+) -> (Vec<GlyphFx>, Vec<bool>) {
+    let width = if lay.size[0].is_finite() {
+        lay.size[0]
+    } else {
+        lay.lines.iter().map(|l| l.rect[0] + l.rect[2]).fold(1.0, f64::max)
+    };
+    apply_with_eye(lib, lay, roles, anims, t, Some(default_eye_distance(width.max(1.0))))
+}
+
+/// Per-glyph effects of `anims` at layer time `t`; `counter` text replaces digits for the counter preset.
+/// `roles` gives each span's role. `eye` is the distance in pixels from the eye to the plane z = 0 (the animators'
+/// `zDepth` and 3D turns are seen in perspective from there); `None` is an orthographic view, without perspective.
+pub fn apply_with_eye(
+    lib: &FontLib,
+    lay: &Layout,
+    roles: &[Option<String>],
+    anims: &[Animator],
+    t: f64,
+    eye: Option<f64>,
 ) -> (Vec<GlyphFx>, Vec<bool>) {
     let n = lay.glyphs.len();
     let mut acc = vec![Acc::default(); n];
@@ -940,16 +978,27 @@ pub fn apply(
     for (g, (gl, a)) in lay.glyphs.iter().zip(&acc).enumerate() {
         let (px, py) = a.pivot.unwrap_or((gl.x + gl.advance * 0.5, gl.y));
         let anchor = p(px + a.ax, py + a.ay);
-        let persp = 1000.0 / (1000.0 + a.z).max(1.0);
+        let persp = crate::glyph::Tilt::scale_at(eye, a.z);
         let sx = a.sc * a.sx * libm::cos(a.ry.to_radians()) * persp;
         let sy = a.sc * a.sy * libm::cos(a.rx.to_radians()) * persp;
-        let xf = Xf::translate(anchor.x + a.dx + shift_x[g], anchor.y + a.dy + a.line_sp * gl.line as f64 - a.shift)
+        let post = Xf::translate(anchor.x + a.dx + shift_x[g], anchor.y + a.dy + a.line_sp * gl.line as f64 - a.shift)
             .mul(&Xf::rotate(a.rot))
-            .mul(&Xf::skew(a.skew, 0.0))
-            .mul(&Xf::scale(sx, sy))
-            .mul(&Xf::translate(-anchor.x, -anchor.y));
+            .mul(&Xf::skew(a.skew, 0.0));
+        let pre = |sx: f64, sy: f64| Xf::scale(sx, sy).mul(&Xf::translate(-anchor.x, -anchor.y));
+        let xf = post.mul(&pre(sx, sy));
+        // a turn about x or y is drawn as the exact perspective of the turned glyph; `xf` is its cosine approximation
+        let tilt = (a.rx != 0.0 || a.ry != 0.0 || a.z != 0.0).then(|| crate::glyph::Tilt {
+            rx: a.rx,
+            ry: a.ry,
+            z: a.z,
+            eye,
+            projection: None,
+            pre: pre(a.sc * a.sx, a.sc * a.sy),
+            post,
+        });
         let mut fx = GlyphFx {
             xf,
+            tilt,
             opacity: a.op.clamp(0.0, 1.0),
             blur: a.blur,
             variation: a.var.clone(),

@@ -15,6 +15,13 @@ class ChangelogTests(unittest.TestCase):
         self.assertEqual(version, "v1.2.3")
         self.assertEqual(text, "## v1.2.3 — 2026-01-02\n\nBody.\n\n### Detail\n")
 
+    def test_unreleased_notes_are_separate_from_released_history(self):
+        notes = "# scene-render v1.2.3\n\nReleased.\n\n## Unreleased\n\nPending.\n\n## Detail\nOld.\n"
+        released, pending = changelog.split_unreleased(notes)
+        self.assertEqual(pending, "## Unreleased\n\nPending.\n")
+        self.assertIn("## Detail\nOld.", released)
+        self.assertNotIn("Pending", released)
+
     def test_entry_rejects_notes_without_a_release_title(self):
         with self.assertRaises(ValueError):
             changelog.entry("Release notes\n", "2026-01-02")

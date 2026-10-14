@@ -69,7 +69,7 @@ fn invalid_document_exits_one_with_a_located_diagnostic() {
     let o = run(&["validate", &path("invalid/c21.scene.xml")]);
     assert_eq!(o.status.code(), Some(1));
     let out = String::from_utf8_lossy(&o.stdout);
-    assert!(out.contains("error[C21]: transition type=\"shader\" requires @shader."), "{out}");
+    assert!(out.contains("error[C21] (xf): transition type=\"shader\" requires @shader."), "{out}");
     assert!(out.contains("c21.scene.xml:"), "{out}");
     assert!(out.contains('^'), "{out}");
 }
@@ -1793,5 +1793,22 @@ fn a_voxels_scene_with_small_cells_is_rendered_as_authored_under_strict_and_ente
     assert!(first.status.success(), "{first:?}");
     assert_eq!(rendered(&first), (3, 3));
     assert_eq!(rendered(&run(&args)), (0, 3), "the frames are in the record");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a4_inspect_and_validate_show_human_labels() {
+    let dir = std::env::temp_dir().join(format!("sr-a4-labels-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("labels.scene.xml");
+    let xml = r#"<scene version="1.2"><project width="64" height="64" fps="24" duration="1"/><symbols><symbol id="sym" name="Lower third"/></symbols><composition/></scene>"#;
+    std::fs::write(&file, xml).unwrap();
+    let inspected = run(&["inspect", file.to_str().unwrap(), "--no-assets"]);
+    assert!(inspected.status.success(), "{}", String::from_utf8_lossy(&inspected.stdout));
+    assert!(String::from_utf8_lossy(&inspected.stdout).contains("Lower third [sym]"));
+    std::fs::write(&file, xml.replace("name=\"Lower third\"", "name=\"Lower third\" invalid=\"x\"")).unwrap();
+    let validated = run(&["validate", file.to_str().unwrap(), "--no-assets"]);
+    assert_eq!(validated.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&validated.stdout).contains("(Lower third)"));
     std::fs::remove_dir_all(dir).unwrap();
 }

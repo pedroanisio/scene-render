@@ -499,10 +499,12 @@ fn run(xml: &str, base_dir: PathBuf, opts: &LoadOptions, build: bool) -> Outcome
         let (waiting, rest): (Vec<Diagnostic>, Vec<Diagnostic>) =
             report.diagnostics.drain(..).partition(|d| d.is_error() && holders.contains(&d.path));
         report.diagnostics = rest;
+        crate::diag::attach_labels(&mut report.diagnostics, &doc);
         report.sort();
         if !build || report.has_errors() {
             report.diagnostics.extend(deferred.into_iter().map(|u| u.diagnostic));
             report.diagnostics.extend(waiting);
+            crate::diag::attach_labels(&mut report.diagnostics, &doc);
             report.sort();
             return Outcome { report, document: None };
         }

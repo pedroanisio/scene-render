@@ -128,6 +128,10 @@ pub struct Diagnostic {
     /// Optional suggestion for fixing the problem.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub help: Option<String>,
+    /// Human label of the nearest named/identified element, symbol, animator or puppet pin (see [`label`]).
+    /// For people; `path` remains the locator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// What a check measured, when it measured something (SREP 18 `measured`, `limit`, `unit`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub measured: Option<Measure>,
@@ -155,6 +159,7 @@ impl Diagnostic {
             loc,
             path: path.into(),
             help: None,
+            label: None,
             measured: None,
         }
     }
@@ -168,6 +173,7 @@ impl Diagnostic {
             loc,
             path: path.into(),
             help: None,
+            label: None,
             measured: None,
         }
     }
@@ -202,7 +208,10 @@ impl Diagnostic {
 
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}[{}] {}: {}", self.severity, self.code, self.loc, self.message)
+        match &self.label {
+            Some(l) => write!(f, "{}[{}] {} ({l}): {}", self.severity, self.code, self.loc, self.message),
+            None => write!(f, "{}[{}] {}: {}", self.severity, self.code, self.loc, self.message),
+        }
     }
 }
 
@@ -232,6 +241,48 @@ pub fn element_path(n: roxmltree::Node<'_, '_>) -> String {
     }
     parts.reverse();
     format!("/{}", parts.join("/"))
+}
+
+/// The human label of an element, used in findings, diagnostics and reports: its `name` when it has a non-empty one,
+/// else its `id`, else `<element>[<n>]` with `index` the 0-based position among its same-named siblings. One rule for
+/// every element that can carry a `name` (nodes, symbols, text animators, puppet pins).
+pub fn label(name: Option<&str>, id: Option<&str>, element: &str, index: usize) -> String {
+    let given = |s: Option<&str>| s.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    given(name).or_else(|| given(id)).unwrap_or_else(|| format!("{element}[{}]", index + 1))
+}
+
+/// [`label`] of a typed element at 0-based position `index` among its same-named siblings.
+pub fn element_label(e: &dyn crate::element::Element, index: usize) -> String {
+    let name = e.get_attr("name").map(|v| v.to_string());
+    label(name.as_deref(), e.element_id(), e.element_name(), index)
+}
+
+/// [`label`] of an XML element.
+pub fn node_label(n: roxmltree::Node<'_, '_>) -> String {
+    let name = n.tag_name().name();
+    let index = n.prev_siblings().skip(1).filter(|s| s.is_element() && s.tag_name().name() == name).count();
+    label(n.attribute("name"), n.attribute("id"), name, index)
+}
+
+/// Sets a human label from the nearest named or identified element, symbol, animator or puppet pin.
+pub(crate) fn attach_labels(diagnostics: &mut [Diagnostic], doc: &roxmltree::Document<'_>) {
+    for d in diagnostics.iter_mut().filter(|d| d.label.is_none()) {
+        let at = d.loc.offset as usize;
+        let Some(inner) =
+            doc.descendants().filter(|n| n.is_element() && n.range().contains(&at)).max_by_key(|n| n.range().start)
+        else {
+            continue;
+        };
+        d.label = inner
+            .ancestors()
+            .find(|a| {
+                a.is_element()
+                    && (matches!(a.tag_name().name(), "symbol" | "textAnimator" | "pin")
+                        || a.attribute("id").is_some()
+                        || a.attribute("name").is_some_and(|v| !v.trim().is_empty()))
+            })
+            .map(node_label);
+    }
 }
 
 /// The outcome of validating one document.

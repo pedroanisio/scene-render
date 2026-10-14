@@ -172,3 +172,148 @@ fn a_document_without_captions_dumps_no_tracks() {
     let out = dump(ev.program(), &[0.0]);
     assert!(out.tracks.is_empty() && out.is_complete());
 }
+
+mod common;
+
+fn a4_pixels(caps: &str, body: &str) -> common::Rendered {
+    let xml = format!(
+        r##"<scene version="1.2"><project width="320" height="180" fps="24" duration="4" background="#000000"/><composition>{body}</composition><captions>{caps}</captions></scene>"##
+    );
+    let d = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
+    common::render_times(&d, &[0.1]).expect("A4 pixel evidence requires a software Vulkan adapter")
+}
+
+#[test]
+fn a4_captions_stack_by_z_and_equal_z_document_order() {
+    let caps = r#"<captionTrack id="cc" language="en" preset="none" y="10%"><cue start="0" end="2" text="CAPTION"/></captionTrack>"#;
+    let cover = |z| format!(r##"<shape id="cover" z="{z}" shape="rect" width="320" height="180" fill="#FF0000"/>"##);
+    let high = a4_pixels(caps, &cover(2000000));
+    assert!(high.px.iter().all(|p| p[1] < 0.001 && p[2] < 0.001), "higher layer must cover captions");
+    let low = a4_pixels(caps, &cover(0));
+    assert!(low.px.iter().any(|p| p[1] > 0.1), "default captions remain visible");
+    let tracks = r##"<captionTrack id="first" language="en" z="20" preset="highlight" activeColor="#FF0000" y="10%"><cue start="0" end="2" text="CAPTION"/></captionTrack><captionTrack id="last" language="en" z="10" preset="highlight" activeColor="#00FF00" y="10%"><cue start="0" end="2" text="CAPTION"/></captionTrack>"##;
+    let sorted = a4_pixels(tracks, "");
+    assert!(sorted.px.iter().map(|p| p[0] - p[1]).sum::<f32>() > 1.0);
+    let tied = a4_pixels(&tracks.replace("z=\"10\"", "z=\"20\""), "");
+    assert!(tied.px.iter().map(|p| p[1] - p[0]).sum::<f32>() > 1.0);
+}
+
+#[test]
+fn a4_cue_position_overrides_track_and_reports_ignored_settings() {
+    let caps = |position: &str| {
+        format!(
+            r#"<captionTrack id="cc" language="en" preset="none" x="80%" y="70%"><cue start="0" end="2" position="{position}" text="CAPTION"/></captionTrack>"#
+        )
+    };
+    let moved = a4_pixels(&caps("line:10% position:30% align:start"), "");
+    let reference = a4_pixels(&caps("").replace("x=\"80%\" y=\"70%\"", "x=\"30%\" y=\"10%\""), "");
+    assert!(moved.px == reference.px, "cue percentages must match track percentages");
+    assert!(moved.stats.errors.is_empty(), "{:?}", moved.stats.errors);
+    assert!(moved.stats.unsupported.iter().any(|s| s.contains("align:start")));
+}
+
+#[test]
+fn a4_caption_emphasis_uses_bold_without_active_colour() {
+    let caps = |emphasis| {
+        format!(
+            r#"<captionTrack id="cc" language="en" preset="none" y="10%"><cue start="0" end="2"><word start="0" end="1" text="MMMM" emphasis="{emphasis}"/></cue></captionTrack>"#
+        )
+    };
+    let plain = a4_pixels(&caps(false), "");
+    let bold = a4_pixels(&caps(true), "");
+    assert!(bold.px.iter().map(|p| p[0]).sum::<f32>() > plain.px.iter().map(|p| p[0]).sum::<f32>() * 1.05);
+}
+
+#[test]
+fn a4_glyph_depth_uses_the_layer_camera_pose_and_projection() {
+    let image = |camera: &str, glyph_depth: bool| {
+        let (depth, anim) = if glyph_depth { ("0", r#"<textAnimator zDepth="60"/>"#) } else { ("60", "") };
+        let xml = format!(
+            r##"<scene version="1.2"><project width="320" height="180" fps="24" duration="1" background="#000000"/><assets><text id="t" width="200" height="100" text="M" size="48" font="DejaVu Sans" color="#FFFFFF"/></assets><composition>{camera}<layer id="l" asset="t" threeD="true" x="50" y="30" zDepth="{depth}">{anim}</layer></composition></scene>"##
+        );
+        let d = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
+        common::render_times(&d, &[0.0]).expect("A4 requires software Vulkan")
+    };
+    let centroid = |r: &common::Rendered| {
+        let mut s = [0.0f64; 3];
+        for (i, p) in r.px.iter().enumerate() {
+            let v = p[0] as f64;
+            s[0] += v * (i % 320) as f64;
+            s[1] += v * (i / 320) as f64;
+            s[2] += v;
+        }
+        assert!(s[2] > 10.0, "visible glyph");
+        [s[0] / s[2], s[1] / s[2]]
+    };
+    for camera in [
+        "",
+        r#"<camera id="cam" x="130" y="80" z="-300" fov="45" roll="12"/>"#,
+        r#"<camera id="cam" projection="orthographic" x="130" y="80" z="-300" yaw="8"/>"#,
+    ] {
+        let (a, b) = (centroid(&image(camera, true)), centroid(&image(camera, false)));
+        assert!((a[0] - b[0]).abs() < 0.7 && (a[1] - b[1]).abs() < 0.7, "{camera}: {a:?} vs {b:?}");
+    }
+}
+
+#[test]
+fn a4_checkpoint_labels_share_name_id_index_without_key_collisions() {
+    let xml = r#"<scene version="1.2"><project width="64" height="64" fps="24" duration="1"/><assets><text id="t" width="64" height="64" text="M" size="12"/></assets><symbols><symbol id="sym" name="Lower third"/></symbols><composition><layer id="l" name="Title" asset="t"><textAnimator name="Turn"/><textAnimator name="Turn"/><textAnimator/></layer><shape id="shape" shape="rect" width="10" height="10"><deform><modifier type="puppet"><pin name="Elbow" restX="0" restY="0"/><pin restX="10" restY="10"/></modifier></deform></shape></composition></scene>"#;
+    let d = sr_model::load_str(xml, &sr_model::LoadOptions::without_assets()).unwrap();
+    let ev = sr_eval::Evaluator::new(&d, &Default::default()).unwrap();
+    let labels = sr_gpu::checkpoints::labels(ev.program());
+    assert_eq!(labels.values().filter(|v| v.as_str() == "Turn").count(), 2);
+    for label in ["Lower third", "Title", "textAnimator[3]", "Elbow", "pin[2]", "shape"] {
+        assert!(labels.values().any(|v| v == label), "missing {label}: {labels:?}");
+    }
+    let dir = std::env::temp_dir().join(format!("sr-a4-checkpoint-labels-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    sr_gpu::checkpoints::Store::new(&dir, ev.program()).unwrap();
+    let manifest = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.to_string_lossy().ends_with(".labels.json"))
+        .unwrap();
+    let saved: std::collections::BTreeMap<String, String> =
+        serde_json::from_slice(&std::fs::read(manifest).unwrap()).unwrap();
+    assert_eq!(saved, labels);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a4_rotation_sign_changes_outline_and_bitmap_perspective() {
+    for text in ["M", "😀"] {
+        let image = |angle| {
+            let xml = format!(
+                r##"<scene version="1.2"><project width="160" height="160" fps="24" duration="1" background="#000000"/><assets><text id="t" width="160" height="160" text="{text}" size="80" font="DejaVu Sans" color="#FFFFFF"/></assets><composition><layer id="l" asset="t"><textAnimator rotationX="{angle}" rotationY="30"/></layer></composition></scene>"##
+            );
+            let doc = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
+            common::render_times(&doc, &[0.0]).expect("A4 requires software Vulkan")
+        };
+        let positive = image(45);
+        let negative = image(-45);
+        assert!(positive.stats.errors.is_empty(), "{:?}", positive.stats.errors);
+        assert!(
+            positive.px.iter().zip(&negative.px).map(|(a, b)| (a[0] - b[0]).abs()).sum::<f32>() > 5.0,
+            "{text}: signed turns need true perspective"
+        );
+    }
+}
+
+#[test]
+fn a4_glyph_camera_and_parent_motion_invalidate_cached_picture() {
+    for motion in ["camera", "group"] {
+        let animation =
+            r#"<animate property="rotationY"><key time="0" value="0"/><key time="1" value="35"/></animate>"#;
+        let camera_animation =
+            r#"<animate property="x"><key time="0" value="160"/><key time="1" value="200"/></animate>"#;
+        let xml = format!(
+            r##"<scene version="1.2"><project width="320" height="180" fps="24" duration="2" background="#000000"/><assets><text id="t" width="200" height="100" text="M" size="48" font="DejaVu Sans" color="#FFFFFF"/></assets><composition><camera id="cam" x="160" y="90" z="-300">{}</camera><group id="g" threeD="true" x="30" y="20">{}<layer id="l" asset="t"><textAnimator rotationX="35" rotationY="30"/></layer></group></composition></scene>"##,
+            if motion == "camera" { camera_animation } else { "" },
+            if motion == "group" { animation } else { "" }
+        );
+        let d = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
+        let sequential = common::render_times(&d, &[0.0, 1.0]).unwrap();
+        let fresh = common::render_times(&d, &[1.0]).unwrap();
+        assert!(sequential.px == fresh.px, "{motion}: cached glyph geometry must follow the camera/parent");
+    }
+}

@@ -637,6 +637,10 @@ impl Page {
     pub fn words(&self) -> Vec<&Word> {
         self.lines.iter().flatten().collect()
     }
+    /// Whether any word of the page is emphasised.
+    pub fn has_emphasis(&self) -> bool {
+        self.lines.iter().flatten().any(|w| w.emphasis)
+    }
 }
 
 /// Splits cues into pages of at most `max_lines` lines of `max_chars` characters and `max_words`
@@ -754,9 +758,72 @@ pub fn to_vtt(cues: &[Cue]) -> String {
             Some(sp) => format!("<v {sp}>{}", c.text),
             None => c.text.clone(),
         };
-        s.push_str(&format!("{} --> {}\n{}\n\n", ts(c.start, '.'), ts(c.end, '.'), body));
+        // the cue settings follow the timing line (one line, single spaces)
+        let settings = c
+            .position
+            .as_deref()
+            .map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|p| !p.is_empty())
+            .map(|p| format!(" {p}"))
+            .unwrap_or_default();
+        s.push_str(&format!("{} --> {}{settings}\n{}\n\n", ts(c.start, '.'), ts(c.end, '.'), body));
     }
     s
+}
+
+/// The WebVTT cue settings string of `Cue::position` (`line:10% position:50% align:center`), read for burning:
+/// `line` in percent of the frame height (where the block's top edge goes) and `position` in percent of the frame
+/// width (where its centre goes). Every other setting, and a `line` that is a line number or a `position` that is
+/// not a percentage, has no effect and is listed in `ignored`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CueSettings {
+    pub line: Option<f64>,
+    pub position: Option<f64>,
+    pub ignored: Vec<String>,
+}
+
+impl CueSettings {
+    /// Reads the settings string; an alignment after a comma (`position:50%,line-left`) is dropped, as it is not drawn.
+    pub fn parse(settings: &str) -> CueSettings {
+        let mut out = CueSettings::default();
+        for item in settings.split_whitespace() {
+            let percent = |v: &str| {
+                let v = v.split(',').next().unwrap_or("");
+                v.strip_suffix('%')
+                    .and_then(|n| n.parse::<f64>().ok())
+                    .filter(|n| n.is_finite() && (0.0..=100.0).contains(n))
+            };
+            match item.split_once(':') {
+                Some(("line", v)) => match percent(v) {
+                    Some(n) => {
+                        out.line.get_or_insert(n);
+                        if v.contains(',') {
+                            out.ignored.push(item.to_string());
+                        }
+                    }
+                    None => out.ignored.push(item.to_string()),
+                },
+                Some(("position", v)) => match percent(v) {
+                    Some(n) => {
+                        out.position.get_or_insert(n);
+                        if v.contains(',') {
+                            out.ignored.push(item.to_string());
+                        }
+                    }
+                    None => out.ignored.push(item.to_string()),
+                },
+                _ => out.ignored.push(item.to_string()),
+            }
+        }
+        out
+    }
+}
+
+/// Whether the preset paints the current word in the track's active colour (`activeStyle` fill, else `activeColor`):
+/// karaoke, highlight, pop and enlarge. The other presets have no active-word colour of their own (boxed-word fills a
+/// box with it behind the word).
+pub fn has_active_colour(preset: Preset) -> bool {
+    matches!(preset, Preset::Karaoke | Preset::Highlight | Preset::Pop | Preset::Enlarge)
 }
 
 /// Caption presets.
@@ -951,6 +1018,11 @@ pub fn effects(preset: Preset, lay: &Layout, page: &Page, t: f64, active: &Paint
                     }
                 }
                 _ => {}
+            }
+            // an emphasised word wears the active colour for as long as its page shows (the other presets set
+            // such a word in bold weight, in the burn layout)
+            if w.emphasis && has_active_colour(preset) {
+                light(&mut fx, 1.0);
             }
             fx
         })

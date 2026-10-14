@@ -213,6 +213,7 @@ mod tests {
                 xf,
                 opacity: 0.7,
                 uv: [0., 0., 1., 1.],
+                tilt: None,
                 below: true,
             });
         }

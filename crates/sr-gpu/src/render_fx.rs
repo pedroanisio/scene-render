@@ -248,7 +248,7 @@ fn bounds_of(ctx: &Ctx, i: usize, space: &Space, flat_root: bool) -> Option<[f64
     while let Some((k, outer)) = stack.pop() {
         let n = &ctx.g.nodes[k];
         let placed = n.three_d.is_some() && !(flat_root && k == i);
-        if placed || sr_eval::draws_in_3d(n.kind) || n.particles.is_some() {
+        if placed || sr_eval::draws_in_3d(n.kind) || n.particles.is_some() || Renderer::glyph_depth(n) {
             return None;
         }
         if sr_model::element::children(&*n.elem).iter().any(|c| RESHAPING.contains(&c.element_name())) {

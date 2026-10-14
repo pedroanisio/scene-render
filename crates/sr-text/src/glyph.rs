@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use rustybuzz::ttf_parser::{self, colr, GlyphId};
-use sr_vector::geom::{p, Rect, Xf};
+use sr_vector::geom::{p, Rect, Xf, P};
 use sr_vector::scene::{Cmd, FillRule, Gradient, GradientKind, MaskOp, Paint, Scene};
 use sr_vector::stroke::{self, Cap, Join, Style as StrokeStyle};
 use sr_vector::{shapes, Path, Poly};
@@ -23,6 +23,8 @@ pub struct Bitmap {
     /// Rectangle x, y, w, h before `xf`.
     pub rect: [f64; 4],
     pub xf: Xf,
+    /// Glyph perspective, applied before `xf`.
+    pub tilt: Option<Tilt>,
     pub opacity: f64,
     /// The part of the image drawn (u0, v0, u1, v1).
     pub uv: [f64; 4],
@@ -56,11 +58,85 @@ impl Drawing {
     }
 }
 
+/// A glyph's turn about the x and y axes (text animators `rotationX`, `rotationY`) seen with perspective.
+///
+/// A point `q` of the box goes through `pre` (to the glyph's anchor, with the animator's scale), is turned about the
+/// anchor, first by `rx` about x and then by `ry` about y (the order and signs of a 2.5D node: `rotationX > 0` turns
+/// the top edge away, `rotationY > 0` the right edge), then moved to depth `z` (`zDepth`). With a layer
+/// `projection`, `post` places XY in the text box before homogeneous projection. Without one, perspective is
+/// about the anchor, followed by `post` (the standalone text API's local perspective).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tilt {
+    /// Degrees.
+    pub rx: f64,
+    pub ry: f64,
+    /// `zDepth`, pixels away from the eye.
+    pub z: f64,
+    /// Distance from the eye to the plane z = 0 in pixels; `None` for an orthographic view (no perspective).
+    pub eye: Option<f64>,
+    /// Homogeneous text-space projection through the layer camera and back onto its plane.
+    pub projection: Option<[[f64; 4]; 3]>,
+    pub pre: Xf,
+    pub post: Xf,
+}
+
+impl Tilt {
+    /// Perspective scale of a point at depth `z` (away from the eye): `eye / (eye + z)`, 1 when orthographic.
+    pub fn scale_at(eye: Option<f64>, z: f64) -> f64 {
+        match eye {
+            Some(d) => d / (d + z).max(d * 1e-3).max(1e-9),
+            None => 1.0,
+        }
+    }
+
+    /// Where the point `q` of the box lands.
+    pub fn map(&self, q: P) -> P {
+        self.project(q).0
+    }
+
+    /// Projected point and homogeneous weight (for perspective-correct bitmap interpolation).
+    pub fn project(&self, q: P) -> (P, f64) {
+        let v = self.pre.apply(q);
+        let (mut vx, mut vy, mut vz) = (v.x, v.y, 0.0);
+        let (sx, cx) = (libm::sin(self.rx.to_radians()), libm::cos(self.rx.to_radians()));
+        let ny = vy * cx + vz * sx;
+        vz = -vy * sx + vz * cx;
+        vy = ny;
+        let (sy, cy) = (libm::sin(self.ry.to_radians()), libm::cos(self.ry.to_radians()));
+        let nx = vx * cy - vz * sy;
+        vz = vx * sy + vz * cy;
+        vx = nx;
+        if let Some(m) = self.projection {
+            let xy = self.post.apply(p(vx, vy));
+            let v = [xy.x, xy.y, self.z + vz, 1.0];
+            let h: [f64; 3] = m.map(|r| r.iter().zip(v).map(|(a, b)| a * b).sum());
+            let w = h[2].max(1e-3);
+            (p(h[0] / w, h[1] / w), w)
+        } else {
+            let s = Self::scale_at(self.eye, self.z + vz);
+            (self.post.apply(p(vx * s, vy * s)), 1.0 / s)
+        }
+    }
+
+    /// `path` (in the box's space) with every point moved by [`Tilt::map`], as polylines flattened to `tol`.
+    pub fn path(&self, path: &Path, tol: f64) -> Path {
+        let polys: Vec<Poly> = path
+            .flatten(tol)
+            .into_iter()
+            .map(|q| Poly { pts: q.pts.iter().map(|&pt| self.map(pt)).collect(), closed: q.closed })
+            .collect();
+        sr_vector::path::polys_to_path(&polys)
+    }
+}
+
 /// Per-glyph effects (text animators, captions).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GlyphFx {
-    /// Applied after placement (in the box's space).
+    /// Applied after placement in the box's space. With `tilt`, a compatibility affine approximation;
+    /// rendering projects the complete glyph through `tilt` instead.
     pub xf: Xf,
+    /// The exact 3D turn of glyphs, when the animators turn the glyph about x or y.
+    pub tilt: Option<Tilt>,
     pub opacity: f64,
     /// Replacement fill, mixed in by `fill_mix` (solid colours mix; other paints switch at ½).
     pub fill: Option<Paint>,
@@ -97,6 +173,7 @@ impl Default for GlyphFx {
     fn default() -> GlyphFx {
         GlyphFx {
             xf: Xf::IDENTITY,
+            tilt: None,
             opacity: 1.0,
             fill: None,
             fill_mix: 0.0,
@@ -395,6 +472,57 @@ pub fn draw(lib: &FontLib, lay: &Layout, fx: Option<&[GlyphFx]>, decor: &Decor, 
 }
 
 fn draw_glyphs(lib: &FontLib, lay: &Layout, fx: Option<&[GlyphFx]>, decor: &Decor, tol: f64) -> Drawing {
+    if let Some(fx) = fx.filter(|f| f.iter().any(|e| e.tilt.is_some())) {
+        // Paint the complete glyph (including COLR, stroke, shadow and decoration) in its plane,
+        // then project it. Projecting only the outline leaves those other marks flat.
+        let mut flat = lay.clone();
+        flat.clip = false;
+        let hidden = vec![GlyphFx { hidden: true, ..Default::default() }; lay.glyphs.len()];
+        let highlights: Vec<_> = flat.styles.iter_mut().map(|s| s.highlight.take()).collect();
+        let mut out = draw_glyphs(lib, &flat, Some(&hidden), decor, tol);
+        for (style, highlight) in flat.styles.iter_mut().zip(highlights) {
+            style.highlight = highlight;
+        }
+        flat.glyphs.clear();
+        flat.lines.clear();
+        for (i, g) in lay.glyphs.iter().enumerate() {
+            let mut effect = fx.get(i).cloned().unwrap_or_default();
+            if effect.hidden || effect.opacity <= 0.0 {
+                continue;
+            }
+            let tilt = effect.tilt.take();
+            if tilt.is_some() {
+                effect.xf = Xf::IDENTITY;
+            }
+            flat.glyphs.clear();
+            flat.glyphs.push(g.clone());
+            flat.lines.clear();
+            let mut line = lay.lines[g.line].clone();
+            line.glyphs = 0..1;
+            flat.lines.push(line);
+            let mut part = draw_glyphs(lib, &flat, Some(&[effect]), &Decor::default(), tol);
+            if let Some(t) = tilt {
+                part.scene.map_points(&|q| t.map(q));
+                for b in &mut part.bitmaps {
+                    b.tilt = Some(t);
+                }
+            }
+            out.extend(part);
+        }
+        if lay.clip {
+            out.scene.cmds.insert(0, Cmd::Push { mask_init: 0.0 });
+            let [w, h] = lay.size;
+            out.scene.cmds.push(Cmd::Mask {
+                polys: shapes::rect(0.0, 0.0, w.min(1e6), h.min(1e6), [0.0; 4]).flatten(tol),
+                rule: FillRule::NonZero,
+                op: MaskOp::Add,
+                opacity: 1.0,
+                invert: false,
+            });
+            out.scene.cmds.push(Cmd::Pop { opacity: 1.0 });
+        }
+        return out;
+    }
     let mut d = Drawing::default();
     let s = &mut d.scene;
     let rrect = |r: [f64; 4], pad: f64, rad: f64| {
@@ -501,7 +629,8 @@ fn draw_glyphs(lib: &FontLib, lay: &Layout, fx: Option<&[GlyphFx]>, decor: &Deco
         let gid = e.gid.unwrap_or(g.gid);
         let upem = lib.upem(g.face);
         let k = g.size / upem;
-        let xf = e.xf.mul(&Xf([k, 0.0, 0.0, -k, g.x, g.y]));
+        let place = Xf([k, 0.0, 0.0, -k, g.x, g.y]);
+        let xf = e.xf.mul(&place);
         let fd = lib.face(g.face);
         let mut colr = false;
         if fd.color {
@@ -533,6 +662,7 @@ fn draw_glyphs(lib: &FontLib, lay: &Layout, fx: Option<&[GlyphFx]>, decor: &Deco
                                     img.height as f64 * sc,
                                 ],
                                 xf: e.xf,
+                                tilt: None,
                                 opacity: e.opacity,
                                 uv: [0.0, 0.0, 1.0, 1.0],
                                 below: false,

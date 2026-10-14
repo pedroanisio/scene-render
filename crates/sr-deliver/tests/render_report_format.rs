@@ -183,3 +183,12 @@ fn a_document_that_cannot_load_still_names_its_outputs() {
     assert_eq!(outs[0].report.as_deref(), Some("m.report.json"));
     assert_eq!(outs[0].info, OutputInfo { id: Some("m".into()), width: 64, height: 720, start: 0.0, end: 2.0 });
 }
+
+#[test]
+fn a4_finding_name_is_additive_and_id_stays_addressable() {
+    let xml = DOC.replace("id=\"a\"", "id=\"a\" name=\" Title \"");
+    let w = ReportWriter::new(xml.as_bytes(), std::path::Path::new("."));
+    let r = w.report(output(), vec![Finding::node("TXT-FIT", Severity::Warning, "a", "m")]);
+    assert_eq!(r.findings[0].node.as_deref(), Some("a"));
+    assert_eq!(r.findings[0].node_name.as_deref(), Some("Title"));
+}

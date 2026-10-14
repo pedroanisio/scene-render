@@ -39,6 +39,7 @@ mod render_fx;
 mod render_map3d;
 #[path = "render_three.rs"]
 mod render_three;
+
 pub use render_three::ViewOverride;
 use sr_model::element::{AttrValue, Element};
 use sr_model::model::{self as m, AssetsChild};
@@ -2379,6 +2380,19 @@ impl Renderer {
         }
     }
 
+    /// Whether the current text animator values place glyph geometry outside the text plane.
+    pub(super) fn glyph_depth(n: &FrameNode) -> bool {
+        sr_model::element::children(&*n.elem)
+            .into_iter()
+            .filter(|c| c.element_name() == "textAnimator")
+            .enumerate()
+            .any(|(i, c)| {
+                let key = format!("{}/textAnimator[{i}]", n.id);
+                let a = Attrs { e: c, props: crate::vector::part(n, &key) };
+                ["rotationX", "rotationY", "zDepth"].iter().any(|name| a.num(name, 0.0) != 0.0)
+            })
+    }
+
     fn node_hash(ctx: &Ctx, n: &FrameNode, rel: &Affine) -> u64 {
         let props = if n.props.0.is_empty() && n.parts.is_empty() { 0 } else { props_hash(&n.props, &n.parts) };
         let asset = n.asset.as_deref();
@@ -2399,7 +2413,8 @@ impl Renderer {
             n.three_d.map(|t| h(&t.map(hf))).unwrap_or(2),
             // the camera projects 3D objects and 2.5D layers: a still one looks different when it moves,
             // and a cached isolated group (mask, clip, matte, effects) holding it must redraw
-            if sr_eval::draws_in_3d(n.kind) || n.three_d.is_some() { ctx.cam } else { 0 },
+            if sr_eval::draws_in_3d(n.kind) || n.three_d.is_some() || Self::glyph_depth(n) { ctx.cam } else { 0 },
+            if Self::glyph_depth(n) { affine_hash(&n.world) } else { 0 },
             n.content.map(|c| h(&[h(&c.dest.map(hf)), h(&c.uv.map(hf))])).unwrap_or(3),
             n.size.map(|s| h(&s.map(hf))).unwrap_or(4),
             props,
@@ -2659,6 +2674,9 @@ impl Renderer {
             "rotationY",
         ];
         let n = &ctx.g.nodes[i];
+        if Self::glyph_depth(n) {
+            return None;
+        }
         let local = n.world.inverse()?;
         let mut f = Fnv(0xcbf2_9ce4_8422_2325);
         for (k, v) in n.props.0.iter().filter(|(k, _)| !WHERE.contains(&&**k)) {
@@ -3303,6 +3321,7 @@ impl Renderer {
                 let mut unsupported = Vec::new();
                 let (p, g) = (ctx.p, ctx.g);
                 let tokens = self.tokens.clone();
+                let projection = self.text_projection(ctx, n, space, &to_local);
                 let r = {
                     let mut pf = |val: &Value, b: [f64; 4]| self.vector_paint(plan, p, g, val, b, &n.id);
                     let mut cx = crate::text::Cx {
@@ -3310,6 +3329,7 @@ impl Renderer {
                         g,
                         n,
                         base: base.clone(),
+                        projection,
                         tol: tol / to_local.max_scale().max(1e-9),
                         paint: &mut pf,
                         tokens: &tokens,
@@ -3459,6 +3479,35 @@ impl Renderer {
             hf(b.uv[3]),
         ]);
         self.draw_cmd(plan, ctx, i, space, d, [x, y, x + w, y + hh], b.uv, &world, tex, cmds, hash, false);
+        if let Some(tilt) = b.tilt {
+            let cmd = cmds.last_mut().expect("bitmap draw");
+            let draw = &mut plan.draws[cmd.draw as usize];
+            draw.flags = (draw.flags & !flag::ALIGNED) | flag::EDGE;
+            draw.box_rect = [x as f32, y as f32, (x + w) as f32, (y + hh) as f32];
+            draw.uv_rect = b.uv.map(|v| v as f32);
+            let xf = space.xform.then(&world);
+            let proj = self.proj25(ctx.g, ctx.p, space);
+            let three = n.three_d.filter(|_| !self.bare.contains(&n.id));
+            let mut bounds = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+            for vertex in &mut plan.verts[cmd.first_vertex as usize..][..6] {
+                let (q, weight) = tilt.project(sr_vector::geom::p(vertex.local[0] as f64, vertex.local[1] as f64));
+                let q = xf.apply([q.x, q.y]);
+                let (clip, pixel) = match three {
+                    Some(t) => project_25(q, t, space.xform.then(&n.world).apply(n.anchor), &proj, space.size),
+                    None => (to_clip(q, space.size), q),
+                };
+                vertex.clip = clip.map(|v| v * weight as f32);
+                bounds = [
+                    bounds[0].min(pixel[0]),
+                    bounds[1].min(pixel[1]),
+                    bounds[2].max(pixel[0]),
+                    bounds[3].max(pixel[1]),
+                ];
+            }
+            if cmd.backdrop.is_some() {
+                cmd.backdrop = Some(std::array::from_fn(|j| bounds[j].clamp(0.0, space.size[j % 2] as f64) as u32));
+            }
+        }
     }
 
     fn glyph_texture(&mut self, b: &sr_text::Bitmap) -> Option<Arc<Tex>> {
@@ -3640,8 +3689,8 @@ impl Renderer {
         out
     }
 
-    /// Burned-in captions over everything, in frame space.
-    fn burn_captions(&mut self, plan: &mut Plan, ctx: &Ctx, space: &Space, cmds: &mut Vec<Cmd>) {
+    /// One burned-in caption track at its stacking position, in frame space.
+    fn burn_captions(&mut self, plan: &mut Plan, ctx: &Ctx, space: &Space, cmds: &mut Vec<Cmd>, track: &str) {
         if ctx.p.scene.captions.is_none() || self.captions_off {
             return;
         }
@@ -3660,7 +3709,7 @@ impl Renderer {
             self.flush_vec(plan, cmds);
             cmds.len()
         });
-        let bounds = self.burn_captions_inner(plan, ctx, space, cmds);
+        let bounds = self.burn_captions_inner(plan, ctx, space, cmds, track);
         if let Some(ink) = ink {
             self.flush_vec(plan, cmds);
             for cmd in &mut cmds[at_ink..] {
@@ -3682,21 +3731,27 @@ impl Renderer {
         ctx: &Ctx,
         space: &Space,
         cmds: &mut Vec<Cmd>,
+        track: &str,
     ) -> Option<[f64; 4]> {
         let clock = std::time::Instant::now();
         let mut tc = std::mem::take(&mut self.text);
         let mut errors = Vec::new();
-        let only = self.burn_captions.clone();
+        let mut notes = Vec::new();
         let tokens = self.tokens.clone();
         let built = {
             let (p, g) = (ctx.p, ctx.g);
             let mut pf = |v: &Value, b: [f64; 4]| self.vector_paint(plan, p, g, v, b, "captions");
-            crate::text::caption_scene(&mut tc, p, g, &mut pf, &tokens, only.as_deref(), &mut errors)
+            crate::text::caption_scene_with_notes(&mut tc, p, g, &mut pf, &tokens, Some(track), &mut errors, &mut notes)
         };
         self.text = tc;
         for e in errors {
             if !plan.stats.errors.contains(&e) {
                 plan.stats.errors.push(e);
+            }
+        }
+        for note in notes {
+            if !plan.stats.unsupported.contains(&note) {
+                plan.stats.unsupported.push(note);
             }
         }
         let (scene, hsh) = built?;
@@ -4313,11 +4368,35 @@ impl Renderer {
         if background_first {
             self.background(&mut plan, &ctx, &space, &mut cmds);
         }
-        for r in Self::depth_sorted(g, &roots) {
+        let mut tracks: Vec<_> = p
+            .scene
+            .captions
+            .as_ref()
+            .map(|c| {
+                c.caption_tracks
+                    .iter()
+                    .filter(|t| {
+                        !self.captions_off
+                            && self.burn_captions.as_ref().map_or(t.mode.as_str() != "sidecar", |id| *id == t.id)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        tracks.sort_by_key(|t| t.z);
+        let mut next = 0;
+        for track in &tracks {
+            let end = next + roots[next..].iter().take_while(|&&r| g.nodes[r].z <= track.z).count();
+            for r in Self::depth_sorted(g, &roots[next..end]) {
+                let rh = h(&[Self::subtree_hash(&ctx, r, &Affine::IDENTITY), hf(g.nodes[r].world_opacity), cam_hash]);
+                self.emit(&mut plan, &ctx, r, &space, 1.0, &mut cmds, false, rh);
+            }
+            next = end;
+            self.burn_captions(&mut plan, &ctx, &space, &mut cmds, &track.id);
+        }
+        for r in Self::depth_sorted(g, &roots[next..]) {
             let rh = h(&[Self::subtree_hash(&ctx, r, &Affine::IDENTITY), hf(g.nodes[r].world_opacity), cam_hash]);
             self.emit(&mut plan, &ctx, r, &space, 1.0, &mut cmds, false, rh);
         }
-        self.burn_captions(&mut plan, &ctx, &space, &mut cmds);
         self.flush_vec(&mut plan, &mut cmds);
         if !background_first {
             self.background(&mut plan, &ctx, &space, &mut cmds);

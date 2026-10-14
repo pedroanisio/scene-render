@@ -122,6 +122,7 @@ pub fn layout_of(tc: &mut TextCache, p: &Program, g: &FrameGraph, n: &FrameNode)
         n,
         base: p.base_dirs.get(doc).cloned().unwrap_or_default(),
         tol: 0.25,
+        projection: None,
         paint: &mut paint,
         tokens: &tokens,
         unsupported: &mut unsupported,

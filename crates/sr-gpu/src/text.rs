@@ -102,6 +102,7 @@ pub struct Cx<'a> {
     pub n: &'a FrameNode,
     pub base: PathBuf,
     pub tol: f64,
+    pub projection: Option<[[f64; 4]; 3]>,
     pub paint: &'a mut PaintFn<'a>,
     pub tokens: &'a HashMap<String, [f64; 4]>,
     pub unsupported: &'a mut Vec<String>,
@@ -539,6 +540,7 @@ fn animators(
             continue;
         }
         let key = format!("{}/{}[{ai}]", n.id, c.element_name());
+        let label = sr_model::diag::element_label(c, ai);
         ai += 1;
         let a = Attrs { e: c, props: crate::vector::part(n, &key) };
         let s = |name: &str| a.str(name).unwrap_or_default();
@@ -614,7 +616,7 @@ fn animators(
                     }
                     None => {
                         cx.unsupported.push(format!(
-                            "{}: textAnimator expression selector needs a valid <expression property=\"selector\">",
+                            "{}: textAnimator {label:?} expression selector needs a valid <expression property=\"selector\">",
                             n.id
                         ));
                         Selector::Values(vec![amount; total])
@@ -690,6 +692,7 @@ fn animators(
             props.fill = (cx.paint)(&Value::Color(animate::KARAOKE), bx);
         }
         out.push(Animator {
+            name: Some(label),
             unit,
             // the model fills XSD defaults, so the default values read as "not given"
             unit_set: unit != Unit::Char,
@@ -854,8 +857,20 @@ pub fn asset_drawing(tc: &mut TextCache, cx: &mut Cx, key: &str, a: &AssetsChild
             let (mut fx, clip_lines) = if anims.is_empty() {
                 (Vec::new(), Vec::new())
             } else {
-                animate::apply(lib, &lay, &roles, &anims, cx.n.timeline_time)
+                animate::apply_with_eye(
+                    lib,
+                    &lay,
+                    &roles,
+                    &anims,
+                    cx.n.timeline_time,
+                    Some(animate::default_eye_distance(cx.g.size[0])),
+                )
             };
+            for f in &mut fx {
+                if let Some(tilt) = &mut f.tilt {
+                    tilt.projection = cx.projection;
+                }
+            }
             if let Some(op) = &on_path {
                 let pf = animate::on_path(&lay, op);
                 if fx.is_empty() {
@@ -863,6 +878,9 @@ pub fn asset_drawing(tc: &mut TextCache, cx: &mut Cx, key: &str, a: &AssetsChild
                 }
                 for (f, x) in fx.iter_mut().zip(pf) {
                     f.xf = x.mul(&f.xf);
+                    if let Some(t) = &mut f.tilt {
+                        t.post = x.mul(&t.post);
+                    }
                 }
             }
             // mask-reveal clips each line to its box: the lines holding clipped glyphs are drawn apart, each
@@ -1212,7 +1230,7 @@ fn len_px(l: &sr_model::values::Length, axis: f64, frame: [f64; 2]) -> f64 {
     }
 }
 
-/// Burned-in captions at frame time, in frame space. `only` restricts to one track.
+/// Caption scene for callers that only need errors; the renderer also collects unsupported settings.
 pub fn caption_scene(
     tc: &mut TextCache,
     p: &Program,
@@ -1221,6 +1239,21 @@ pub fn caption_scene(
     tokens: &HashMap<String, [f64; 4]>,
     only: Option<&str>,
     errors: &mut Vec<String>,
+) -> Option<(sr_vector::Scene, u64)> {
+    caption_scene_with_notes(tc, p, g, paint, tokens, only, errors, &mut Vec::new())
+}
+
+/// Burned-in captions at frame time, in frame space. `only` restricts to one track.
+#[allow(clippy::too_many_arguments)]
+pub fn caption_scene_with_notes(
+    tc: &mut TextCache,
+    p: &Program,
+    g: &FrameGraph,
+    paint: &mut PaintFn,
+    tokens: &HashMap<String, [f64; 4]>,
+    only: Option<&str>,
+    errors: &mut Vec<String>,
+    notes: &mut Vec<String>,
 ) -> Option<(sr_vector::Scene, u64)> {
     // a caption style names its font by asset, and font assets load with the first text drawn: a caption on
     // its own must load them too, or it is set in the fallback family
@@ -1250,7 +1283,10 @@ pub fn caption_scene(
         }
         let Some((_, page)) = tr.page_at(t) else { continue };
         let width = len_px(&tr.width, frame[0], frame);
-        let (cxp, cyp) = (len_px(&tr.x, frame[0], frame), len_px(&tr.y, frame[1], frame));
+        let settings = captions::CueSettings::parse(tr.cues[page.cue].position.as_deref().unwrap_or(""));
+        notes.extend(settings.ignored.iter().map(|s| format!("{}: unsupported cue setting {s:?}", tr.id)));
+        let cxp = settings.position.map_or_else(|| len_px(&tr.x, frame[0], frame), |v| frame[0] * v / 100.0);
+        let cyp = settings.line.map_or_else(|| len_px(&tr.y, frame[1], frame), |v| frame[1] * v / 100.0);
         let bx = [0.0, 0.0, width, frame[1]];
         // default style (4.4 % of the frame height,
         // white DejaVu Sans at its regular weight, line height 1.2)
@@ -1271,8 +1307,10 @@ pub fn caption_scene(
             // classic adds a soft drop shadow to a style with neither shadow nor stroke
             st.shadow = Some(([0.0, 0.0, 0.0, 0.8], 0.0, size * 0.04, size * 0.12));
         }
-        let active_st =
-            tr.active_style.as_deref().map(|id| style_for(p, Some(id), st.clone(), &base, paint, tokens, &fonts, bx));
+        let active_st = tr
+            .active_style
+            .as_deref()
+            .map(|id| style_for(p, Some(id), Style { color: None, ..st.clone() }, &base, paint, tokens, &fonts, bx));
         tc.font_assets = fonts;
         let active = active_st
             .as_ref()
@@ -1281,9 +1319,36 @@ pub fn caption_scene(
             .or_else(|| paint(&Value::Color([1.0, 212.0 / 255.0, 0.0, 1.0]), bx))
             .unwrap_or(Paint::Solid { rgba: [1.0, 212.0 / 255.0, 0.0, 1.0], srgb: true });
         let boxed = tr.preset == captions::Preset::BoxedLine;
+        let mut bold = st.clone();
+        bold.weight = bold.weight.max(700);
+        let runs = if page.has_emphasis() && !captions::has_active_colour(tr.preset) {
+            page.lines
+                .iter()
+                .enumerate()
+                .flat_map(|(li, line)| {
+                    line.iter().enumerate().map(move |(wi, word)| Run {
+                        text: format!(
+                            "{}{}",
+                            if wi > 0 {
+                                " "
+                            } else if li > 0 {
+                                "\n"
+                            } else {
+                                ""
+                            },
+                            word.text
+                        ),
+                        style: usize::from(word.emphasis),
+                        role: None,
+                    })
+                })
+                .collect()
+        } else {
+            vec![Run { text: page.text(), style: 0, role: None }]
+        };
         let para = Para {
-            runs: vec![Run { text: page.text(), style: 0, role: None }],
-            styles: vec![st],
+            runs,
+            styles: vec![st, bold],
             // lines break where the pagination put them, never at the width
             opts: Opts {
                 width,
