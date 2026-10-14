@@ -15,6 +15,7 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use sr_text::layout::{self, Align, AutoFit, Dir, Opts, Overflow, Para, Run, Wrap, Writing};
@@ -408,7 +409,9 @@ impl Scratch {
     fn new(name: &str, data: &[u8]) -> Option<Scratch> {
         let dir = std::env::var_os("SR_FUZZ_SCRATCH").map(PathBuf::from).unwrap_or_else(|| repo("target/sr-fuzz"));
         std::fs::create_dir_all(&dir).ok()?;
-        let path = dir.join(format!("{}-{name}", std::process::id()));
+        // one number per file: two threads probing one target at once write two files
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = dir.join(format!("{}-{}-{name}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
         std::fs::write(&path, data).ok()?;
         Some(Scratch(path))
     }
@@ -1027,4 +1030,18 @@ pub fn fuzz(seed: u64, t: &Target, mut stop: impl FnMut(&Campaign) -> bool) -> C
         c.inputs += 1;
     }
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_scratch_files_of_one_name_do_not_share_a_path() {
+        let a = Scratch::new("in.bin", b"first").expect("scratch a");
+        let b = Scratch::new("in.bin", b"second").expect("scratch b");
+        assert_ne!(a.0, b.0);
+        drop(a);
+        assert_eq!(std::fs::read(&b.0).expect("b outlives a"), b"second");
+    }
 }
