@@ -103,6 +103,15 @@ impl ModelError {
             .unwrap_or_else(|| Loc::of(n));
         ModelError { message: format!("@{attr} of <{}>: {e}", n.tag_name().name()), loc }
     }
+
+    /// The schema default of an absent attribute does not parse: the schema
+    /// the model was generated from contradicts its own types.
+    pub(crate) fn default_value(n: Node<'_, '_>, attr: &str, default: &str, e: ValueError) -> Self {
+        ModelError {
+            message: format!("the schema default {default:?} of @{attr} of <{}> is invalid: {e}", n.tag_name().name()),
+            loc: Loc::of(n),
+        }
+    }
 }
 
 /// Required attribute.
@@ -132,14 +141,11 @@ macro_rules! def {
         match $n.attribute($name) {
             Some(v) => $crate::parse::attr::<$t>($n, $name, v),
             None => {
-                static DEFAULT: std::sync::OnceLock<$t> = std::sync::OnceLock::new();
-                Ok::<$t, ModelError>(
-                    DEFAULT
-                        .get_or_init(|| {
-                            <$t as ParseValue>::parse_value($default).expect("schema default is a valid value")
-                        })
-                        .clone(),
-                )
+                static DEFAULT: std::sync::OnceLock<Result<$t, $crate::parse::ValueError>> = std::sync::OnceLock::new();
+                DEFAULT
+                    .get_or_init(|| <$t as $crate::parse::ParseValue>::parse_value($default))
+                    .clone()
+                    .map_err(|e| $crate::parse::ModelError::default_value($n, $name, $default, e))
             }
         }
     };
@@ -149,4 +155,26 @@ pub(crate) use def;
 /// Concatenated text content of an element with simple content.
 pub(crate) fn text_content(n: Node<'_, '_>) -> String {
     n.children().filter(|c| c.is_text()).filter_map(|c| c.text()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_absent_attribute_takes_its_schema_default() {
+        let doc = roxmltree::Document::parse(r#"<node x="2"/>"#).unwrap();
+        assert_eq!(def!(doc.root_element(), "x", "1.5", f64), Ok(2.0));
+        let doc = roxmltree::Document::parse("<node/>").unwrap();
+        assert_eq!(def!(doc.root_element(), "x", "1.5", f64), Ok(1.5));
+    }
+
+    #[test]
+    fn a_schema_default_that_does_not_parse_is_a_model_error() {
+        let doc = roxmltree::Document::parse("<node/>").unwrap();
+        let e = def!(doc.root_element(), "x", "not-a-number", f64).unwrap_err();
+        assert_eq!(e.loc, Loc::of(doc.root_element()));
+        assert!(e.message.contains(r#"schema default "not-a-number" of @x of <node> is invalid"#), "{}", e.message);
+        assert!(e.message.contains("is not a number"), "{}", e.message);
+    }
 }
