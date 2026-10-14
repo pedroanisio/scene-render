@@ -55,6 +55,13 @@ def section(notices, title):
     return match[1] if match else ""
 
 
+class SectionTests(unittest.TestCase):
+    def test_each_section_title_appears_once(self):
+        titles = re.findall(r"^## (.+)$", (ROOT / "THIRD-PARTY-NOTICES.md").read_text(), re.M)
+        repeated = sorted({t for t in titles if titles.count(t) > 1})
+        self.assertEqual(repeated, [], "merge the repeated sections: a lookup by title reads only the first")
+
+
 class AdaptedSourceTests(unittest.TestCase):
     def test_files_adapted_from_filmcraft_are_listed_with_the_mit_licence(self):
         files = adapted_files("FilmCraft")
