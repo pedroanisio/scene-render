@@ -1,4 +1,4 @@
 {
   "schema_version": "1.0.0",
-  "crates": ["sr-deliver", "sr-wasm"]
+  "crates": ["sr-deliver", "sr-fuzz", "sr-wasm"]
 }
