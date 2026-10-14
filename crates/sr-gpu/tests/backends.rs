@@ -5,25 +5,14 @@
 mod common;
 
 use common::*;
-use sr_gpu::gpu::GpuOptions;
 use sr_gpu::Gpu;
 
-fn on(backends: wgpu::Backends) -> Option<Gpu> {
-    match Gpu::with_options(&GpuOptions { backends, adapter: None }) {
-        Ok(g) => Some(g),
-        Err(e) => {
-            eprintln!("skipping: no {backends:?} adapter ({e})");
-            None
-        }
-    }
-}
-
 fn gl() -> Option<Gpu> {
-    on(wgpu::Backends::GL)
+    gpu_on(wgpu::Backends::GL)
 }
 
 fn native() -> Option<Gpu> {
-    on(wgpu::Backends::PRIMARY)
+    gpu_on(wgpu::Backends::PRIMARY)
 }
 
 /// Peak signal-to-noise ratio of two linear RGBA frames, in dB (colour and alpha, clamped to [0, 1]).
