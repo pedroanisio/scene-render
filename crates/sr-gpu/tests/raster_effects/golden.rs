@@ -1,6 +1,7 @@
 //! Golden-frame regression: a scene exercising the core compositing features is
 //! rendered at several times and compared with PNGs in tests/golden
-//! (PSNR ≥ 50 dB and max ΔE2000 ≤ 1). `SR_BLESS=1` rewrites the goldens.
+//! (PSNR ≥ 50 dB and max ΔE2000 ≤ 1). `SR_BLESS=1` rewrites the goldens. The helpers that locate, bless and
+//! report references are shared with the corpus goldens (corpus_golden.rs).
 
 use super::common;
 use common::*;
@@ -33,12 +34,9 @@ const PAINTS: &str = r##"<paints><linearGradient id="bg" x1="0" y1="0" x2="1" y2
 #[test]
 fn kitchen_scene_matches_goldens() {
     let d = doc(r#"width="128" height="72" background="url(#bg)""#, PAINTS, SCENE);
-    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
-    let bless = std::env::var("SR_BLESS").is_ok_and(|v| v == "1");
-    let out = std::env::var_os("SR_GOLDEN_OUT")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/golden-output"));
-    std::fs::create_dir_all(&out).unwrap();
+    let base = golden_dir();
+    let bless = bless_requested();
+    let out = output_dir("");
     let mut failures = Vec::new();
     let mut reports = Vec::new();
     for (k, t) in [0.0, 0.7, 1.4].into_iter().enumerate() {
@@ -54,7 +52,7 @@ fn kitchen_scene_matches_goldens() {
         let profile = reference_profile(&info.name, info.vendor, info.backend);
         let dir = profile.map_or_else(|| base.clone(), |name| base.join(name));
         let path = dir.join(format!("kitchen_{k}.png"));
-        let golden = match reference(&path, &actual, bless, std::env::var_os("CI").is_some()) {
+        let golden = match reference(&path, &actual, bless, in_ci()) {
             Ok(Some(golden)) => golden,
             Ok(None) => continue,
             Err(e) => {
@@ -66,19 +64,10 @@ fn kitchen_scene_matches_goldens() {
         let got = sr_gpu::golden::from_rgba8(&rgba);
         let want = sr_gpu::golden::from_rgba8(golden.as_raw());
         let c = sr_gpu::golden::compare(&got, &want);
-        let diff = image::RgbaImage::from_fn(r.size[0], r.size[1], |x, y| {
-            let a = actual.get_pixel(x, y).0;
-            let b = golden.get_pixel(x, y).0;
-            image::Rgba([
-                a[0].abs_diff(b[0]).saturating_mul(16),
-                a[1].abs_diff(b[1]).saturating_mul(16),
-                a[2].abs_diff(b[2]).saturating_mul(16),
-                255,
-            ])
-        });
-        diff.save(out.join(format!("kitchen_{k}.diff-x16.png"))).unwrap();
-        reports.push(serde_json::json!({"frame":k,"time":t,"comparison":c,"reference_profile":profile,
-                              "adapter":format!("{:?}",r.renderer.gpu().info)}));
+        let channels = sr_gpu::golden::channel_errors(&rgba, golden.as_raw()).unwrap();
+        diff_x16(&actual, &golden).save(out.join(format!("kitchen_{k}.diff-x16.png"))).unwrap();
+        reports.push(serde_json::json!({"frame":k,"time":t,"comparison":c,"channels":channels,
+                              "reference_profile":profile,"adapter":format!("{:?}",r.renderer.gpu().info)}));
         if !c.passes() {
             failures.push(format!("frame {k} (t = {t}): {c:?}"));
         }
@@ -99,6 +88,45 @@ fn reference_profile(name: &str, vendor: u32, backend: wgpu::Backend) -> Option<
     REFERENCE_PROFILES.iter().find(|p| p.0 == vendor && p.1 == name && p.2 == backend).map(|p| p.3)
 }
 
+/// The directory of the committed reference sets.
+pub(super) fn golden_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden")
+}
+
+/// `SR_BLESS=1`: the explicit request to write references instead of comparing with them.
+pub(super) fn bless_requested() -> bool {
+    std::env::var("SR_BLESS").is_ok_and(|v| v == "1")
+}
+
+pub(super) fn in_ci() -> bool {
+    std::env::var_os("CI").is_some()
+}
+
+/// Where actual, expected and difference images and reports go (`SR_GOLDEN_OUT`, else target/golden-output), plus
+/// `sub`; created on demand.
+pub(super) fn output_dir(sub: &str) -> std::path::PathBuf {
+    let out = std::env::var_os("SR_GOLDEN_OUT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/golden-output"))
+        .join(sub);
+    std::fs::create_dir_all(&out).unwrap();
+    out
+}
+
+/// The per-channel RGB difference of two images of equal size, amplified 16 times, on opaque black.
+pub(super) fn diff_x16(actual: &image::RgbaImage, golden: &image::RgbaImage) -> image::RgbaImage {
+    image::RgbaImage::from_fn(actual.width(), actual.height(), |x, y| {
+        let a = actual.get_pixel(x, y).0;
+        let b = golden.get_pixel(x, y).0;
+        image::Rgba([
+            a[0].abs_diff(b[0]).saturating_mul(16),
+            a[1].abs_diff(b[1]).saturating_mul(16),
+            a[2].abs_diff(b[2]).saturating_mul(16),
+            255,
+        ])
+    })
+}
+
 #[test]
 fn hardware_reference_profile_requires_the_recorded_adapter_and_backend() {
     let name = "NVIDIA RTX 6000 Ada Generation";
@@ -113,9 +141,8 @@ fn hardware_reference_profile_requires_the_recorded_adapter_and_backend() {
 
 #[test]
 fn every_reference_profile_records_its_adapters() {
-    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
     for &(_, name, backend, dir) in REFERENCE_PROFILES {
-        let text = std::fs::read_to_string(base.join(dir).join("provenance.json")).unwrap();
+        let text = std::fs::read_to_string(golden_dir().join(dir).join("provenance.json")).unwrap();
         let record: serde_json::Value = serde_json::from_str(&text).unwrap();
         let adapters = record["verified_adapters"].as_array().unwrap_or_else(|| panic!("{dir}: no verified_adapters"));
         assert!(
@@ -125,7 +152,7 @@ fn every_reference_profile_records_its_adapters() {
     }
 }
 
-fn reference(
+pub(super) fn reference(
     path: &std::path::Path,
     actual: &image::RgbaImage,
     bless: bool,

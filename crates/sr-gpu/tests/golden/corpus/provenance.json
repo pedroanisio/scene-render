@@ -1,0 +1,154 @@
+{
+  "review_date": "2026-10-13",
+  "adapter": "AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"llvmpipe\", driver_info: \"Mesa 25.0.7-2+deb13u1 (LLVM 19.1.7)\", backend: Vulkan, subgroup_min_size: 8, subgroup_max_size: 8, transient_saves_memory: Some(false), limit_bucket: None }",
+  "os": "Debian 13",
+  "method": "Rendered each listed corpus scene at its listed time on llvmpipe with SR_GPU_ADAPTER=llvmpipe and SR_BLESS=1, reduced to a thumbnail of at most 64 px on the long side and converted to display sRGB. The set is checked by corpus_golden: every frame has a spread of at least 16 code values and every pair a distinctness of at least 2.0.",
+  "regenerate": "SR_GPU_ADAPTER=llvmpipe SR_BLESS=1 cargo test -p sr-gpu --test raster_effects corpus_golden",
+  "verified_adapters": [
+    {
+      "adapter": "llvmpipe (LLVM 19.1.7, 256 bits)",
+      "backend": "Vulkan",
+      "driver": "Mesa 25.0.7-2+deb13u1 (LLVM 19.1.7)"
+    }
+  ],
+  "frames": [
+    {
+      "file": "gm_key.png",
+      "scene": "gm-key",
+      "time": 2.0,
+      "decoded_rgba_sha256": "d69793606830b27829a5049620d55500996778df2ac014ff582ec2fba4e558a7"
+    },
+    {
+      "file": "stroke_text.png",
+      "scene": "stroke-text",
+      "time": 1.5,
+      "decoded_rgba_sha256": "1d17aadb3d3fa004d3a857a65aecd85dd974b42dc3b7e178c906ed649da083ea"
+    },
+    {
+      "file": "connector.png",
+      "scene": "connector",
+      "time": 1.0,
+      "decoded_rgba_sha256": "8113d7d56de0a3aee284390e8a115842e5100508459a5ac19bc5d2d89efad818"
+    },
+    {
+      "file": "repeat_points.png",
+      "scene": "repeat-points",
+      "time": 1.0,
+      "decoded_rgba_sha256": "98f40c669e9d27c8fdb2c8c550f459362cddc7797374cacd2a8f251d755f1e9f"
+    },
+    {
+      "file": "fractal.png",
+      "scene": "fractal",
+      "time": 0.5,
+      "decoded_rgba_sha256": "c17cb68820e00921abac9b03ff51400ee117154b699cf60ea0e286ce7d02b983"
+    },
+    {
+      "file": "pdf_region.png",
+      "scene": "pdf-region",
+      "time": 1.0,
+      "decoded_rgba_sha256": "f5bdf2d0d89e35194cddb62b350f6b2fe95d674075bb5935e6b2516171b9f91c"
+    },
+    {
+      "file": "flock_upright.png",
+      "scene": "flock-upright",
+      "time": 0.5,
+      "decoded_rgba_sha256": "6ba2aa574c5e2b238c5a56ff35e5c4e59963f38b7a3e9d815251d172935a2425"
+    },
+    {
+      "file": "text3d_tracking.png",
+      "scene": "text3d-tracking",
+      "time": 1.0,
+      "decoded_rgba_sha256": "f2fc9a0225d6ad0de96534eac88ab8f9dabbab3027fd81c801c94a7e9cca0caa"
+    },
+    {
+      "file": "metal_without_environment.png",
+      "scene": "metal-without-environment",
+      "time": 0.5,
+      "decoded_rgba_sha256": "cc491fb9d021a7eb15d296537ba692358a964c2f9404ac12c4c5ba8672895fe4"
+    },
+    {
+      "file": "subsurface_sky_maps.png",
+      "scene": "srep71-subsurface-sky-maps",
+      "time": 0.5,
+      "decoded_rgba_sha256": "8082825cb6f7a0e4e396bc8649f25ebd1cb8dbeaf25b80e64348fb00b5fd9dde"
+    },
+    {
+      "file": "viewport3d.png",
+      "scene": "viewport3d",
+      "time": 0.5,
+      "decoded_rgba_sha256": "a87bd2405f03f2bdf523134e5c2ed3794f3b68184635754b0383d8b1b734039b"
+    },
+    {
+      "file": "black_hole_isco.png",
+      "scene": "black-hole-disk-at-isco",
+      "time": 1.0,
+      "decoded_rgba_sha256": "11617be37ce7f97e1fbba4896531265661bbecd8d6bd95cfdd4678d9976ca046"
+    },
+    {
+      "file": "globe_relief.png",
+      "scene": "globe-relief",
+      "time": 1.0,
+      "decoded_rgba_sha256": "b74ee55657bcc4d2d1b8b77d08ec839550998274430768d73ab140bb6ca7aa71"
+    },
+    {
+      "file": "mesh_sequence.png",
+      "scene": "mesh-sequence",
+      "time": 1.0,
+      "decoded_rgba_sha256": "3438553a514883511edad4328bb4c68159786c89a7f4889442c12beed91d53a5"
+    },
+    {
+      "file": "parametric.png",
+      "scene": "parametric",
+      "time": 0.5,
+      "decoded_rgba_sha256": "fa0070462782c25863b6ad038056cbba54e6cd0ebb9222641087accd97258872"
+    },
+    {
+      "file": "voxel_fracture.png",
+      "scene": "voxel-fracture",
+      "time": 2.0,
+      "decoded_rgba_sha256": "495bf164fe1178970c8a30d209829c205a9013158bc01e6d55c2a07b90a5b955"
+    },
+    {
+      "file": "particles3d_gas.png",
+      "scene": "particles3d-gas",
+      "time": 1.0,
+      "decoded_rgba_sha256": "039fe18a8cfb6dfb6e26c79d8c7ad3eaa7554bc9f3fdc883115725f0269c1636"
+    },
+    {
+      "file": "volume.png",
+      "scene": "volume",
+      "time": 0.5,
+      "decoded_rgba_sha256": "278caf9a83722dc2463d76cd4f3a6e9eae8aeaa0e4fa3e46416c7f0d402749fa"
+    },
+    {
+      "file": "advected_volume.png",
+      "scene": "advected-volume",
+      "time": 0.5,
+      "decoded_rgba_sha256": "8aa40613822e69d18aae35c6c972038d53fe09372b95fbc6fb4481f46a0e0743"
+    },
+    {
+      "file": "thermal_volume.png",
+      "scene": "thermal-volume",
+      "time": 0.5,
+      "decoded_rgba_sha256": "2193238aa745e473bedb30b495df54c5d29004d4c56414b5ba3e15d2dee49f7b"
+    },
+    {
+      "file": "volume_scatter_bounces.png",
+      "scene": "volume-scatter-bounces",
+      "time": 0.5,
+      "decoded_rgba_sha256": "315740b438e2f009aaea8cfe20682ef2ddbe356eaac3baa8ce3707d6680acf91"
+    },
+    {
+      "file": "kitchen_sink_early.png",
+      "scene": "kitchen-sink",
+      "time": 1.0,
+      "decoded_rgba_sha256": "44ab1004c0bdc86607a4b07bb15a432f3361f6aa7b17d3dfe717e7e16073806f"
+    },
+    {
+      "file": "kitchen_sink_late.png",
+      "scene": "kitchen-sink",
+      "time": 11.0,
+      "decoded_rgba_sha256": "c638263e5fc3b885f73ff55f925b4c31b1436683f5f5afa0c75d8241e82a597d"
+    }
+  ]
+}

@@ -1,4 +1,5 @@
-//! Rendering of 2D documents: compositing, effects, text, vector art, maps, video, caches and their costs, and the golden frames.
+//! Rendering of 2D documents: compositing, effects, text, vector art, maps, video, caches and their costs, and the
+//! golden frames (the kitchen scene and the corpus scenes).
 
 mod common;
 
@@ -10,6 +11,8 @@ mod caches;
 mod clip_blend_doc;
 #[path = "raster_effects/composite.rs"]
 mod composite;
+#[path = "raster_effects/corpus_golden.rs"]
+mod corpus_golden;
 #[path = "raster_effects/effect_costs.rs"]
 mod effect_costs;
 #[path = "raster_effects/effect_reads.rs"]
