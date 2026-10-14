@@ -52,3 +52,26 @@ checks remain as released upstream.
 `crates/sr-wasm/tests/runtime.rs` checks exact budgets for straight-line code, loops,
 nested functions and host calls. Preserve those boundaries when upgrading Wasmtime,
 and drop the patch if upstream provides a configurable function-entry cost.
+
+## wgpu-hal 30.0.1
+
+wgpu's backends, from <https://github.com/gfx-rs/wgpu>, MIT OR Apache-2.0 (both licence files are kept).
+
+**The change** is in the OpenGL backend, `src/gles`. A two-dimensional texture of one layer with more than one
+sample that shaders also read (a texture that is only a render target is a renderbuffer and is unchanged) gets
+the `GL_TEXTURE_2D_MULTISAMPLE` target in `Texture::get_info_from_desc` (`mod.rs`) instead of `GL_TEXTURE_2D`;
+`create_texture` (`device.rs`) sets no filtering state on it, which a multisampled texture does not have;
+`is_layered_target` (`conv.rs`) and `get_2d_target` (`queue.rs`) accept the target, where they would otherwise
+reach `unreachable!()`; and the view-dimension heuristic that logs a mismatch accepts it for a `D2` view.
+
+**Why.** The 3D pass draws into multisampled colour and depth textures and its depth resolve loads each sample.
+Released, the backend allocates such a texture with `glTexStorage2DMultisample(GL_TEXTURE_2D, …)`, which Mesa
+rejects with `GL_INVALID_ENUM`: the texture has no storage, every framebuffer that uses it is incomplete, and the
+3D pass draws nothing on OpenGL. The OpenGL test `a_multisampled_texture_is_sampled_on_opengl` in
+`crates/sr-gpu/tests/adapters/hardening.rs` reads back what such textures hold. Rendering without multisampling on
+OpenGL was rejected because its frames would no longer match the Vulkan ones, and wrapping a texture created
+outside wgpu needs unsafe code, which `sr-gpu` forbids.
+
+**When wgpu is upgraded**, vendor the wgpu-hal version it asks for and carry the change over, or drop this
+directory once upstream allocates sampled multisampled textures on the multisampled target.
+`tools/tests/test_vendor.py` fails if the patch entry or the change is missing.
