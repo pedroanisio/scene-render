@@ -109,3 +109,23 @@ fn a_fracture_at_a_time_is_as_it_was() {
     let ev = evaluator(r#"at="1""#, 0.);
     assert!(!broken(&ev, 0.5) && broken(&ev, 1.5));
 }
+
+/// The poses of the pieces of the rock at `t`, as text.
+fn poses(ev: &sr_eval::Evaluator, t: f64) -> String {
+    let frame = ev.evaluate(t);
+    assert!(frame.problems.is_empty() && frame.failures.is_empty(), "{:?} {:?}", frame.problems, frame.failures);
+    format!("{:?}", frame.nodes.iter().find(|n| &*n.id == "rock").unwrap().fracture.as_ref().unwrap().poses)
+}
+
+#[test]
+fn energy_fraction_defaults_to_the_one_named_constant_and_an_explicit_value_is_honoured() {
+    assert_eq!(sr_eval::fracture::DEFAULT_ENERGY_FRACTION, 0.3);
+    let absent = poses(&evaluator(r#"source="ball""#, 20.), 1.0);
+    let named = poses(
+        &evaluator(&format!(r#"source="ball" energyFraction="{}""#, sr_eval::fracture::DEFAULT_ENERGY_FRACTION), 20.),
+        1.0,
+    );
+    let other = poses(&evaluator(r#"source="ball" energyFraction="0.5""#, 20.), 1.0);
+    assert_eq!(absent, named);
+    assert_ne!(absent, other);
+}

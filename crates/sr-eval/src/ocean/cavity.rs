@@ -8,6 +8,8 @@ pub(super) struct Entry {
     source: Arc<str>,
     /// The water's density, the target of the law of the cavity (1000 kg/m3, the law's own for water, by default).
     density: f64,
+    /// Physical acceleration, in metres per second squared.
+    gravity: f64,
     /// `None` while the body has not entered; `Some(None)` when its entry made nothing.
     found: Option<Option<Cavity>>,
 }
@@ -52,14 +54,19 @@ fn grown(s: f64) -> f64 {
 const RING_CELLS: f64 = 4.;
 
 /// The entries the ocean's `waterImpulse` children with a `source` ask for.
-pub(super) fn read(e: &sr_model::model::Ocean, colliders: &[String], density: f64) -> Result<Vec<Entry>, String> {
+pub(super) fn read(e: &sr_model::model::Ocean, colliders: &[String], water: WaterAttrs) -> Result<Vec<Entry>, String> {
     let mut entries = Vec::new();
     for c in children(e).into_iter().filter(|c| c.element_name() == "waterImpulse") {
         let Some(source) = text(c, "source") else { continue };
         if !colliders.contains(&source) {
             return Err(format!("water impulse source {source} is not in the ocean's colliders"));
         }
-        entries.push(Entry { source: source.as_str().into(), density, found: None });
+        entries.push(Entry {
+            source: source.as_str().into(),
+            density: water.density,
+            gravity: water.gravity,
+            found: None,
+        });
     }
     Ok(entries)
 }
@@ -82,7 +89,7 @@ impl Entry {
             let Some(crossing) = colliders.crossing(&self.source, spec, ocean, frame_at, time)? else {
                 return Ok(Vec::new());
             };
-            self.found = Some(cavity(&crossing, spec, pixels_per_meter, self.density)?);
+            self.found = Some(cavity(&crossing, spec, pixels_per_meter, self.density, self.gravity)?);
         }
         let from = time - spec.dt;
         // The part that forms in this step, as one impulse in the middle of the stretch of the step in
@@ -93,7 +100,13 @@ impl Entry {
 }
 
 /// The cavity of an entry, in ocean-local units; none when the body enters outside the ocean.
-fn cavity(c: &colliders::Crossing, spec: &Spec, pixels_per_meter: f64, density: f64) -> Result<Option<Cavity>, String> {
+fn cavity(
+    c: &colliders::Crossing,
+    spec: &Spec,
+    pixels_per_meter: f64,
+    density: f64,
+    gravity: f64,
+) -> Result<Option<Cavity>, String> {
     let inside =
         (0..2).all(|a| (spec.origin[a]..spec.origin[a] + spec.cells[a] as f64 * spec.cell_size).contains(&c.centre[a]));
     if !inside {
@@ -107,7 +120,7 @@ fn cavity(c: &colliders::Crossing, spec: &Spec, pixels_per_meter: f64, density: 
     }
     let law = cratering::crater(
         &Impact { mass: c.mass, density: c.mass / volume, normal_speed: c.speed * metres },
-        &Target { material: Material::Water, density: Some(density), strength: None, gravity: spec.gravity * metres },
+        &Target { material: Material::Water, density: Some(density), strength: None, gravity },
     )?;
     // The disc that is emptied is the kernel's central disc, half the impulse's radius. Its profile
     // (1 - (r/R)^2)^2 holds pi R^2 / 3 per unit of depth at the centre, so a volume V with the depth d that
@@ -137,6 +150,36 @@ fn cavity(c: &colliders::Crossing, spec: &Spec, pixels_per_meter: f64, density: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cavity_uses_physical_gravity_at_every_scene_and_ocean_scale() {
+        let sample = |ppm: f64, scale: f64| {
+            let units = ppm / scale;
+            let c = colliders::Crossing {
+                time: 0.0,
+                centre: [0.0; 2],
+                speed: 20.0 * units,
+                volume: units.powi(3),
+                mass: 2700.0,
+                scale,
+            };
+            let spec = Spec {
+                origin: [-100.0 * units; 2],
+                cells: [200; 2],
+                cell_size: units,
+                gravity: 9.81 * units,
+                ..Default::default()
+            };
+            let c = cavity(&c, &spec, ppm, 1000.0, 9.81).unwrap().unwrap();
+            [c.whole.radius / units, c.whole.amplitude / units, c.duration]
+        };
+        let expected = sample(1.0, 1.0);
+        for (ppm, scale) in [(100.0, 1.0), (100.0, 2.0), (1.0, 0.5)] {
+            for (a, b) in expected.into_iter().zip(sample(ppm, scale)) {
+                assert!((a - b).abs() < 1e-10, "{ppm} / {scale}: {a} vs {b}");
+            }
+        }
+    }
 
     fn whole(time: f64) -> Cavity {
         Cavity {

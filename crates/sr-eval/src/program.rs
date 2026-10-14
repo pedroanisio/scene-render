@@ -1075,17 +1075,22 @@ fn template(
         scene.assets.iter().flat_map(|a| a.children.iter()).filter_map(|c| c.id().map(str::to_string)).collect();
     let mut params = HashMap::new();
     for d in &defs {
+        // Keep the stable id in diagnostics as well as the human-facing label.
+        let name = match d.label.as_deref().filter(|label| !label.is_empty()) {
+            Some(label) => format!("{label:?} ({:?})", d.id),
+            None => format!("{:?}", d.id),
+        };
         match raw.get(&d.id).cloned().flatten() {
             Some(r) => match convert_param(&ParamDef { p: d }, &r, fps, &asset_ids) {
                 Ok(v) => {
                     params.insert(d.id.clone(), v);
                 }
-                Err(e) => diags.push(err("E07", format!("param {:?}: {e}", d.id), d.loc, d.id.as_str())),
+                Err(e) => diags.push(err("E07", format!("param {name}: {e}"), d.loc, d.id.as_str())),
             },
             None => {
                 if d.required {
                     diags.push(
-                        err("E08", format!("param {:?} is required and has no value", d.id), d.loc, d.id.as_str())
+                        err("E08", format!("param {name} is required and has no value"), d.loc, d.id.as_str())
                             .with_help(format!("pass --param {}=<value>, or set it in a variant or data row", d.id)),
                     );
                 }

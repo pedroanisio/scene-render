@@ -60,6 +60,9 @@ pub struct ParticleFrame {
     pub alpha: Vec<f32>,
     /// Sprite-sheet cell.
     pub frame: Vec<u32>,
+    /// Seconds since each particle was born (a flock's agents are all as old as the flock's clock): the frame of a sprite that is an
+    /// image sequence, which the renderer picks as `age * fps` looping through the sequence.
+    pub age: Vec<f64>,
     pub shape: ParticleShape,
     pub color0: Option<Value>,
     pub color1: Option<Value>,
@@ -2067,6 +2070,7 @@ fn render_frame(rt: &EmitterRt, s: &sr_sim::particles::Store) -> ParticleFrame {
         let cells = (rt.cols * rt.rows).max(1);
         let frame = if rt.sprite_fps > 0.0 { (s.age[i] * rt.sprite_fps) as u64 } else { s.id[i] };
         f.frame.push((frame % cells as u64) as u32);
+        f.age.push(s.age[i]);
     }
     f
 }

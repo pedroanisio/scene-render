@@ -50,6 +50,10 @@ pub enum Shape {
     Outline(Vec<[f64; 2]>),
 }
 
+/// The least mass of a rigid body, kilograms: a body whose `mass` is zero or negative weighs this much, so the solver never
+/// divides by zero. This also defends against non-positive values admitted by the 2D schema.
+pub const MIN_MASS: f64 = 1e-6;
+
 /// A rigid body.
 #[derive(Clone, Debug)]
 pub struct BodySpec {
@@ -335,7 +339,7 @@ impl World {
                     .restitution(b.restitution)
                     .sensor(b.sensor)
                     .collision_groups(groups)
-                    .mass(b.mass.max(1e-6) / n)
+                    .mass(b.mass.max(MIN_MASS) / n)
                     .build();
                 st.colliders.insert_with_parent(c, h, &mut st.bodies);
             }

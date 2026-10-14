@@ -1080,7 +1080,9 @@ fn chart_drawing(tc: &mut TextCache, cx: &mut Cx, key: &str, c: &m::ChartAsset) 
     };
     let text = style_for(cx.p, c.text_style.as_deref(), base, &cx.base, &mut *cx.paint, cx.tokens, &fonts, bx);
     tc.font_assets = fonts;
-    let kind = chart::Kind::parse(&at.str("kind").unwrap_or_default()).unwrap_or(chart::Kind::Column);
+    // Reject an invalid evaluated property even when it bypassed typed model validation.
+    let raw = at.str("kind").unwrap_or_default();
+    let kind = chart::Kind::parse(&raw).ok_or_else(|| format!("chart {key}: unknown kind {raw:?}"))?;
     let spec = chart::Chart {
         kind,
         size: [w, h],

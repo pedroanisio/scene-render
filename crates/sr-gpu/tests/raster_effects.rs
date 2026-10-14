@@ -51,6 +51,8 @@ mod resample;
 mod shaders;
 #[path = "raster_effects/shutter_angle_node.rs"]
 mod shutter_angle_node;
+#[path = "raster_effects/sprites.rs"]
+mod sprites;
 #[path = "raster_effects/srep67_compute.rs"]
 mod srep67_compute;
 #[path = "raster_effects/srep67_iterate.rs"]

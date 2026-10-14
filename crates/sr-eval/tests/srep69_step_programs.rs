@@ -94,3 +94,38 @@ fn running_out_of_fuel_fails_the_frame_with_prg12() {
     let g = e.evaluate_frame(0);
     assert!(g.failures.iter().any(|f| f.starts_with("p: PRG12")), "{:?}", g.failures);
 }
+
+#[test]
+fn a_stepping_program_without_width_or_height_is_prg3() {
+    for attrs in [r#"height="100""#, r#"width="100""#, ""] {
+        let xml = format!(
+            r#"<scene version="1.6"><project width="640" height="360" fps="10" duration="2" seed="1"/><composition>
+            <program id="p" mode="step" {attrs} src="srep69-counter.wasm" sha256="{}"/></composition></scene>"#,
+            "0".repeat(64)
+        );
+        let report = sr_model::validate_str(&xml, &LoadOptions { verify_assets: false, base_dir: Some(modules()) });
+        assert!(report.diagnostics.iter().any(|d| d.code == "PRG3"), "{attrs:?}: {:?}", report.diagnostics);
+    }
+}
+
+#[test]
+fn invalid_step_dimensions_after_validation_fail_before_loading_the_module() {
+    let xml = format!(
+        r#"<scene version="1.6"><project width="16" height="16" fps="1" duration="1"/>
+      <composition><program id="p" mode="step" width="100" height="100" src="missing.wasm" sha256="{}"/></composition></scene>"#,
+        "0".repeat(64)
+    );
+    for value in [None, Some(0), Some(u32::MAX as u64 + 1)] {
+        let mut doc = load_str(&xml, &LoadOptions::without_assets()).unwrap();
+        // Simulate a caller editing the typed document after validation.
+        if let sr_model::model::Node::Program(p) = &mut doc.scene.composition.children[0] {
+            p.width = value;
+        } else {
+            panic!("program");
+        }
+        let ev = Evaluator::new(&doc, &Default::default()).unwrap();
+        let frame = ev.evaluate(0.0);
+        assert!(frame.failures.iter().any(|e| e.contains("PRG3")), "{:?}", frame.failures);
+        assert!(frame.nodes[0].sim_image.is_none());
+    }
+}

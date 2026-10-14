@@ -56,7 +56,8 @@ pub struct Spec {
     pub cell_size: f64,
     /// Canonical replay interval; CFL and events may subdivide it.
     pub dt: f64,
-    /// Positive acceleration magnitude in scene units/second².
+    /// Positive acceleration magnitude in ocean-local units/second².
+    /// The evaluator converts document gravity (m/s²) through pixelsPerMeter and the ocean scale.
     pub gravity: f64,
     /// Exponential horizontal velocity decay per second.
     pub damping: f64,

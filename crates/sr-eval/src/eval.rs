@@ -830,11 +830,15 @@ impl<'p> Frame<'p> {
         node.is_some_and(|n| !self.alive[n as usize])
     }
 
-    fn slots(&mut self) {
+    fn slots(&mut self, definition_time: Option<f64>) {
         let p = self.p;
         for &s in &p.order {
             let slot = &p.slots[s as usize];
-            let t = p.slot_time(s, self.t, Some(&self.tl));
+            let t = if slot.time_node.is_none() {
+                definition_time.unwrap_or_else(|| p.slot_time(s, self.t, Some(&self.tl)))
+            } else {
+                p.slot_time(s, self.t, Some(&self.tl))
+            };
             let mut v = p.channels_at(s, t);
             if let Some(l) = slot.link {
                 if let Some(lv) = p.link_value(s, l, self.t, Some(self), 0, &self.memo) {
@@ -1153,6 +1157,32 @@ pub fn evaluate(p: &Program, t: f64) -> FrameGraph {
     evaluate_with_clocks(p, t, &[])
 }
 
+/// Samples animated definitions at a consumer's local time, including definitions
+/// from included documents. Used when a sprite samples a generator at layer time.
+/// Node properties referenced by expressions retain their ordinary timeline mapping.
+pub fn elements_at(p: &Program, t: f64) -> Vec<ElementState> {
+    let n = p.nodes.len();
+    let mut f = Frame {
+        include_inactive: false,
+        p,
+        t,
+        tl: vec![0.0; n],
+        child: vec![0.0; n],
+        values: vec![Value::Num(0.0); p.slots.len()],
+        regs: Vec::new(),
+        adjust: vec![None; n],
+        alive: vec![false; n],
+        memo: Memo::default(),
+    };
+    f.timelines(&[]);
+    f.slots(Some(t));
+    p.elements
+        .iter()
+        .filter(|e| e.node.is_none())
+        .map(|e| ElementState { key: e.key.clone(), element: e.name, props: f.props(&e.slots) })
+        .collect()
+}
+
 /// Sample source history that a remap jumps over or a freeze holds. Composition
 /// properties still use `t`; the supplied container clocks drive their children.
 pub(crate) fn evaluate_with_clocks(p: &Program, t: f64, clocks: &[(u32, f64)]) -> FrameGraph {
@@ -1188,7 +1218,7 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
     if include_inactive {
         f.alive.fill(true);
     }
-    f.slots();
+    f.slots(None);
 
     struct Out {
         inst: Vec<u32>,

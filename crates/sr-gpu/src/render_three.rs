@@ -3460,8 +3460,11 @@ impl Renderer {
         let white = self.working.from_literal([1.0; 4]);
         let c0 = self.stored(pf.color0.as_ref(), white);
         let c1 = pf.color1.as_ref().map(|v| self.stored(Some(v), c0)).unwrap_or(c0);
-        // a sprite sheet from an image asset
+        // The sprite is a sheet from an image asset (the cell is the particle's), or the picture of a video at the emitter's time
+        // or of a generator at its time, or an image sequence: each particle takes the frame its age gives (`age * fps`, looping
+        // through the sequence at its asset frame rate).
         let mut sprite = None;
+        let mut sequence: Option<(m::ImageSequenceAsset, std::path::PathBuf)> = None;
         if let Some(key) = pf.sprite.as_deref() {
             match self.asset(ctx.p, key) {
                 Some((AssetsChild::Image(img), doc)) => {
@@ -3479,7 +3482,56 @@ impl Renderer {
                         }
                     }
                 }
-                _ => plan.stats.errors.push(format!("{}: sprite {key} is not an image asset", n.id)),
+                Some((AssetsChild::ImageSequence(s), doc)) => {
+                    sequence = Some((s.clone(), ctx.p.base_dirs.get(doc).cloned().unwrap_or_default()));
+                }
+                Some((AssetsChild::Video(_), _)) => {
+                    // the layer's own path draws it, at the time the emitter is at
+                    let mut at = n.clone();
+                    at.asset = Some(key.into());
+                    at.source_time = Some(n.source_time.unwrap_or(n.local_time).max(0.0));
+                    if let Some(t) = self.layer_source(plan, ctx.p, ctx.g, &at) {
+                        sprite = Some((key.to_string(), t.view.clone()));
+                        plan.fx_temps.push(t);
+                    }
+                }
+                Some((AssetsChild::Generator(gen), _)) => {
+                    let time = n.local_time.max(0.0);
+                    let mut sampled = ctx.g.clone();
+                    sampled.time = time;
+                    sampled.elements = sr_eval::eval::elements_at(ctx.p, time);
+                    let gen = gen.clone();
+                    let t = self.generator_texture(plan, ctx.p, &sampled, key, &gen);
+                    sprite = Some((key.to_string(), t.view.clone()));
+                    plan.fx_temps.push(t);
+                }
+                _ => plan
+                    .stats
+                    .errors
+                    .push(format!("{}: sprite {key} is not an image, image sequence, video or generator asset", n.id)),
+            }
+        }
+        // the frame of the sequence each particle shows, and its picture
+        let mut sequence_views: std::collections::BTreeMap<i64, Option<(String, wgpu::TextureView)>> =
+            Default::default();
+        let mut particle_frame: Vec<i64> = Vec::new();
+        if let Some((s, base)) = &sequence {
+            let count = ((s.last - s.first) / s.step as i64).max(0) + 1;
+            let fps = s.fps.as_f64();
+            particle_frame = (0..pf.pos.len())
+                .map(|k| {
+                    let age = pf.age.get(k).copied().unwrap_or(0.0).max(0.0);
+                    ((age * fps + 1e-9).floor() as i64).rem_euclid(count)
+                })
+                .collect();
+            let wanted: std::collections::BTreeSet<i64> = particle_frame.iter().copied().collect();
+            for k in wanted {
+                let view = self.sequence_at(plan, base, s, k, &n.id).map(|t| {
+                    let view = t.view.clone();
+                    plan.fx_temps.push(t);
+                    (s.id.to_string(), view)
+                });
+                sequence_views.insert(k, view);
             }
         }
         let xf = space.xform;
@@ -3488,13 +3540,18 @@ impl Renderer {
         let shape = match pf.shape {
             sr_eval::sim::ParticleShape::Disc => 0.0,
             sr_eval::sim::ParticleShape::Square => 1.0,
-            sr_eval::sim::ParticleShape::Sprite if sprite.is_some() => 2.0,
+            sr_eval::sim::ParticleShape::Sprite if sprite.is_some() || sequence.is_some() => 2.0,
             sr_eval::sim::ParticleShape::Sprite => 0.0,
             sr_eval::sim::ParticleShape::Streak => 3.0,
         };
         let (cols, rows) = (pf.cols.max(1), pf.rows.max(1));
         let mut insts = Vec::with_capacity(pf.pos.len() * if pf.trail > 0.0 && shape != 3.0 { 2 } else { 1 });
+        // the sequence frame each instance is drawn with (the instances of one particle share it)
+        let mut tags: Vec<i64> = Vec::new();
+        let mut current = 0;
         for k in 0..pf.pos.len() {
+            tags.resize(insts.len(), current);
+            current = particle_frame.get(k).copied().unwrap_or(0);
             let t = pf.color_t[k] as f64;
             let a = pf.alpha[k] as f64;
             let c: [f32; 4] = std::array::from_fn(|ch| (c0[ch] + (c1[ch] - c0[ch]) * t) as f32);
@@ -3536,6 +3593,10 @@ impl Renderer {
                     cell: [0.0; 4],
                 });
             }
+            // a particle whose frame of the sequence is not there (`missingFrame`) shows no sprite
+            if sequence.is_some() && sequence_views.get(&current).is_none_or(Option::is_none) {
+                continue;
+            }
             let cell = pf.frame[k];
             let (cx, cy) = ((cell % cols) as f32, (cell / cols % rows) as f32);
             insts.push(crate::particles::Inst {
@@ -3544,6 +3605,31 @@ impl Renderer {
                 color: col,
                 cell: [cx / cols as f32, cy / rows as f32, (cx + 1.0) / cols as f32, (cy + 1.0) / rows as f32],
             });
+        }
+        tags.resize(insts.len(), current);
+        let mut job = crate::particles::ParticleJob { insts, sprite, more: Vec::new() };
+        if sequence.is_some() {
+            // Batch only adjacent equal frames. Sorting by frame would change the
+            // compositing order of overlapping translucent particles.
+            let mut last = None;
+            for (inst, tag) in std::mem::take(&mut job.insts).into_iter().zip(tags) {
+                if last == Some(tag) {
+                    if let Some(batch) = job.more.last_mut() {
+                        batch.insts.push(inst);
+                    } else {
+                        job.insts.push(inst);
+                    }
+                } else {
+                    let view = sequence_views.get(&tag).cloned().flatten();
+                    if last.is_none() {
+                        job.insts.push(inst);
+                        job.sprite = view;
+                    } else {
+                        job.more.push(crate::particles::ParticleBatch { insts: vec![inst], sprite: view });
+                    }
+                    last = Some(tag);
+                }
+            }
         }
         let tex = self.temp(plan, space.size);
         plan.jobs.push(Job {
@@ -3554,7 +3640,7 @@ impl Renderer {
             fx: Vec::new(),
             flow: None,
             draw: false,
-            parts: Some(Box::new(crate::particles::ParticleJob { insts, sprite })),
+            parts: Some(Box::new(job)),
         });
         let (w, hgt) = (space.size[0] as f64, space.size[1] as f64);
         // the cloud is drawn in target pixels: a node placed in 2.5D carries that sheet through the frame camera

@@ -1,6 +1,11 @@
 //! Frozen fracture surfaces and world-space fragment poses for rendering.
 pub(crate) mod source;
 
+/// The share of the closing kinetic energy of a projectile that breaks a body and throws its pieces (`fracture/@energyFraction`)
+/// when the attribute is absent. The schema documents it and does not declare it, because the attribute is invalid on a fracture
+/// without a `source`; both fracture paths of the evaluator read it from here.
+pub const DEFAULT_ENERGY_FRACTION: f64 = 0.3;
+
 use crate::{FrameNode, Program};
 use sr_3d::fracture::{self, Surface};
 use sr_sim::physics3d::{Pose3, Shape3};

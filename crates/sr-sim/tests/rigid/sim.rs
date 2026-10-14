@@ -529,3 +529,20 @@ fn very_stiff_soft_bodies_stay_finite() {
         }
     }
 }
+
+fn fall(mass: f64, seconds: f64) -> [f64; 2] {
+    let mut b = body(200.0, 100.0);
+    b.mass = mass;
+    let mut w = world(vec![b], vec![], vec![], Bounds::None);
+    let f = w.frame_at(seconds, &mut Still(vec![]));
+    [f.bodies[0].x, f.bodies[0].y]
+}
+
+#[test]
+fn a_mass_of_zero_or_below_is_the_least_mass_and_the_body_still_moves_finitely() {
+    let least = fall(sr_sim::physics::MIN_MASS, 0.5);
+    assert!(least.iter().all(|v| v.is_finite()), "{least:?}");
+    assert!(least[1] > 100.0, "the clamped body must fall: {least:?}");
+    assert_eq!(fall(0.0, 0.5), least);
+    assert_eq!(fall(-3.0, 0.5), least);
+}

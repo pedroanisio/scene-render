@@ -369,6 +369,7 @@ fn emitters_sharing_a_sprite_id_keep_their_own_textures() {
                 cell: [0.0, 0.0, 1.0, 1.0],
             }],
             sprite: Some(("spark".into(), solid(&g, c))),
+            more: Vec::new(),
         };
         let mut enc = g.device.create_command_encoder(&Default::default());
         eng.record(&mut enc, &job, &target.view, [8, 8]);

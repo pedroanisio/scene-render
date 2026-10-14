@@ -89,6 +89,22 @@ fn build(p: &Program, n: &FrameNode) -> Result<Runtime, String> {
     let sr_model::model::Node::Ocean(e) = &*n.elem else { unreachable!("ocean node") };
     let f = |k, d| num(e, k, d);
     let water = WaterAttrs::of(e);
+    let ppm = p.scene.physics.as_ref().map_or(100.0, |ph| ph.pixels_per_meter.get());
+    // Solver configuration is static. Use the world scale at the ocean's start,
+    // independent of which frame the caller happens to request first.
+    let start = p
+        .nodes
+        .iter()
+        .position(|node| node.id == n.id)
+        .and_then(|i| crate::sim::uniform_clock(p, i as u32).map(|clock| clock.composition_time(p.nodes[i].start)))
+        .unwrap_or(0.0);
+    let initial = crate::eval::evaluate_for_physics(p, start);
+    let i = initial.nodes.iter().position(|node| node.id == n.id).ok_or("ocean has no initial pose")?;
+    let world = crate::sim3d::world3(&initial, i, 0);
+    let scale = world.transform_vector3(glam::DVec3::X).length();
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("ocean pose is singular".into());
+    }
     let bytes = |k, d| (f(k, d) as usize).checked_mul(1 << 20).ok_or("ocean memory overflow".to_string());
     let width = f("width", 64.);
     let depth = f("depth", 64.);
@@ -99,7 +115,7 @@ fn build(p: &Program, n: &FrameNode) -> Result<Runtime, String> {
         origin: [-width / 2., -depth / 2.],
         cell_size: dx,
         dt: f("dt", 1. / 60.),
-        gravity: water.gravity,
+        gravity: water.gravity * ppm / scale,
         damping: f("damping", 0.),
         dry_tolerance: f("dryTolerance", 1e-10),
         boundary: match text(e, "boundary").as_deref() {
@@ -182,7 +198,7 @@ fn build(p: &Program, n: &FrameNode) -> Result<Runtime, String> {
         spec.body_push = built.pushes();
         Some(built)
     };
-    let entries = cavity::read(e, &collider_ids, water.density)?;
+    let entries = cavity::read(e, &collider_ids, water)?;
     let splash = text(e, "splash").map_or(0, |l| l.split_whitespace().count());
     if splash > 0 {
         // the driver gives what the particles bring at the sample that closes each canonical step
@@ -506,6 +522,7 @@ mod tests {
 
     #[test]
     fn the_columns_of_a_body_are_tagged_with_its_place_in_the_collider_list() {
+        // Metre-sized bodies: sample the displacement before the waves redistribute it.
         let xml = r#"<scene version="1.3"><project width="64" height="64" fps="24" duration="3"/><composition>
           <object3D id="seabed" primitive="plane" width="400" height="400" segments="20" y="12" rotationX="-90">
             <crater radius="40" depth="2" rimHeight="1" rimWidth="8" start="2" end="2.5"/>
@@ -513,7 +530,7 @@ mod tests {
           <object3D id="left" primitive="sphere" radius="6" x="-30" y="0"/>
           <object3D id="right" primitive="sphere" radius="6" x="30" y="2"/>
           <ocean id="sea" bedResponse="hydrostatic" width="128" depth="128" cellSize="2" bottomDepth="12" dt="0.0416666666666667" boundary="closed" colliders="seabed right left"/>
-        </composition></scene>"#;
+        </composition><physics pixelsPerMeter="1"/></scene>"#;
         let doc = sr_model::load_str(xml, &sr_model::LoadOptions::without_assets()).unwrap();
         let ev = crate::Evaluator::new(&doc, &Default::default()).unwrap();
         OFFERS.with(|o| o.borrow_mut().clear());

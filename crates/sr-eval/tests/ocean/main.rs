@@ -6,4 +6,5 @@ mod ocean_coupling;
 mod ocean_coupling_cases;
 mod ocean_depth_filter;
 mod ocean_full;
+mod ocean_gravity_units;
 mod ocean_group_time;

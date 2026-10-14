@@ -1,6 +1,7 @@
+// These clock and whitewater fixtures use metre-sized geometry and velocities.
 fn evaluator(nodes: &str) -> sr_eval::Evaluator {
     let xml = format!(
-        r#"<scene version="1.3"><project width="64" height="64" fps="10" duration="4"/><composition>{nodes}</composition></scene>"#
+        r#"<scene version="1.3"><project width="64" height="64" fps="10" duration="4"/><composition>{nodes}</composition><physics pixelsPerMeter="1"/></scene>"#
     );
     let d = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
     sr_eval::Evaluator::new(&d, &Default::default()).unwrap()

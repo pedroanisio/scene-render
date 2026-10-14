@@ -1812,3 +1812,52 @@ fn a4_inspect_and_validate_show_human_labels() {
     assert!(String::from_utf8_lossy(&validated.stdout).contains("(Lower third)"));
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn params_prints_metadata_without_evaluating_required_values() {
+    let dir = std::env::temp_dir().join(format!("sr-params-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("scene.xml");
+    std::fs::write(
+        &file,
+        r#"<scene version="1.1"><project width="16" height="16" fps="1" duration="1"/>
+      <parameters>
+        <param id="headline" type="string" label="Headline" description="Title to display" required="true"/>
+        <param id="amount" type="number" default="2" min="1" max="9"/>
+        <param id="choice" type="enum" default="a" options="a,b"/>
+        <variant id="short" label="Short version"><set param="amount" value="3"/></variant>
+      </parameters><composition/></scene>"#,
+    )
+    .unwrap();
+    let output = run(&["params", file.to_str().unwrap()]);
+    assert!(output.status.success(), "{output:?}");
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(v["params"][0]["id"], "headline");
+    assert_eq!(v["params"][0]["label"], "Headline");
+    assert_eq!(v["params"][0]["description"], "Title to display");
+    assert_eq!(v["params"][0]["required"], true);
+    assert!(v["params"][0]["default"].is_null());
+    assert_eq!(v["params"][1]["type"], "number");
+    assert_eq!(v["params"][1]["default"], "2");
+    assert_eq!(v["params"][1]["min"], 1.0);
+    assert_eq!(v["params"][1]["max"], 9.0);
+    assert_eq!(v["params"][2]["options"], serde_json::json!(["a", "b"]));
+    assert_eq!(v["variants"][0], serde_json::json!({"id": "short", "label": "Short version"}));
+    let output = run(&["eval", file.to_str().unwrap(), "--no-assets"]);
+    assert!(!output.status.success());
+    let errors = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(errors.contains("Headline") && errors.contains("headline"), "{errors}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn params_empty_and_error_exit_codes_follow_the_cli() {
+    let output = run(&["params", &path("valid/minimal.scene.xml")]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!({"params": [], "variants": []})
+    );
+    assert_eq!(run(&["params", "/nonexistent/scene.xml"]).status.code(), Some(2));
+    assert_eq!(run(&["params", &path("invalid/c21.scene.xml"), "--no-assets"]).status.code(), Some(1));
+}

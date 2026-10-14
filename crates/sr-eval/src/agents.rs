@@ -361,7 +361,7 @@ impl Sims {
                         let (w, f) = got.unwrap_or((Affine::IDENTITY, Vec::new()));
                         flock::step(spec, a, STEP, &mut |pos, vel| accel(&w, &f, pos, vel, t0 + offset));
                     });
-                    g.nodes[i].particles = Some(Arc::new(flock_frame(a, &world, look)));
+                    g.nodes[i].particles = Some(Arc::new(flock_frame(a, &world, look, local)));
                 }
                 Kind::Fluid { spec, tl } => {
                     let spec = &*spec;
@@ -427,7 +427,7 @@ fn cached(
     img
 }
 
-fn flock_frame(a: &flock::Agents, world: &Affine, look: &FlockLook) -> ParticleFrame {
+fn flock_frame(a: &flock::Agents, world: &Affine, look: &FlockLook, age: f64) -> ParticleFrame {
     let [m0, m1, m2, m3, ..] = world.0;
     // rotation 0 in the flock's space is the direction its +x axis takes in the frame
     let upright = m1.atan2(m0);
@@ -451,6 +451,7 @@ fn flock_frame(a: &flock::Agents, world: &Affine, look: &FlockLook) -> ParticleF
         f.color_t.push(0.0);
         f.alpha.push(1.0);
         f.frame.push(0);
+        f.age.push(age);
     }
     f
 }
@@ -459,12 +460,10 @@ fn flock_frame(a: &flock::Agents, world: &Affine, look: &FlockLook) -> ParticleF
 
 /// A `<program mode="step">`: its module, live instance and step schedule (SREP 68, Semantics 1; SREP 69).
 pub(crate) struct StepProgram {
-    /// The module, or why it cannot run.
-    module: Result<Vec<u8>, String>,
+    /// The module and required image dimensions, or why it cannot run.
+    module: Result<(Vec<u8>, [u32; 2]), String>,
     inputs: sr_wasm::Inputs,
     limits: sr_wasm::Limits,
-    width: u32,
-    height: u32,
     steps_per_frame: u64,
     prewarm: u64,
     live: Option<sr_wasm::Stepper>,
@@ -489,20 +488,34 @@ impl StepProgram {
                 (crate::sim::text(*c, "name").unwrap_or_default(), crate::sim::text(*c, "value").unwrap_or_default())
             })
             .collect();
+        // width and height have no default: PRG3 requires both of a stepping program, and xs:positiveInteger rules out 0
+        let size = |k: &str| {
+            let v = match e.get_attr(k) {
+                Some(sr_model::element::AttrValue::Num(v)) if v.is_finite() && v.fract() == 0.0 && v >= 1.0 => {
+                    Some(v as u64)
+                }
+                _ => text(k).and_then(|t| t.trim().parse::<u64>().ok()),
+            };
+            v.filter(|v| *v >= 1).and_then(|v| u32::try_from(v).ok())
+        };
+        let (width, height) = (size("width"), size("height"));
         let base = base_dir(p, &n.id);
-        let module = match (text("src"), text("sha256")) {
-            (Some(src), Some(sha)) => sr_model::program::read_module_file(&src, &sha, &base),
-            _ => Err("a program needs src and sha256".to_string()),
+        let module = match (width, height, text("src"), text("sha256")) {
+            (None, _, _, _) | (_, None, _, _) => {
+                Err("PRG3: a stepping program needs positive width and height fitting 32-bit dimensions".to_string())
+            }
+            (Some(width), Some(height), Some(src), Some(sha)) => sr_model::program::read_module_file(&src, &sha, &base)
+                .map(|module| (module, [width, height]))
+                .map_err(|m| format!("PRG10: {m}")),
+            _ => Err("PRG10: a program needs src and sha256".to_string()),
         };
         StepProgram {
-            module: module.map_err(|m| format!("PRG10: {m}")),
+            module,
             inputs: sr_wasm::Inputs { project_seed: p.seed, seed: int("seed", 0), params },
             limits: sr_wasm::Limits {
                 fuel: int("fuel", 1_000_000_000),
                 memory_mib: int("memoryLimit", 64).min(u32::MAX as u64) as u32,
             },
-            width: int("width", 1).max(1) as u32,
-            height: int("height", 1).max(1) as u32,
             steps_per_frame: int("stepsPerFrame", 1).max(1),
             prewarm: int("prewarm", 0),
             live: None,
@@ -552,12 +565,12 @@ impl StepProgram {
                 return Ok(Some(img.clone()));
             }
         }
-        let module = self.module.as_ref().map_err(Clone::clone)?;
+        let (module, size) = self.module.as_ref().map_err(Clone::clone)?;
+        let [width, height] = *size;
         let code = |e: sr_wasm::Error| format!("{}: {}", e.code.as_str(), e.message);
         if self.live.as_ref().is_none_or(|l| l.steps() > target) {
             // a step program's state only moves forward: an earlier state is reached again from init
-            self.live =
-                Some(sr_wasm::Stepper::new(module, &self.inputs, self.limits, self.width, self.height).map_err(code)?);
+            self.live = Some(sr_wasm::Stepper::new(module, &self.inputs, self.limits, width, height).map_err(code)?);
         }
         let live = self.live.as_mut().expect("instantiated above");
         while live.steps() < target {
@@ -565,8 +578,8 @@ impl StepProgram {
         }
         let rgba = live.frame().map_err(code)?;
         let img = Arc::new(SimImage {
-            width: self.width,
-            height: self.height,
+            width,
+            height,
             rgba: rgba
                 .as_chunks::<4>()
                 .0

@@ -326,3 +326,39 @@ fn counter_starts_on_the_same_clock_as_the_other_presets() {
     let own = doc_text(asset, "", &layer(""), 200, 100);
     assert!(ink(&own, 2.05) < ink(&own, 3.5) * 0.95, "the count runs from the layer's start");
 }
+
+/// A 200 x 100 chart whose kind is the string parameter `k`, bound to it after validation.
+fn chart_with_kind_param(k: &str) -> sr_model::Document {
+    let a = ASSETS.replace(
+        "</assets>",
+        r##"<chart id="c" kind="column" width="200" height="100" labels="a,b" showAxes="false"><series name="s" values="1 2" color="#00FF00"/></chart></assets>"##,
+    );
+    let xml = format!(
+        r##"<scene version="1.1"><project width="200" height="100" fps="10" duration="1" background="#000000"/><parameters><param id="k" type="string" default="{k}"/><bind param="k" target="c" property="kind"/></parameters>{a}<composition><layer id="lc" asset="c" x="0" y="0"/></composition></scene>"##
+    );
+    sr_model::load_str(&xml, &sr_model::LoadOptions { verify_assets: true, base_dir: Some(fixtures()) })
+        .unwrap_or_else(|e| panic!("{e:?}"))
+}
+
+#[test]
+fn an_unknown_chart_kind_is_a_render_error_and_draws_no_column_chart() {
+    let Some(ok) = render_times(&chart_with_kind_param("bar"), &[0.0]) else { return };
+    assert!(ok.stats.errors.is_empty(), "{:?}", ok.stats.errors);
+    assert!(sum(&ok, 0, 0, 200, 100, 1) > 1000.0, "a known kind draws its green series");
+    // Typed parameter bindings reject unknown enum literals during evaluation.
+    // Exercise the renderer boundary with an overridden evaluated property.
+    let d = chart_with_kind_param("column");
+    let ev = sr_eval::Evaluator::new(&d, &Default::default()).unwrap();
+    let mut frame = ev.evaluate(0.0);
+    frame.elements.push(sr_eval::eval::ElementState {
+        key: "c".into(),
+        element: "chart",
+        props: sr_eval::eval::Props(vec![("kind".into(), sr_eval::Value::Str("pyramid".into()))]),
+    });
+    let mut renderer = sr_gpu::Renderer::new(gpu().unwrap(), ev.program());
+    let rendered = renderer.render(&frame, ev.program());
+    let bad =
+        Rendered { px: renderer.read(&rendered.texture), size: rendered.texture.size, stats: rendered.stats, renderer };
+    assert!(bad.stats.errors.iter().any(|e| e.contains("pyramid") && e.contains("chart")), "{:?}", bad.stats.errors);
+    assert!(sum(&bad, 0, 0, 200, 100, 1) < 1.0, "nothing is drawn for an unknown kind");
+}

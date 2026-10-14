@@ -107,6 +107,30 @@ fn inspect_gives_the_summary_and_the_model() {
 }
 
 #[test]
+fn params_gives_the_parameters_and_variants() {
+    let o = run(&["params", "--format", "json", &corpus("valid/c15-speed-exponent.scene.xml")]);
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    let v = envelope(&o, Some("params"));
+    let r = &v["result"];
+    assert_eq!(r["params"][0]["id"], "headline");
+    assert_eq!(r["params"][0]["default"], "Hello");
+    assert_eq!(r["params"][0]["required"], false);
+    assert_eq!(r["params"][1]["type"], "list");
+    assert_eq!(r["variants"][0]["id"], "dark");
+
+    let o = run(&["params", "--json", &corpus("invalid/c21.scene.xml")]);
+    assert_eq!(o.status.code(), Some(1));
+    let v = envelope(&o, Some("params"));
+    assert_eq!(kind(&v), "invalid");
+    assert_eq!(v["result"], Value::Null);
+    assert_eq!(v["error"]["codes"][0], "C21");
+
+    let o = run(&["params", "--json", "/nonexistent/scene.xml"]);
+    assert_eq!(o.status.code(), Some(2));
+    assert_eq!(kind(&envelope(&o, Some("params"))), "io");
+}
+
+#[test]
 fn eval_gives_a_frame_or_a_benchmark() {
     let f = corpus("valid/kitchen-sink.scene.xml");
     let o = run(&["eval", &f, "--frame", "150", "--format", "json"]);

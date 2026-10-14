@@ -11,7 +11,7 @@
     "schema_version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"},
     "command": {
       "description": "the subcommand that ran; null when the command line names none that could be understood",
-      "enum": [null, "validate", "inspect", "eval", "captions", "render", "watch", "encode", "simulate", "bake-volume", "resolve", "scopes", "gpus", "capabilities", "explain", "completions"]
+      "enum": [null, "validate", "inspect", "params", "eval", "captions", "render", "watch", "encode", "simulate", "bake-volume", "resolve", "scopes", "gpus", "capabilities", "explain", "completions"]
     },
     "ok": {"type": "boolean", "description": "true exactly when exit_code is 0"},
     "exit_code": {"enum": [0, 1, 2], "description": "the process exit status: 0 success, 1 invalid or failed, 2 usage, I/O, unavailable or internal error"},
@@ -40,6 +40,7 @@
     {"if": {"properties": {"error": {"type": "object", "properties": {"kind": {"enum": ["usage", "io", "unavailable", "internal"]}}}}}, "then": {"properties": {"exit_code": {"const": 2}}}},
     {"if": {"properties": {"command": {"const": "validate"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/validate"}]}}}},
     {"if": {"properties": {"command": {"const": "inspect"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/inspect"}]}}}},
+    {"if": {"properties": {"command": {"const": "params"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/params"}]}}}},
     {"if": {"properties": {"command": {"const": "eval"}}}, "then": {"properties": {"result": {"type": ["object", "null"]}}}},
     {"if": {"properties": {"command": {"const": "captions"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/captions"}]}}}},
     {"if": {"properties": {"command": {"enum": ["render", "watch"]}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/render"}]}}}},
@@ -154,6 +155,44 @@
         "ids": {"$ref": "#/$defs/count"},
         "warnings": {"$ref": "#/$defs/count"},
         "model": {"description": "the document model, the scene element and everything in it", "type": "object"}
+      }
+    },
+    "params": {
+      "description": "the document's parameters and variants in declaration order, without evaluating it",
+      "type": "object",
+      "required": ["params", "variants"],
+      "additionalProperties": false,
+      "properties": {
+        "params": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "type", "default", "label", "description", "required", "min", "max", "maxLength", "pattern", "options"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "type": {"type": "string", "minLength": 1},
+              "default": {"description": "the lexical @default, null when absent", "type": ["string", "null"]},
+              "label": {"type": ["string", "null"]},
+              "description": {"type": ["string", "null"]},
+              "required": {"type": "boolean"},
+              "min": {"type": ["number", "null"]},
+              "max": {"type": ["number", "null"]},
+              "maxLength": {"type": ["integer", "null"]},
+              "pattern": {"type": ["string", "null"]},
+              "options": {"type": "array", "items": {"type": "string", "minLength": 1}}
+            }
+          }
+        },
+        "variants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "label"],
+            "additionalProperties": false,
+            "properties": {"id": {"type": "string", "minLength": 1}, "label": {"type": ["string", "null"]}}
+          }
+        }
       }
     },
     "captions": {

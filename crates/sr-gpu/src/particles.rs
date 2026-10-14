@@ -24,6 +24,15 @@ pub struct Inst {
 pub struct ParticleJob {
     pub insts: Vec<Inst>,
     pub sprite: Option<(String, wgpu::TextureView)>,
+    /// Further batches drawn after `insts`, each with its own sprite texture, into the same pass: an image-sequence sprite has one
+    /// texture for each frame the particles show.
+    pub more: Vec<ParticleBatch>,
+}
+
+/// A consecutive run of particle instances sharing one texture.
+pub struct ParticleBatch {
+    pub insts: Vec<Inst>,
+    pub sprite: Option<(String, wgpu::TextureView)>,
 }
 
 /// GPU state for particles.
@@ -163,23 +172,21 @@ impl ParticleEngine {
         ParticleEngine { device, pipe, bgl, smp, white, binds: HashMap::new() }
     }
 
-    /// Records the particles of `job` into `target` (cleared first).
-    pub fn record(
+    /// The bind group (and its uniform buffer) for drawing with `sprite` into a target of `size`.
+    fn bind(
         &mut self,
-        enc: &mut wgpu::CommandEncoder,
-        job: &ParticleJob,
-        target: &wgpu::TextureView,
+        sprite: &Option<(String, wgpu::TextureView)>,
         size: [u32; 2],
-    ) {
+    ) -> (Option<wgpu::TextureView>, [u32; 2]) {
         let d = self.device.clone();
-        let key = (job.sprite.as_ref().map(|s| s.1.clone()), size);
+        let key = (sprite.as_ref().map(|s| s.1.clone()), size);
         if !self.binds.contains_key(&key) {
             let buf = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("particle-target"),
                 contents: bytemuck::cast_slice(&[size[0] as f32, size[1] as f32, 0.0, 0.0]),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
-            let view = job.sprite.as_ref().map(|s| &s.1).unwrap_or(&self.white);
+            let view = sprite.as_ref().map(|s| &s.1).unwrap_or(&self.white);
             let bg = d.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("particles"),
                 layout: &self.bgl,
@@ -189,11 +196,28 @@ impl ParticleEngine {
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.smp) },
                 ],
             });
-            if self.binds.len() > 64 {
-                self.binds.clear();
-            }
             self.binds.insert(key.clone(), (bg, buf));
         }
+        key
+    }
+
+    /// Records the particles of `job` into `target` (cleared first).
+    pub fn record(
+        &mut self,
+        enc: &mut wgpu::CommandEncoder,
+        job: &ParticleJob,
+        target: &wgpu::TextureView,
+        size: [u32; 2],
+    ) {
+        let d = self.device.clone();
+        if self.binds.len() > 64 {
+            self.binds.clear();
+        }
+        // every batch's bind group exists before the pass borrows them
+        let batches: Vec<_> = std::iter::once((&job.insts, &job.sprite))
+            .chain(job.more.iter().map(|batch| (&batch.insts, &batch.sprite)))
+            .map(|(insts, sprite)| (insts, self.bind(sprite, size)))
+            .collect();
         let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("particles"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -210,17 +234,25 @@ impl ParticleEngine {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        if job.insts.is_empty() {
-            return;
-        }
-        let ibuf = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("particles"),
-            contents: bytemuck::cast_slice(&job.insts),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
         rp.set_pipeline(&self.pipe);
-        rp.set_bind_group(0, &self.binds[&key].0, &[]);
-        rp.set_vertex_buffer(0, ibuf.slice(..));
-        rp.draw(0..6, 0..job.insts.len() as u32);
+        // the buffers outlive the pass
+        let buffers: Vec<wgpu::Buffer> = batches
+            .iter()
+            .map(|(insts, _)| {
+                d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("particles"),
+                    contents: bytemuck::cast_slice(insts),
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+            })
+            .collect();
+        for ((insts, key), ibuf) in batches.iter().zip(&buffers) {
+            if insts.is_empty() {
+                continue;
+            }
+            rp.set_bind_group(0, &self.binds[key].0, &[]);
+            rp.set_vertex_buffer(0, ibuf.slice(..));
+            rp.draw(0..6, 0..insts.len() as u32);
+        }
     }
 }

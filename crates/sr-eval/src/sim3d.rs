@@ -859,7 +859,7 @@ pub(crate) fn build(
                 fragments,
                 contact: projectile.map(|_| sr_sim::physics3d::FractureContact {
                     watch: usize::MAX,
-                    energy_fraction: num(config, "energyFraction", 0.3),
+                    energy_fraction: num(config, "energyFraction", crate::fracture::DEFAULT_ENERGY_FRACTION),
                 }),
                 dust: broken.dust_body.clone(),
             });
@@ -943,7 +943,7 @@ pub(crate) fn build(
             // the watch is the one that is made for it below, once the world's others are known
             contact: projectile.map(|_| sr_sim::physics3d::FractureContact {
                 watch: usize::MAX,
-                energy_fraction: num(config, "energyFraction", 0.3),
+                energy_fraction: num(config, "energyFraction", crate::fracture::DEFAULT_ENERGY_FRACTION),
             }),
             dust: None,
         });

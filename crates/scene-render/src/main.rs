@@ -25,6 +25,7 @@ Examples:
   scene-render inspect promo.scene.xml --json
   scene-render validate promo.scene.xml --no-assets --deny-warnings
   scene-render inspect promo.scene.xml
+  scene-render params promo.scene.xml
   scene-render eval promo.scene.xml --time 2.5 --variant dark --param headline=Hi
   scene-render eval promo.scene.xml --bench
   scene-render captions promo.scene.xml --at 1.5,3
@@ -191,6 +192,15 @@ enum Command {
     ///
     /// With --format json the result carries the summary and the whole typed model under `model`.
     Inspect {
+        /// Scene document.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// Skip file existence and SHA-256 checks.
+        #[arg(long)]
+        no_assets: bool,
+    },
+    /// Print parameter definitions and variant labels as JSON, without evaluating the scene.
+    Params {
         /// Scene document.
         #[arg(value_name = "FILE")]
         file: PathBuf,
@@ -482,6 +492,7 @@ impl Command {
         match self {
             Command::Validate { .. } => "validate",
             Command::Inspect { .. } => "inspect",
+            Command::Params { .. } => "params",
             Command::Eval { .. } => "eval",
             Command::Captions { .. } => "captions",
             Command::Render { .. } => "render",
@@ -913,6 +924,47 @@ fn resolve(file: &Path, o: &sr_resolve::Options, out: &mut Out) -> std::io::Resu
     }
     out.set_result(json!({ "targets": rows }));
     Ok(u8::from(errors + stale > 0))
+}
+
+fn params(file: &Path, no_assets: bool, out: &mut Out) -> std::io::Result<u8> {
+    let opts = if no_assets { LoadOptions::without_assets() } else { LoadOptions::default() };
+    let doc = match sr_model::load_file(file, &opts) {
+        Ok(d) => d,
+        Err(LoadError::Io { path, source }) => {
+            return Ok(out.fail(ErrorKind::Io, format!("cannot read {}: {source}", path.display())))
+        }
+        Err(LoadError::Invalid(report)) => {
+            let text = sr_model::read_document(file).unwrap_or_default();
+            return out.report_invalid(file, &LineIndex::new(&text), &report);
+        }
+    };
+    let mut params = Vec::new();
+    let mut variants = Vec::new();
+    for child in doc.scene.parameters.iter().flat_map(|p| &p.children) {
+        match child {
+            sr_model::model::ParametersChild::Param(p) => {
+                let options: Vec<_> =
+                    p.options.as_deref().unwrap_or("").split(',').map(str::trim).filter(|o| !o.is_empty()).collect();
+                params.push(json!({
+                    "id": p.id, "type": p.r#type, "default": p.default,
+                    "label": p.label, "description": p.description, "required": p.required,
+                    "min": p.min, "max": p.max, "maxLength": p.max_length,
+                    "pattern": p.pattern, "options": options,
+                }));
+            }
+            sr_model::model::ParametersChild::Variant(v) => {
+                variants.push(json!({"id": v.id, "label": v.label}));
+            }
+            _ => {}
+        }
+    }
+    let result = json!({ "params": params, "variants": variants });
+    if !out.json() {
+        let text = serde_json::to_string_pretty(&result).map_err(std::io::Error::other)?;
+        writeln!(out.w, "{text}")?;
+    }
+    out.set_result(result);
+    Ok(0)
 }
 
 fn inspect(file: &Path, no_assets: bool, out: &mut Out) -> std::io::Result<u8> {
@@ -2212,6 +2264,7 @@ fn dispatch(command: Command, out: &mut Out) -> std::io::Result<u8> {
             validate(&files, no_assets, base_dir, deny_warnings, quiet, out)
         }
         Command::Inspect { file, no_assets } => inspect(&file, no_assets, out),
+        Command::Params { file, no_assets } => params(&file, no_assets, out),
         Command::Eval { file, time, frame, variant, layout, params, row, data, bench, no_assets } => {
             let opts =
                 sr_eval::EvalOptions { variant, layout, params, row: row.map(|r| (data, r)), ..Default::default() };

@@ -721,3 +721,10 @@ fn a4_rotation_projects_strokes_and_decoration_with_glyph() {
         );
     }
 }
+
+#[test]
+fn an_unknown_chart_kind_does_not_parse() {
+    assert!(chart::Kind::parse("pyramid").is_none());
+    assert!(chart::Kind::parse("").is_none());
+    assert!(chart::Kind::parse("Column").is_none());
+}

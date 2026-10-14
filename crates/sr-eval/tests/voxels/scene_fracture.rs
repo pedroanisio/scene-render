@@ -231,3 +231,27 @@ fn the_documents_of_the_fracture_evaluate_clean_through_their_last_frame() {
         assert_every_frame_is_clean(&ev, name);
     }
 }
+
+#[test]
+fn contact_fracture_of_cells_uses_the_shared_energy_fraction_default() {
+    let dir = Dir::new("contact-energy-fraction");
+    std::fs::write(dir.0.join("block.srvol"), srvol::write(&block(), 0.25).unwrap()).unwrap();
+    let poses = |fraction: &str| {
+        let xml = document(
+            "",
+            &format!(r#"source="ball" minImpulse="0.001" partition="labels" labels="material" {fraction}"#),
+        )
+        .replace(
+            "</composition>",
+            r#"<object3D id="ball" primitive="sphere" radius="0.25" x="-2" y="0.5" z="0.5">
+              <rigidBody mass="100" velocityX="20" linearDamping="0" angularDamping="0" restitution="0" friction="0"/>
+            </object3D></composition>"#,
+        );
+        let n = block_node(&evaluator(&dir, &xml), 0.8);
+        let state = n.voxels.unwrap();
+        assert!(!state.enabled && state.pieces.len() == 2, "the projectile must break the block");
+        state.pieces.iter().map(|p| p.pose3).collect::<Vec<_>>()
+    };
+    assert_eq!(poses(""), poses(r#"energyFraction="0.3""#));
+    assert_ne!(poses(""), poses(r#"energyFraction="0.5""#));
+}

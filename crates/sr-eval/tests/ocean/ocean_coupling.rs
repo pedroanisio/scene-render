@@ -1,4 +1,5 @@
 //! The ocean responds to a crater that deforms the seabed, with no authored impulse.
+//! Fixture lengths and velocities are metres and metres per second, explicitly at one scene unit per metre.
 use sr_eval::{Evaluator, FrameGraph};
 
 /// A 128 x 128 ocean of 2-unit cells over a 12-unit layer of water, and a seabed
@@ -10,7 +11,7 @@ fn scene(crater_depth: f64, extra: &str) -> String {
             <crater radius="40" depth="{crater_depth}" rimHeight="3" rimWidth="8" start="0.5" end="1.5"/>
           </object3D>
           <ocean id="sea" bedResponse="hydrostatic" width="128" depth="128" cellSize="2" bottomDepth="12" dt="0.0416666666666667" boundary="closed" colliders="seabed">{extra}</ocean>
-        </composition></scene>"#
+        </composition><physics pixelsPerMeter="1"/></scene>"#
     )
 }
 fn evaluator(xml: &str) -> Evaluator {
@@ -93,7 +94,7 @@ fn bed_sampling_cost_per_canonical_step_at_720_by_720() {
                 <crater radius="52" depth="25" rimHeight="7" rimWidth="10" start="1" end="2.5"/>
               </object3D>
               <ocean id="sea" bedResponse="hydrostatic" width="1440" depth="1440" cellSize="2" bottomDepth="12" dt="0.0416666666666667" boundary="open" order="2" maxMemoryMiB="512" surfaceMemoryMiB="256" maxWork="100000000000" {colliders}/>
-            </composition></scene>"#
+            </composition><physics pixelsPerMeter="1"/></scene>"#
         )
     };
     let run = |colliders: &str| {
@@ -122,7 +123,7 @@ fn falling_sphere(radius: f64, speed_scale: f64) -> String {
             <animate property="y"><key time="0" value="{y0}"/><key time="{fall}" value="{y1}"/></animate>
           </object3D>
           <ocean id="sea" bedResponse="hydrostatic" width="128" depth="128" cellSize="2" bottomDepth="12" dt="0.0416666666666667" boundary="closed" colliders="impactor"/>
-        </composition></scene>"#
+        </composition><physics pixelsPerMeter="1"/></scene>"#
     )
 }
 
@@ -192,7 +193,7 @@ fn sliding_sphere(speed: f64) -> String {
             <animate property="x"><key time="0" value="-40"/><key time="2" value="{}"/></animate>
           </object3D>
           <ocean id="sea" bedResponse="hydrostatic" width="128" depth="128" cellSize="2" bottomDepth="12" dt="0.0416666666666667" boundary="closed" colliders="barge"/>
-        </composition></scene>"#,
+        </composition><physics pixelsPerMeter="1"/></scene>"#,
         -40.0 + 2.0 * speed
     )
 }
@@ -224,7 +225,7 @@ fn falling_rigid_sphere() -> String {
         <rigidBody velocityY="46" linearDamping="0" angularDamping="0"/>
       </object3D>
       <ocean id="sea" bedResponse="hydrostatic" width="128" depth="128" cellSize="2" bottomDepth="12" dt="0.0416666666666667" boundary="closed" colliders="impactor"/>
-    </composition><physics gravityY="0" bounds="none"/></scene>"#
+    </composition><physics gravityY="0" bounds="none" pixelsPerMeter="1"/></scene>"#
         .to_string()
 }
 
@@ -240,7 +241,7 @@ fn a_body_of_the_rigid_world_moves_the_ocean_like_the_same_animated_body() {
             r#"<rigidBody velocityY="46" linearDamping="0" angularDamping="0"/>"#,
             r#"<animate property="y"><key time="0" value="-40"/><key time="2" value="52"/></animate>"#,
         )
-        .replace(r#"<physics gravityY="0" bounds="none"/>"#, "");
+        .replace(r#"<physics gravityY="0" bounds="none" pixelsPerMeter="1"/>"#, r#"<physics pixelsPerMeter="1"/>"#);
     let (animated, simulated) = (far_wave(&evaluator(&animated_xml)), far_wave(&rigid));
     println!("RIGID far-field wave: animated {animated:.4}, rigid world {simulated:.4}");
     assert!(simulated > 0.0 && (simulated - animated).abs() < 0.02 * animated, "{animated} vs {simulated}");
@@ -256,7 +257,7 @@ fn colliders_that_are_neither_bed_nor_body_are_rejected_when_the_scene_loads() {
     let floor = r#"<scene version="1.3"><project width="64" height="64" fps="24" duration="6"/><composition>
       <object3D id="floor" primitive="plane" width="100" height="100" y="12" rotationX="-90"/>
       <ocean id="sea" bedResponse="hydrostatic" width="64" depth="64" cellSize="2" bottomDepth="12" colliders="floor"/>
-    </composition></scene>"#;
+    </composition><physics pixelsPerMeter="1"/></scene>"#;
     let Err(error) = sr_model::load_str(floor, &sr_model::LoadOptions::without_assets()) else {
         panic!("a plane without a crater was accepted");
     };
@@ -287,7 +288,7 @@ fn ocean_replay_seconds_at_target_resolution() {
         let ocean = if foam { ocean } else { no_foam.as_str() };
         let ocean = ocean.replacen("<ocean id=\"sea\"", &format!("<ocean id=\"sea\"{colliders}"), 1);
         let xml = format!(
-            r##"<scene version="1.3"><project width="64" height="64" fps="24" duration="6"/><materials><material id="water" baseColor="#06212C"/><material id="bed" baseColor="#756653"/></materials><composition>{seabed}{ocean}</composition></scene>"##
+            r##"<scene version="1.3"><project width="64" height="64" fps="24" duration="6"/><materials><material id="water" baseColor="#06212C"/><material id="bed" baseColor="#756653"/></materials><composition>{seabed}{ocean}</composition><physics pixelsPerMeter="1"/></scene>"##
         );
         let ev = evaluator(&xml);
         let seconds = |t: f64| {
@@ -312,7 +313,7 @@ fn whitewater_checkpoint_budget_never_changes_the_result_of_a_replay() {
               <ocean id="sea" bedResponse="hydrostatic" width="64" depth="64" cellSize="1" bottomDepth="6" dt="0.0416666666666667">
                 <waterImpulse time="0.2" radius="8" amplitude="-4"/>
                 <whitewater emissionRate="20" threshold="0.05" maxParticles="100000" lifetime="2" {budget}/>
-              </ocean></composition></scene>"#
+              </ocean></composition><physics pixelsPerMeter="1"/></scene>"#
         )
     };
     let run = |budget: &str| {

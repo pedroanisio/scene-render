@@ -1330,6 +1330,43 @@ impl Renderer {
         }
     }
 
+    /// Frame number `k` (counted from the first, in steps) of an image sequence, as its `missingFrame` policy gives it: `who` names
+    /// the node that asks, for the error of a frame that is missing and must not be.
+    fn sequence_at(
+        &mut self,
+        plan: &mut Plan,
+        base: &std::path::Path,
+        s: &m::ImageSequenceAsset,
+        k: i64,
+        who: &str,
+    ) -> Option<Arc<Tex>> {
+        let hold = if s.missing_frame == m::MissingFrame::Hold { k } else { 0 };
+        for back in 0..=hold {
+            let frame = s.first + (k - back) * s.step as i64;
+            let file = sr_model::assets::sequence_frame(&s.src, frame)?;
+            if let sr_model::assets::Resolved::Local(path) = sr_model::assets::resolve(&file, base) {
+                if path.is_file() {
+                    return self.sequence_frame(
+                        path,
+                        s.color_space,
+                        s.transfer,
+                        s.alpha,
+                        s.color_profile == sr_model::model::ColorProfile::Embedded,
+                    );
+                }
+            }
+        }
+        let frame = s.first + k * s.step as i64;
+        match s.missing_frame {
+            m::MissingFrame::Black => Some(self.solid_texture([0.0, 0.0, 0.0, 1.0])),
+            m::MissingFrame::Transparent | m::MissingFrame::Hold => None,
+            m::MissingFrame::Error => {
+                plan.stats.errors.push(format!("{who}: frame {frame} of image sequence {} is missing", s.id));
+                None
+            }
+        }
+    }
+
     /// Source texture for a layer's asset at a source time.
     /// Source path, primaries and transfer of an asset, honouring the
     /// preferred representation.
@@ -1595,33 +1632,7 @@ impl Renderer {
                 let t = n.source_time.unwrap_or(0.0).max(0.0);
                 let count = ((s.last - s.first) / s.step as i64).max(0);
                 let k = ((t * s.fps.as_f64() + 1e-9).floor() as i64).min(count);
-                let hold = if s.missing_frame == m::MissingFrame::Hold { k } else { 0 };
-                for back in 0..=hold {
-                    let frame = s.first + (k - back) * s.step as i64;
-                    let file = sr_model::assets::sequence_frame(&s.src, frame)?;
-                    if let sr_model::assets::Resolved::Local(path) = sr_model::assets::resolve(&file, &base) {
-                        if path.is_file() {
-                            return self.sequence_frame(
-                                path,
-                                s.color_space,
-                                s.transfer,
-                                s.alpha,
-                                s.color_profile == sr_model::model::ColorProfile::Embedded,
-                            );
-                        }
-                    }
-                }
-                let frame = s.first + k * s.step as i64;
-                match s.missing_frame {
-                    m::MissingFrame::Black => Some(self.solid_texture([0.0, 0.0, 0.0, 1.0])),
-                    m::MissingFrame::Transparent | m::MissingFrame::Hold => None,
-                    m::MissingFrame::Error => {
-                        plan.stats
-                            .errors
-                            .push(format!("{}: frame {frame} of image sequence {} is missing", n.id, s.id));
-                        None
-                    }
-                }
+                self.sequence_at(plan, &base, s, k, &n.id)
             }
             AssetsChild::Video(v) => {
                 let (src, space, transfer) = self.representation(&v.representations, &v.src, v.color_space, v.transfer);
