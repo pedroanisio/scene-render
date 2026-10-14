@@ -14,6 +14,10 @@ pub struct MediaInfo {
     pub video: Option<VideoInfo>,
     /// Audio streams in file order.
     pub audio: Vec<AudioInfo>,
+    /// The container's metadata tags, keys in lower case (Matroska writes them in upper case, MP4 in lower).
+    pub tags: std::collections::BTreeMap<String, String>,
+    /// The start timecode: a timecode track's tag, falling back to another stream's or the container's.
+    pub timecode: Option<String>,
 }
 
 /// Video stream properties.
@@ -47,6 +51,8 @@ pub struct VideoInfo {
     pub full_range: bool,
     /// Display rotation in degrees clockwise from the display matrix.
     pub rotation: i32,
+    /// Sample aspect ratio as FFprobe prints it (`6:5`); empty when the stream has none.
+    pub sample_aspect_ratio: String,
 }
 
 /// Audio stream properties.
@@ -60,6 +66,12 @@ pub struct AudioInfo {
     pub layout: String,
     /// Codec name.
     pub codec: String,
+    /// The stream's `language` tag, as stored.
+    pub language: String,
+    /// The stream's `title` tag (Matroska, WebM) or, without one, its handler name (MP4, MOV: `SoundHandler` unless named).
+    pub title: String,
+    /// Flagged as audio description: MP4's `descriptions` or Matroska's `visual_impaired` disposition.
+    pub description: bool,
 }
 
 fn rate(s: &str) -> f64 {
@@ -170,6 +182,7 @@ pub fn probe(path: &Path) -> Result<MediaInfo, MediaError> {
                     primaries: s(st, "color_primaries"),
                     full_range: s(st, "color_range") == "pc",
                     rotation,
+                    sample_aspect_ratio: s(st, "sample_aspect_ratio"),
                 });
             }
             Some("audio") => info.audio.push(AudioInfo {
@@ -177,9 +190,39 @@ pub fn probe(path: &Path) -> Result<MediaInfo, MediaError> {
                 channels: n(st, "channels") as u16,
                 layout: s(st, "channel_layout"),
                 codec: s(st, "codec_name"),
+                language: s(&st["tags"], "language"),
+                title: {
+                    let t = s(&st["tags"], "title");
+                    if t.is_empty() {
+                        s(&st["tags"], "handler_name")
+                    } else {
+                        t
+                    }
+                },
+                description: st["disposition"]["descriptions"].as_u64() == Some(1)
+                    || st["disposition"]["visual_impaired"].as_u64() == Some(1),
             }),
+            Some("data") if info.timecode.is_none() => {
+                info.timecode = st["tags"]["timecode"].as_str().map(str::to_string);
+            }
             _ => {}
         }
+    }
+    if let Some(tags) = v["format"]["tags"].as_object() {
+        for (k, val) in tags {
+            if let Some(val) = val.as_str() {
+                info.tags.insert(k.to_ascii_lowercase(), val.to_string());
+            }
+        }
+    }
+    if info.timecode.is_none() {
+        info.timecode = v["streams"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find_map(|st| st["tags"]["timecode"].as_str())
+            .map(str::to_string)
+            .or_else(|| info.tags.get("timecode").cloned());
     }
     if info.duration == 0.0 {
         info.duration = v["streams"]

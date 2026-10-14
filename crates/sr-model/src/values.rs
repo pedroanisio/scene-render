@@ -388,6 +388,40 @@ impl Timecode {
     pub fn to_seconds(self, fps: Fps) -> Result<f64, ValueError> {
         self.to_frame(fps).map(|fr| fps.frame_time(fr))
     }
+
+    /// The timecode of frame number `frame` at `fps`: the inverse of [`Timecode::to_frame`]. With `drop_frame` the
+    /// rate must be in the 29.97 or 59.94 family (a nominal rate that 30 divides), as `to_frame` requires; a
+    /// frame number beyond 99:59:59 wraps hours at 100, as timecode does.
+    pub fn from_frame(frame: u64, fps: Fps, drop_frame: bool) -> Result<Timecode, ValueError> {
+        let nominal = fps.nominal() as u64;
+        if nominal == 0 {
+            return Err(ValueError::new("the nominal frame rate is 0"));
+        }
+        let mut n = frame;
+        if drop_frame {
+            if !nominal.is_multiple_of(30) {
+                return Err(ValueError::new("drop-frame timecode requires a 29.97 or 59.94 fps family rate"));
+            }
+            // labels 0..drop are skipped at the start of every minute except every tenth
+            let drop = nominal / 15;
+            let per_minute = nominal * 60 - drop;
+            let per_ten_minutes = nominal * 600 - 9 * drop;
+            let (tens, rest) = (n / per_ten_minutes, n % per_ten_minutes);
+            n += 9 * drop * tens;
+            if rest >= drop {
+                n += drop * ((rest - drop) / per_minute);
+            }
+        }
+        let frames = (n % nominal) as u32;
+        let total_seconds = n / nominal;
+        Ok(Timecode {
+            hours: ((total_seconds / 3600) % 100) as u32,
+            minutes: (total_seconds / 60 % 60) as u32,
+            seconds: (total_seconds % 60) as u32,
+            frames,
+            drop_frame,
+        })
+    }
 }
 
 impl ParseValue for Timecode {
@@ -581,6 +615,27 @@ mod tests {
         assert!(Timecode::parse_value("00:01:00;00").unwrap().to_frame(ntsc).is_err());
         assert_eq!(Timecode::parse_value("00:10:00;00").unwrap().to_frame(ntsc).unwrap(), 17982);
         assert_eq!(Timecode::parse_value("01:00:00:00").unwrap().to_frame(Fps::new(25, 1).unwrap()).unwrap(), 90000);
+    }
+
+    #[test]
+    fn timecode_of_a_frame_inverts_the_frame_of_a_timecode() {
+        for (fps, drop) in [
+            (Fps::new(30000, 1001).unwrap(), true),
+            (Fps::new(60000, 1001).unwrap(), true),
+            (Fps::new(30000, 1001).unwrap(), false),
+            (Fps::new(25, 1).unwrap(), false),
+            (Fps::new(24000, 1001).unwrap(), false),
+        ] {
+            for frame in (0..200_000u64).step_by(7).chain([1799, 1800, 1801, 17981, 17982, 17983, 107_891, 107_892]) {
+                let tc = Timecode::from_frame(frame, fps, drop).unwrap();
+                assert_eq!(tc.to_frame(fps).unwrap(), frame, "{tc} at {}/{}", fps.num, fps.den);
+            }
+        }
+        let ntsc = Fps::new(30000, 1001).unwrap();
+        assert_eq!(Timecode::from_frame(1800, ntsc, true).unwrap().to_string(), "00:01:00;02");
+        assert_eq!(Timecode::from_frame(17982, ntsc, true).unwrap().to_string(), "00:10:00;00");
+        assert_eq!(Timecode::from_frame(90000, Fps::new(25, 1).unwrap(), false).unwrap().to_string(), "01:00:00:00");
+        assert!(Timecode::from_frame(0, Fps::new(25, 1).unwrap(), true).is_err());
     }
 
     #[test]

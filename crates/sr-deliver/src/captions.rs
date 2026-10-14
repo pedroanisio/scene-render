@@ -112,14 +112,14 @@ fn inline(tr: &m::CaptionTrack, cues: &[Cue]) -> m::CaptionTrack {
 
 /// Samples shared by all cues/words of a segment. Keys split the grid so short
 /// holds and jumps are represented too; crossings are refined against the actual curve.
-struct CueMap<'a> {
+pub(crate) struct CueMap<'a> {
     tm: &'a TimeMap,
     segment: usize,
     samples: Vec<(f64, f64)>,
 }
 
 impl<'a> CueMap<'a> {
-    fn new(tm: &'a TimeMap, segment: usize) -> Self {
+    pub(crate) fn new(tm: &'a TimeMap, segment: usize) -> Self {
         let mut samples = Vec::new();
         if tm.span(segment).is_none() {
             let duration = tm.segments[segment].duration;
@@ -138,7 +138,7 @@ impl<'a> CueMap<'a> {
     }
 
     /// All local output intervals whose composition times fall in [lo, hi).
-    fn intervals(&self, lo: f64, hi: f64) -> Vec<(f64, f64)> {
+    pub(crate) fn intervals(&self, lo: f64, hi: f64) -> Vec<(f64, f64)> {
         if hi <= lo {
             return Vec::new();
         }

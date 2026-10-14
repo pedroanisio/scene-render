@@ -16,6 +16,7 @@ pub struct Code {
 }
 
 const FIXED: &[(&str, &str, &str)] = &[
+    ("AD01", "rules", "accessibility/@audioDescription must name an audioTrack."),
     (
         "XML",
         "xml",

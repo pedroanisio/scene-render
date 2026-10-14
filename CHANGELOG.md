@@ -5,6 +5,20 @@ at each tag; edit `RELEASE_NOTES.md`, not this file. Entries are kept as release
 been removed since: "the cinematic impact SREP" is sr-core SREP 40, whose working draft this repository removed after v0.3.2.
 Versions up to v0.4.1 were released under the MIT License from github.com/pedroanisio/rs-scene-render.
 
+## Unreleased
+
+- Delivery embeds authored revision, timestamps, generator, language, accessibility description and custom metadata;
+  MP4/MOV preserve arbitrary tags, and container metadata never uses the wall clock.
+- Project pixel aspect tags the encoded stream without resampling; WebM reports its integral display-dimension
+  rounding. Start timecode follows output ranges.
+- Audio languages reach stream tags and the delivery manifest. Audio description has a separate complete programme
+  stream in MP4/MOV/MKV/WebM, with narration excluded from the default stream. MOV/WebM retain its name but lose the
+  description disposition in FFmpeg 7.1, with a warning; audio-only outputs and MXF warn and retain narration in the mix. AD01 validates its reference.
+- Chapter duration follows the composition span through retiming. Plain deliveries now embed chapters too.
+- Caption label and kind reach sidecars and reports; SRT names distinguish SDH and forced captions.
+- Container bytes and explicitly authored sidecars can change; rendered pixels and default caption sidecars do not.
+  No image goldens or frame hashes changed.
+
 ## v0.5.0 — 2026-10-12
 
 This release moves the engine to a new repository, https://github.com/pedroanisio/scene-render, and a new licence. The code and behaviour are those of v0.4.1.

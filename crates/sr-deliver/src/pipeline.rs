@@ -133,6 +133,10 @@ pub struct Report {
     pub vector_seconds: f64,
     /// Seconds spent mixing audio.
     pub audio_seconds: f64,
+    /// ISO 639-2 languages of delivered audio streams, in stream order.
+    pub audio_languages: Vec<String>,
+    /// Caption identities, including labels and kind, in delivery order.
+    pub caption_tracks: Vec<crate::metadata::CaptionInfo>,
     /// Integrated loudness of the delivered mix, LUFS.
     pub loudness: Option<f64>,
     /// True peak of the delivered mix, dBTP.
@@ -240,21 +244,45 @@ fn input_format(o: &m::Output, codec: Codec) -> InputFormat {
 }
 
 fn metadata(scene: &m::Scene) -> Vec<(String, String)> {
-    let mut v = vec![("encoder".to_string(), format!("scene-render {}", env!("CARGO_PKG_VERSION")))];
+    // Case-insensitive collisions follow the muxers' tag semantics. Explicit attributes win;
+    // repeated custom keys use the last authored value, in a stable sorted order.
+    let mut tags = std::collections::BTreeMap::new();
     if let Some(md) = &scene.metadata {
-        for (k, val) in [
+        for c in &md.children {
+            if let m::MetadataChild::Meta(meta) = c {
+                tags.insert(meta.name.to_ascii_lowercase(), meta.value.clone());
+            }
+        }
+        for (key, value) in [
             ("title", &md.title),
             ("artist", &md.author),
             ("comment", &md.description),
             ("copyright", &md.copyright),
             ("keywords", &md.keywords),
+            ("version", &md.revision),
+            ("creation_time", &md.created),
+            ("date", &md.modified),
+            ("generator", &md.generator),
         ] {
-            if let Some(val) = val {
-                v.push((k.to_string(), val.clone()));
+            if let Some(value) = value {
+                tags.insert(key.into(), value.clone());
+            }
+        }
+        if let Some(language) = &md.language {
+            tags.insert("language".into(), language.to_string());
+        }
+        for c in &md.children {
+            if let m::MetadataChild::Accessibility(a) = c {
+                if let Some(value) = &a.description {
+                    tags.insert("synopsis".into(), value.clone());
+                }
             }
         }
     }
-    v
+    // FFmpeg owns `encoder` and overwrites it on some muxers. Preserve the authoring tool in
+    // `generator`, independently of this engine and FFmpeg's actual encoder identification.
+    tags.insert("encoder".into(), format!("scene-render {}", env!("CARGO_PKG_VERSION")));
+    tags.into_iter().collect()
 }
 
 struct Video<'a> {
@@ -881,6 +909,25 @@ fn run_delivery(
     // captions in output time: with segments the composition's are mapped; the output's own tracks
     let captions = crate::captions::output_captions(p, output, segments.as_ref())?;
     report.warnings.extend(captions.warnings.iter().cloned());
+    if segments.is_none() {
+        report.caption_tracks.extend(p.scene.captions.iter().flat_map(|c| &c.caption_tracks).map(Into::into));
+    }
+    report.caption_tracks.extend(captions.tracks.iter().map(Into::into));
+    for track in &report.caption_tracks {
+        report.findings.push(crate::render_report::Finding::node(
+            crate::render_report::code::engine("CAPTION-TRACK"),
+            sr_model::Severity::Info,
+            &track.id,
+            format!(
+                "caption track {}: kind={}, language={}, label={}",
+                track.id,
+                track.kind,
+                track.language,
+                track.label.as_deref().unwrap_or("")
+            ),
+        ));
+    }
+
     report.findings.extend(captions.warnings.iter().map(|w| {
         crate::render_report::Finding::scene(
             crate::render_report::code::engine("CAPTION"),
@@ -918,26 +965,66 @@ fn run_delivery(
         report.warnings.extend(empty);
         chapters = write_chapters(p, tm, start, end, &tmp)?;
     }
+    if segments.is_none() {
+        let tm = crate::segments::TimeMap::span_of(p, 0.0, p.duration).map_err(DeliverError::Invalid)?;
+        chapters = write_chapters(p, &tm, start, end, &tmp)?;
+    }
     // with segments the programme is the output's own mix in output time (its own tracks may be its
     // only audio)
     let takes_audio = output.audio && (codec.takes_audio() || codec.is_audio_only());
     // Shader inputs are still needed for silent video and image-sequence exports.
     let overlay_audio_needed = output.overlay.is_some();
     let own_tracks = output.children.iter().any(|c| matches!(c, m::OutputChild::AudioTrack(_)));
+    let container = output
+        .container
+        .and_then(|c| Container::parse(c.as_str()))
+        .or_else(|| Container::from_path(&report.path))
+        .or_else(|| Container::default_for(codec));
+    let description_id = crate::metadata::description(&p.scene).filter(|id| {
+        p.scene
+            .audio_mix
+            .iter()
+            .flat_map(|am| &am.children)
+            .any(|c| matches!(c, m::AudioMixChild::AudioTrack(t) if t.id == *id))
+            || output.children.iter().any(|c| matches!(c, m::OutputChild::AudioTrack(t) if t.id == *id))
+    });
+    let separate_description = takes_audio
+        && !codec.is_audio_only()
+        && container.is_some_and(|c| c.carries_audio_description())
+        && description_id.is_some();
+    if separate_description && matches!(container, Some(Container::Mov | Container::Webm)) {
+        let name = if container == Some(Container::Mov) { "MOV" } else { "WebM" };
+        report.warnings.push(format!("{name} does not retain the audio-description disposition in FFmpeg; the alternate stream is named Audio description"));
+    }
+    if takes_audio && description_id.is_some() && !separate_description {
+        report.warnings.push(
+            "this output cannot identify a separate audio description stream; narration remains in the programme mix"
+                .into(),
+        );
+    }
+
     if (takes_audio || overlay_audio_needed) && scene_audio.is_none() && own_tracks {
         scene_audio = Some(audio::silent(p, fps));
     }
     // Without segments, selection attributes have no effect. Only output-owned
     // tracks need a programme of their own, starting at output/@start.
-    let plain = match (&segments, own_tracks) {
+    let plain = match (&segments, own_tracks || separate_description) {
         (None, true) => Some(crate::segment_audio::output_map(p, output)?),
         _ => None,
     };
     let mut programme = match (segments.as_ref().or(plain.as_ref()), &scene_audio) {
         (Some(tm), Some(sa)) if takes_audio || overlay_audio_needed => {
             let t = Instant::now();
-            let mut a =
-                crate::segment_audio::render(p, sa, output, tm, fps, representation.as_deref(), segments.is_some())?;
+            let mut a = crate::segment_audio::render_version(
+                p,
+                sa,
+                output,
+                tm,
+                fps,
+                representation.as_deref(),
+                segments.is_some(),
+                description_id.filter(|_| takes_audio).map(|id| (id, !separate_description)),
+            )?;
             if !overlay_audio_needed {
                 a.nodes.clear();
             }
@@ -947,6 +1034,58 @@ fn run_delivery(
         _ => None,
     };
     let wants_audio = takes_audio && scene_audio.is_some() && (segments.is_none() || programme.is_some());
+    let mut description_file = None;
+    if separate_description {
+        if let (Some(sa), Some(tm)) = (&scene_audio, segments.as_ref().or(plain.as_ref())) {
+            let described = crate::segment_audio::render_version(
+                p,
+                sa,
+                output,
+                tm,
+                fps,
+                representation.as_deref(),
+                segments.is_some(),
+                description_id.map(|id| (id, true)),
+            )?;
+            let origin = plain.as_ref().map_or(0.0, |tm| tm.composition(0, 0.0));
+            let mut part = audio::slice(&described.master, sa.mix.rate, start - origin, end - origin);
+            let master = &sa.mix.master;
+            if (master.limiter || master.normalize != sr_audio::mix::Normalize::None)
+                && crate::ceiling::applies(&output.audio_codec, container)
+            {
+                crate::ceiling::hold(
+                    &mut part,
+                    sa.mix.rate,
+                    sa.mix.layout,
+                    master.true_peak,
+                    output.audio_bitrate,
+                    &tmp,
+                )?;
+            }
+            let path = tmp.join("description.wav");
+            sr_audio::wav::write(&path, &part, sa.mix.rate, 32, sa.mix.layout, false)?;
+            description_file = Some(sr_media::encode::DescriptionTrack { path });
+        }
+    }
+    let main_language = crate::metadata::audio_language(
+        p,
+        output,
+        description_id.filter(|_| takes_audio).map(|id| (id, !separate_description)),
+        &mut report.warnings,
+    );
+    let description_language = description_id
+        .filter(|_| separate_description)
+        .map(|id| crate::metadata::audio_language(p, output, Some((id, true)), &mut report.warnings));
+    if wants_audio {
+        if main_language != "und" && matches!(container, Some(Container::Wav | Container::Mp3 | Container::Mxf)) {
+            report.warnings.push(
+                "this container does not retain audio stream language tags; language remains in the delivery manifest"
+                    .into(),
+            );
+        }
+        report.audio_languages.push(main_language.clone());
+        report.audio_languages.extend(description_language.iter().cloned());
+    }
     let mut audio_file = None;
     if let (true, Some(sa)) = (wants_audio, &scene_audio) {
         // Plain programmes start at their mapped composition time; the scene and
@@ -1008,6 +1147,7 @@ fn run_delivery(
                 opts,
             );
             spec.chapters = chapters.clone();
+            spec.tags.audio_language = Some(main_language.clone());
             let enc = Encoder::start(&spec)?;
             report.encoder = enc.encoder.clone();
             enc.finish()?;
@@ -1218,6 +1358,43 @@ fn run_delivery(
         }
         let audio_in = audio_file.clone().map(|f| (f, output.audio_codec.clone(), output.audio_bitrate));
         let mut spec = base_spec(output, &report.path, codec, size, fps, format, &color, audio_in, p, opts);
+        let pixel_aspect = p.scene.project.pixel_aspect.get();
+        if spec.tags.sar.is_none() && (pixel_aspect - 1.0).abs() > pixel_aspect * 1e-6 {
+            return Err(DeliverError::Invalid(format!(
+                "pixelAspect {pixel_aspect} cannot be represented within the encoder's rational precision"
+            )));
+        }
+        spec.tags.audio_language = Some(main_language.clone());
+        spec.tags.description = description_file;
+        spec.tags.description_language = description_language;
+        if spec.container() == Some(Container::Webm) {
+            if let Some((n, d)) = spec.tags.sar {
+                let numerator = u64::from(size[0]) * u64::from(n);
+                if !numerator.is_multiple_of(u64::from(d)) {
+                    let display = (numerator as f64 / f64::from(d)).round() as u64;
+                    report.warnings.push(format!("WebM stores integral display dimensions: pixelAspect {n}/{d} becomes {display}:{} at this frame width", size[0]));
+                }
+            }
+        }
+        if let Some(tc) = p.scene.project.timecode_start {
+            // Timecode labels use the output rate; the base is authored at the project rate.
+            // Segmented deliveries have their own output clock beginning at the project base.
+            let first_frame =
+                video.segments.as_ref().and_then(|(_, frames)| frames.first()).map_or(start, |f| f.output);
+            let seconds =
+                tc.to_seconds(p.scene.project.fps).map_err(|e| DeliverError::Invalid(e.to_string()))? + first_frame;
+            let output_fps = output.fps.unwrap_or(p.scene.project.fps);
+            spec.tags.timecode = Some(
+                sr_model::values::Timecode::from_frame(
+                    (seconds * fps).round() as u64,
+                    output_fps,
+                    tc.drop_frame && output_fps.nominal().is_multiple_of(30),
+                )
+                .map_err(|e| DeliverError::Invalid(e.to_string()))?
+                .to_string(),
+            );
+        }
+
         spec.start_number = (start * fps).round() as u64;
         spec.chapters = chapters.clone();
         let fit = output.max_file_size;
@@ -1277,7 +1454,11 @@ fn run_delivery(
             feeder.finish()?;
             report.frames = n;
             let duration = end - start;
-            let audio_bps = if spec.audio.is_some() { output.audio_bitrate } else { 0 };
+            let audio_bps = if spec.audio.is_some() {
+                output.audio_bitrate * (1 + u64::from(spec.tags.description.is_some()))
+            } else {
+                0
+            };
             let mut bitrate = fit.map(|max| sr_media::encode::fit_bitrate(max, duration, audio_bps)).or(output.bitrate);
             for attempt in 0..4 {
                 let log = tmp.join(format!("pass{attempt}"));
@@ -1871,6 +2052,11 @@ fn base_spec(
         metadata: if o.embed_metadata { metadata(&p.scene) } else { Vec::new() },
         chapters: None,
         hardware: opts.hardware,
+        tags: sr_media::encode::StreamTags {
+            sar: sr_media::encode::StreamTags::sar_of(p.scene.project.pixel_aspect.get()),
+            timecode: p.scene.project.timecode_start.map(|tc| tc.to_string()),
+            ..Default::default()
+        },
         audio_bits: p.scene.audio_mix.as_ref().map(|a| a.bit_depth.as_str().parse().unwrap_or(24)).unwrap_or(24),
     }
 }
@@ -1994,7 +2180,7 @@ fn write_chapters(
     end: f64,
     dir: &Path,
 ) -> Result<Option<PathBuf>, DeliverError> {
-    let mut marks: Vec<(f64, String)> = p
+    let mut marks: Vec<(f64, Option<f64>, String)> = p
         .scene
         .markers
         .iter()
@@ -2002,11 +2188,34 @@ fn write_chapters(
         .filter_map(|c| match c {
             m::MarkersChild::Marker(mk) if mk.kind.as_str() == "chapter" => {
                 let t = tm.output_of(mk.time)?;
-                Some((t, mk.label.clone().or_else(|| mk.id.clone()).unwrap_or_default()))
+                let stop = (mk.duration.get() > 0.0).then(|| {
+                    // Duration is in composition seconds. Reuse the caption interval mapper so
+                    // speed changes, skipped spans, holds and reverse remaps have one definition.
+                    let mut intervals: Vec<_> = (0..tm.segments.len())
+                        .flat_map(|i| {
+                            crate::captions::CueMap::new(tm, i)
+                                .intervals(mk.time, mk.time + mk.duration.get())
+                                .into_iter()
+                                .map(move |(a, b)| (tm.segments[i].start + a, tm.segments[i].start + b))
+                        })
+                        .collect();
+                    intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    let mut stop = t;
+                    for (a, b) in intervals {
+                        if a > stop + 1e-7 {
+                            break;
+                        }
+                        if b > stop {
+                            stop = b;
+                        }
+                    }
+                    stop
+                });
+                Some((t, stop, mk.label.clone().or_else(|| mk.id.clone()).unwrap_or_default()))
             }
             _ => None,
         })
-        .filter(|(t, _)| *t >= start - 1e-9 && *t < end)
+        .filter(|(t, _, _)| *t >= start - 1e-9 && *t < end)
         .collect();
     if marks.is_empty() {
         return Ok(None);
@@ -2023,8 +2232,9 @@ fn write_chapters(
         })
     };
     let mut text = String::from(";FFMETADATA1\n");
-    for (k, (t, title)) in marks.iter().enumerate() {
-        let next = marks.get(k + 1).map_or(end, |m| m.0);
+    for (k, (t, stop, title)) in marks.iter().enumerate() {
+        let next = marks.get(k + 1).map_or(end, |m| m.0).min(end);
+        let next = stop.map_or(next, |stop| stop.min(next));
         text.push_str(&format!(
             "[CHAPTER]\nTIMEBASE=1/1000\nSTART={}\nEND={}\ntitle={}\n",
             ms(*t),
@@ -2070,9 +2280,25 @@ fn write_sidecars(
             .collect();
         let srt = tr.format.as_ref().map(|f| f.to_string()) == Some("srt".into());
         let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
-        let name = format!("{stem}.{}.{}.{}", tr.id, tr.language, if srt { "srt" } else { "vtt" });
+        let kind = tr.kind.as_str();
+        let suffix = if srt && matches!(kind, "sdh" | "forced") { format!(".{kind}") } else { String::new() };
+        let name = format!("{stem}.{}.{}{suffix}.{}", tr.id, tr.language, if srt { "srt" } else { "vtt" });
         let path = out.with_file_name(name);
-        let text = if srt { sr_text::captions::to_srt(&cues) } else { sr_text::captions::to_vtt(&cues) };
+        let text = if srt {
+            sr_text::captions::to_srt(&cues)
+        } else {
+            // NOTE is standard WebVTT syntax. These are informational fields, not cue settings
+            // or nonstandard WebVTT header directives. Keep default sidecars byte-identical.
+            let mut text = sr_text::captions::to_vtt(&cues);
+            if tr.label.is_some() || kind != "captions" {
+                let label = tr.label.as_deref().unwrap_or("").replace(['\r', '\n'], " ").replace("-->", "→");
+                text.insert_str(
+                    "WEBVTT\n\n".len(),
+                    &format!("NOTE\nKind: {kind}\nLanguage: {}\nLabel: {label}\n\n", tr.language),
+                );
+            }
+            text
+        };
         std::fs::write(&path, text)?;
         files.push(path);
     }
@@ -2294,6 +2520,113 @@ fn thinned_contrasts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn a1_document(extra: &str) -> sr_model::Document {
+        let (before, after) = extra.find("<captions>").map_or((extra, ""), |i| extra.split_at(i));
+        sr_model::load_str(&format!(r#"<scene version="1.2"><project width="64" height="36" fps="25" duration="10" pixelAspect="1.2" timecodeStart="01:00:00:00"/>{before}<composition/>{after}</scene>"#), &sr_model::LoadOptions::without_assets()).unwrap()
+    }
+
+    #[test]
+    fn a1_metadata_explicit_fields_win_and_dates_are_authored() {
+        let d = a1_document(
+            r#"<metadata title="Title" revision="r7" created="2020-01-02T03:04:05Z" modified="2021-02-03T04:05:06Z" generator="Authoring tool" language="pt-BR" description="Editorial"><meta name="TITLE" value="wrong"/><meta name="custom" value="kept"/><accessibility description="Text alternative"/></metadata>"#,
+        );
+        let tags: std::collections::BTreeMap<_, _> = metadata(&d.scene).into_iter().collect();
+        for (key, val) in [
+            ("title", "Title"),
+            ("version", "r7"),
+            ("creation_time", "2020-01-02T03:04:05Z"),
+            ("date", "2021-02-03T04:05:06Z"),
+            ("language", "pt-BR"),
+            ("comment", "Editorial"),
+            ("synopsis", "Text alternative"),
+            ("custom", "kept"),
+            ("generator", "Authoring tool"),
+        ] {
+            assert_eq!(tags.get(key).map(String::as_str), Some(val), "{key}");
+        }
+        assert!(!tags.contains_key("TITLE"));
+        assert!(!metadata(&a1_document("").scene).iter().any(|(k, _)| k == "creation_time" || k == "date"));
+    }
+
+    #[test]
+    fn a1_project_stream_tags_are_independent_of_embed_metadata() {
+        let d = a1_document("");
+        let ev = Evaluator::new(&d, &EvalOptions::default()).unwrap();
+        let mut o = adhoc_output("x.mov", "h264").unwrap();
+        o.embed_metadata = false;
+        let color = OutputColor::new(m::ColorSpace::Srgb, m::Transfer::Auto, false);
+        let spec = base_spec(
+            &o,
+            Path::new("x.mov"),
+            Codec::H264,
+            [64, 36],
+            25.0,
+            InputFormat::Rgba8,
+            &color,
+            None,
+            ev.program(),
+            &Options::default(),
+        );
+        assert_eq!(spec.tags.sar, Some((6, 5)));
+        assert_eq!(spec.tags.timecode.as_deref(), Some("01:00:00:00"));
+        assert!(spec.metadata.is_empty());
+    }
+
+    #[test]
+    fn a1_chapter_duration_caps_end_after_a_skipped_span() {
+        let d = a1_document(
+            r#"<markers><marker time="0" kind="chapter" label="Skipped"/><marker time="3" duration="0.5" kind="chapter" label="Short"/><marker time="5" kind="chapter" label="Next"/></markers>"#,
+        );
+        let ev = Evaluator::new(&d, &EvalOptions::default()).unwrap();
+        let tm = crate::segments::TimeMap::span_of(ev.program(), 2.0, 8.0).unwrap();
+        let dir = std::env::temp_dir().join(format!("a1-chapters-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = write_chapters(ev.program(), &tm, 0.0, 6.0, &dir).unwrap().unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(text.contains("START=1000\nEND=1500\ntitle=Short"), "{text}");
+        assert!(!text.contains("Skipped"));
+        assert!(text.contains("START=3000\nEND=6000\ntitle=Next"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a1_caption_sidecars_preserve_track_identity() {
+        let d = a1_document(
+            r#"<captions><captionTrack id="cc" language="pt-BR" label="Português" kind="sdh" mode="sidecar"><cue start="0" end="1" text="Hello"/></captionTrack></captions>"#,
+        );
+        let dir = std::env::temp_dir().join(format!("a1-sidecars-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut tracks = d.scene.captions.unwrap().caption_tracks;
+        let o = adhoc_output("x.mp4", "h264").unwrap();
+        let paths = write_sidecars(&tracks, &dir, &o, &dir.join("x.mp4"), 0.0, 1.0).unwrap();
+        let vtt = std::fs::read_to_string(&paths[0]).unwrap();
+        assert!(vtt.contains("NOTE\nKind: sdh\nLanguage: pt-BR\nLabel: Português\n\n"), "{vtt}");
+        tracks[0].format = Some(m::CaptionTrackFormat::Srt);
+        let paths = write_sidecars(&tracks, &dir, &o, &dir.join("x.mp4"), 0.0, 1.0).unwrap();
+        assert!(paths[0].ends_with("x.cc.pt-BR.sdh.srt"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a1_chapter_duration_follows_speed_and_contiguous_mapped_spans() {
+        for (segments, expected) in [
+            (r#"<segment from="0" to="6" speed="2"/>"#, "START=500\nEND=1500"),
+            (r#"<segment from="0" to="2"/><segment from="2.5" to="6"/>"#, "START=1000\nEND=2500"),
+        ] {
+            let d = a1_document(&format!(
+                r#"<output path="a.mkv" codec="h264">{segments}</output><markers><marker time="1" duration="2" kind="chapter" label="Span"/></markers>"#
+            ));
+            let ev = Evaluator::new(&d, &EvalOptions::default()).unwrap();
+            let tm = crate::segments::TimeMap::of(ev.program(), &d.scene.outputs[0]).unwrap().unwrap();
+            let dir = std::env::temp_dir().join(format!("a1-chapter-speed-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = write_chapters(ev.program(), &tm, 0.0, tm.duration, &dir).unwrap().unwrap();
+            let text = std::fs::read_to_string(path).unwrap();
+            assert!(text.contains(expected), "{text}");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
 
     /// Graphs evaluated ahead arrive in order, and a body that stops early releases the helper.
     #[test]

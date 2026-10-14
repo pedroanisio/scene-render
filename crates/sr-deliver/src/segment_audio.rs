@@ -101,6 +101,22 @@ pub fn render(
     representation: Option<&str>,
     select: bool,
 ) -> Result<OutputAudio, DeliverError> {
+    render_version(p, sa, output, tm, fps, representation, select, None)
+}
+
+/// Render the ordinary or described programme using the same selection, mapping, buses and master.
+/// The narration is excluded from the ordinary programme and included in the described one.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_version(
+    p: &Program,
+    sa: &SceneAudio,
+    output: &m::Output,
+    tm: &TimeMap,
+    fps: f64,
+    representation: Option<&str>,
+    select: bool,
+    description: Option<(&str, bool)>,
+) -> Result<OutputAudio, DeliverError> {
     let rate = sa.mix.rate;
     let roles: std::collections::HashMap<&str, &str> = p
         .scene
@@ -114,13 +130,29 @@ pub fn render(
         .collect();
     // the output's own tracks, in output time
     let mut own = own_nodes(p, output, tm, rate, fps, representation)?;
+    if let Some((id, false)) = description {
+        for node in &mut own {
+            if node.id == id {
+                node.mute = true;
+            }
+        }
+    }
     let tracks: Vec<&Node> = sa.mix.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Track { .. })).collect();
     let buses: Vec<&Node> = sa.mix.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Bus)).collect();
     let play: HashSet<&str> = tracks
         .iter()
         .filter(|n| {
-            !select
-                || selected(output, &n.id, roles.get(n.id.as_str()).copied().unwrap_or("other"), n.output.as_deref())
+            if let Some((_, include)) = description.filter(|(id, _)| *id == n.id) {
+                include
+            } else {
+                !select
+                    || selected(
+                        output,
+                        &n.id,
+                        roles.get(n.id.as_str()).copied().unwrap_or("other"),
+                        n.output.as_deref(),
+                    )
+            }
         })
         .map(|n| n.id.as_str())
         .collect();

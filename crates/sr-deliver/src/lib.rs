@@ -27,6 +27,7 @@ pub mod ceiling;
 mod child;
 pub mod destinations;
 pub mod legibility;
+pub mod metadata;
 pub mod overlay;
 pub mod pipeline;
 pub mod render_report;

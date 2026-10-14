@@ -175,6 +175,44 @@ Evaluation errors use codes `E01`–`E16` (expression compile errors, unknown pr
 
 **Captions burn in or write sidecars** (see [typography and data graphics](#typography-and-data-graphics)); `sphericalMetadata` is written into 360 outputs (see [3D rendering and 360 video](#3d-rendering-and-360-video)).
 
+**Delivery metadata.** With `embedMetadata`, title, author, description, copyright and keywords are joined by
+revision (`version`), created (`creation_time`), modified (`date`), generator (`generator`), language (`language`),
+and the accessibility text alternative (`synopsis`). Creation dates come only from authored values; no wall clock
+is consulted. Dates without a timezone use UTC; relative creation times such as `now` are rejected. `generator` identifies the authoring application; FFmpeg owns the encoder identification. Custom
+`meta` pairs become container tags; keys compare without case, explicit fields take precedence, and the last custom
+value wins. MP4/MOV use mdta metadata to preserve arbitrary keys. MKV/WebM keys are case-insensitive and ffprobe may
+print them in uppercase. The container tests probe the supported fields in all four formats.
+
+`project/@pixelAspect` sets the output stream's sample aspect ratio without resampling pixels. `timecodeStart`
+sets the output's starting timecode, advanced to the first rendered frame, using the project rate for the authored
+base and the output rate for emitted labels (non-drop-frame when the output rate cannot use drop-frame labels).
+Segments use the output programme clock. MOV/MP4 carry a timecode
+track; MKV/WebM preserve the timecode tag. These stream properties also apply with `embedMetadata="false"`.
+WebM rounds display dimensions to whole pixels (64 pixels at 6:5 becomes 77:64); delivery reports that rounding.
+Ratios that cannot be represented within 1e-6 relative error with terms up to 100000 fail instead of silently
+becoming square pixels.
+
+Audio track languages are mapped from the primary BCP-47 subtag to ISO 639-2/T (`pt-BR` → `por`). A mixed stream
+has its one declared language, `mul` if several declared languages contribute, or `und` if none does. Unknown
+language mappings are reported and use `und`; unlabelled music/effects do not erase a declared voice language.
+The delivery manifest lists the stream languages. Tracks stay mixed unless selected as audio description.
+
+`accessibility/@audioDescription` must reference an `audioTrack` (AD01). It designates narration: MP4, MOV, MKV
+and WebM carry the normal programme without that narration and a second, selectable described programme containing
+both the programme and narration. Both versions follow the output's timing, buses and master processing; the
+narration is included in the described version even if ordinary segment selection excludes it. The alternate
+stream is named “Audio description”. MP4/MKV retain the description disposition; FFmpeg 7.1 drops it in MOV/WebM,
+which retain the track name and emit a delivery warning. Audio-only outputs and MXF warn and retain narration in
+the mix, including when ordinary segment selection excludes it. A track owned by another output does not apply to this output.
+
+Chapter marker durations are composition-time spans. A positive duration ends at the first exit from the mapped
+span, the next chapter, or the output end, whichever comes first; zero duration ends at the next chapter or output
+end. Markers whose start is skipped are omitted. Plain and segmented deliveries both write chapters.
+
+Caption labels and kinds appear in the delivery manifest and as `X-scene-render-CAPTION-TRACK` informational render findings.
+WebVTT sidecars with a label or nondefault kind carry a standard `NOTE` block containing Kind, Language and Label;
+default sidecars remain unchanged. SRT sidecars use `.sdh.srt` or `.forced.srt` for those kinds.
+
 **Destinations run after the files exist.** `file` copies; `http-put`, `s3`, `gcs`, `azure-blob` and `sftp` upload through `curl` (override with `SR_CURL`), which brings TLS, HTTP/2 and SFTP without a compiled-in HTTP stack. S3 requests are signed with AWS Signature Version 4 in the code (the HMAC matches RFC 4231 and the signing key the AWS example), path-style when an endpoint is set. Webhooks run last and post JSON listing every file with its size, SHA-256 and uploaded location, signed with HMAC-SHA256 in `X-Scene-Render-Signature`. Credentials and signed URLs are passed to curl through standard input, excluded from process arguments and failure messages. File digests are streamed with a fixed-size buffer. Upload responses are discarded without buffering. Each transfer, including retries and request writing, has a 30-minute wall-clock deadline (`SR_UPLOAD_TIMEOUT`, positive seconds); connection attempts are limited to 30 seconds or the remaining transfer budget. Credentials never appear in the document: `credentials="prod"` reads environment variables `SR_CREDENTIALS_PROD_<NAME>`.
 
 | kind | variables |
@@ -947,7 +985,7 @@ crates/sr-fuzz/src/         mutators, targets and the sr-fuzz campaign runner
 crates/sr-testkit/src/      test-only: skip a test whose GPU, FFmpeg or HEIC decoder is missing, or fail it under SR_REQUIRE_*;
                             property (property tests that draw the same cases on every run)
 crates/sr-deliver/src/      audio (scene mix, analysis table), pipeline, destinations, access (flash analysis); capabilities (the manifest, SREP 22), captions, segments and segment_audio (output segments, SREP 13),
-                            overlay, ceiling (true-peak), legibility (SREP 19), render_report (SREP 18), child (reaping a tool spawned without its pipes)
+                            overlay, ceiling (true-peak), legibility (SREP 19), render_report (SREP 18), child (reaping a tool spawned without its pipes), metadata (container and stream identity)
 crates/scene-render/        CLI
 crates/*/tests/             per-crate test suites, fixtures and golden frames
 tests/corpus/               conformance documents, media fixtures, manifest.json

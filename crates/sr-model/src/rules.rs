@@ -970,6 +970,11 @@ impl<'a> Eval<'a> {
         let local = if n.tag_name().namespace().is_none() { n.tag_name().name() } else { "" };
         let parent_is = |name: &str| n.parent_element().is_some_and(|p| is(p, name));
 
+        if local == "accessibility" && has("audioDescription") {
+            let target = a("audioDescription");
+            let ok = n.document().descendants().any(|t| is(t, "audioTrack") && t.attribute("id") == target);
+            self.check(ok, n, "AD01", || "accessibility/@audioDescription must name an audioTrack.".into());
+        }
         if local == "scene" && n.parent_element().is_none() {
             self.pinned_fonts(n);
         }
@@ -3096,6 +3101,25 @@ mod tests {
         assert!(xpath_number("e3").is_nan());
         assert!(xpath_number("").is_nan());
         assert!(xpath_number(".").is_nan());
+    }
+
+    #[test]
+    fn a1_audio_description_reference_accepts_only_audio_tracks() {
+        for (reference, invalid) in [("asset", true), ("narration", false), ("local", false)] {
+            let xml = format!(
+                r#"<scene version="1.2"><project width="64" height="36" fps="25" duration="1"/>
+                <metadata><accessibility audioDescription="{reference}"/></metadata>
+                <output path="out.mp4" codec="h264"><audioTrack id="local" asset="asset"/></output>
+                <assets><audio id="asset" src="a.wav"/></assets><composition/>
+                <audioMix><audioTrack id="narration" asset="asset"/></audioMix></scene>"#
+            );
+            let report = crate::validate_str(&xml, &crate::LoadOptions::without_assets());
+            assert_eq!(report.diagnostics.iter().any(|d| d.code == "AD01"), invalid, "{report}");
+            if !invalid {
+                assert!(!report.has_errors(), "{report}");
+            }
+        }
+        assert!(crate::codes::lookup("AD01").is_some());
     }
 
     #[test]

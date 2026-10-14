@@ -50,6 +50,7 @@ fn spec(path: &Path, codec: Codec, input: InputFormat) -> EncodeSpec {
         chapters: None,
         hardware: Hardware::Software,
         audio_bits: 24,
+        tags: Default::default(),
     }
 }
 
@@ -573,4 +574,100 @@ fn the_software_encoders_use_a_fixed_number_of_threads() {
         assert!(params.contains(&format!("pools={SOFTWARE_ENCODER_THREADS}")), "{params}");
         assert!(params.contains("frame-threads="), "{params}");
     }
+}
+
+/// These assertions run ffprobe on the VM, including each muxer's handling of arbitrary tags.
+#[test]
+fn a1_container_metadata_survival() {
+    if !common::ffmpeg_available("a1_container_metadata_survival") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for (ext, codec) in [("mp4", Codec::H264), ("mov", Codec::H264), ("mkv", Codec::H264), ("webm", Codec::Vp9)] {
+        let mut s = spec(&dir.path().join(format!("tags.{ext}")), codec, InputFormat::Nv12);
+        s.width = 100; // WebM stores integral display dimensions; 100 * 6/5 is exact.
+        s.metadata = [
+            ("title", "Title"),
+            ("artist", "Author"),
+            ("comment", "Editorial"),
+            ("copyright", "Copyright"),
+            ("keywords", "one,two"),
+            ("version", "r7"),
+            ("creation_time", "2020-01-02T03:04:05Z"),
+            ("date", "2021-02-03T04:05:06Z"),
+            ("language", "pt-BR"),
+            ("synopsis", "Text alternative"),
+            ("generator", "Authoring tool"),
+            ("custom", "kept"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        s.tags.sar = Some((6, 5));
+        s.tags.timecode = Some("01:00:00:00".into());
+        encode(&s, 2);
+        let info = probe(&s.path).unwrap();
+        eprintln!("{ext}: {:?}", info.tags);
+        for (k, v) in &s.metadata {
+            if k == "creation_time" {
+                assert!(
+                    info.tags.get(k).is_some_and(|v| v.starts_with("2020-01-02T03:04:05")),
+                    "{ext}: {k}: {:?}",
+                    info.tags
+                );
+            } else {
+                assert_eq!(info.tags.get(k), Some(v), "{ext}: {k}");
+            }
+        }
+        assert_eq!(info.video.unwrap().sample_aspect_ratio, "6:5", "{ext}");
+        assert_eq!(info.timecode.as_deref(), Some("01:00:00:00"), "{ext}");
+    }
+}
+
+#[test]
+fn a1_creation_time_cannot_request_the_wall_clock() {
+    let mut s = spec(Path::new("clock.mp4"), Codec::H264, InputFormat::Nv12);
+    for value in ["now", "12:34:56"] {
+        s.metadata = vec![("creation_time".into(), value.into())];
+        assert!(s.validate().is_err(), "{value} must not be interpreted relative to the current time");
+    }
+}
+
+#[test]
+fn a1_unset_creation_time_stays_unset_and_tags_repeat() {
+    if !common::ffmpeg_available("a1_unset_creation_time_stays_unset_and_tags_repeat") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for (ext, codec) in [("mp4", Codec::H264), ("mov", Codec::H264), ("mkv", Codec::H264), ("webm", Codec::Vp9)] {
+        let mut s = spec(&dir.path().join(format!("first.{ext}")), codec, InputFormat::Nv12);
+        encode(&s, 2);
+        let first = probe(&s.path).unwrap();
+        s.path = dir.path().join(format!("second.{ext}"));
+        encode(&s, 2);
+        let second = probe(&s.path).unwrap();
+        assert_eq!(first.tags, second.tags, "{ext}");
+        assert!(!first.tags.contains_key("creation_time"), "{ext}: {:?}", first.tags);
+    }
+}
+
+#[test]
+fn a1_webm_reports_its_integral_display_dimensions() {
+    if !common::ffmpeg_available("a1_webm_reports_its_integral_display_dimensions") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = spec(&dir.path().join("aspect.webm"), Codec::Vp9, InputFormat::Nv12);
+    s.tags.sar = Some((6, 5));
+    encode(&s, 2);
+    assert_eq!(probe(&s.path).unwrap().video.unwrap().sample_aspect_ratio, "77:64");
+}
+
+#[test]
+fn a1_pixel_aspect_reduces_without_silently_losing_extreme_values() {
+    assert_eq!(StreamTags::sar_of(1.2), Some((6, 5)));
+    assert_eq!(StreamTags::sar_of(0.00001), Some((1, 100000)));
+    assert_eq!(StreamTags::sar_of(1001.0 / 1000.0), Some((1001, 1000)));
+    assert_eq!(StreamTags::sar_of(1.0), None);
+    assert_eq!(StreamTags::sar_of(1e8), None);
 }

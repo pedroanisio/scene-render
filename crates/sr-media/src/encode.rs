@@ -102,6 +102,13 @@ impl Container {
         Container::parse(&p.extension()?.to_str()?.to_ascii_lowercase())
     }
 
+    /// Whether the container holds a second audio stream beside the programme's (the audio description). These muxers retain a stream title or
+    /// description disposition. FFmpeg's MXF muxer does not store these identifiers, and this encoder's
+    /// audio-only outputs deliver one stream.
+    pub fn carries_audio_description(&self) -> bool {
+        matches!(self, Container::Mp4 | Container::Mov | Container::Mkv | Container::Webm)
+    }
+
     fn muxer(&self) -> &'static str {
         match self {
             Container::Mp4 => "mp4",
@@ -291,6 +298,64 @@ pub struct EncodeSpec {
     pub hardware: Hardware,
     /// Audio sample format bits for PCM outputs.
     pub audio_bits: u16,
+    /// What the container records about the streams besides the picture and the sound itself.
+    pub tags: StreamTags,
+}
+
+/// The name of the audio description stream.
+pub const AUDIO_DESCRIPTION_TITLE: &str = "Audio description";
+
+/// A second audio stream, the described version of the programme (`accessibility/@audioDescription`), muxed
+/// beside the main one and flagged as audio description where the container can flag it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct DescriptionTrack {
+    /// The audio file; it is encoded with the main audio's codec and bitrate.
+    pub path: PathBuf,
+}
+
+/// Stream-level tags of an output. None of them changes a pixel or a sample.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct StreamTags {
+    /// Sample aspect ratio of the picture (`project/@pixelAspect`) as a reduced fraction; `None` leaves the stream
+    /// untagged, which players read as square pixels. The frames are not resampled.
+    pub sar: Option<(u32, u32)>,
+    /// Timecode of the first frame, `HH:MM:SS:FF` or `HH:MM:SS;FF` (drop-frame).
+    pub timecode: Option<String>,
+    /// ISO 639-2 language of the main audio stream.
+    pub audio_language: Option<String>,
+    /// The audio description stream.
+    pub description: Option<DescriptionTrack>,
+    /// ISO 639-2 language of the audio description stream.
+    pub description_language: Option<String>,
+}
+
+impl StreamTags {
+    /// The closest fraction with both terms at most 100000. None means square pixels, an
+    /// invalid value, or a ratio that cannot be represented within 1e-6 relative error.
+    pub fn sar_of(pixel_aspect: f64) -> Option<(u32, u32)> {
+        if !pixel_aspect.is_finite() || pixel_aspect <= 0.0 {
+            return None;
+        }
+        let mut best = None;
+        let mut error = f64::INFINITY;
+        // Exact broadcast ratios terminate after a handful of denominators. A bounded search
+        // also handles values at the boundary (1/100000) without continued-fraction overflow.
+        for d in 1..=100000u32 {
+            let n = (pixel_aspect * f64::from(d)).round();
+            if !(1.0..=100000.0).contains(&n) {
+                continue;
+            }
+            let delta = (n / f64::from(d) - pixel_aspect).abs();
+            if delta < error {
+                best = Some((n as u32, d));
+                error = delta;
+            }
+            if error <= pixel_aspect * f64::EPSILON * 4.0 {
+                break;
+            }
+        }
+        best.filter(|(n, d)| n != d && error <= pixel_aspect * 1e-6)
+    }
 }
 
 /// Encoders the local FFmpeg can actually open, probed once per process.
@@ -425,6 +490,28 @@ impl EncodeSpec {
 
     /// Checks codec, container and alpha combinations.
     pub fn validate(&self) -> Result<(), MediaError> {
+        for (key, value) in &self.metadata {
+            if key.is_empty() || key.contains(['=', '\0']) {
+                return Err(MediaError::Invalid(format!("metadata key {key:?} cannot be represented by FFmpeg")));
+            }
+            if key.eq_ignore_ascii_case("creation_time") && !value.is_empty() {
+                // FFmpeg also accepts `now` and time-only strings, both relative to the clock.
+                // Require a complete ISO date/time, even for caller-supplied custom metadata.
+                let b = value.trim().as_bytes();
+                let absolute = b.len() >= 19
+                    && [4, 7].iter().all(|&i| b[i] == b'-')
+                    && b[10] == b'T'
+                    && b[13] == b':'
+                    && b[16] == b':'
+                    && [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18].iter().all(|&i| b[i].is_ascii_digit());
+                if !absolute {
+                    return Err(MediaError::Invalid(
+                        "creation_time requires an absolute ISO date/time; clock-relative values are not deterministic"
+                            .into(),
+                    ));
+                }
+            }
+        }
         if let Some(c) = self.container() {
             if !self.codec.is_sequence()
                 && !matches!(self.codec, Codec::Gif | Codec::Apng | Codec::Webp)
@@ -538,7 +625,14 @@ impl EncodeSpec {
             a.push(p.display().to_string());
         }
         let container = self.container();
-        let index = usize::from(!self.codec.is_audio_only()) + usize::from(audio.is_some());
+        let description = self.description(audio.is_some(), container);
+        if let Some(d) = description {
+            a.push("-i".into());
+            a.push(d.path.display().to_string());
+        }
+        let index = usize::from(!self.codec.is_audio_only())
+            + usize::from(audio.is_some())
+            + usize::from(description.is_some());
         let map_chapters = self.chapter_input(&mut a, container, index);
         if self.codec.is_audio_only() {
             let (codec, bits) = match container {
@@ -571,6 +665,10 @@ impl EncodeSpec {
         // pixel conversion and colour tags
         let pix = self.pix_fmt();
         let mut filters: Vec<String> = Vec::new();
+        // the sample aspect ratio is a tag on the stream: setsar changes no pixel
+        if let Some((n, d)) = self.tags.sar.filter(|_| self.tags_picture()) {
+            filters.push(format!("setsar=sar={n}/{d}:max=100000"));
+        }
         let matrix = if self.color.matrix.is_empty() { "bt709" } else { self.color.matrix.as_str() };
         let range = if self.color.full_range { "pc" } else { "tv" };
         let rgb_out = pix.starts_with("rgb") || pix.starts_with("gbr") || pix == "pal8";
@@ -832,7 +930,11 @@ impl EncodeSpec {
         }
         if let Some((_, codec, bitrate)) = audio {
             let codec = if container == Some(Container::Webm) && codec == "aac" { "libopus" } else { codec.as_str() };
-            s(&mut a, &["-map", "1:a:0", "-c:a", codec]);
+            s(&mut a, &["-map", "1:a:0"]);
+            if description.is_some() {
+                s(&mut a, &["-map", "2:a:0"]);
+            }
+            s(&mut a, &["-c:a", codec]);
             a.extend(compressed_audio_args(codec, *bitrate));
         }
         if let Some((1, _)) = &self.pass {
@@ -864,6 +966,7 @@ impl EncodeSpec {
     }
 
     pub fn join(&self, segments: &[PathBuf], list: &Path) -> Result<(), MediaError> {
+        self.validate()?;
         let quote = |p: &Path| format!("file '{}'\n", p.display().to_string().replace('\'', r"'\''"));
         std::fs::write(list, segments.iter().map(|p| quote(p)).collect::<String>())?;
         let mut a: Vec<String> = ["-hide_banner", "-nostdin", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i"]
@@ -878,14 +981,27 @@ impl EncodeSpec {
             a.push(p.display().to_string());
         }
         let container = self.container();
-        let map_chapters = self.chapter_input(&mut a, container, 1 + usize::from(audio.is_some()));
+        let description = self.description(audio.is_some(), container);
+        if let Some(d) = description {
+            a.push("-i".into());
+            a.push(d.path.display().to_string());
+        }
+        let map_chapters = self.chapter_input(
+            &mut a,
+            container,
+            1 + usize::from(audio.is_some()) + usize::from(description.is_some()),
+        );
         a.extend(["-map", "0:v:0", "-c:v", "copy"].iter().map(|x| x.to_string()));
         if matches!(self.codec, Codec::H265) && matches!(container, Some(Container::Mp4 | Container::Mov)) {
             a.extend(["-tag:v".into(), "hvc1".into()]);
         }
         if let Some((_, codec, bitrate)) = audio {
             let codec = if container == Some(Container::Webm) && codec == "aac" { "libopus" } else { codec.as_str() };
-            a.extend(["-map".into(), "1:a:0".into(), "-c:a".into(), codec.into()]);
+            a.extend(["-map".into(), "1:a:0".into()]);
+            if description.is_some() {
+                a.extend(["-map".into(), "2:a:0".into()]);
+            }
+            a.extend(["-c:a".into(), codec.into()]);
             a.extend(compressed_audio_args(codec, *bitrate));
         }
         a.extend(map_chapters);
@@ -919,14 +1035,76 @@ impl EncodeSpec {
         Ok(())
     }
 
+    /// The description stream this output muxes: the file is there, the main audio is, and the container holds two.
+    fn description(&self, has_audio: bool, container: Option<Container>) -> Option<&DescriptionTrack> {
+        self.tags.description.as_ref().filter(|_| has_audio && container.is_some_and(|c| c.carries_audio_description()))
+    }
+
+    /// Whether the output is a moving picture in a video container: what a sample aspect ratio and a start
+    /// timecode describe.
+    fn tags_picture(&self) -> bool {
+        !self.codec.is_sequence()
+            && !self.codec.is_audio_only()
+            && !matches!(self.codec, Codec::Gif | Codec::Apng | Codec::Webp)
+    }
+
     fn tail(&self, a: &mut Vec<String>, container: Option<Container>) {
+        // Do not inherit global or stream tags (including input dates) from scratch files.
+        // Scope `g` explicitly: an unqualified negative map also strips authored chapter titles.
+        a.extend(["-map_metadata:g".into(), "-1".into(), "-map_metadata:s".into(), "-1".into()]);
+        if matches!(container, Some(Container::Mkv | Container::Webm | Container::Mxf)) {
+            // These muxers otherwise create random identifiers. Never use the wall clock.
+            a.extend(["-fflags".into(), "+bitexact".into()]);
+        }
         for (k, v) in &self.metadata {
             a.push("-metadata".into());
-            a.push(format!("{k}={v}"));
+            let v = if k.eq_ignore_ascii_case("creation_time") { v.trim() } else { v.as_str() };
+            // An xs:dateTime without a timezone is interpreted as UTC, independently of the host.
+            let utc = k.eq_ignore_ascii_case("creation_time")
+                && !v.is_empty()
+                && !v.ends_with('Z')
+                && !v.get(19..).is_some_and(|s| s.contains(['+', '-']));
+            a.push(format!("{k}={v}{}", if utc { "Z" } else { "" }));
         }
-        if self.faststart && matches!(container, Some(Container::Mp4 | Container::Mov | Container::M4a)) {
-            a.push("-movflags".into());
-            a.push("+faststart".into());
+        if self.tags_picture() {
+            if let Some(tc) = &self.tags.timecode {
+                a.extend(["-timecode".into(), tc.clone()]);
+            }
+        }
+        let has_audio = self.audio.is_some() && self.codec.takes_audio() && self.pass.as_ref().is_none_or(|p| p.0 == 2);
+        if has_audio || self.codec.is_audio_only() {
+            if let Some(l) = &self.tags.audio_language {
+                a.extend(["-metadata:s:a:0".into(), format!("language={l}")]);
+            }
+        }
+        if self.description(has_audio, container).is_some() {
+            if let Some(l) = &self.tags.description_language {
+                a.extend(["-metadata:s:a:1".into(), format!("language={l}")]);
+            }
+            // a name where the container has no flag for it; `descriptions` is MP4's flag and `visual_impaired`
+            // Matroska's. MOV and WebM drop both in FFmpeg 7.1 and retain the track name only.
+            a.extend(["-metadata:s:a:1".into(), format!("title={AUDIO_DESCRIPTION_TITLE}")]);
+            if matches!(container, Some(Container::Mp4 | Container::Mov)) {
+                a.extend(["-metadata:s:a:1".into(), format!("handler_name={AUDIO_DESCRIPTION_TITLE}")]);
+            }
+            a.extend([
+                "-disposition:a:0".into(),
+                "default".into(),
+                "-disposition:a:1".into(),
+                "descriptions+visual_impaired".into(),
+            ]);
+        }
+        if matches!(container, Some(Container::Mp4 | Container::Mov | Container::M4a)) {
+            let mut flags = String::new();
+            if self.faststart {
+                flags.push_str("+faststart");
+            }
+            if !self.metadata.is_empty() {
+                flags.push_str("+use_metadata_tags");
+            }
+            if !flags.is_empty() {
+                a.extend(["-movflags".into(), flags]);
+            }
         }
         if self.codec.is_sequence() {
             a.extend(["-f".into(), "image2".into(), "-start_number".into(), self.start_number.to_string()]);
