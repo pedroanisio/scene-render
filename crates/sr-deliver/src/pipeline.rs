@@ -675,7 +675,10 @@ impl Feeder {
 
     fn send(&mut self, frame: Vec<u8>) -> Result<f64, DeliverError> {
         let t = Instant::now();
-        if self.tx.as_ref().expect("open").send(frame).is_err() {
+        let Some(tx) = self.tx.as_ref() else {
+            return Err(DeliverError::Invalid("a frame was sent after the encode was finished".into()));
+        };
+        if tx.send(frame).is_err() {
             // the encoder thread stopped: surface its error
             return Err(self.finish().err().unwrap_or_else(|| DeliverError::Invalid("encoder stopped".into())));
         }
@@ -1899,8 +1902,11 @@ fn replay(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| sr_media::MediaError::Spawn { tool: sr_media::ffmpeg(), source: e })?;
-    let mut out = dec.stdout.take().expect("piped");
-    let mut err = dec.stderr.take().expect("piped");
+    let (Some(mut out), Some(mut err)) = (dec.stdout.take(), dec.stderr.take()) else {
+        let _ = dec.kill();
+        let _ = dec.wait();
+        return Err(DeliverError::Invalid("ffmpeg was started without its output pipes".into()));
+    };
     let said = std::thread::spawn(move || {
         let mut v = Vec::new();
         let _ = err.read_to_end(&mut v);
@@ -2380,6 +2386,14 @@ mod tests {
         assert_eq!(requested, vec![b], "only an absent exact sample needs a fallback");
         assert_eq!(ratios, vec![Some(5.0), None, Some(3.0)]);
         assert!(cache.resolve(time, &[], |_| panic!("no selected targets")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_frame_sent_to_a_finished_encode_is_an_error() {
+        let mut feeder =
+            Feeder { tx: None, handle: None, complete: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+        let error = feeder.send(vec![0; 4]).unwrap_err().to_string();
+        assert!(error.contains("after the encode was finished"), "{error}");
     }
 
     #[test]

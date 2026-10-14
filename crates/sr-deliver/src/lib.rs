@@ -7,6 +7,17 @@
 //! Cloud Storage, Azure Blob Storage, HTTP PUT, SFTP and webhooks.
 
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
 
 pub mod access;
 pub mod audio;
