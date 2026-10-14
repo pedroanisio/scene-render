@@ -112,6 +112,29 @@ fn flips(len: usize) -> Vec<(usize, u32)> {
 /// The panic messages, with their places, of the inputs run since the last take.
 static PANICS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+type Hook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>;
+
+/// Records every panic message into [`PANICS`] while it lives, then puts back the hook it replaced.
+/// A test that fails while recording leaves the recording hook in place: the hook cannot be
+/// changed from a panicking thread.
+struct Recording(Option<Hook>);
+
+impl Recording {
+    fn start() -> Recording {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|info| PANICS.lock().unwrap_or_else(|e| e.into_inner()).push(info.to_string())));
+        Recording(Some(previous))
+    }
+}
+
+impl Drop for Recording {
+    fn drop(&mut self) {
+        if let Some(previous) = self.0.take().filter(|_| !std::thread::panicking()) {
+            std::panic::set_hook(previous);
+        }
+    }
+}
+
 /// Runs the target on `input`: `Err` says how it failed (a panic, or too much held).
 fn probe(t: &targets::Target, input: &[u8]) -> Result<(), String> {
     let mut crashed = None;
@@ -132,7 +155,7 @@ fn cut_and_flip(name: &str, min_seeds: usize) {
     let t = targets::target(name).unwrap_or_else(|| panic!("no target {name}"));
     let seeds = (t.seeds)();
     assert!(seeds.len() >= min_seeds, "{name}: {} seeds, expected at least {min_seeds}", seeds.len());
-    std::panic::set_hook(Box::new(|info| PANICS.lock().unwrap_or_else(|e| e.into_inner()).push(info.to_string())));
+    let recording = Recording::start();
     let mut failures = Vec::new();
     let mut inputs = 0;
     for (s, seed) in seeds.iter().enumerate() {
@@ -152,7 +175,7 @@ fn cut_and_flip(name: &str, min_seeds: usize) {
             run(format!("with bit {b} of byte {i} flipped"), &m);
         }
     }
-    let _ = std::panic::take_hook();
+    drop(recording);
     assert!(
         failures.is_empty(),
         "{name}: {} of {inputs} inputs failed:\n{}",
@@ -217,13 +240,27 @@ fn the_probe_reports_a_panic_and_a_large_hold() {
         drop(std::hint::black_box(vec![0u8; PEAK_LIMIT * 2]));
     }
     let _held = exclusive();
-    std::panic::set_hook(Box::new(|info| PANICS.lock().unwrap_or_else(|e| e.into_inner()).push(info.to_string())));
+    let recording = Recording::start();
     let panics = probe(&targets::Target { name: "boom", text: false, seeds: Vec::new, run: boom }, b"x");
     let hogs = probe(&targets::Target { name: "hog", text: false, seeds: Vec::new, run: hog }, b"x");
-    let _ = std::panic::take_hook();
+    drop(recording);
     let panics = panics.unwrap_err();
     assert!(panics.contains("boom") && panics.contains("parsers.rs"), "{panics}");
     assert!(hogs.unwrap_err().contains("held"));
+}
+
+#[test]
+fn recording_panics_puts_back_the_hook_it_replaced() {
+    static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let _held = exclusive();
+    let before = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|info| SEEN.lock().unwrap_or_else(|e| e.into_inner()).push(info.to_string())));
+    drop(Recording::start());
+    let _ = std::panic::catch_unwind(|| panic!("after the recording"));
+    drop(std::panic::take_hook());
+    std::panic::set_hook(before);
+    let seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(seen.iter().any(|m| m.contains("after the recording")), "the replaced hook saw {seen:?}");
 }
 
 #[test]
