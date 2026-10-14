@@ -16,10 +16,12 @@ LAYERS is the one statement of the layering. The README's list of layers is gene
 Target-specific dependencies count like any other.
 """
 import json
+import os
 import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -128,9 +130,11 @@ def violations(metadata, layers=LAYERS, dev_only=DEV_ONLY):
     return problems
 
 
-def cargo_metadata():
-    cmd = ["cargo", "metadata", "--format-version", "1", "--offline", "--locked"]
-    run = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+def cargo_metadata(env=None):
+    """The members' declared dependencies. Only edges between members are checked, so `--no-deps` leaves out the rest
+    of the graph, whose crates for other targets an offline run could not read until something downloads them."""
+    cmd = ["cargo", "metadata", "--format-version", "1", "--no-deps", "--offline", "--locked"]
+    run = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=env)
     if run.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)} exited {run.returncode}:\n{run.stderr}")
     return json.loads(run.stdout)
@@ -269,6 +273,13 @@ class WorkspaceLayerTests(unittest.TestCase):
         kinds = {kind for _, _, kind, _ in edges(self.metadata)}
         self.assertIn("normal", kinds)
         self.assertIn("dev", kinds)
+
+    def test_the_workspace_is_read_without_downloaded_crates(self):
+        # a dependency's own dependencies, on any target, need not be in the crate cache
+        with tempfile.TemporaryDirectory() as home:
+            metadata = cargo_metadata(env={**os.environ, "CARGO_HOME": home})
+        self.assertEqual(edges(metadata), edges(self.metadata))
+        self.assertEqual(members(metadata), members(self.metadata))
 
     def test_an_upward_edge_injected_into_the_real_graph_fails(self):
         metadata = json.loads(json.dumps(self.metadata))
