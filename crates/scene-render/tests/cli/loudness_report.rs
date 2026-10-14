@@ -69,10 +69,18 @@ fn encode(dir: &Path, steps: &[(usize, f64)], json: bool) -> Output {
     o
 }
 
+/// The report of the one output, from the `scene-render-cli/1` envelope that `encode --json` prints.
 fn report(o: &Output) -> serde_json::Value {
     let text = String::from_utf8_lossy(&o.stdout);
-    let line = text.lines().find(|l| l.starts_with('{')).unwrap_or_else(|| panic!("no JSON report in {text}"));
-    serde_json::from_str(line).unwrap()
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 1, "one JSON document: {text}");
+    let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(v["format"], "scene-render-cli/1", "{v:#}");
+    assert_eq!(v["command"], "encode", "{v:#}");
+    assert_eq!(v["ok"], true, "{v:#}");
+    let outputs = v["result"]["outputs"].as_array().unwrap_or_else(|| panic!("no result.outputs in {v:#}"));
+    assert_eq!(outputs.len(), 1, "{v:#}");
+    outputs[0].clone()
 }
 
 fn near(r: &serde_json::Value, key: &str, want: f64, tol: f64) {
