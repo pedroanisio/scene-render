@@ -1,8 +1,9 @@
 //! Test helpers shared by the scene-render crates, as a dev-dependency only.
 //!
-//! A test that needs a GPU adapter, FFmpeg or a HEIC decoder skips itself with a `SKIPPED (<test>): <reason>` line
-//! when the requirement is missing, unless the environment requires it: `SR_REQUIRE_GPU=1`, `SR_REQUIRE_FFMPEG=1` or
-//! `SR_REQUIRE_HEIC=1` (as in renderer CI) turn the skip into a failure that names the reason.
+//! A test that needs a GPU adapter, FFmpeg, a HEIC decoder or an adapter verified against golden references skips
+//! itself with a `SKIPPED (<test>): <reason>` line when the requirement is missing, unless the environment requires
+//! it: `SR_REQUIRE_GPU=1`, `SR_REQUIRE_FFMPEG=1` (both as in renderer CI), `SR_REQUIRE_HEIC=1` or
+//! `SR_REQUIRE_GOLDEN_ADAPTER=1` turn the skip into a failure that names the reason.
 //!
 //! A test that stands in a fake tool (`curl`, `ffmpeg`) writes its script with [`executable`], never `std::fs::write`.
 
@@ -28,6 +29,10 @@ pub const GPU: Requirement = Requirement { var: "SR_REQUIRE_GPU", needs: "a GPU 
 pub const FFMPEG: Requirement = Requirement { var: "SR_REQUIRE_FFMPEG", needs: "FFmpeg" };
 /// A decoder for HEIC stills: `SR_REQUIRE_HEIC=1`.
 pub const HEIC: Requirement = Requirement { var: "SR_REQUIRE_HEIC", needs: "a HEIC decoder" };
+/// An adapter a golden reference set records as verified, so its frames can be compared pixel for pixel:
+/// `SR_REQUIRE_GOLDEN_ADAPTER=1`.
+pub const GOLDEN_ADAPTER: Requirement =
+    Requirement { var: "SR_REQUIRE_GOLDEN_ADAPTER", needs: "an adapter verified against the golden references" };
 
 impl Requirement {
     /// Whether the environment requires it: its variable is exactly `1`.
