@@ -22,6 +22,30 @@ pub fn gpu() -> Option<Gpu> {
     sr_testkit::gpu(G.get_or_init(|| Gpu::new().map_err(|e| e.to_string())).clone(), "GPU tests")
 }
 
+/// A device on the first adapter of `backends` (`GL` or `PRIMARY`), created once per process and never dropped; without
+/// one, None, saying why. Tests that opened a device each and dropped it at their end deadlocked the NVIDIA driver for
+/// good: `vkDestroyDevice` on one test thread, device creation and thread-exit destructors on others, all waiting on the
+/// driver's own lock. So tests share a device per backend, as they share [`gpu`].
+pub fn gpu_on(backends: wgpu::Backends) -> Option<Gpu> {
+    static GL: OnceLock<Result<Gpu, String>> = OnceLock::new();
+    static PRIMARY: OnceLock<Result<Gpu, String>> = OnceLock::new();
+    let cell = match backends {
+        b if b == wgpu::Backends::GL => &GL,
+        b if b == wgpu::Backends::PRIMARY => &PRIMARY,
+        b => panic!("no shared test device for {b:?}: use GL or PRIMARY"),
+    };
+    let opened = cell.get_or_init(|| {
+        Gpu::with_options(&sr_gpu::gpu::GpuOptions { backends, adapter: None }).map_err(|e| e.to_string())
+    });
+    match opened {
+        Ok(g) => Some(g.clone()),
+        Err(e) => {
+            eprintln!("skipping: no {backends:?} adapter ({e})");
+            None
+        }
+    }
+}
+
 /// Skips what `context` needs FFmpeg for, saying why, or fails under `SR_REQUIRE_FFMPEG=1` (as in CI).
 pub fn skip_ffmpeg(context: &str, reason: &str) {
     sr_testkit::FFMPEG.skip(context, reason);
