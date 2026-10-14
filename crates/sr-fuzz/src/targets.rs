@@ -753,9 +753,13 @@ pub fn run_srvol(data: &[u8]) {
     if let Ok(v) = sr_volume::Volume::read(data, VOLUME_LIMITS) {
         probe_volume(&v, VOLUME_LIMITS);
         let mut out = Vec::new();
-        v.write(&mut out).expect("a volume read writes to memory");
-        let back = sr_volume::Volume::read(out.as_slice(), VOLUME_LIMITS).expect("a volume written reads back");
-        assert_eq!(back.grids().count(), v.grids().count(), "a volume read back has other grids");
+        let written = v.write(&mut out);
+        assert!(written.is_ok(), "a volume read does not write to memory: {written:?}");
+        let back = sr_volume::Volume::read(out.as_slice(), VOLUME_LIMITS);
+        assert!(back.is_ok(), "a volume written does not read back: {:?}", back.as_ref().err());
+        if let Ok(back) = back {
+            assert_eq!(back.grids().count(), v.grids().count(), "a volume read back has other grids");
+        }
     }
     if let Ok(model) = srvol::import(data, srvol::GRID, VOXEL_LIMITS, VOLUME_LIMITS) {
         within_voxel_limits(&model.occupancy);
@@ -783,10 +787,14 @@ pub fn run_vox(data: &[u8]) {
     for model in [Some(0), Some(usize::MAX), None] {
         if let Ok(imported) = file.occupancy(model, VOXEL_LIMITS, &bounds) {
             within_voxel_limits(&imported.occupancy);
-            let cache = srvol::write(&imported.occupancy, 0.5).expect("cells built write as a cache");
-            let back =
-                srvol::import(&cache, srvol::GRID, VOXEL_LIMITS, VOLUME_LIMITS).expect("a cache written reads back");
-            assert_eq!(back.occupancy.count(), imported.occupancy.count(), "a model read back has other cells");
+            let cache = srvol::write(&imported.occupancy, 0.5);
+            assert!(cache.is_ok(), "cells built do not write as a cache: {:?}", cache.as_ref().err());
+            let Ok(cache) = cache else { continue };
+            let back = srvol::import(&cache, srvol::GRID, VOXEL_LIMITS, VOLUME_LIMITS);
+            assert!(back.is_ok(), "a cache written does not read back: {:?}", back.as_ref().err());
+            if let Ok(back) = back {
+                assert_eq!(back.occupancy.count(), imported.occupancy.count(), "a model read back has other cells");
+            }
         }
     }
 }
@@ -832,9 +840,8 @@ pub fn run_stroke_font(data: &[u8]) {
     let Ok(font) = stroke_font::parse_jhf(&String::from_utf8_lossy(data)) else { return };
     let (d, _missing) = stroke_font::layout(&font, "Hello, World!\n0123 ~\u{7f}\u{1f}\u{e9}", 24.0);
     if !d.is_empty() {
-        if let Err(e) = sr_vector::Path::parse(&d) {
-            panic!("a stroke font set path data that does not parse: {e:?}");
-        }
+        let parsed = sr_vector::Path::parse(&d);
+        assert!(parsed.is_ok(), "a stroke font set path data that does not parse: {:?}", parsed.err());
     }
 }
 
