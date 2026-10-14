@@ -173,7 +173,7 @@ def committed_lists(root, path=LIST):
     head = git(root, "rev-parse", "--verify", "--quiet", "HEAD")
     if head.returncode != 0:
         return []
-    log = git(root, "log", "--format=%H", "HEAD", "--", path)
+    log = git(root, "log", "--full-history", "--format=%H", "HEAD", "--", path)
     if log.returncode != 0:
         raise HistoryUnavailable(f"git log failed: {log.stderr.strip()}")
     versions = []
@@ -389,6 +389,20 @@ class HistoryTests(unittest.TestCase):
         versions = committed_lists(self.path)
         self.assertEqual([crates for _, crates in versions], [("a",), (), ("a",), ("a", "b")])
         self.assertEqual(len(shrinks(("a",), versions)), 1)
+
+    def test_a_crate_listed_only_on_a_merged_branch_is_still_caught(self):
+        repo = Repo(self.path)
+        repo.commit(["a"])
+        repo.run("checkout", "-q", "-b", "side")
+        repo.commit(["a", "b"])
+        repo.commit(["a"])
+        repo.run("checkout", "-q", "-")
+        repo.commit(["a", "c"])
+        repo.run("merge", "-q", "--no-ff", "-m", "merge the side branch", "side")
+        versions = committed_lists(self.path)
+        self.assertIn(("a", "b"), [crates for _, crates in versions])
+        self.assertEqual(len(shrinks(("a", "c"), versions)), 1)
+        self.assertIn("b was listed at", shrinks(("a", "c"), versions)[0])
 
     def test_a_malformed_earlier_version_is_an_error(self):
         repo = Repo(self.path)
