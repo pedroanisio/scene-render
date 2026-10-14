@@ -27,7 +27,8 @@ fn json_output_parses_while_the_document_has_warnings() {
     assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
     let v: serde_json::Value = serde_json::from_slice(&o.stdout)
         .unwrap_or_else(|e| panic!("stdout is not JSON ({e}): {}", String::from_utf8_lossy(&o.stdout)));
-    assert_eq!(v["frame"], 0);
+    assert_eq!(v["result"]["frame"], 0);
+    assert!(v["diagnostics"].as_array().unwrap().iter().any(|d| d["code"] == "INERT-I9"), "{v}");
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("info[INERT-I9]") && err.contains("collapse"), "the warning is on stderr: {err}");
     // the summary format still shows warnings with their source line, on standard output

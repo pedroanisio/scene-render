@@ -17,6 +17,18 @@ fn path(p: &str) -> String {
     corpus(p).display().to_string()
 }
 
+/// The result of a `--format json` run: the `result` of the envelope it printed.
+fn json_result(o: &Output) -> serde_json::Value {
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout)
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&o.stdout)));
+    v["result"].clone()
+}
+
+/// The report of the first output of an `encode --json` run.
+fn encode_report(o: &Output) -> serde_json::Value {
+    json_result(o)["outputs"][0].clone()
+}
+
 #[test]
 fn valid_document_exits_zero() {
     let o = run(&["validate", &path("valid/kitchen-sink.scene.xml")]);
@@ -66,7 +78,7 @@ fn invalid_document_exits_one_with_a_located_diagnostic() {
 fn json_output_lists_codes_per_file() {
     let o = run(&["validate", "--format", "json", &path("invalid/r6.scene.xml"), &path("valid/minimal.scene.xml")]);
     assert_eq!(o.status.code(), Some(1));
-    let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("JSON");
+    let v = json_result(&o);
     assert_eq!(v["valid"], false);
     assert_eq!(v["files"][0]["diagnostics"][0]["code"], "R6");
     assert_eq!(v["files"][1]["valid"], true);
@@ -101,7 +113,7 @@ fn inspect_summarises_the_model() {
     assert!(out.contains("1920x1080 @ 30000/1001 fps"), "{out}");
     assert!(out.contains("375 frames"), "{out}");
     let o = run(&["inspect", "--json", &path("valid/minimal.scene.xml")]);
-    let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("JSON");
+    let v = json_result(&o)["model"].clone();
     assert_eq!(v["project"]["fps"], "30");
     assert_eq!(v["project"]["workingColorSpace"], "srgb");
 }
@@ -132,7 +144,7 @@ fn eval_prints_frames_as_summary_and_json() {
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("t = 5.0000 s") && out.contains("card-1/card-logo"), "{out}");
     let o = run(&["eval", &f, "--frame", "150", "--format", "json"]);
-    let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("JSON");
+    let v = json_result(&o);
     assert_eq!(v["frame"], 150);
     assert!(v["nodes"].as_array().unwrap().iter().any(|n| n["id"] == "hero"));
 }
@@ -174,7 +186,7 @@ fn image_size_warning_can_be_explained_denied_and_skipped() {
     let file = file.to_str().unwrap();
     let o = run(&["validate", file, "--format", "json"]);
     assert_eq!(o.status.code(), Some(0));
-    let r: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let r = json_result(&o);
     assert!(r["files"][0]["diagnostics"].as_array().unwrap().iter().any(|d| d["code"] == "A07"));
     assert_eq!(run(&["validate", file, "--deny-warnings"]).status.code(), Some(1));
     assert_eq!(run(&["validate", file, "--no-assets", "--deny-warnings"]).status.code(), Some(0));
@@ -204,7 +216,7 @@ fn render_and_encode_surface_image_size_warnings() {
     let pattern = dir.join("encode_%03d.png");
     let o = run(&["encode", file, "-o", pattern.to_str().unwrap(), "--end", "0.1", "--json"]);
     assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
-    let r: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let r = encode_report(&o);
     assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("A07")));
     // a warning is a finding --strict counts (SREP 18: only information is left out)
     let o = run(&["encode", file, "-o", pattern.to_str().unwrap(), "--end", "0.1", "--json", "--strict"]);
@@ -251,7 +263,7 @@ fn gpus_lists_adapters_and_marks_the_one_chosen() {
     assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
     let text = String::from_utf8_lossy(&o.stdout);
     assert_eq!(text.lines().filter(|l| l.starts_with('*')).count(), 1, "{text}");
-    let r: serde_json::Value = serde_json::from_slice(&run(&["gpus", "--json"]).stdout).unwrap();
+    let r = json_result(&run(&["gpus", "--json"]));
     let list = r["adapters"].as_array().unwrap();
     assert!(!list.is_empty());
     assert_eq!(list.iter().filter(|a| a["chosen"] == true).count(), 1, "{r}");
@@ -290,7 +302,7 @@ fn rendering_on_a_software_adapter_warns() {
         &["encode", &scene, "-o", pattern.to_str().unwrap(), "--end", "0.2", "--json"],
         &[("SR_GPU_ADAPTER", "llvmpipe")],
     );
-    let r: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let r = encode_report(&o);
     assert_eq!(r["render_adapter"]["software"], true, "{r}");
     let o = run_env(
         &["encode", &scene, "-o", pattern.to_str().unwrap(), "--end", "0.2"],
@@ -319,7 +331,7 @@ fn quality_overrides_render_drafts_at_half_size_and_encode_at_full_size() {
     let pattern = dir.join("enc_%03d.png");
     let o = run(&["encode", &scene, "-o", pattern.to_str().unwrap(), "--end", "0.2", "--quality", "draft", "--json"]);
     assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
-    let r: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let r = encode_report(&o);
     assert_eq!(r["quality"], "draft", "{r}");
     let img = image::open(dir.join("enc_000.png")).unwrap();
     assert_eq!((img.width(), img.height()), (48, 32), "delivery scales a draft to the output size");
@@ -577,7 +589,7 @@ fn encode_writes_adhoc_outputs() {
         return;
     }
     assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
-    let r: serde_json::Value = serde_json::from_slice(&o.stdout).expect("JSON report");
+    let r = encode_report(&o);
     assert_eq!(r["frames"], 10);
     assert_eq!(r["size"], serde_json::json!([48, 32]));
     for field in ["name", "backend", "device_type"] {
@@ -631,7 +643,7 @@ fn bake_volume_exports_native_fields_without_replacing_existing_output() {
     let args = ["bake-volume", scene.to_str().unwrap(), "--object", "cloud", "-o", output.to_str().unwrap(), "--json"];
     let result = run(&args);
     assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
-    let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let report = json_result(&result);
     assert_eq!(report["frames"], 3);
     assert_eq!(report["sha256"].as_str().unwrap().len(), 64);
     assert!(output.join("manifest.srvseq").is_file());
@@ -710,7 +722,7 @@ fn strict_parallel_encode_retains_findings_from_early_chunks() {
             return;
         }
         assert_eq!(o.status.code(), Some(1), "workers={workers}: {}", String::from_utf8_lossy(&o.stdout));
-        let report: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        let report = encode_report(&o);
         assert!(report["unsupported"]
             .as_array()
             .unwrap()
@@ -743,7 +755,7 @@ fn strict_encode_rejects_unresolved_placeholders_and_reports_them() {
     let strict = run(&[args.as_slice(), &["--strict"]].concat());
     assert_eq!(strict.status.code(), Some(1), "{}", String::from_utf8_lossy(&strict.stdout));
     for o in [&normal, &strict] {
-        let report: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        let report = encode_report(o);
         assert!(report["evaluation_warnings"].as_array().unwrap().iter().any(|d| d["code"] == "E16"));
     }
     let human = run(&["encode", scene.to_str().unwrap(), "-o", output.to_str().unwrap()]);
@@ -1303,7 +1315,9 @@ fn three_d_fixture(name: &str) -> PathBuf {
 /// whose device cannot be created, as on a WSL2 host without a working D3D12 driver, is a skip like a missing one.
 fn has_gl_adapter() -> bool {
     let o = run_env(&["gpus", "--json"], &[("SR_GPU_BACKEND", "gl")]);
-    let Ok(r) = serde_json::from_slice::<serde_json::Value>(&o.stdout) else { return false };
+    let Ok(r) = serde_json::from_slice::<serde_json::Value>(&o.stdout).map(|v| v["result"].clone()) else {
+        return false;
+    };
     if r["adapters"].as_array().is_none_or(|a| a.is_empty()) {
         return false;
     }
@@ -1373,7 +1387,7 @@ fn a_3d_document_takes_an_adapter_that_can_draw_it_by_default() {
     // on a machine that offers OpenGL only for the GPU and Vulkan for lavapipe (WSL2), the default
     // adapter would drop the 3D object; the choice now moves to the Vulkan one
     let o = run(&["gpus", "--json"]);
-    let Ok(r) = serde_json::from_slice::<serde_json::Value>(&o.stdout) else { return };
+    let Ok(r) = serde_json::from_slice::<serde_json::Value>(&o.stdout).map(|v| v["result"].clone()) else { return };
     let list = r["adapters"].as_array().cloned().unwrap_or_default();
     if !list.iter().any(|a| a["backend"] != "Gl") {
         eprintln!("skipping: no non-OpenGL adapter");
@@ -1395,7 +1409,7 @@ fn encoding_a_3d_document_by_default_takes_an_adapter_that_can_draw_it() {
     }
     // encode builds its own adapter, so it needs the same document-driven choice as render
     let o = run(&["gpus", "--json"]);
-    let Ok(r) = serde_json::from_slice::<serde_json::Value>(&o.stdout) else { return };
+    let Ok(r) = serde_json::from_slice::<serde_json::Value>(&o.stdout).map(|v| v["result"].clone()) else { return };
     let list = r["adapters"].as_array().cloned().unwrap_or_default();
     if !list.iter().any(|a| a["backend"] != "Gl") {
         eprintln!("skipping: no non-OpenGL adapter");
@@ -1476,7 +1490,7 @@ fn render_and_encode_stop_on_enforce_error_and_say_so_on_warn() {
     let png = dir.join("w_%03d.png");
     let o = run(&["encode", &f, "-o", png.to_str().unwrap(), "--end", "0.2", "--json"]);
     assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
-    let r: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let r = encode_report(&o);
     assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("SA01")), "{r}");
     assert!(dir.join("w_000.png").is_file());
 }
@@ -1564,7 +1578,7 @@ fn a_forced_node_passes_enforce_error_and_validate_says_so() {
     // the force is information, not a warning: it does not fail --deny-warnings
     assert_eq!(run(&["validate", "--deny-warnings", &f]).status.code(), Some(0));
     let j = run(&["validate", "--format", "json", &f]);
-    let v: serde_json::Value = serde_json::from_slice(&j.stdout).unwrap();
+    let v = json_result(&j);
     assert!(v["files"][0]["info"][0].as_str().unwrap().contains("SA02"), "{v}");
 }
 
@@ -1603,7 +1617,7 @@ fn validate_warns_about_attributes_this_build_does_not_read() {
         "inert attributes pass --deny-warnings"
     );
     let j = run(&["validate", "--format", "json", &f]);
-    let v: serde_json::Value = serde_json::from_slice(&j.stdout).unwrap();
+    let v = json_result(&j);
     let d = &v["files"][0]["diagnostics"][0];
     assert!(d["code"] == "INERT-I9" && d["severity"] == "info", "{v}");
 }
@@ -1620,7 +1634,7 @@ fn validate_reports_prec1_for_f32_with_3d_content_and_the_document_stays_valid()
     assert!(!out.contains("E23"), "{out}");
     assert_eq!(run(&["validate", "--deny-warnings", &f]).status.code(), Some(0), "information passes --deny-warnings");
     let j = run(&["validate", "--format", "json", &f]);
-    let v: serde_json::Value = serde_json::from_slice(&j.stdout).unwrap();
+    let v = json_result(&j);
     assert_eq!(v["valid"], true, "{v}");
     let diags = v["files"][0]["diagnostics"].as_array().unwrap();
     let codes: Vec<&str> = diags.iter().map(|d| d["code"].as_str().unwrap()).collect();

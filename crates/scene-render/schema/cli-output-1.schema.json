@@ -1,0 +1,303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scene-render-cli-1",
+  "title": "scene-render command output with --format json, format 1: one envelope per run",
+  "description": "schema_version follows semantic versioning: a new optional key is a minor version, a key removed or whose meaning changes is a new format. Keys a command's result lists as required are always present; other keys of a result may be added in a minor version.",
+  "type": "object",
+  "required": ["format", "schema_version", "command", "ok", "exit_code", "result", "diagnostics", "error"],
+  "additionalProperties": false,
+  "properties": {
+    "format": {"const": "scene-render-cli/1"},
+    "schema_version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"},
+    "command": {
+      "description": "the subcommand that ran; null when the command line names none that could be understood",
+      "enum": [null, "validate", "inspect", "eval", "captions", "render", "watch", "encode", "simulate", "bake-volume", "resolve", "scopes", "gpus", "capabilities", "explain", "completions"]
+    },
+    "ok": {"type": "boolean", "description": "true exactly when exit_code is 0"},
+    "exit_code": {"enum": [0, 1, 2], "description": "the process exit status: 0 success, 1 invalid or failed, 2 usage, I/O, unavailable or internal error"},
+    "result": {"description": "the command's machine result; null when the command stopped before it had one"},
+    "diagnostics": {
+      "description": "findings about documents, in the order they were found; validate keeps a file's findings in its result",
+      "type": "array",
+      "items": {"$ref": "#/$defs/diagnostic"}
+    },
+    "error": {
+      "description": "why the run did not succeed; null when ok",
+      "type": ["object", "null"],
+      "required": ["kind", "message", "codes"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"enum": ["usage", "io", "invalid", "failed", "unavailable", "internal"]},
+        "message": {"type": "string", "minLength": 1},
+        "codes": {"type": "array", "items": {"$ref": "#/$defs/code"}}
+      }
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"ok": {"const": true}}}, "then": {"properties": {"exit_code": {"const": 0}, "error": {"type": "null"}}}},
+    {"if": {"properties": {"ok": {"const": false}}}, "then": {"properties": {"exit_code": {"enum": [1, 2]}, "error": {"type": "object"}}}},
+    {"if": {"properties": {"error": {"type": "object", "properties": {"kind": {"enum": ["invalid", "failed"]}}}}}, "then": {"properties": {"exit_code": {"const": 1}}}},
+    {"if": {"properties": {"error": {"type": "object", "properties": {"kind": {"enum": ["usage", "io", "unavailable", "internal"]}}}}}, "then": {"properties": {"exit_code": {"const": 2}}}},
+    {"if": {"properties": {"command": {"const": "validate"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/validate"}]}}}},
+    {"if": {"properties": {"command": {"const": "inspect"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/inspect"}]}}}},
+    {"if": {"properties": {"command": {"const": "eval"}}}, "then": {"properties": {"result": {"type": ["object", "null"]}}}},
+    {"if": {"properties": {"command": {"const": "captions"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/captions"}]}}}},
+    {"if": {"properties": {"command": {"enum": ["render", "watch"]}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/render"}]}}}},
+    {"if": {"properties": {"command": {"const": "encode"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/encode"}]}}}},
+    {"if": {"properties": {"command": {"const": "simulate"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/simulate"}]}}}},
+    {"if": {"properties": {"command": {"const": "bake-volume"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/bake-volume"}]}}}},
+    {"if": {"properties": {"command": {"const": "resolve"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/resolve"}]}}}},
+    {"if": {"properties": {"command": {"const": "scopes"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/scopes"}]}}}},
+    {"if": {"properties": {"command": {"const": "gpus"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/gpus"}]}}}},
+    {"if": {"properties": {"command": {"const": "capabilities"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/capabilities"}]}}}},
+    {"if": {"properties": {"command": {"const": "explain"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/explain"}]}}}},
+    {"if": {"properties": {"command": {"const": "completions"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/completions"}]}}}},
+    {"if": {"properties": {"command": {"type": "null"}}}, "then": {"properties": {"result": {"type": "null"}, "ok": {"const": false}}}}
+  ],
+  "$defs": {
+    "code": {"description": "a diagnostic code; `scene-render explain CODE` describes it", "type": "string", "minLength": 1},
+    "count": {"type": "integer", "minimum": 0},
+    "diagnostic": {
+      "type": "object",
+      "required": ["severity", "code", "message", "loc", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "severity": {"enum": ["error", "warning", "info"]},
+        "code": {"$ref": "#/$defs/code"},
+        "message": {"type": "string"},
+        "loc": {
+          "type": "object",
+          "required": ["line", "column", "offset"],
+          "additionalProperties": false,
+          "properties": {
+            "line": {"$ref": "#/$defs/count"},
+            "column": {"$ref": "#/$defs/count"},
+            "offset": {"$ref": "#/$defs/count"}
+          }
+        },
+        "path": {"type": "string"},
+        "help": {"type": "string"},
+        "measured": {
+          "type": "object",
+          "required": ["value", "unit"],
+          "additionalProperties": false,
+          "properties": {
+            "value": {"type": "number"},
+            "limit": {"type": "number"},
+            "unit": {"type": "string"}
+          }
+        },
+        "file": {"description": "the document the finding is about (outside validate's result)", "type": "string"}
+      }
+    },
+    "validate": {
+      "type": "object",
+      "required": ["valid", "files"],
+      "additionalProperties": false,
+      "properties": {
+        "valid": {"type": "boolean"},
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["file", "valid", "errors", "warnings", "diagnostics"],
+            "additionalProperties": false,
+            "properties": {
+              "file": {"type": "string"},
+              "valid": {"type": "boolean"},
+              "errors": {"$ref": "#/$defs/count"},
+              "warnings": {"$ref": "#/$defs/count"},
+              "io_error": {"type": "string"},
+              "info": {"type": "array", "items": {"type": "string"}},
+              "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/diagnostic"}}
+            }
+          }
+        }
+      }
+    },
+    "inspect": {
+      "type": "object",
+      "required": ["file", "version", "width", "height", "fps", "fps_ratio", "duration", "frames", "background", "working_color_space", "linear_light", "assets", "nodes", "depth", "symbols", "effects", "outputs", "ids", "warnings", "model"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {"type": "string"},
+        "version": {"type": "string"},
+        "width": {"$ref": "#/$defs/count"},
+        "height": {"$ref": "#/$defs/count"},
+        "fps": {"type": "string"},
+        "fps_ratio": {
+          "type": "object",
+          "required": ["num", "den"],
+          "additionalProperties": false,
+          "properties": {"num": {"$ref": "#/$defs/count"}, "den": {"$ref": "#/$defs/count"}}
+        },
+        "duration": {"type": "number"},
+        "frames": {"$ref": "#/$defs/count"},
+        "background": {"type": "string"},
+        "working_color_space": {"type": "string"},
+        "linear_light": {"type": "boolean"},
+        "assets": {"description": "the number of assets of each kind", "type": "object"},
+        "nodes": {"$ref": "#/$defs/count"},
+        "depth": {"$ref": "#/$defs/count"},
+        "symbols": {"$ref": "#/$defs/count"},
+        "effects": {"$ref": "#/$defs/count"},
+        "outputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "path", "codec"],
+            "additionalProperties": false,
+            "properties": {"id": {"type": ["string", "null"]}, "path": {"type": "string"}, "codec": {"type": "string"}}
+          }
+        },
+        "ids": {"$ref": "#/$defs/count"},
+        "warnings": {"$ref": "#/$defs/count"},
+        "model": {"description": "the document model, the scene element and everything in it", "type": "object"}
+      }
+    },
+    "captions": {
+      "type": "object",
+      "required": ["tracks"],
+      "properties": {"tracks": {"type": "array", "items": {"type": "object", "required": ["id"]}}}
+    },
+    "render": {
+      "type": "object",
+      "required": ["unsupported", "notes", "warnings"],
+      "properties": {
+        "unsupported": {"type": "array", "items": {"type": "string"}},
+        "notes": {"type": "array", "items": {"type": "string"}},
+        "warnings": {"$ref": "#/$defs/count"},
+        "written": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "time", "draws"],
+            "additionalProperties": false,
+            "properties": {"path": {"type": "string"}, "time": {"type": "number"}, "draws": {"$ref": "#/$defs/count"}}
+          }
+        },
+        "rendered": {"$ref": "#/$defs/count"},
+        "total": {"$ref": "#/$defs/count"}
+      }
+    },
+    "encode": {
+      "type": "object",
+      "required": ["outputs"],
+      "additionalProperties": false,
+      "properties": {
+        "outputs": {
+          "type": "array",
+          "items": {"type": "object", "required": ["path", "files", "frames", "size", "fps", "encoder"]}
+        }
+      }
+    },
+    "simulate": {
+      "type": "object",
+      "required": ["cache", "bytes", "sha256"],
+      "additionalProperties": false,
+      "properties": {"cache": {"type": "string"}, "bytes": {"$ref": "#/$defs/count"}, "sha256": {"type": "string", "minLength": 64}}
+    },
+    "bake-volume": {
+      "type": "object",
+      "required": ["manifest", "sha256", "frames", "bytes", "clock", "object"],
+      "additionalProperties": false,
+      "properties": {
+        "manifest": {"type": "string"},
+        "sha256": {"type": "string", "minLength": 64},
+        "frames": {"$ref": "#/$defs/count"},
+        "bytes": {"$ref": "#/$defs/count"},
+        "clock": {"const": "composition"},
+        "object": {"type": "string"}
+      }
+    },
+    "resolve": {
+      "type": "object",
+      "required": ["targets"],
+      "additionalProperties": false,
+      "properties": {
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "element", "provider", "cache", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string"},
+              "element": {"type": "string"},
+              "provider": {"type": "string"},
+              "cache": {"type": "string"},
+              "status": {"enum": ["up-to-date", "pinned", "restored", "made", "stale", "error"]},
+              "sha256": {"type": "string"},
+              "message": {"type": "string"},
+              "notes": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "scopes": {
+      "description": "the levels report scene-render-scopes/1 (README, `scene-render scopes`)",
+      "type": "object",
+      "required": ["schema", "file", "source", "frames", "levels", "worst", "scopes", "warnings"],
+      "properties": {"schema": {"const": "scene-render-scopes/1"}, "warnings": {"type": "array", "items": {"type": "string"}}}
+    },
+    "gpus": {
+      "type": "object",
+      "required": ["adapters"],
+      "additionalProperties": false,
+      "properties": {
+        "adapters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "backend", "device_type", "driver", "software", "chosen"],
+            "additionalProperties": false,
+            "properties": {
+              "name": {"type": "string"},
+              "backend": {"type": "string"},
+              "device_type": {"type": "string"},
+              "driver": {"type": "string"},
+              "software": {"type": "boolean"},
+              "chosen": {"type": "boolean"}
+            }
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "description": "the engine capability manifest (schema/capabilities-1.schema.json at the repository root)",
+      "type": "object",
+      "required": ["format", "engine", "schema", "entries"],
+      "properties": {"format": {"const": "scene-render-capabilities/1"}}
+    },
+    "explain": {
+      "type": "object",
+      "required": ["codes"],
+      "additionalProperties": false,
+      "properties": {
+        "codes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["code", "stage", "summary"],
+            "additionalProperties": false,
+            "properties": {
+              "code": {"$ref": "#/$defs/code"},
+              "stage": {"type": "string", "minLength": 1},
+              "summary": {"type": "string", "minLength": 1},
+              "context": {"type": "string"},
+              "test": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "completions": {
+      "type": "object",
+      "required": ["shell", "script"],
+      "additionalProperties": false,
+      "properties": {"shell": {"enum": ["bash", "elvish", "fish", "powershell", "zsh"]}, "script": {"type": "string", "minLength": 1}}
+    }
+  }
+}

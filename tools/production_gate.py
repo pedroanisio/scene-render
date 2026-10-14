@@ -123,13 +123,25 @@ def successful(argv, *, env=None):
     return result
 
 
+CLI_FORMAT = "scene-render-cli/1"
+
+
 def reports(path):
-    text = Path(path).read_text()
+    """The per-output reports of a saved `encode --json` standard output: the envelope scene-render-cli/1 of a
+    successful encode, whose result.outputs holds one report per delivered output."""
     try:
-        data = json.loads(text)
-        return data if isinstance(data, list) else [data]
-    except json.JSONDecodeError:
-        return [json.loads(line) for line in text.splitlines() if line.strip()]
+        data = json.loads(Path(path).read_text())
+    except json.JSONDecodeError as e:
+        raise GateError(f"Encode report is not one JSON document: {e}") from e
+    require(isinstance(data, dict) and data.get("format") == CLI_FORMAT,
+            f"Encode report must be the {CLI_FORMAT} envelope of `scene-render encode --json`")
+    error = data.get("error") or {}
+    require(data.get("ok") is True and data.get("command") == "encode",
+            f"Encode report is not a successful encode: {error.get('message', 'no error recorded')}")
+    outputs = (data.get("result") or {}).get("outputs")
+    require(isinstance(outputs, list) and all(isinstance(r, dict) for r in outputs),
+            "Encode report has no result.outputs list")
+    return outputs
 
 
 def probe(path):
@@ -219,6 +231,21 @@ def scopes_argv(engine, video, chroma_limit=None):
     return argv if chroma_limit is None else argv + ["--chroma-limit", repr(chroma_limit)]
 
 
+def scopes_result(stdout):
+    """The scopes report in the standard output of `scene-render scopes --format json`: the result of its envelope
+    scene-render-cli/1, which must record a successful scopes run."""
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        raise GateError(f"Scopes output is not one JSON document: {e}") from e
+    require(isinstance(data, dict) and data.get("format") == CLI_FORMAT,
+            f"Scopes output must be the {CLI_FORMAT} envelope of `scene-render scopes --format json`")
+    error = data.get("error") or {}
+    require(data.get("ok") is True and data.get("exit_code") == 0 and data.get("command") == "scopes",
+            f"Scopes output is not a successful scopes run: {error.get('message', 'no error recorded')}")
+    return data.get("result")
+
+
 def scopes_findings(report, limits):
     """Breaches of `limits` ({measure: fraction or None}) in a `scene-render scopes --format json` report.
 
@@ -304,7 +331,7 @@ def technical(args):
     require(float(peak[1]) <= -1.0, "Decoded true peak exceeds -1 dBTP")
     checks["scopes"] = successful(scopes_argv(engine["path"], video["path"], args.chroma_limit))
     limits = {measure: getattr(args, flag) for measure, flag, _ in SCOPE_LIMITS}
-    findings = scopes_findings(json.loads(checks["scopes"]["stdout"]), limits)
+    findings = scopes_findings(scopes_result(checks["scopes"]["stdout"]), limits)
     require(not findings, "Scopes out of tolerance:\n" + "\n".join(findings))
     checks["black_freeze"] = successful([ffmpeg, "-nostdin", "-v", "info", "-i", video["path"], "-an",
         "-vf", "scale=320:-2,blackdetect=d=0.3:pix_th=0.06,freezedetect=n=0.001:d=2", "-f", "null", "-"])

@@ -331,6 +331,32 @@ class ScopesGateTests(unittest.TestCase):
                 with self.assertRaisesRegex(gate.GateError, "Unsupported scopes report"):
                     gate.scopes_findings(report, LIMITS)
 
+    def test_the_report_is_the_result_of_the_scopes_envelope(self):
+        report = scopes_report()
+        envelope = {"format": "scene-render-cli/1", "schema_version": "1.0.0", "command": "scopes", "ok": True,
+                    "exit_code": 0, "result": report, "diagnostics": [], "error": None}
+        self.assertEqual(gate.scopes_result(json.dumps(envelope) + "\n"), report)
+
+    def test_scopes_output_other_than_a_successful_scopes_envelope_is_rejected(self):
+        ok = {"format": "scene-render-cli/1", "schema_version": "1.0.0", "command": "scopes", "ok": True,
+              "exit_code": 0, "result": scopes_report(), "diagnostics": [], "error": None}
+        failed = dict(ok, ok=False, exit_code=2, result=None,
+                      error={"kind": "io", "message": "cannot read film.mp4: gone", "codes": []})
+        cases = [
+            ("not JSON", "valid\n", "not one JSON document"),
+            ("two documents", json.dumps(ok) + "\n" + json.dumps(ok), "not one JSON document"),
+            ("bare report", json.dumps(scopes_report()), "envelope"),
+            ("other format", json.dumps(dict(ok, format="scene-render-cli/2")), "envelope"),
+            ("other command", json.dumps(dict(ok, command="inspect")), "not a successful scopes run"),
+            ("failed run", json.dumps(failed), "cannot read film.mp4: gone"),
+            ("ok claimed with an error status", json.dumps(dict(ok, exit_code=2)), "not a successful scopes run"),
+            ("no result", json.dumps(dict(ok, result=None)), "Unsupported scopes report"),
+        ]
+        for name, stdout, message in cases:
+            with self.subTest(name):
+                with self.assertRaisesRegex(gate.GateError, message):
+                    gate.scopes_findings(gate.scopes_result(stdout), LIMITS)
+
     def test_adversarial_report_cannot_bypass_the_limits(self):
         report = scopes_report(illegal=0.5)
         report["levels"]["status"] = "PASS"
@@ -378,6 +404,33 @@ class EncodedFrameTests(unittest.TestCase):
             gate.check_video(report, "short.mp4", probe)
         probe["streams"][0]["nb_read_frames"] = "1327"
         self.assertAlmostEqual(gate.check_video(report, "short.mp4", probe), 1327 / 30)
+
+    def test_the_encode_report_is_the_cli_envelope(self):
+        envelope = {"format": "scene-render-cli/1", "schema_version": "1.0.0", "command": "encode", "ok": True,
+                    "exit_code": 0, "result": {"outputs": [{"path": "film.mp4", "frames": 3}]},
+                    "diagnostics": [], "error": None}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "encode.json"
+            path.write_text(json.dumps(envelope) + "\n")
+            self.assertEqual(gate.reports(path), [{"path": "film.mp4", "frames": 3}])
+            failed = dict(envelope, ok=False, exit_code=1, result=None,
+                          error={"kind": "failed", "message": "1 construct not drawn", "codes": []})
+            path.write_text(json.dumps(failed))
+            with self.assertRaisesRegex(gate.GateError, "not a successful encode: 1 construct not drawn"):
+                gate.reports(path)
+            path.write_text(json.dumps(dict(envelope, command="render")))
+            with self.assertRaisesRegex(gate.GateError, "not a successful encode"):
+                gate.reports(path)
+            path.write_text(json.dumps(dict(envelope, result={"outputs": "film.mp4"})))
+            with self.assertRaisesRegex(gate.GateError, "result.outputs"):
+                gate.reports(path)
+            # the line-per-output report of earlier releases, and anything else, is refused
+            path.write_text('{"path": "a.mp4", "frames": 3}\n{"path": "b.mp4", "frames": 3}\n')
+            with self.assertRaisesRegex(gate.GateError, "not one JSON document"):
+                gate.reports(path)
+            path.write_text(json.dumps([{"path": "film.mp4"}]))
+            with self.assertRaisesRegex(gate.GateError, "scene-render-cli/1 envelope"):
+                gate.reports(path)
 
     def test_degraded_output_is_not_certified(self):
         with self.assertRaisesRegex(gate.GateError, "unsupported"):

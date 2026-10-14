@@ -1,10 +1,22 @@
 //! `scopes` measures a still: clipping per channel, chroma above the limit, the JSON report and the exit status.
+//! `--format json` wraps the report in the envelope scene-render-cli/1 as its `result`.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
 fn run(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_scene-render")).args(args).env("NO_COLOR", "1").output().expect("binary runs")
+}
+
+/// The scopes report of a successful `--format json` run: the `result` of its one-line envelope.
+fn report(o: &Output) -> serde_json::Value {
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = String::from_utf8_lossy(&o.stdout);
+    assert_eq!(text.lines().count(), 1, "one envelope line: {text}");
+    let mut v: serde_json::Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(v["format"], "scene-render-cli/1", "{v}");
+    assert_eq!((&v["command"], &v["ok"], &v["exit_code"]), (&"scopes".into(), &true.into(), &0.into()), "{v}");
+    v["result"].take()
 }
 
 /// A 4×2 PNG whose columns are white, black, 100 % red and mid grey.
@@ -20,9 +32,7 @@ fn still(tag: &str) -> (PathBuf, PathBuf) {
 #[test]
 fn json_reports_clipping_and_chroma_of_a_still() {
     let (dir, file) = still("json");
-    let o = run(&["scopes", file.to_str().unwrap(), "--format", "json"]);
-    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
-    let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("json");
+    let v = report(&run(&["scopes", file.to_str().unwrap(), "--format", "json"]));
     assert_eq!(v["schema"], "scene-render-scopes/1");
     assert_eq!(v["source"]["kind"], "still");
     assert_eq!((v["source"]["width"].as_u64(), v["source"]["height"].as_u64()), (Some(4), Some(2)));
@@ -43,9 +53,7 @@ fn json_reports_clipping_and_chroma_of_a_still() {
     assert_eq!(v["worst"]["white_clipped"], serde_json::json!({"frame": 0, "value": 0.5}));
 
     // a looser limit passes the red
-    let o = run(&["scopes", file.to_str().unwrap(), "--format", "json", "--chroma-limit", "0.6"]);
-    assert_eq!(o.status.code(), Some(0));
-    let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("json");
+    let v = report(&run(&["scopes", file.to_str().unwrap(), "--format", "json", "--chroma-limit", "0.6"]));
     assert_eq!(v["levels"]["saturation"]["above_limit"].as_f64(), Some(0.0));
     assert_eq!(v["levels"]["saturation"]["chroma_limit"].as_f64().map(|c| (c * 1e6).round() / 1e6), Some(0.6));
     std::fs::remove_dir_all(&dir).ok();
@@ -71,6 +79,12 @@ fn unreadable_files_and_bad_settings_exit_two() {
     let o = run(&["scopes", missing.to_str().unwrap()]);
     assert_eq!(o.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&o.stderr).contains("error: cannot read"), "{o:?}");
+    // in JSON mode the failure is the envelope's error, of kind io
+    let o = run(&["scopes", missing.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(o.status.code(), Some(2));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("json");
+    assert_eq!((&v["command"], &v["ok"], &v["error"]["kind"]), (&"scopes".into(), &false.into(), &"io".into()), "{v}");
+    assert!(v["result"].is_null(), "{v}");
 
     let (dir, file) = still("settings");
     for bad in [&["--step", "0"][..], &["--chroma-limit", "0"], &["--chroma-limit", "NaN"], &["--format", "xml"]] {
