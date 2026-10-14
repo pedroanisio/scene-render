@@ -236,7 +236,7 @@ pub fn channel_errors(actual: &[u8], expected: &[u8]) -> Result<[ChannelError; 4
     }
     let n = actual.len() / 4;
     let mut histograms = [[0usize; 256]; 4];
-    for (p, q) in actual.chunks_exact(4).zip(expected.chunks_exact(4)) {
+    for (p, q) in actual.as_chunks::<4>().0.iter().zip(expected.as_chunks::<4>().0) {
         for (c, h) in histograms.iter_mut().enumerate() {
             h[p[c].abs_diff(q[c]) as usize] += 1;
         }
@@ -423,7 +423,7 @@ mod tests {
     /// `px` with channel `c` of the first `count` pixels raised by `by`.
     fn raised(px: &[u8], c: usize, count: usize, by: u8) -> Vec<u8> {
         let mut out = px.to_vec();
-        for p in out.chunks_exact_mut(4).take(count) {
+        for p in out.as_chunks_mut::<4>().0.iter_mut().take(count) {
             p[c] += by;
         }
         out
@@ -566,7 +566,7 @@ mod tests {
         assert!((d - 128.0).abs() < 1.0, "{d}");
         // a small mark on the same ground is a small difference
         let mut mark = black.clone();
-        for p in mark.chunks_exact_mut(4).take(64 * 4) {
+        for p in mark.as_chunks_mut::<4>().0.iter_mut().take(64 * 4) {
             p[0] = 255;
         }
         let d = distinctness(&mark, [64, 64], &black, [64, 64]).unwrap();
