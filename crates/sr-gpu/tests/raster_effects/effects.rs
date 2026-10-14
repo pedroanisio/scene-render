@@ -304,8 +304,8 @@ fn an_identity_lut_leaves_every_colour_unchanged() {
         )
     };
     let effects = r#"<effects><effect id="id" type="lut" src="identity2.cube"/></effects>"#;
-    let Some(plain) = render(&doc_with("", paints, &body(""), effects)) else { return };
-    let graded = render(&doc_with("", paints, &body(r#" effects="id""#), effects)).unwrap();
+    let Some(plain) = render(&doc_with_resources("", "", paints, &body(""), effects)) else { return };
+    let graded = render(&doc_with_resources("", "", paints, &body(r#" effects="id""#), effects)).unwrap();
     assert!(problems(&graded).is_empty(), "{:?}", problems(&graded));
     // two half-float steps of the working target, so only the lookup's own error can exceed it
     let mut worst = (0.0f32, 0usize, 0usize);
