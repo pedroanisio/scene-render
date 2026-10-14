@@ -936,7 +936,8 @@ crates/sr-volume/src/        sparse volumetric grids and bounded deterministic c
                             medium (participating media), thermal (blackbody emission)
 crates/sr-wasm/src/          the WebAssembly host for `<program>` (Wasmtime, fuel, canonical NaNs)
 crates/sr-fuzz/src/         mutators, targets and the sr-fuzz campaign runner
-crates/sr-testkit/src/      test-only: skip a test whose GPU, FFmpeg or HEIC decoder is missing, or fail it under SR_REQUIRE_*
+crates/sr-testkit/src/      test-only: skip a test whose GPU, FFmpeg or HEIC decoder is missing, or fail it under SR_REQUIRE_*;
+                            property (property tests that draw the same cases on every run)
 crates/sr-deliver/src/      audio (scene mix, analysis table), pipeline, destinations, access (flash analysis); capabilities (the manifest, SREP 22), captions, segments and segment_audio (output segments, SREP 13),
                             overlay, ceiling (true-peak), legibility (SREP 19), render_report (SREP 18)
 crates/scene-render/        CLI
