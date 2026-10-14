@@ -227,9 +227,7 @@ fn curl_with_deadline(
     }
     let start = std::time::Instant::now();
     let mut child = command.spawn().map_err(|e| error(format!("cannot run curl: {e}")))?;
-    let Some(mut stdin) = child.stdin.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
+    let Some(mut stdin) = crate::child::take_or_reap(&mut child, |c| c.stdin.take()) else {
         return Err(error("curl was started without its standard input".into()));
     };
     let (tx, written) = std::sync::mpsc::channel();
