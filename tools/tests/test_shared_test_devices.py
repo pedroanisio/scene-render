@@ -23,6 +23,7 @@ CALLEE = re.compile(r"([A-Za-z_][A-Za-z_0-9]*)\s*$")
 ALLOWED = {
     # One test per binary (it sets a process-wide environment variable), so no other test thread runs beside it.
     "crates/sr-deliver/tests/debug_layers_serial.rs": "one test per binary",
+    "crates/sr-gpu/tests/gl_version_refusal.rs": "one test per binary",
     # The command-line tests run the program in child processes; this probe is the only device the test process opens.
     "crates/scene-render/tests/cli/cli.rs": "the only in-process device of a binary whose tests run children",
 }
