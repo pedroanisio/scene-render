@@ -55,7 +55,7 @@ fn decoded_true_peak(path: &Path) -> f64 {
     let planar: Vec<Vec<f32>> = (0..a.channels as usize)
         .map(|c| a.samples.iter().skip(c).step_by(a.channels as usize).copied().collect())
         .collect();
-    sr_audio::loudness::true_peak(&planar)
+    sr_audio::loudness::true_peak(&planar, 48_000.0)
 }
 
 fn scene(dir: &Path, ceiling: f64) -> sr_model::Document {
