@@ -5,11 +5,19 @@
 mod common;
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use sr_gpu::gpu::GpuOptions;
 
+/// The llvmpipe device, opened once for the process (tests share devices; see `common::gpu`).
 fn software() -> Option<sr_gpu::Gpu> {
-    sr_gpu::Gpu::with_options(&GpuOptions { adapter: Some("llvmpipe".into()), ..GpuOptions::default() })
+    static SOFTWARE: OnceLock<Result<sr_gpu::Gpu, String>> = OnceLock::new();
+    SOFTWARE
+        .get_or_init(|| {
+            sr_gpu::Gpu::with_options(&GpuOptions { adapter: Some("llvmpipe".into()), ..GpuOptions::default() })
+                .map_err(|e| e.to_string())
+        })
+        .clone()
         .map_err(|e| eprintln!("skipping: no llvmpipe adapter ({e})"))
         .ok()
 }
