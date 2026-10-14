@@ -116,7 +116,6 @@ impl Out {
     }
 
     /// JSON mode with nothing printed at all: the caller takes the envelope from [`Out::finish`].
-    #[cfg(test)]
     pub fn capture() -> Self {
         Out { w: Sink::Discard, json: true, echo: false, result: None, diagnostics: Vec::new(), error: None }
     }

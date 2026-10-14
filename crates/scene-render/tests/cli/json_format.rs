@@ -332,7 +332,8 @@ fn every_subcommand_is_in_the_schema() {
         // a command starts two spaces in; a description clap wraps continues deeper
         .filter(|l| !l.starts_with("   "))
         .filter_map(|l| l.split_whitespace().next())
-        .filter(|c| *c != "help")
+        // mcp answers in JSON-RPC, never with an envelope
+        .filter(|c| *c != "help" && *c != "mcp")
         .map(String::from)
         .collect();
     assert!(listed.len() >= 14, "{listed:?}");

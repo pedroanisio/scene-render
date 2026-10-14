@@ -79,6 +79,9 @@ python3 -m unittest discover -s tools/tests -v
   new optional key raises the minor `schema_version`; removing a key or changing its meaning needs a new format) and
   the README's *Machine-readable output* paragraph. `crates/scene-render/tests/cli/json_format.rs` checks each
   command's envelope against the schema and fails when a subcommand is missing from it.
+- **MCP server:** a tool of `scene-render mcp` (`crates/scene-render/src/mcp.rs`) is a read-only command run in
+  JSON mode. A new tool parses its arguments into a typed struct that refuses unknown keys, checks their bounds
+  before building the command, and gets a failing-input case in `crates/scene-render/tests/cli/mcp.rs`.
 - **Staged files:** `tools/check_release_hygiene.py --staged` checks only what you are about to commit.
 - **Unsafe code:** the workspace denies `unsafe_code`, and crate roots without audited items forbid it. `unsafe` is
   allowed only on the items listed in `ALLOWED` in `tools/tests/test_unsafe_policy.py`, each with

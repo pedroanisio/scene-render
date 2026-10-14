@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod changes;
+mod mcp;
 mod output;
 
 use std::io::Write;
@@ -437,6 +438,12 @@ enum Command {
         /// Code such as S06, C21 or R24-fill; omit to list all codes.
         code: Option<String>,
     },
+    /// Serve the read-only commands to a Model Context Protocol client over standard input and output.
+    ///
+    /// JSON-RPC 2.0, one message per line. The tools are validate, inspect, eval, captions, capabilities and explain;
+    /// each returns the command's `--format json` envelope. Nothing is written and the program cache is off. The
+    /// session ends when the input closes; --format does not apply.
+    Mcp,
     /// Print a shell completion script.
     Completions {
         /// Target shell.
@@ -462,6 +469,7 @@ impl Command {
             Command::Gpus => "gpus",
             Command::Capabilities => "capabilities",
             Command::Explain { .. } => "explain",
+            Command::Mcp => "mcp",
             Command::Completions { .. } => "completions",
         }
     }
@@ -2255,6 +2263,7 @@ fn dispatch(command: Command, out: &mut Out) -> std::io::Result<u8> {
             write!(out.w, "{manifest}").map(|()| 0)
         }
         Command::Explain { code } => explain(code.as_deref(), out),
+        Command::Mcp => Ok(mcp::run_stdio()),
         Command::Completions { shell } => {
             if out.json() {
                 let mut script = Vec::new();
@@ -2318,7 +2327,8 @@ fn main() -> ExitCode {
             std::env::set_var("RAYON_NUM_THREADS", n.to_string());
         }
     }
-    let json = cli.json || cli.format == OutputFormat::Json;
+    // the server speaks JSON-RPC on standard output, so no envelope follows it
+    let json = (cli.json || cli.format == OutputFormat::Json) && !matches!(cli.command, Command::Mcp);
     let mut out = Out::new(cli.color.choice(), json);
     let name = cli.command.name();
     let code = run(cli.command, &mut out);
