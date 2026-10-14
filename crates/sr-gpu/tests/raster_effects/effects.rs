@@ -284,6 +284,51 @@ fn luts_from_files() {
     assert_px(&r, 28, 8, [inv(200), inv(100), inv(50), 1.0], 1.5e-2);
 }
 
+/// An identity table leaves every colour as it was, on every adapter: a 2³ table spans the whole range in one cell,
+/// so the lookup's interpolation weights carry the colour, and they must keep f32 precision (a hardware filter keeps
+/// as few as 4 fractional bits under Vulkan).
+#[test]
+fn an_identity_lut_leaves_every_colour_unchanged() {
+    let dir = fixtures();
+    std::fs::write(
+        dir.join("identity2.cube"),
+        "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n",
+    )
+    .unwrap();
+    let paints = r##"<paints><linearGradient id="g" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" color="#000000"/><stop offset="1" color="#FF8040"/></linearGradient></paints>"##;
+    let body = |fx: &str| {
+        format!(
+            r##"<shape id="ramp" shape="rect" x="0" y="0" width="64" height="16" fill="url(#g)"{fx}/>
+            <shape id="card" shape="rect" x="0" y="16" width="64" height="16" fill="#101418"{fx}/>"##
+        )
+    };
+    let effects = r#"<effects><effect id="id" type="lut" src="identity2.cube"/></effects>"#;
+    let Some(plain) = render(&doc_with_resources("", "", paints, &body(""), effects)) else { return };
+    let graded = render(&doc_with_resources("", "", paints, &body(r#" effects="id""#), effects)).unwrap();
+    assert!(problems(&graded).is_empty(), "{:?}", problems(&graded));
+    // two half-float steps of the working target, so only the lookup's own error can exceed it
+    let mut worst = (0.0f32, 0usize, 0usize);
+    for (k, (g, p)) in graded.px.iter().zip(&plain.px).enumerate() {
+        for c in 0..3 {
+            let excess = (g[c] - p[c]).abs() - (p[c].abs() * 2e-3 + 1e-6);
+            if excess > worst.0 {
+                worst = (excess, k, c);
+            }
+        }
+    }
+    let (_, k, c) = worst;
+    assert!(
+        worst.0 <= 0.0,
+        "pixel ({}, {}) channel {c}: {} through an identity LUT, {} without ({:?})",
+        k as u32 % graded.size[0],
+        k as u32 / graded.size[0],
+        graded.px[k][c],
+        plain.px[k][c],
+        graded.renderer.gpu().info.name
+    );
+}
+
 #[test]
 fn keyers_and_warps() {
     let body = r#"<layer id="k" asset="solid" x="0" y="0" scaleX="4" scaleY="4" effects="key"/>

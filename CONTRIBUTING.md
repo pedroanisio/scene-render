@@ -63,9 +63,10 @@ cargo test --workspace --features scene-render/pdf --locked
 python3 -m unittest discover -s tools/tests -v
 ```
 
-- **Test prerequisites:** a test that needs a GPU adapter, FFmpeg or a HEIC decoder asks `sr-testkit` (a
-  dev-dependency, never published), which prints `SKIPPED (<test>): <reason>` or, under `SR_REQUIRE_GPU=1`,
-  `SR_REQUIRE_FFMPEG=1` or `SR_REQUIRE_HEIC=1`, fails with the reason. Do not read those variables in a test.
+- **Test prerequisites:** a test that needs a GPU adapter, FFmpeg, a HEIC decoder or an adapter verified against
+  the golden references asks `sr-testkit` (a dev-dependency, never published), which prints
+  `SKIPPED (<test>): <reason>` or, under `SR_REQUIRE_GPU=1`, `SR_REQUIRE_FFMPEG=1`, `SR_REQUIRE_HEIC=1` or
+  `SR_REQUIRE_GOLDEN_ADAPTER=1`, fails with the reason. Do not read those variables in a test.
 - **Fake tools:** a test that runs a script in place of `curl`, `ffmpeg` or another tool writes it with
   `sr_testkit::executable`, never `std::fs::write`: a file this process wrote is inherited open by any process another
   test thread forks meanwhile, and Linux then refuses to run it ("Text file busy").

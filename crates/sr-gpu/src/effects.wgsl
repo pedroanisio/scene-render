@@ -71,6 +71,22 @@ fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) instance: u3
 
 const PI: f32 = 3.14159265;
 
+// The n³ table `lut3` at `x` (clamped to [0, 1]³): trilinear interpolation in f32 between the eight entries around
+// it. A filtering sampler would interpolate in hardware with as few fractional weight bits as the adapter keeps
+// (Vulkan allows 4), and a coarse table spends its whole range in one cell, so an identity 2³ table moved colours.
+fn lut3_trilinear(x: vec3<f32>, n: u32) -> vec3<f32> {
+    let last = vec3(max(n, 1u) - 1u);
+    let f = clamp(x, vec3(0.0), vec3(1.0)) * vec3<f32>(last);
+    let i = min(vec3<u32>(floor(f)), last);
+    let j = min(i + vec3(1u), last);
+    let w = f - vec3<f32>(i);
+    let c00 = mix(textureLoad(lut3, vec3(i.x, i.y, i.z), 0).rgb, textureLoad(lut3, vec3(j.x, i.y, i.z), 0).rgb, w.x);
+    let c10 = mix(textureLoad(lut3, vec3(i.x, j.y, i.z), 0).rgb, textureLoad(lut3, vec3(j.x, j.y, i.z), 0).rgb, w.x);
+    let c01 = mix(textureLoad(lut3, vec3(i.x, i.y, j.z), 0).rgb, textureLoad(lut3, vec3(j.x, i.y, j.z), 0).rgb, w.x);
+    let c11 = mix(textureLoad(lut3, vec3(i.x, j.y, j.z), 0).rgb, textureLoad(lut3, vec3(j.x, j.y, j.z), 0).rgb, w.x);
+    return mix(mix(c00, c10, w.y), mix(c01, c11, w.y), w.z);
+}
+
 fn S(uv: vec2<f32>) -> vec4<f32> { return textureSampleLevel(src, smp, uv, 0.0); }
 fn A(uv: vec2<f32>) -> vec4<f32> { return textureSampleLevel(aux, smp, uv, 0.0); }
 fn A2(uv: vec2<f32>) -> vec4<f32> { return textureSampleLevel(aux2, smp, uv, 0.0); }
@@ -509,9 +525,7 @@ fn grade(c3: vec3<f32>, uv: vec2<f32>, px: vec2<f32>) -> vec3<f32> {
             let m = mat3x3<f32>(v[4].xyz, v[5].xyz, v[6].xyz);
             var x = transpose(m) * c;
             x = tf_encode3(u32(v[7].x), x);
-            let n = v[0].y;
-            let coord = clamp(x, vec3(0.0), vec3(1.0)) * ((n - 1.0) / n) + 0.5 / n;
-            var y = textureSampleLevel(lut3, smp, coord, 0.0).rgb;
+            var y = lut3_trilinear(x, u32(v[0].y));
             let tf_out = select(u32(v[7].x), u32(v[7].z) - 1u, v[7].z > 0.5);
             y = tf_decode3(tf_out, y);
             let mi = mat3x3<f32>(vec3(v[4].w, v[5].w, v[6].w), vec3(v[1].x, v[1].y, v[1].z), vec3(v[2].x, v[2].y, v[2].z));

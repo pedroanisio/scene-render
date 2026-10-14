@@ -187,10 +187,17 @@ pub fn lin8(v: u8) -> f32 {
     srgb_to_linear(v as f32 / 255.0)
 }
 
-/// A document with sections before the composition (`pre`) and after it (`post`: lights, effects).
+/// A document with sections before the assets (`pre`: colour management) and after the composition
+/// (`post`: lights, effects).
 pub fn doc_with(project: &str, pre: &str, body: &str, post: &str) -> sr_model::Document {
+    doc_with_resources(project, pre, "", body, post)
+}
+
+/// [`doc_with`] with sections between the assets and the composition as well (`resources`: paints,
+/// materials), in the order the schema gives them.
+pub fn doc_with_resources(project: &str, pre: &str, resources: &str, body: &str, post: &str) -> sr_model::Document {
     let xml = format!(
-        r#"<scene version="1.1"><project width="64" height="32" fps="10" duration="4" {project}/>{pre}{ASSETS}<composition>{body}</composition>{post}</scene>"#
+        r#"<scene version="1.1"><project width="64" height="32" fps="10" duration="4" {project}/>{pre}{ASSETS}{resources}<composition>{body}</composition>{post}</scene>"#
     );
     let opts = sr_model::LoadOptions { verify_assets: true, base_dir: Some(fixtures()) };
     match sr_model::load_str(&xml, &opts) {
