@@ -1,5 +1,8 @@
-"""Acceptance gates reject missing perception, stale artifacts and mux truncation."""
+"""Acceptance gates reject missing perception, stale artifacts, mux truncation and out-of-range scopes."""
+import contextlib
+import copy
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -51,7 +54,7 @@ class PremiumGateTests(unittest.TestCase):
             (self.root / name).write_text(name)
         self.review = gate.artifact(self.root / "work/review.txt")
         checks = {name: {"exit": 0} for name in ("validate", "resolve", "sr-audiocheck", "sr-margin",
-                   "sr-sibilance", "decoded_audio", "black_freeze", "captions", "audio_tail")}
+                   "sr-sibilance", "decoded_audio", "scopes", "black_freeze", "captions", "audio_tail")}
         self.tech = {"version": 1, "status": "TECHNICAL PASS", "project": str(self.root), "duration": 100,
                      "inputs": gate.inputs(self.root), "checks": checks,
                      "sidecars": [gate.artifact(self.root / "out/film.vtt")]}
@@ -203,11 +206,167 @@ class PremiumGateTests(unittest.TestCase):
         with self.assertRaisesRegex(gate.GateError, "Unresolved issue"):
             self.check()
 
+    def test_technical_result_without_scopes_is_incomplete(self):
+        self.complete()
+        tech = json.loads((self.root / "qa/TECHNICAL.json").read_text())
+        del tech["checks"]["scopes"]
+        gate.write_json(self.root / "qa/TECHNICAL.json", tech)
+        self.manifest["technical"] = gate.artifact(self.root / "qa/TECHNICAL.json")
+        with self.assertRaisesRegex(gate.GateError, "Incomplete technical checks"):
+            self.check()
+
     def test_new_source_file_invalidates_review(self):
         self.complete()
         (self.root / "assets/new.png").write_text("New image")
         with self.assertRaisesRegex(gate.GateError, "Sources/assets changed"):
             self.check()
+
+
+def scopes_report(**levels):
+    """A `scene-render scopes --format json` report of a clean limited-range video, with `levels` replaced."""
+    channels = {"r": 0.0, "g": 0.0, "b": 0.0, "y": 0.0}
+    report = {
+        "schema": "scene-render-scopes/1", "file": "film.mp4",
+        "source": {"kind": "video", "width": 1920, "height": 1080, "matrix": "BT.709", "range": "limited"},
+        "frames": {"analysed": 300, "step": 1},
+        "levels": {"samples": 622080000, "clipping": {"black": dict(channels), "white": dict(channels)},
+                   "float_range": None, "legal": None, "illegal": 0.0,
+                   "saturation": {"chroma_limit": 0.44675, "above_limit": 0.0, "out_of_gamut": 0.0,
+                                  "max_chroma": 0.3}},
+        "worst": {"black_clipped": {"frame": 0, "value": 0.0}, "white_clipped": {"frame": 0, "value": 0.0},
+                  "illegal": {"frame": 0, "value": 0.0}, "out_of_gamut": {"frame": 0, "value": 0.0},
+                  "above_chroma_limit": {"frame": 0, "value": 0.0}},
+        "scopes": {}, "warnings": [],
+    }
+    report["levels"].update(levels)
+    return report
+
+
+LIMITS = {"illegal": 0.01, "out_of_gamut": 0.01, "above_chroma_limit": 0.01,
+          "black_clipped": None, "white_clipped": None}
+
+
+class ScopesGateTests(unittest.TestCase):
+    def test_clean_film_passes(self):
+        self.assertEqual(gate.scopes_findings(scopes_report(), LIMITS), [])
+
+    def test_each_breach_names_the_measure_and_its_worst_frame(self):
+        tail = ": 2.00% of samples, limit 1.00%; worst frame 41 (9.50%)"
+        cases = (("illegal", "Levels outside the legal range"), ("out_of_gamut", "Colours outside the gamut"),
+                 ("above_chroma_limit", "Chroma above the limit"))
+        for measure, label in cases:
+            message = label + tail
+            with self.subTest(measure=measure):
+                report = scopes_report()
+                if measure == "illegal":
+                    report["levels"]["illegal"] = 0.02
+                else:
+                    report["levels"]["saturation"][{"out_of_gamut": "out_of_gamut",
+                                                    "above_chroma_limit": "above_limit"}[measure]] = 0.02
+                report["worst"][measure] = {"frame": 41, "value": 0.095}
+                self.assertEqual(gate.scopes_findings(report, LIMITS), [message])
+
+    def test_a_measure_at_its_limit_passes(self):
+        report = scopes_report(illegal=0.01)
+        self.assertEqual(gate.scopes_findings(report, LIMITS), [])
+
+    def test_sources_without_a_legal_range_skip_the_illegal_limit(self):
+        report = scopes_report(illegal=None)
+        report["worst"]["illegal"] = None
+        self.assertEqual(gate.scopes_findings(report, dict(LIMITS, illegal=0.0)), [])
+
+    def test_clipping_is_checked_per_channel_only_when_limited(self):
+        report = scopes_report()
+        report["levels"]["clipping"]["white"]["g"] = 0.2
+        report["worst"]["white_clipped"] = {"frame": 7, "value": 0.6}
+        self.assertEqual(gate.scopes_findings(report, LIMITS), [])
+        self.assertEqual(gate.scopes_findings(report, dict(LIMITS, white_clipped=0.05)),
+                         ["White clipping: 20.00% of samples, limit 5.00%; worst frame 7 (60.00%)"])
+        report["levels"]["clipping"]["black"]["y"] = 0.3
+        self.assertEqual(len(gate.scopes_findings(report, dict(LIMITS, black_clipped=0.05, white_clipped=0.05))), 2)
+
+    def test_decoding_warnings_fail_the_candidate(self):
+        report = scopes_report()
+        report["warnings"] = ["frame 12: corrupt packet"]
+        self.assertEqual(gate.scopes_findings(report, LIMITS), ["Scopes decoding warning: frame 12: corrupt packet"])
+
+    def test_malformed_reports_are_rejected_not_passed(self):
+        def mutate(path, value):
+            report = scopes_report()
+            node = report
+            for key in path[:-1]:
+                node = node[key]
+            if value is KeyError:
+                del node[path[-1]]
+            else:
+                node[path[-1]] = value
+            return report
+
+        cases = [
+            ("unsupported schema", mutate(("schema",), "scene-render-scopes/2")),
+            ("missing levels", mutate(("levels",), KeyError)),
+            ("missing worst", mutate(("worst",), KeyError)),
+            ("no frames", mutate(("frames", "analysed"), 0)),
+            ("boolean frame count", mutate(("frames", "analysed"), True)),
+            ("missing illegal", mutate(("levels", "illegal"), KeyError)),
+            ("NaN illegal", mutate(("levels", "illegal"), float("nan"))),
+            ("infinite gamut", mutate(("levels", "saturation", "out_of_gamut"), float("inf"))),
+            ("negative chroma", mutate(("levels", "saturation", "above_limit"), -0.1)),
+            ("fraction above one", mutate(("levels", "clipping", "white", "r"), 1.5)),
+            ("string fraction", mutate(("levels", "clipping", "black", "y"), "0")),
+            ("boolean fraction", mutate(("levels", "saturation", "above_limit"), False)),
+            ("missing channel", mutate(("levels", "clipping", "black", "b"), KeyError)),
+            ("missing clipping", mutate(("levels", "clipping"), KeyError)),
+            ("negative worst frame", mutate(("worst", "illegal", "frame"), -1)),
+            ("worst value out of range", mutate(("worst", "out_of_gamut", "value"), 2.0)),
+            ("non-text warnings", mutate(("warnings",), [None])),
+            ("warnings not a list", mutate(("warnings",), "none")),
+        ]
+        for name, report in cases:
+            with self.subTest(name):
+                with self.assertRaisesRegex(gate.GateError, "scopes report|Scopes analysed no frames"):
+                    gate.scopes_findings(report, LIMITS)
+        for report in (None, [], "scene-render-scopes/1", {}):
+            with self.subTest(report=report):
+                with self.assertRaisesRegex(gate.GateError, "Unsupported scopes report"):
+                    gate.scopes_findings(report, LIMITS)
+
+    def test_adversarial_report_cannot_bypass_the_limits(self):
+        report = scopes_report(illegal=0.5)
+        report["levels"]["status"] = "PASS"
+        report["worst"]["illegal"] = None
+        self.assertEqual(gate.scopes_findings(report, LIMITS),
+                         ["Levels outside the legal range: 50.00% of samples, limit 1.00%"])
+        report = scopes_report()
+        before = copy.deepcopy(report)
+        gate.scopes_findings(report, LIMITS)
+        self.assertEqual(report, before)
+
+    def test_invalid_limits_are_rejected(self):
+        for limit in (-0.1, 1.5, float("nan"), True):
+            with self.subTest(limit=limit):
+                with self.assertRaisesRegex(gate.GateError, "limit must be a fraction"):
+                    gate.scopes_findings(scopes_report(), dict(LIMITS, illegal=limit))
+
+    def test_command_passes_the_chroma_limit_only_when_set(self):
+        self.assertEqual(gate.scopes_argv("sr", "film.mp4"), ["sr", "scopes", "film.mp4", "--format", "json"])
+        self.assertEqual(gate.scopes_argv("sr", "film.mp4", 0.45)[-2:], ["--chroma-limit", "0.45"])
+
+    def test_threshold_flags_default_and_reject_non_fractions(self):
+        base = ["technical", "p", "--scene", "s", "--video", "v", "--engine", "e", "--encode-report", "r",
+                "--tools-dir", "t", "--captions", "c", "--voice-end", "1"]
+        args = gate.arguments().parse_args(base)
+        limits = {measure: getattr(args, flag) for measure, flag, _ in gate.SCOPE_LIMITS}
+        self.assertEqual(limits, LIMITS)
+        self.assertIsNone(args.chroma_limit)
+        args = gate.arguments().parse_args(base + ["--max-white-clipped", "0.02", "--chroma-limit", "0.5"])
+        self.assertEqual((args.max_white_clipped, args.chroma_limit), (0.02, 0.5))
+        for flag, value in (("--max-illegal", "1.5"), ("--max-out-of-gamut", "-0.1"), ("--max-oversaturated", "nan"),
+                            ("--max-black-clipped", "inf"), ("--chroma-limit", "0"), ("--chroma-limit", "nan")):
+            with self.subTest(flag=flag, value=value):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as exit:
+                    gate.arguments().parse_args(base + [flag, value])
+                self.assertEqual(exit.exception.code, 2)
 
 
 class EncodedFrameTests(unittest.TestCase):

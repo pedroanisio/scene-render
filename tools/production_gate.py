@@ -32,6 +32,15 @@ OWNERS = (
     "pals-film-producer", "pals-coordinator",
 )
 SKIP = {"out", "work", "qa", ".git", "__pycache__", ".venv", "node_modules"}
+SCOPES_SCHEMA = "scene-render-scopes/1"
+# (measure, gate flag, finding) for each scope threshold; a measure is a fraction of the analysed samples
+SCOPE_LIMITS = (
+    ("illegal", "max_illegal", "Levels outside the legal range"),
+    ("out_of_gamut", "max_out_of_gamut", "Colours outside the gamut"),
+    ("above_chroma_limit", "max_oversaturated", "Chroma above the limit"),
+    ("black_clipped", "max_black_clipped", "Black clipping"),
+    ("white_clipped", "max_white_clipped", "White clipping"),
+)
 
 
 class GateError(Exception):
@@ -196,6 +205,65 @@ def captions(path, duration):
     return {"exit": 0, "cues": count}
 
 
+def is_fraction(value):
+    return type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1
+
+
+def scope_fraction(value, name):
+    require(is_fraction(value), f"Malformed scopes report: {name} is not a fraction")
+    return float(value)
+
+
+def scopes_argv(engine, video, chroma_limit=None):
+    argv = [engine, "scopes", video, "--format", "json"]
+    return argv if chroma_limit is None else argv + ["--chroma-limit", repr(chroma_limit)]
+
+
+def scopes_findings(report, limits):
+    """Breaches of `limits` ({measure: fraction or None}) in a `scene-render scopes --format json` report.
+
+    A report that does not match the scopes schema raises GateError instead of passing unchecked."""
+    require(isinstance(report, dict) and report.get("schema") == SCOPES_SCHEMA, "Unsupported scopes report")
+    frames, levels, worst = report.get("frames"), report.get("levels"), report.get("worst")
+    require(isinstance(frames, dict) and isinstance(levels, dict) and isinstance(worst, dict),
+            "Malformed scopes report: missing frames, levels or worst")
+    require(type(frames.get("analysed")) is int and frames["analysed"] > 0, "Scopes analysed no frames")
+    warnings = report.get("warnings")
+    require(isinstance(warnings, list) and all(isinstance(w, str) for w in warnings),
+            "Malformed scopes report: warnings")
+    clipping, saturation = levels.get("clipping"), levels.get("saturation")
+    require(isinstance(clipping, dict) and isinstance(saturation, dict) and "illegal" in levels,
+            "Malformed scopes report: missing clipping, saturation or illegal")
+
+    def clipped(end):
+        channels = clipping.get(end)
+        require(isinstance(channels, dict), f"Malformed scopes report: clipping.{end}")
+        return max(scope_fraction(channels.get(c), f"clipping.{end}.{c}") for c in "rgby")
+
+    illegal = levels["illegal"]
+    measured = {
+        "illegal": None if illegal is None else scope_fraction(illegal, "illegal"),
+        "out_of_gamut": scope_fraction(saturation.get("out_of_gamut"), "saturation.out_of_gamut"),
+        "above_chroma_limit": scope_fraction(saturation.get("above_limit"), "saturation.above_limit"),
+        "black_clipped": clipped("black"),
+        "white_clipped": clipped("white"),
+    }
+    findings = [f"Scopes decoding warning: {w}" for w in warnings]
+    for measure, _, label in SCOPE_LIMITS:
+        limit, value = limits.get(measure), measured[measure]
+        require(limit is None or is_fraction(limit), f"The {measure} limit must be a fraction from 0 to 1")
+        frame = worst.get(measure)
+        require(frame is None or isinstance(frame, dict) and type(frame.get("frame")) is int
+                and frame["frame"] >= 0, f"Malformed scopes report: worst.{measure}")
+        if frame is not None:
+            scope_fraction(frame.get("value"), f"worst.{measure}.value")
+        if limit is None or value is None or value <= limit:
+            continue
+        where = f"; worst frame {frame['frame']} ({frame['value']:.2%})" if frame else ""
+        findings.append(f"{label}: {value:.2%} of samples, limit {limit:.2%}{where}")
+    return findings
+
+
 def technical(args):
     project = Path(args.project).resolve(strict=True)
     scene, video, engine = artifact(args.scene), artifact(args.video), artifact(args.engine)
@@ -234,6 +302,10 @@ def technical(args):
     require(loud and peak, "Cannot measure decoded loudness/true peak")
     require(abs(float(loud[1]) - args.loudness_target) <= 1.0, "Decoded loudness is outside target ±1 LU")
     require(float(peak[1]) <= -1.0, "Decoded true peak exceeds -1 dBTP")
+    checks["scopes"] = successful(scopes_argv(engine["path"], video["path"], args.chroma_limit))
+    limits = {measure: getattr(args, flag) for measure, flag, _ in SCOPE_LIMITS}
+    findings = scopes_findings(json.loads(checks["scopes"]["stdout"]), limits)
+    require(not findings, "Scopes out of tolerance:\n" + "\n".join(findings))
     checks["black_freeze"] = successful([ffmpeg, "-nostdin", "-v", "info", "-i", video["path"], "-an",
         "-vf", "scale=320:-2,blackdetect=d=0.3:pix_th=0.06,freezedetect=n=0.001:d=2", "-f", "null", "-"])
     after = inputs(project)
@@ -290,7 +362,8 @@ def premium(root):
     t = json.loads(Path(m["technical"]["path"]).read_text())
     require(t["status"] == "TECHNICAL PASS" and Path(t["project"]) == root, "Invalid technical result")
     require(set(t["checks"]) >= {"validate", "resolve", "sr-audiocheck", "sr-margin", "sr-sibilance",
-                                "decoded_audio", "black_freeze", "captions", "audio_tail"}, "Incomplete technical checks")
+                                "decoded_audio", "scopes", "black_freeze", "captions", "audio_tail"},
+            "Incomplete technical checks")
     require(all(c["exit"] == 0 for c in t["checks"].values()), "A technical check failed")
     for key in ("scene", "video", "engine", "encode_report"):
         verify_artifact(t[key])
@@ -397,7 +470,21 @@ def premium(root):
             "note": "Quality acceptance only. Upload/publication still requires the owner's instruction."}
 
 
-def main():
+def limit_arg(text):
+    value = float(text)
+    if not (math.isfinite(value) and 0 <= value <= 1):
+        raise argparse.ArgumentTypeError(f"expected a fraction from 0 to 1, got {text!r}")
+    return value
+
+
+def chroma_arg(text):
+    value = float(text)
+    if not (math.isfinite(value) and value > 0):
+        raise argparse.ArgumentTypeError(f"expected a positive chroma such as 0.45, got {text!r}")
+    return value
+
+
+def arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
     f = sub.add_parser("frames", help="Check decoded video against engine JSON delivery reports")
@@ -412,9 +499,20 @@ def main():
     p.add_argument("--tail-check", help="Default: ../lib/tools/tail_check.py relative to --tools-dir")
     voice_python = Path.home() / ".venvs" / "voice" / "bin" / "python"
     p.add_argument("--audio-python", default=str(voice_python) if voice_python.exists() else sys.executable)
+    for flag, default, measure in (("--max-illegal", 0.01, "samples outside the legal range"),
+                                   ("--max-out-of-gamut", 0.01, "samples outside the gamut"),
+                                   ("--max-oversaturated", 0.01, "samples above the chroma limit"),
+                                   ("--max-black-clipped", None, "samples clipped at black (default: unchecked)"),
+                                   ("--max-white-clipped", None, "samples clipped at white (default: unchecked)")):
+        p.add_argument(flag, type=limit_arg, default=default, metavar="FRACTION", help=f"Largest fraction of {measure}")
+    p.add_argument("--chroma-limit", type=chroma_arg, help="Chroma limit for the scopes (default: the matrix's own)")
     for action in ("init", "check"):
         sub.add_parser(action).add_argument("project")
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = arguments().parse_args()
     try:
         if args.action == "frames":
             print(f"Encoded frame verification PASS: {frame_gate(args.report)} video(s)")

@@ -23,6 +23,7 @@ Examples:
   scene-render eval promo.scene.xml --time 2.5 --variant dark --param headline=Hi
   scene-render eval promo.scene.xml --bench
   scene-render captions promo.scene.xml --at 1.5,3
+  scene-render scopes final.mp4 --step 5 --format json
   scene-render explain C21
 
 Exit status: 0 valid, 1 invalid (or warnings with --deny-warnings; render/encode: anything\nnot rendered as authored with --strict), 2 usage, I/O or internal error.";
@@ -136,6 +137,14 @@ fn parse_time(s: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("expected a time in seconds, got {s:?}"))
 }
 
+fn parse_chroma_limit(s: &str) -> Result<f32, String> {
+    s.trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|c| c.is_finite() && *c > 0.0)
+        .ok_or_else(|| format!("expected a positive chroma such as 0.45, got {s:?}"))
+}
+
 fn parse_param(s: &str) -> Result<(String, String), String> {
     s.split_once('=')
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -238,6 +247,24 @@ enum Command {
         /// Skip file existence and SHA-256 checks.
         #[arg(long)]
         no_assets: bool,
+    },
+    /// Measure the levels of a video or still image: clipping at black and white, codes outside the legal range,
+    /// chroma above a limit and colours outside the gamut, with waveform, RGB parade, histogram and vectorscope
+    /// summaries. Exit status 2 when the file cannot be read.
+    Scopes {
+        /// Video or still image.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = Format::Human)]
+        format: Format,
+        /// Measure every Nth frame of a video, from the first.
+        #[arg(long, value_name = "N", default_value_t = 1, value_parser = clap::value_parser!(u64).range(1..))]
+        step: u64,
+        /// Chroma √(Cb² + Cr²) above which a sample is oversaturated (default: the largest 75 % colour-bar chroma
+        /// of the stream's matrix).
+        #[arg(long, value_name = "CHROMA", value_parser = parse_chroma_limit)]
+        chroma_limit: Option<f32>,
     },
     /// Render frames on the GPU and write PNG files.
     Render {
@@ -2078,6 +2105,27 @@ fn exit_code(res: std::thread::Result<std::io::Result<ExitCode>>) -> ExitCode {
     }
 }
 
+fn scopes(
+    file: &Path,
+    format: Format,
+    step: u64,
+    chroma_limit: Option<f32>,
+    out: &mut Out,
+) -> std::io::Result<ExitCode> {
+    let report = match sr_media::scopes::analyse(file, step, chroma_limit) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return Ok(ExitCode::from(2));
+        }
+    };
+    match format {
+        Format::Json => writeln!(out.w, "{}", serde_json::to_string_pretty(&report).expect("serialisable"))?,
+        Format::Human => write!(out.w, "{}", report.human())?,
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn main() -> ExitCode {
     install_panic_hook();
     let cli = Cli::parse();
@@ -2195,6 +2243,7 @@ fn main() -> ExitCode {
             let o = sr_resolve::Options { check, force, only, allow_cloud, store: no_store.then(PathBuf::new) };
             resolve(&file, &o, json, &mut out)
         }
+        Command::Scopes { file, format, step, chroma_limit } => scopes(&file, format, step, chroma_limit, &mut out),
         Command::Gpus { json } => gpus(json, &mut out),
         Command::Capabilities => write!(out.w, "{}", sr_deliver::capabilities::MANIFEST).map(|()| ExitCode::SUCCESS),
         Command::Explain { code } => explain(code.as_deref(), &mut out),
