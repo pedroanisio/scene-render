@@ -35,6 +35,9 @@ sha2.workspace = true
 naga = { version = "30", features = ["wgsl-in"] }
 
 [dev-dependencies]
+# the shader tests translate the 3D shaders to the GLSL the OpenGL backend compiles (naga's GLSL writer is in the
+# build already, through wgpu's OpenGL backend)
+naga = { version = "30", features = ["wgsl-in", "glsl-out"] }
 sr-sim = { path = "../sr-sim" }
 sr-testkit.workspace = true
 

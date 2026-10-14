@@ -166,9 +166,9 @@ fn d_ggx(nh: f32, a: f32) -> f32 {
 
 fn v_smith(nl: f32, nv: f32, a: f32) -> f32 {
     let a2 = a * a;
-    let gv = nl * sqrt(nv * nv * (1.0 - a2) + a2);
-    let gl = nv * sqrt(nl * nl * (1.0 - a2) + a2);
-    return 0.5 / max(gv + gl, 1e-6);
+    let g_view = nl * sqrt(nv * nv * (1.0 - a2) + a2);
+    let g_light = nv * sqrt(nl * nl * (1.0 - a2) + a2);
+    return 0.5 / max(g_view + g_light, 1e-6);
 }
 
 // Anisotropic GGX (Burley) with tangent t and bitangent b.
@@ -180,9 +180,9 @@ fn d_aniso(nh: f32, th: f32, bh: f32, at: f32, ab: f32) -> f32 {
 }
 
 fn v_aniso(nl: f32, nv: f32, tv: f32, bv: f32, tl: f32, bl: f32, at: f32, ab: f32) -> f32 {
-    let gv = nl * length(vec3(at * tv, ab * bv, nv));
-    let gl = nv * length(vec3(at * tl, ab * bl, nl));
-    return 0.5 / max(gv + gl, 1e-6);
+    let g_view = nl * length(vec3(at * tv, ab * bv, nv));
+    let g_light = nv * length(vec3(at * tl, ab * bl, nl));
+    return 0.5 / max(g_view + g_light, 1e-6);
 }
 
 fn f_schlick(f0: vec3<f32>, f90: vec3<f32>, vh: f32) -> vec3<f32> {

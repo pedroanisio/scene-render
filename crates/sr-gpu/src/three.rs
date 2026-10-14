@@ -2953,6 +2953,40 @@ pub fn sort_src() -> String {
     include_str!("three_sort.wgsl").to_string()
 }
 
+/// Translates every entry point of the WGSL `src`, with its overrides set to `constants` (the rest keep their
+/// defaults), to the GLSL wgpu gives an OpenGL 4.5 driver (Mesa's llvmpipe and its D3D12 driver under WSL2 report 4.5
+/// or later, and wgpu caps the version at 450), and fails on what that compiler refuses: a construct GLSL 450 lacks,
+/// or an identifier with the `gl_` prefix GLSL reserves for its built-ins (naga renames a WGSL `gl` to `gl_1`).
+#[cfg(test)]
+pub(crate) fn assert_translates_to_glsl(name: &str, src: &str, constants: &[(&str, f64)]) {
+    use naga::back::glsl;
+    let module = naga::front::wgsl::parse_str(src).unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(src)));
+    let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(src)));
+    let options = glsl::Options { version: glsl::Version::Desktop(450), ..glsl::Options::default() };
+    // the built-ins are `gl_` and a capital letter
+    let reserved = regex::Regex::new(r"\bgl_[^A-Z]\w*").expect("pattern");
+    assert!(!module.entry_points.is_empty(), "{name}: no entry points");
+    let mut values = naga::back::PipelineConstants::default();
+    for (k, v) in constants {
+        values.insert((*k).to_string(), *v);
+    }
+    for ep in &module.entry_points {
+        // as wgpu does before it writes GLSL: the overrides become constants
+        let (module, info) =
+            naga::back::pipeline_constants::process_overrides(&module, &info, Some((ep.stage, &ep.name)), &values)
+                .unwrap_or_else(|e| panic!("{name}, {}: {e}", ep.name));
+        let pipeline = glsl::PipelineOptions { shader_stage: ep.stage, entry_point: ep.name.clone(), multiview: None };
+        let mut out = String::new();
+        glsl::Writer::new(&mut out, &module, &info, &options, &pipeline, naga::proc::BoundsCheckPolicies::default())
+            .and_then(|mut w| w.write())
+            .unwrap_or_else(|e| panic!("{name}, {}: no GLSL 450: {e}", ep.name));
+        let bad: Vec<&str> = reserved.find_iter(&out).map(|m| m.as_str()).collect();
+        assert!(bad.is_empty(), "{name}, {}: GLSL reserves the gl_ prefix: {bad:?}", ep.name);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// The largest distance between two renders of one size, in steps of the half floats the target stores.
@@ -3711,6 +3745,28 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
             naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
                 .validate(&m)
                 .unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(&src)));
+        }
+    }
+
+    #[test]
+    fn shaders_translate_to_the_glsl_opengl_compiles() {
+        for (name, src) in [
+            ("main", super::main_src()),
+            ("splat", super::splat_src()),
+            ("ssr", super::ssr_src()),
+            ("post", super::post_src()),
+            ("depth", super::depth_src()),
+            ("sort", super::sort_src()),
+            ("sphere", super::sphere_src()),
+        ] {
+            super::assert_translates_to_glsl(name, &src, &[]);
+        }
+        // the variants the main pass compiles
+        for plain in [0.0, 1.0] {
+            for lights in [0.0, 1.0] {
+                let constants = [("PLAIN_MATERIAL", plain), ("ALL_GLOBAL_LIGHTS", lights), ("ALPHA_MASK", 1.0 - plain)];
+                super::assert_translates_to_glsl("main", &super::main_src(), &constants);
+            }
         }
     }
 }

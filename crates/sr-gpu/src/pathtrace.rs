@@ -731,6 +731,29 @@ mod tests {
     }
 
     #[test]
+    fn every_variant_translates_to_the_glsl_opengl_compiles() {
+        let plain = format!(
+            "{}\n{}\n{}",
+            include_str!("sampling.wgsl"),
+            include_str!("pathtrace.wgsl"),
+            include_str!("volume.wgsl")
+        );
+        for base in [plain, grid_source()] {
+            for water in [false, true] {
+                for foam in [false, true] {
+                    for scatter in [false, true] {
+                        let source = variant_source(&base, water, foam, scatter);
+                        for media in [false, true] {
+                            let constants = variant_constants(media, media, water, foam);
+                            crate::three::assert_translates_to_glsl("path tracer", &source, &constants);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn scatter_shader_validates_with_water_foam_and_grid_combinations() {
         let plain = format!(
             "{}\n{}\n{}",
