@@ -263,6 +263,29 @@ pub struct OutputInfo {
     pub end: f64,
 }
 
+/// Declared attribution of an asset, in document order.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AssetCredit {
+    pub id: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credit: Option<String>,
+}
+
+/// Source range of an authored video layer, independent of output retiming.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SourceTimecodes {
+    pub layer: String,
+    pub asset: String,
+    pub fps: String,
+    #[serde(rename = "in")]
+    pub source_in: String,
+    #[serde(rename = "out")]
+    pub source_out: String,
+}
+
 /// A render report.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RenderReport {
@@ -276,6 +299,12 @@ pub struct RenderReport {
     pub output: OutputInfo,
     /// The findings, sorted.
     pub findings: Vec<Finding>,
+    /// Assets with a declared licence or credit; absent when none exist.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub assets: Vec<AssetCredit>,
+    /// Source in/out labels of video layers whose asset declares a timecode origin.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<SourceTimecodes>,
 }
 
 /// Builds and writes reports for one document: places findings in the document (XPath, node id), removes paths
@@ -331,7 +360,8 @@ impl<'a> ReportWriter<'a> {
     }
 
     /// The report of `output` with `findings`: placed, cleaned, sorted and deduplicated.
-    pub fn report(&self, output: OutputInfo, findings: Vec<Finding>) -> RenderReport {
+    pub fn report(&self, output: OutputInfo, mut findings: Vec<Finding>) -> RenderReport {
+        let sources = self.source_timecodes(&mut findings);
         let mut findings: Vec<Finding> = findings.into_iter().map(|f| self.place(f)).collect();
         findings.sort_by(order);
         findings.dedup();
@@ -341,7 +371,75 @@ impl<'a> ReportWriter<'a> {
             scene: self.scene(),
             output,
             findings,
+            assets: self.asset_credits(),
+            sources,
         }
+    }
+
+    fn asset_credits(&self) -> Vec<AssetCredit> {
+        let Some(xml) = &self.xml else { return Vec::new() };
+        xml.root_element()
+            .children()
+            .filter(|n| n.has_tag_name("assets"))
+            .flat_map(|n| n.children().filter(roxmltree::Node::is_element))
+            .filter(|n| n.has_attribute("license") || n.has_attribute("credit"))
+            .filter_map(|n| {
+                Some(AssetCredit {
+                    id: n.attribute("id")?.to_string(),
+                    kind: n.tag_name().name().to_string(),
+                    license: n.attribute("license").map(str::to_string),
+                    credit: n.attribute("credit").map(str::to_string),
+                })
+            })
+            .collect()
+    }
+
+    fn source_timecodes(&self, findings: &mut Vec<Finding>) -> Vec<SourceTimecodes> {
+        use sr_model::{
+            parse::ParseValue,
+            values::{Fps, Timecode},
+        };
+        let Some(xml) = &self.xml else { return Vec::new() };
+        let videos: std::collections::HashMap<_, _> = xml
+            .root_element()
+            .children()
+            .filter(|n| n.has_tag_name("assets"))
+            .flat_map(|n| n.children())
+            .filter(|n| n.has_tag_name("video") && n.has_attribute("timecodeStart"))
+            .filter_map(|n| Some((n.attribute("id")?, n)))
+            .collect();
+        let mut sources = Vec::new();
+        for layer in xml.descendants().filter(|n| n.has_tag_name("layer")) {
+            let Some(asset) = layer.attribute("asset") else { continue };
+            let Some(video) = videos.get(asset) else { continue };
+            let id = layer.attribute("id").map(str::to_string).unwrap_or_else(|| sr_model::diag::element_path(layer));
+            let convert = || -> Option<SourceTimecodes> {
+                let fps = Fps::parse_value(video.attribute("fps")?).ok()?;
+                let start = Timecode::parse_value(video.attribute("timecodeStart")?).ok()?;
+                let origin = start.to_frame(fps).ok()?;
+                let label = |seconds: &str| -> Option<String> {
+                    let offset = (seconds.trim().parse::<f64>().ok()? * fps.as_f64()).round();
+                    if !offset.is_finite() || offset.abs() >= i64::MAX as f64 {
+                        return None;
+                    }
+                    let frame = origin.checked_add_signed(offset as i64)?;
+                    Some(Timecode::from_frame(frame, fps, start.drop_frame).ok()?.to_string())
+                };
+                Some(SourceTimecodes {
+                    layer: id.clone(),
+                    asset: asset.to_string(),
+                    fps: fps.to_string(),
+                    source_in: label(layer.attribute("clipIn").unwrap_or("0"))?,
+                    source_out: label(layer.attribute("clipOut").or_else(|| video.attribute("duration"))?)?,
+                })
+            };
+            match convert() {
+                Some(source) => sources.push(source),
+                None => findings.push(Finding::node(code::engine("TIMECODE"), Severity::Warning, &id,
+                    format!("video asset {asset:?}: timecodeStart and clip bounds cannot be labelled at the asset frame rate"))),
+            }
+        }
+        sources
     }
 
     /// Writes `report` to `path` as one UTF-8 JSON object (and a final newline), creating its directory.

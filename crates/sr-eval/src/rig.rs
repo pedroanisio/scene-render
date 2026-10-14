@@ -52,7 +52,20 @@ pub fn load_tracks(scene: &m::Scene, base: &FsPath, diags: &mut Vec<Diagnostic>)
     for td in &tr.track_data {
         let parsed = read(&td.src, base).and_then(|b| {
             let text = String::from_utf8_lossy(&b).to_string();
-            TrackData::parse(&text, td.format.as_str()).map_err(|e| e.to_string())
+            let data = TrackData::parse(&text, td.format.as_str()).map_err(|e| e.to_string())?;
+            let points = data.points.values().any(|v| !v.is_empty());
+            let planes = data.planes.values().any(|v| !v.is_empty());
+            let cameras = data.cameras.values().any(|v| !v.is_empty());
+            let compatible = match td.kind.as_str() {
+                "point" | "mask" | "face" => points || planes,
+                "planar" => planes,
+                "camera" => cameras,
+                _ => false,
+            };
+            if !compatible {
+                return Err(format!("kind {} has no compatible nonempty tracking series", td.kind));
+            }
+            Ok(data)
         });
         match parsed {
             Ok(data) => {
@@ -75,6 +88,73 @@ pub fn load_tracks(scene: &m::Scene, base: &FsPath, diags: &mut Vec<Diagnostic>)
         }
     }
     out
+}
+
+/// Point/planar consumers share this compatibility rule. Mask/face files carry named landmarks.
+fn point_capable(entry: &TrackEntry) -> bool {
+    matches!(entry.kind.as_str(), "point" | "planar" | "mask" | "face")
+}
+
+fn stabilization_track<'a>(tracks: &'a HashMap<String, Arc<TrackEntry>>, asset: &str) -> Option<&'a Arc<TrackEntry>> {
+    tracks
+        .iter()
+        .filter(|(_, t)| t.footage.as_deref() == Some(asset) && point_capable(t))
+        .min_by_key(|(id, _)| *id)
+        .map(|(_, t)| t)
+}
+
+/// Reject incompatible consumers while building the program, before any frames are rendered.
+pub(crate) fn validate_track_uses(
+    scene: &m::Scene,
+    nodes: &[InstNode],
+    tracks: &HashMap<String, Arc<TrackEntry>>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let mut constraint = |e: &dyn Element| {
+        if !is(e, "transformConstraint") {
+            return;
+        }
+        let Some(AttrValue::Str(target)) = e.get_attr("target") else { return };
+        let Some(entry) = tracks.get(&target) else { return };
+        if !point_capable(entry) {
+            diags.push(Diagnostic::error(
+                "E17",
+                format!("tracking data {target:?} of kind {} cannot drive a transformConstraint", entry.kind),
+                e.loc(),
+                format!("/scene/tracking/trackData[@id='{target}']"),
+            ));
+        }
+    };
+    for n in nodes.iter().filter(|n| n.doc == 0) {
+        for c in children(&*n.elem) {
+            constraint(c);
+        }
+    }
+    if let Some(lights) = &scene.lights {
+        for light in &lights.lights {
+            for c in children(light) {
+                constraint(c);
+            }
+        }
+    }
+    for n in nodes.iter().filter(|n| n.doc == 0 && n.name == "layer") {
+        if !matches!(n.elem.get_attr("stabilize"), Some(AttrValue::Bool(true))) {
+            continue;
+        }
+        let Some(asset) = n.asset.as_deref() else { continue };
+        if stabilization_track(tracks, asset).is_none() {
+            if let Some((id, entry)) =
+                tracks.iter().filter(|(_, t)| t.footage.as_deref() == Some(asset)).min_by_key(|(id, _)| *id)
+            {
+                diags.push(Diagnostic::error(
+                    "E17",
+                    format!("tracking data {id:?} of kind {} cannot stabilize 2D footage", entry.kind),
+                    n.elem.loc(),
+                    n.id.to_string(),
+                ));
+            }
+        }
+    }
 }
 
 pub(crate) fn bone_ids(e: &dyn Element) -> Vec<String> {
@@ -689,9 +769,7 @@ pub fn post_pass(prog: &Program, nodes: &mut [FrameNode], t: f64) {
             Some(AttrValue::Num(v)) => v,
             _ => 0.5,
         };
-        let Some(te) =
-            n.asset.as_deref().and_then(|a| prog.tracks.values().find(|te| te.footage.as_deref() == Some(a)))
-        else {
+        let Some(te) = n.asset.as_deref().and_then(|a| stabilization_track(&prog.tracks, a)) else {
             continue;
         };
         if let Some(d) = stabilize(&sc, nodes, i, te, smooth) {

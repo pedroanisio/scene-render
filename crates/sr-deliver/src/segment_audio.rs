@@ -40,7 +40,7 @@ pub struct OutputAudio {
 
 /// Whether a source (its id, role and bus) is selected by `o`: it matches any of `audioTracks`,
 /// `audioRoles` and `audioBuses`, or the output gives none of them.
-fn selected(o: &m::Output, id: &str, role: &str, bus: Option<&str>) -> bool {
+pub(crate) fn selected(o: &m::Output, id: &str, role: &str, bus: Option<&str>) -> bool {
     let (t, r, b) = (&o.audio_tracks, &o.audio_roles, &o.audio_buses);
     if t.is_none() && r.is_none() && b.is_none() {
         return true;

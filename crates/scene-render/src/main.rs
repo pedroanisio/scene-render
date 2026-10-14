@@ -380,7 +380,7 @@ enum Command {
         /// Directory relative output paths resolve against (default: the document's).
         #[arg(long, value_name = "DIR")]
         out_dir: Option<PathBuf>,
-        /// Preferred asset representation (e.g. proxy).
+        /// Preferred asset representation name (including proxy), or language tag.
         #[arg(long)]
         representation: Option<String>,
         /// Encoder family for H.264, H.265 and AV1.

@@ -136,7 +136,7 @@
     <beatGrid bpm="120"/>
   </markers>
   <tracking>
-    <trackData id="face" src="../media/track.json" kind="face" sha256="b7aed599be13ebed2ab97b6b45fb21cd19d0b69bb47513b22b6ebabc059f5f36"/>
+    <trackData id="face" src="../media/track.json" kind="face" sha256="4fabf8bcca1ceb8e08b3634dc41f45ff6b4dad6ee01275cf713d9cbe7424bc9f"/>
   </tracking>
   <composition>
     <camera id="cam" projection="perspective" focusTarget="hero" target="hero"/>

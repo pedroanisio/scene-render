@@ -10,7 +10,9 @@
 //! Codes: `A01` missing file, `A02` digest mismatch, `A03` remote input not
 //! verified offline, `A04` missing sequence frames, `A05` unreadable file,
 //! `A06` physics cache absent (recomputed at render time), `A07` declared
-//! image dimensions differ from the local source file.
+//! image dimensions differ from the local source file, `A08` an image/video representation declares other
+//! dimensions than its file or another aspect ratio than the asset, `A09` an audio asset declares a sample rate,
+//! channel count or duration that its file contradicts.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
@@ -22,6 +24,7 @@ use roxmltree::{Document, Node};
 use sha2::{Digest, Sha256};
 
 use crate::diag::{element_path, Diagnostic, Loc, Severity};
+use crate::model::{ColorSpace, Representation, Transfer};
 use crate::xsd::{root_builtin, Builtin, COMPLEX_TYPES};
 
 /// Frames beyond this count are not checked individually.
@@ -29,6 +32,81 @@ const MAX_SEQUENCE_FRAMES: i128 = 1_000_000;
 
 /// Widest frame-number placeholder accepted (`%0Nd` or a run of `#`).
 pub const MAX_FRAME_DIGITS: usize = 64;
+
+/// How far, in seconds, an audio asset's declared `duration` may differ from its probed container duration before
+/// A09 warns: container durations are rounded to the packet or frame.
+pub const AUDIO_DURATION_TOLERANCE: f64 = 0.05;
+
+/// The name that the asset attribute `proxy` answers to when a representation is preferred.
+pub const PROXY_REPRESENTATION: &str = "proxy";
+
+/// The source an asset is read from when a representation is preferred: see [`select_representation`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Selected<'a> {
+    /// The URI to read instead of the asset's `src`.
+    pub src: &'a str,
+    /// The representation's `colorSpace`, when it declares one.
+    pub color_space: Option<ColorSpace>,
+    /// The representation's `transfer`, when it declares one.
+    pub transfer: Option<Transfer>,
+    /// The representation's `language`, when it declares one.
+    pub language: Option<&'a str>,
+}
+
+fn primary_subtag(tag: &str) -> String {
+    tag.split('-').next().unwrap_or("").to_ascii_lowercase()
+}
+
+/// Which source of an asset the preference `wanted` (`--representation`, else `output/@representation`) selects, or
+/// `None` for the asset's own `src`. One mechanism for every way an asset can have more than one file:
+///
+/// 1. a `<representation>` whose `name` is `wanted`;
+/// 2. the asset's `proxy` attribute, when `wanted` is `proxy` (an implicit representation of that name, so an
+///    explicit `<representation name="proxy">` wins over it);
+/// 3. a `<representation>` whose `language` is `wanted` (BCP 47, compared case-insensitively), else the first
+///    whose primary language subtag is `wanted`'s.
+pub fn select_representation<'a>(
+    reps: &'a [Representation],
+    proxy: Option<&'a str>,
+    wanted: Option<&str>,
+) -> Option<Selected<'a>> {
+    let wanted = wanted?;
+    let of = |r: &'a Representation| Selected {
+        src: r.src.as_str(),
+        color_space: r.color_space,
+        transfer: r.transfer,
+        language: r.language.as_ref().map(|l| l.0.as_str()),
+    };
+    if let Some(r) = reps.iter().find(|r| r.name == wanted) {
+        return Some(of(r));
+    }
+    if wanted == PROXY_REPRESENTATION {
+        if let Some(src) = proxy {
+            return Some(Selected { src, color_space: None, transfer: None, language: None });
+        }
+    }
+    // A requested name that is not a schema language tag must not accidentally select a language.
+    let mut subtags = wanted.split('-');
+    let primary = subtags.next().unwrap_or_default();
+    if wanted.len() > 35
+        || !(2..=8).contains(&primary.len())
+        || !primary.bytes().all(|b| b.is_ascii_alphabetic())
+        || subtags.any(|s| !(1..=8).contains(&s.len()) || !s.bytes().all(|b| b.is_ascii_alphanumeric()))
+    {
+        return None;
+    }
+    let language = |r: &&'a Representation| r.language.as_ref().map(|l| l.0.as_str());
+    let exact = reps.iter().find(|r| language(r).is_some_and(|l| l.eq_ignore_ascii_case(wanted)));
+    let wanted_primary = primary_subtag(wanted);
+    exact.or_else(|| reps.iter().find(|r| language(r).is_some_and(|l| primary_subtag(l) == wanted_primary))).map(of)
+}
+
+/// Whether a `rw`x`rh` representation keeps the aspect ratio of a `aw`x`ah` asset, up to the rounding of a scaled
+/// size to whole pixels (one pixel in either dimension).
+pub fn keeps_aspect(rw: u64, rh: u64, aw: u64, ah: u64) -> bool {
+    let cross = (rh as u128 * aw as u128).abs_diff(ah as u128 * rw as u128);
+    cross <= aw.max(ah) as u128
+}
 
 /// Names of input-file attributes, derived from the schema: every `xs:anyURI`
 /// attribute except the output-side `path` and `uri`. (`output/@report` is an output too: see [`is_output_side`].)
@@ -267,6 +345,9 @@ pub fn verify(doc: &Document<'_>, base_dir: &Path, out: &mut Vec<Diagnostic>) {
     }
 
     for (n, attr, scheme) in remote {
+        if n.has_tag_name("representation") && attr == "src" {
+            representation_dimensions(n, None, n.attribute("src").unwrap_or_default(), out);
+        }
         out.push(Diagnostic::warning(
             "A03",
             format!("@{attr} of <{}> is a {scheme} URI and was not verified offline", n.tag_name().name()),
@@ -283,8 +364,7 @@ pub fn verify(doc: &Document<'_>, base_dir: &Path, out: &mut Vec<Diagnostic>) {
     // Probe each original image once, without decoding its pixels. Proxies intentionally
     // have different dimensions; formats delegated to FFmpeg at render time may not have
     // a native reader, so an unavailable probe does not invalidate an otherwise usable asset.
-    let images: BTreeSet<&PathBuf> =
-        checks.iter().filter(|c| c.node.tag_name().name() == "image" && c.attr == "src").map(|c| &c.path).collect();
+    let images: BTreeSet<&PathBuf> = checks.iter().filter(|c| is_image_source(c)).map(|c| &c.path).collect();
     let sizes: HashMap<&PathBuf, Option<(u32, u32)>> = images
         .into_par_iter()
         .map(|p| {
@@ -307,6 +387,22 @@ pub fn verify(doc: &Document<'_>, base_dir: &Path, out: &mut Vec<Diagnostic>) {
             (p, size)
         })
         .collect();
+
+    // Probe audio declarations and video representations once per file. An unavailable probe leaves declarations
+    // unchecked; missing/unreadable files still receive the ordinary asset diagnostics.
+    let media: BTreeSet<&PathBuf> = checks
+        .iter()
+        .filter(|c| {
+            c.attr == "src"
+                && ((c.node.has_tag_name("audio")
+                    && ["sampleRate", "channels", "duration"].iter().any(|a| c.node.has_attribute(*a)))
+                    || (c.node.has_tag_name("representation")
+                        && c.node.parent_element().is_some_and(|p| p.has_tag_name("video"))))
+        })
+        .map(|c| &c.path)
+        .collect();
+    let probes: HashMap<&PathBuf, Option<sr_media::MediaInfo>> =
+        media.into_par_iter().map(|p| (p, sr_media::probe(p).ok())).collect::<Vec<_>>().into_iter().collect();
 
     for c in &checks {
         let ename = c.node.tag_name().name();
@@ -372,6 +468,25 @@ pub fn verify(doc: &Document<'_>, base_dir: &Path, out: &mut Vec<Diagnostic>) {
                 }
             }
         }
+        if ename == "representation" && c.attr == "src" {
+            let file = sizes.get(&c.path).copied().flatten().or_else(|| {
+                let video = probes.get(&c.path)?.as_ref()?.video.as_ref()?;
+                let declared_rotation =
+                    c.node.parent_element()?.attribute("rotation").and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+                let rotation = if declared_rotation == 0 { video.rotation } else { declared_rotation };
+                Some(if rotation.rem_euclid(180) == 90 {
+                    (video.height, video.width)
+                } else {
+                    (video.width, video.height)
+                })
+            });
+            representation_dimensions(c.node, file, &shown, out);
+        }
+        if ename == "audio" && c.attr == "src" {
+            if let Some(Some(info)) = probes.get(&c.path) {
+                audio_declarations(c.node, info, &shown, out);
+            }
+        }
         let Some(expected) = c.expected else { continue };
         match &digests[&c.path] {
             Ok(actual) if *actual == expected => {}
@@ -395,6 +510,93 @@ pub fn verify(doc: &Document<'_>, base_dir: &Path, out: &mut Vec<Diagnostic>) {
             ),
             Err(e) => out.push(Diagnostic::error(unreadable, format!("cannot read {shown}: {e}"), loc, path)),
         }
+    }
+}
+
+/// Whether `c` is the `src` of an image, or of a representation of one: the files whose dimensions are probed.
+fn is_image_source(c: &Check) -> bool {
+    c.attr == "src"
+        && match c.node.tag_name().name() {
+            "image" => true,
+            "representation" => c.node.parent_element().is_some_and(|p| p.tag_name().name() == "image"),
+            _ => false,
+        }
+}
+
+fn declared_u64(n: Node, attr: &str) -> Option<u64> {
+    n.attribute(attr).and_then(|s| s.trim().parse::<u64>().ok())
+}
+
+/// A08: representation dimensions describe its own file; layout still uses the asset's size.
+fn representation_dimensions(n: Node, file: Option<(u32, u32)>, shown: &str, out: &mut Vec<Diagnostic>) {
+    let Some(asset) = n.parent_element().filter(|p| matches!(p.tag_name().name(), "image" | "video")) else { return };
+    let (dw, dh) = (declared_u64(n, "width"), declared_u64(n, "height"));
+    let name = n.attribute("name").unwrap_or_default();
+    let path = element_path(n);
+    let attr = if dw.is_some() {
+        "width"
+    } else if dh.is_some() {
+        "height"
+    } else {
+        "src"
+    };
+    if let Some((w, h)) = file {
+        if dw.is_some_and(|d| d != w as u64) || dh.is_some_and(|d| d != h as u64) {
+            let width = dw.map_or_else(|| "?".into(), |d| d.to_string());
+            let height = dh.map_or_else(|| "?".into(), |d| d.to_string());
+            out.push(
+                Diagnostic::warning(
+                    "A08",
+                    format!(
+                        "representation {name:?} of {} {} declares {width}x{height}, but the file {shown} is {w}x{h}",
+                        asset.tag_name().name(),
+                        asset.attribute("id").unwrap_or_default()
+                    ),
+                    attr_loc(n, attr),
+                    path.clone(),
+                )
+                .with_help("set each declared dimension to the representation file's dimension"),
+            );
+        }
+    }
+    let dimensions = dw.or(file.map(|f| f.0 as u64)).zip(dh.or(file.map(|f| f.1 as u64)));
+    if let (Some((rw, rh)), Some(aw), Some(ah)) =
+        (dimensions, declared_u64(asset, "width"), declared_u64(asset, "height"))
+    {
+        if !keeps_aspect(rw, rh, aw, ah) {
+            out.push(Diagnostic::warning("A08",
+                format!("representation {name:?} is {rw}x{rh}, a different aspect ratio from its asset's {aw}x{ah}; layout uses the asset's size"),
+                attr_loc(n, attr), path)
+                .with_help("keep the asset's aspect ratio when making a representation"));
+        }
+    }
+}
+
+/// A09: the sample rate, channel count and duration an audio asset declares are those the probe reads from its file
+/// (the probe wins; a declaration the file contradicts is a warning).
+fn audio_declarations(n: Node, info: &sr_media::MediaInfo, shown: &str, out: &mut Vec<Diagnostic>) {
+    let Some(stream) = info.audio.first() else { return };
+    let path = element_path(n);
+    let mut warn = |attr: &str, declared: String, actual: String| {
+        out.push(
+            Diagnostic::warning(
+                "A09",
+                format!("@{attr} of <audio> {shown} declares {declared}, but the file has {actual}"),
+                attr_loc(n, attr),
+                path.clone(),
+            )
+            .with_help("the file wins when they differ: correct the declaration"),
+        );
+    };
+    if let Some(d) = declared_u64(n, "sampleRate").filter(|d| *d != stream.sample_rate as u64) {
+        warn("sampleRate", d.to_string(), stream.sample_rate.to_string());
+    }
+    if let Some(d) = declared_u64(n, "channels").filter(|d| *d != stream.channels as u64) {
+        warn("channels", d.to_string(), stream.channels.to_string());
+    }
+    let duration = n.attribute("duration").and_then(|s| s.trim().parse::<f64>().ok());
+    if let Some(d) = duration.filter(|d| info.duration > 0.0 && (d - info.duration).abs() > AUDIO_DURATION_TOLERANCE) {
+        warn("duration", format!("{d} s"), format!("{:.3} s", info.duration));
     }
 }
 

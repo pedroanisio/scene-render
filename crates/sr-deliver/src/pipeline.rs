@@ -1071,11 +1071,12 @@ fn run_delivery(
         p,
         output,
         description_id.filter(|_| takes_audio).map(|id| (id, !separate_description)),
+        representation.as_deref(),
         &mut report.warnings,
     );
-    let description_language = description_id
-        .filter(|_| separate_description)
-        .map(|id| crate::metadata::audio_language(p, output, Some((id, true)), &mut report.warnings));
+    let description_language = description_id.filter(|_| separate_description).map(|id| {
+        crate::metadata::audio_language(p, output, Some((id, true)), representation.as_deref(), &mut report.warnings)
+    });
     if wants_audio {
         if main_language != "und" && matches!(container, Some(Container::Wav | Container::Mp3 | Container::Mxf)) {
             report.warnings.push(

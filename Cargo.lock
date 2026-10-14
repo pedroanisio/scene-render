@@ -3298,6 +3298,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sr-media",
  "sr-testkit",
  "sr-volume",
  "sr-wasm",

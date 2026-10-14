@@ -1688,7 +1688,7 @@ impl Builder {
                 let wh = |w: Option<f64>, h: Option<f64>| w.zip(h).map(|(w, h)| [w, h]);
                 asset_size = match a {
                     m::AssetsChild::Image(x) => wh(Some(x.width as f64), Some(x.height as f64)),
-                    m::AssetsChild::Video(x) => wh(Some(x.width as f64), Some(x.height as f64)),
+                    m::AssetsChild::Video(x) => wh(Some(x.width as f64 * x.pixel_aspect.get()), Some(x.height as f64)),
                     m::AssetsChild::ImageSequence(x) => wh(Some(x.width as f64), Some(x.height as f64)),
                     m::AssetsChild::Text(x) => wh(Some(x.width as f64), Some(x.height as f64)),
                     m::AssetsChild::Vector(x) => wh(Some(x.width as f64), Some(x.height as f64)),
@@ -3777,6 +3777,7 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         vis[k as usize] = (s, e);
     }
     let tracks = crate::rig::load_tracks(&scene, &b.docs[0].base, &mut b.diags);
+    crate::rig::validate_track_uses(&scene, &b.nodes, &tracks, &mut b.diags);
     let skin_dirs: Vec<std::path::PathBuf> = b.docs.iter().map(|d| d.base.clone()).collect();
     let skins = crate::rig::load_skins(&b.nodes, &skin_dirs, &b.local_ids, &mut b.diags);
     let errors: Vec<Diagnostic> = b.diags.iter().filter(|d| d.is_error()).cloned().collect();

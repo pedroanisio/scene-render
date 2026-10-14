@@ -206,3 +206,89 @@ fn a_two_bone_leg_reaches_its_target_under_any_ancestor_transform() {
         assert!(near(tip, goal, 1e-6), "{tf}: the tip is at {tip:?}, the goal at {goal:?}");
     }
 }
+
+fn e17(d: &sr_model::Document) -> Vec<String> {
+    match Evaluator::new(d, &EvalOptions::default()) {
+        Ok(_) => Vec::new(),
+        Err(r) => r.diagnostics.iter().filter(|x| x.code == "E17").map(|x| x.message.clone()).collect(),
+    }
+}
+
+const FOLLOWER: &str =
+    r##"<shape id="f" shape="rect" width="2" height="2"><transformConstraint type="track" target="t"/></shape>"##;
+
+#[test]
+fn track_data_must_hold_the_series_its_kind_declares() {
+    std::fs::write(dir().join("kind-empty.json"), r#"{"points":{"face":[]}}"#).unwrap();
+    std::fs::write(dir().join("kind-points.csv"), "frame,track,x,y\n0,eye,10,10\n10,eye,30,20\n").unwrap();
+    std::fs::write(
+        dir().join("kind-plane.csv"),
+        "frame,track,x0,y0,x1,y1,x2,y2,x3,y3\n0,pl,0,0,10,0,10,10,0,10\n10,pl,5,5,15,5,15,15,5,15\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir().join("kind-camera.json"),
+        r#"{"fps":10,"cameras":{"c":[[0,0,0,0,0,0,0,40],[10,1,0,0,0,0,0,40]]}}"#,
+    )
+    .unwrap();
+    let td = |src: &str, kind: &str, format: &str| {
+        format!(r##"<tracking><trackData id="t" src="{src}" kind="{kind}" format="{format}"/></tracking>"##)
+    };
+    // Empty series and data without the declared kind's geometry are invalid.
+    for (src, kind, format) in [
+        ("kind-empty.json", "face", "json"),
+        ("kind-points.csv", "planar", "csv"),
+        ("kind-points.csv", "camera", "csv"),
+        ("kind-plane.csv", "camera", "csv"),
+        ("kind-camera.json", "point", "json"),
+        ("kind-camera.json", "planar", "json"),
+    ] {
+        let msgs = e17(&doc("", &td(src, kind, format)));
+        assert!(
+            msgs.iter().any(|m| m.contains("\"t\"") && m.contains(kind)),
+            "{src} declared {kind} must be E17 naming the id and the kind: {msgs:?}"
+        );
+    }
+    // matching declarations load; planar data may also be read as a point (its centre), and mask and face are point-like
+    for (src, kind, format) in [
+        ("kind-points.csv", "point", "csv"),
+        ("kind-points.csv", "mask", "csv"),
+        ("kind-points.csv", "face", "csv"),
+        ("kind-plane.csv", "planar", "csv"),
+        ("kind-plane.csv", "point", "csv"),
+        ("kind-camera.json", "camera", "json"),
+    ] {
+        assert_eq!(e17(&doc("", &td(src, kind, format))), Vec::<String>::new(), "{src} as {kind}");
+    }
+}
+
+#[test]
+fn camera_data_cannot_drive_a_transform_constraint() {
+    std::fs::write(
+        dir().join("drive-camera.json"),
+        r#"{"fps":10,"cameras":{"c":[[0,0,0,0,0,0,0,40],[10,1,0,0,0,0,0,40]]}}"#,
+    )
+    .unwrap();
+    std::fs::write(dir().join("drive-points.csv"), "frame,track,x,y\n0,eye,10,10\n10,eye,30,20\n").unwrap();
+    let camera = doc(FOLLOWER, r##"<tracking><trackData id="t" src="drive-camera.json" kind="camera"/></tracking>"##);
+    let msgs = e17(&camera);
+    assert!(
+        msgs.iter().any(|m| m.contains("\"t\"") && m.contains("camera") && m.contains("transformConstraint")),
+        "{msgs:?}"
+    );
+    let point =
+        doc(FOLLOWER, r##"<tracking><trackData id="t" src="drive-points.csv" kind="point" format="csv"/></tracking>"##);
+    assert!(e17(&point).is_empty());
+}
+
+#[test]
+fn camera_tracks_cannot_stabilize_2d_footage() {
+    std::fs::write(dir().join("stabilize-camera.json"), r#"{"fps":10,"cameras":{"c":[[0,0,0,0,0,0,0,40]]}}"#).unwrap();
+    let xml = r#"<scene version="1.1"><project width="100" height="100" fps="10" duration="1"/>
+<assets><video id="v" src="v.mp4" width="100" height="100" fps="10" duration="1"/></assets>
+<tracking><trackData id="t" src="stabilize-camera.json" kind="camera" footage="v"/></tracking>
+<composition><layer id="l" asset="v" stabilize="true"/></composition></scene>"#;
+    let d = sr_model::load_str(xml, &sr_model::LoadOptions { verify_assets: false, base_dir: Some(dir()) }).unwrap();
+    let msgs = e17(&d);
+    assert!(msgs.iter().any(|m| m.contains("camera") && m.contains("stabilize")), "{msgs:?}");
+}

@@ -1374,11 +1374,12 @@ impl Renderer {
         &self,
         reps: &'a [m::Representation],
         src: &'a str,
+        proxy: Option<&'a str>,
         space: m::ColorSpace,
         transfer: m::Transfer,
     ) -> (&'a str, m::ColorSpace, m::Transfer) {
-        match self.representation.as_deref().and_then(|name| reps.iter().find(|r| r.name == name)) {
-            Some(r) => (r.src.as_str(), r.color_space.unwrap_or(space), r.transfer.unwrap_or(transfer)),
+        match sr_model::assets::select_representation(reps, proxy, self.representation.as_deref()) {
+            Some(r) => (r.src, r.color_space.unwrap_or(space), r.transfer.unwrap_or(transfer)),
             None => (src, space, transfer),
         }
     }
@@ -1589,7 +1590,8 @@ impl Renderer {
         let base = p.base_dirs.get(doc).cloned().unwrap_or_default();
         match a {
             AssetsChild::Image(i) => {
-                let (src, space, transfer) = self.representation(&i.representations, &i.src, i.color_space, i.transfer);
+                let (src, space, transfer) =
+                    self.representation(&i.representations, &i.src, i.proxy.as_deref(), i.color_space, i.transfer);
                 match sr_model::assets::resolve(src, &base) {
                     sr_model::assets::Resolved::Local(path) => {
                         let t = self.image(
@@ -1635,7 +1637,8 @@ impl Renderer {
                 self.sequence_at(plan, &base, s, k, &n.id)
             }
             AssetsChild::Video(v) => {
-                let (src, space, transfer) = self.representation(&v.representations, &v.src, v.color_space, v.transfer);
+                let (src, space, transfer) =
+                    self.representation(&v.representations, &v.src, v.proxy.as_deref(), v.color_space, v.transfer);
                 let path = match sr_model::assets::resolve(src, &base) {
                     sr_model::assets::Resolved::Local(path) => path,
                     sr_model::assets::Resolved::Remote(u) => {
@@ -3983,15 +3986,22 @@ impl Renderer {
                             .and_then(|a| a.children.iter().find(|c| c.id() == Some(pt.asset.as_str())));
                         match asset {
                             Some(AssetsChild::Image(img)) => {
-                                let path = match sr_model::assets::resolve(&img.src, &ctx.p.base_dirs[0]) {
+                                let (src, cs, tf) = self.representation(
+                                    &img.representations,
+                                    &img.src,
+                                    img.proxy.as_deref(),
+                                    img.color_space,
+                                    img.transfer,
+                                );
+                                let path = match sr_model::assets::resolve(src, &ctx.p.base_dirs[0]) {
                                     sr_model::assets::Resolved::Local(p) => Some(p),
                                     _ => None,
                                 };
                                 match path.and_then(|p| {
                                     self.image(
                                         p,
-                                        img.color_space,
-                                        img.transfer,
+                                        cs,
+                                        tf,
                                         img.alpha,
                                         img.color_profile == sr_model::model::ColorProfile::Embedded,
                                     )

@@ -192,3 +192,88 @@ fn a4_finding_name_is_additive_and_id_stays_addressable() {
     assert_eq!(r.findings[0].node.as_deref(), Some("a"));
     assert_eq!(r.findings[0].node_name.as_deref(), Some("Title"));
 }
+
+const CREDITS_DOC: &str = r##"<scene version="1.2"><project width="64" height="48" fps="30000/1001" duration="2"/>
+<assets>
+<image id="logo" src="a.png" width="4" height="4" license="CC-BY-4.0" credit="Ada Lovelace"/>
+<image id="plain" src="b.png" width="4" height="4"/>
+<video id="clip" src="c.mp4" width="64" height="48" fps="30000/1001" duration="10" timecodeStart="01:00:00;02" license="Editorial"/>
+<audio id="music" src="m.wav" credit="The Band"/>
+</assets>
+<composition><layer id="v" asset="clip" clipIn="1" clipOut="2"/><layer id="whole" asset="clip"/><layer id="p" asset="plain"/></composition></scene>"##;
+
+#[test]
+fn licence_and_credit_of_every_asset_travel_in_the_report() {
+    let w = ReportWriter::new(CREDITS_DOC.as_bytes(), std::path::Path::new("."));
+    let v = serde_json::to_value(w.report(output(), vec![])).unwrap();
+    let assets = v["assets"].as_array().expect("an assets array");
+    // document order; an asset with neither attribute is not listed
+    let ids: Vec<&str> = assets.iter().map(|a| a["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["logo", "clip", "music"], "{v}");
+    assert_eq!(assets[0]["kind"], "image");
+    assert_eq!(assets[0]["license"], "CC-BY-4.0");
+    assert_eq!(assets[0]["credit"], "Ada Lovelace");
+    assert_eq!(assets[1]["license"], "Editorial");
+    assert!(assets[1].get("credit").is_none(), "an absent attribute leaves no key: {}", assets[1]);
+    assert_eq!(assets[2]["kind"], "audio");
+    assert_eq!(assets[2]["credit"], "The Band");
+}
+
+#[test]
+fn video_layers_report_their_source_timecodes() {
+    let w = ReportWriter::new(CREDITS_DOC.as_bytes(), std::path::Path::new("."));
+    let v = serde_json::to_value(w.report(output(), vec![])).unwrap();
+    let sources = v["sources"].as_array().expect("a sources array");
+    assert_eq!(sources.len(), 2, "only layers of a video asset with a timecodeStart: {v}");
+    // 01:00:00;02 at 29.97 fps (drop frame) plus clipIn 1 s (30 frames) and clipOut 2 s (60 frames)
+    assert_eq!(sources[0]["layer"], "v");
+    assert_eq!(sources[0]["asset"], "clip");
+    assert_eq!(sources[0]["fps"], "30000/1001");
+    assert_eq!(sources[0]["in"], "01:00:01;02");
+    assert_eq!(sources[0]["out"], "01:00:02;02");
+    // no clipOut: the asset's whole duration (10 s = 300 frames)
+    assert_eq!(sources[1]["layer"], "whole");
+    assert_eq!(sources[1]["in"], "01:00:00;02");
+    assert_eq!(sources[1]["out"], "01:00:10;02");
+}
+
+#[test]
+fn a_document_without_credits_or_source_timecodes_has_neither_key() {
+    let w = ReportWriter::new(DOC.as_bytes(), std::path::Path::new("."));
+    let v = serde_json::to_value(w.report(output(), vec![])).unwrap();
+    assert!(v.get("assets").is_none() && v.get("sources").is_none(), "{v}");
+}
+
+#[test]
+fn generated_asset_licence_is_reported_too() {
+    let xml = CREDITS_DOC.replace("</assets>", r#"<generated id="speech" kind="speech" provider="p" model="m" cache="speech.wav" cacheSha256="0000000000000000000000000000000000000000000000000000000000000000" license="Provider terms"/></assets>"#);
+    let w = ReportWriter::new(xml.as_bytes(), std::path::Path::new("."));
+    let v = serde_json::to_value(w.report(output(), vec![])).unwrap();
+    assert_eq!(v["assets"][3]["id"], "speech");
+    assert_eq!(v["assets"][3]["license"], "Provider terms");
+}
+
+#[test]
+fn source_timecodes_use_the_asset_rate_and_signed_clip_offsets() {
+    let xml = CREDITS_DOC
+        .replace(
+            "fps=\"30000/1001\" duration=\"10\" timecodeStart=\"01:00:00;02\"",
+            "fps=\"25\" duration=\"10\" timecodeStart=\"01:00:00:00\"",
+        )
+        .replace("clipIn=\"1\" clipOut=\"2\"", "clipIn=\"-1\" clipOut=\"0.5\"");
+    let w = ReportWriter::new(xml.as_bytes(), std::path::Path::new("."));
+    let v = serde_json::to_value(w.report(output(), vec![])).unwrap();
+    assert_eq!(v["sources"][0]["fps"], "25");
+    assert_eq!(v["sources"][0]["in"], "00:59:59:00");
+    assert_eq!(v["sources"][0]["out"], "01:00:00:13");
+}
+
+#[test]
+fn invalid_source_timecodes_are_reported_instead_of_invented() {
+    let xml = CREDITS_DOC.replace("01:00:00;02", "00:01:00;00"); // skipped drop-frame label
+    let w = ReportWriter::new(xml.as_bytes(), std::path::Path::new("."));
+    let v = serde_json::to_value(w.report(output(), vec![])).unwrap();
+    assert!(v.get("sources").is_none());
+    assert_eq!(v["findings"][0]["code"], "X-rs-scene-render-TIMECODE");
+    assert_eq!(v["findings"][0]["severity"], "warning");
+}

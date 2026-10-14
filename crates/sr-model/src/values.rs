@@ -389,36 +389,31 @@ impl Timecode {
         self.to_frame(fps).map(|fr| fps.frame_time(fr))
     }
 
-    /// The timecode of frame number `frame` at `fps`: the inverse of [`Timecode::to_frame`]. With `drop_frame` the
-    /// rate must be in the 29.97 or 59.94 family (a nominal rate that 30 divides), as `to_frame` requires; a
-    /// frame number beyond 99:59:59 wraps hours at 100, as timecode does.
+    /// The label of frame number `frame` at `fps`: the inverse of [`Timecode::to_frame`]. With `drop_frame` the
+    /// labels skip as `to_frame` counts them (frame labels 0..n at the start of every minute except every tenth).
     pub fn from_frame(frame: u64, fps: Fps, drop_frame: bool) -> Result<Timecode, ValueError> {
-        let nominal = fps.nominal() as u64;
+        let nominal = fps.nominal() as u128;
         if nominal == 0 {
-            return Err(ValueError::new("the nominal frame rate is 0"));
+            return Err(ValueError::new("a frame rate rounds to zero frames per second"));
         }
-        let mut n = frame;
+        let mut f = frame as u128;
         if drop_frame {
             if !nominal.is_multiple_of(30) {
                 return Err(ValueError::new("drop-frame timecode requires a 29.97 or 59.94 fps family rate"));
             }
-            // labels 0..drop are skipped at the start of every minute except every tenth
             let drop = nominal / 15;
             let per_minute = nominal * 60 - drop;
-            let per_ten_minutes = nominal * 600 - 9 * drop;
-            let (tens, rest) = (n / per_ten_minutes, n % per_ten_minutes);
-            n += 9 * drop * tens;
-            if rest >= drop {
-                n += drop * ((rest - drop) / per_minute);
-            }
+            let per_ten_minutes = per_minute * 10 + drop;
+            let (tens, rest) = (f / per_ten_minutes, f % per_ten_minutes);
+            f += drop * 9 * tens + if rest > drop { drop * ((rest - drop) / per_minute) } else { 0 };
         }
-        let frames = (n % nominal) as u32;
-        let total_seconds = n / nominal;
+        let seconds = f / nominal;
+        let narrow = |v: u128| u32::try_from(v).map_err(|_| ValueError::new("timecode hours do not fit 32 bits"));
         Ok(Timecode {
-            hours: ((total_seconds / 3600) % 100) as u32,
-            minutes: (total_seconds / 60 % 60) as u32,
-            seconds: (total_seconds % 60) as u32,
-            frames,
+            hours: narrow(seconds / 3600)?,
+            minutes: narrow(seconds / 60 % 60)?,
+            seconds: narrow(seconds % 60)?,
+            frames: narrow(f % nominal)?,
             drop_frame,
         })
     }
@@ -636,6 +631,7 @@ mod tests {
         assert_eq!(Timecode::from_frame(17982, ntsc, true).unwrap().to_string(), "00:10:00;00");
         assert_eq!(Timecode::from_frame(90000, Fps::new(25, 1).unwrap(), false).unwrap().to_string(), "01:00:00:00");
         assert!(Timecode::from_frame(0, Fps::new(25, 1).unwrap(), true).is_err());
+        assert!(Timecode::from_frame(u64::MAX, ntsc, true).is_err());
     }
 
     #[test]

@@ -36,21 +36,21 @@ const MASTER_KEY: &str = "audioMixType/master[0]";
 
 fn source_path(p: &Program, asset: &AssetsChild, doc: usize, representation: Option<&str>) -> Option<PathBuf> {
     let none = Vec::new();
-    let (src, reps) = match asset {
-        AssetsChild::Audio(a) => (a.src.as_str(), &a.representations),
-        AssetsChild::Video(v) => (v.src.as_str(), &v.representations),
+    let (src, reps, proxy) = match asset {
+        AssetsChild::Audio(a) => (a.src.as_str(), &a.representations, a.proxy.as_deref()),
+        AssetsChild::Video(v) => (v.src.as_str(), &v.representations, v.proxy.as_deref()),
         // generated media plays from its verified cache file
-        AssetsChild::Generated(g) => (g.cache.as_str(), &none),
+        AssetsChild::Generated(g) => (g.cache.as_str(), &none, None),
         _ => return None,
     };
-    let src = representation.and_then(|r| reps.iter().find(|x| x.name == r)).map(|x| x.src.as_str()).unwrap_or(src);
+    let src = sr_model::assets::select_representation(reps, proxy, representation).map(|x| x.src).unwrap_or(src);
     match sr_model::assets::resolve(src, p.base_dirs.get(doc)?) {
         sr_model::assets::Resolved::Local(path) => Some(path),
         sr_model::assets::Resolved::Remote(_) => None,
     }
 }
 
-fn find_asset<'p>(p: &'p Program, key: &str) -> Option<(&'p AssetsChild, usize)> {
+pub(crate) fn find_asset<'p>(p: &'p Program, key: &str) -> Option<(&'p AssetsChild, usize)> {
     let Some((doc, id)) = p.assets.get(key) else {
         // assets used only by the audio mix live in the main document
         return p.scene.assets.as_ref()?.children.iter().find(|c| c.id() == Some(key)).map(|a| (a, 0));

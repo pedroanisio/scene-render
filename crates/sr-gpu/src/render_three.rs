@@ -651,7 +651,14 @@ impl Renderer {
         match a {
             m::AssetsChild::Image(img) => {
                 let base = ctx.p.doc_base(doc);
-                self.map_texture(plan, &base, &img.src, srgb, owner)
+                let (src, _, _) = self.representation(
+                    &img.representations,
+                    &img.src,
+                    img.proxy.as_deref(),
+                    img.color_space,
+                    img.transfer,
+                );
+                self.map_texture(plan, &base, src, srgb, owner)
             }
             m::AssetsChild::Generator(gen) => {
                 let gen = gen.clone();
@@ -1026,7 +1033,9 @@ impl Renderer {
             return None;
         };
         let base = ctx.p.base_dirs.get(doc).cloned().unwrap_or_default();
-        let path = match sr_model::assets::resolve(&ma.src, &base) {
+        let selected =
+            sr_model::assets::select_representation(&[], ma.proxy.as_deref(), self.representation.as_deref());
+        let path = match sr_model::assets::resolve(selected.map_or(ma.src.as_str(), |s| s.src), &base) {
             sr_model::assets::Resolved::Local(p) => p,
             sr_model::assets::Resolved::Remote(u) => {
                 plan.stats.errors.push(format!("{}: remote mesh {u} is not fetched while rendering", n.id));
@@ -1034,7 +1043,7 @@ impl Renderer {
             }
         };
         let key = path.display().to_string();
-        let fmt = ma.format.map(|f| f.to_string());
+        let fmt = if selected.is_some() { None } else { ma.format.map(|f| f.to_string()) };
         let asset = self
             .three_assets
             .entry(key.clone())
@@ -2138,7 +2147,14 @@ impl Renderer {
             };
             let img = img.clone();
             let base = ctx.p.base_dirs.get(doc).cloned().unwrap_or_default();
-            let path = match sr_model::assets::resolve(&img.src, &base) {
+            let (src, cs, tf) = self.representation(
+                &img.representations,
+                &img.src,
+                img.proxy.as_deref(),
+                img.color_space,
+                img.transfer,
+            );
+            let path = match sr_model::assets::resolve(src, &base) {
                 sr_model::assets::Resolved::Local(path) => path,
                 sr_model::assets::Resolved::Remote(uri) => {
                     plan.stats
@@ -2147,21 +2163,15 @@ impl Renderer {
                     return;
                 }
             };
-            let texture_key = format!(
-                "particle-sprite|{}|{}|{}|{}|{}",
-                path.display(),
-                img.color_space,
-                img.transfer,
-                img.alpha,
-                img.color_profile
-            );
+            let texture_key =
+                format!("particle-sprite|{}|{}|{}|{}|{}", path.display(), cs, tf, img.alpha, img.color_profile);
             let texture = if let Some(texture) = self.three_engine().textures.get(&texture_key) {
                 texture.clone()
             } else {
                 let decoded = match resources::decode_image(
                     &path,
-                    img.color_space,
-                    img.transfer,
+                    cs,
+                    tf,
                     img.alpha,
                     img.color_profile == m::ColorProfile::Embedded,
                     &self.working,
@@ -3469,11 +3479,18 @@ impl Renderer {
             match self.asset(ctx.p, key) {
                 Some((AssetsChild::Image(img), doc)) => {
                     let base = ctx.p.base_dirs.get(doc).cloned().unwrap_or_default();
-                    if let sr_model::assets::Resolved::Local(path) = sr_model::assets::resolve(&img.src, &base) {
+                    let (src, cs, tf) = self.representation(
+                        &img.representations,
+                        &img.src,
+                        img.proxy.as_deref(),
+                        img.color_space,
+                        img.transfer,
+                    );
+                    if let sr_model::assets::Resolved::Local(path) = sr_model::assets::resolve(src, &base) {
                         if let Some(t) = self.image(
                             path,
-                            img.color_space,
-                            img.transfer,
+                            cs,
+                            tf,
                             img.alpha,
                             img.color_profile == sr_model::model::ColorProfile::Embedded,
                         ) {

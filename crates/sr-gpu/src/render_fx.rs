@@ -520,14 +520,17 @@ impl Renderer {
                 continue;
             };
             let base = Self::base_dir(ctx.p);
-            let Some(itex) = (match sr_model::assets::resolve(&img.src, &base) {
-                sr_model::assets::Resolved::Local(p) => self.image(
-                    p,
-                    img.color_space,
-                    img.transfer,
-                    img.alpha,
-                    img.color_profile == sr_model::model::ColorProfile::Embedded,
-                ),
+            let (src, cs, tf) = self.representation(
+                &img.representations,
+                &img.src,
+                img.proxy.as_deref(),
+                img.color_space,
+                img.transfer,
+            );
+            let Some(itex) = (match sr_model::assets::resolve(src, &base) {
+                sr_model::assets::Resolved::Local(p) => {
+                    self.image(p, cs, tf, img.alpha, img.color_profile == sr_model::model::ColorProfile::Embedded)
+                }
                 _ => None,
             }) else {
                 continue;
@@ -906,7 +909,8 @@ impl Renderer {
             let Some((a, adoc)) = self.asset(ctx.p, &value) else { continue };
             if let AssetsChild::Image(i) = a {
                 let base = ctx.p.base_dirs.get(adoc).cloned().unwrap_or_default();
-                let (src, cs, tf) = self.representation(&i.representations, &i.src, i.color_space, i.transfer);
+                let (src, cs, tf) =
+                    self.representation(&i.representations, &i.src, i.proxy.as_deref(), i.color_space, i.transfer);
                 if let sr_model::assets::Resolved::Local(path) = sr_model::assets::resolve(src, &base) {
                     if let Some(t) =
                         self.image(path, cs, tf, i.alpha, i.color_profile == sr_model::model::ColorProfile::Embedded)

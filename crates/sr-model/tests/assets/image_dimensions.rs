@@ -42,16 +42,76 @@ fn image_dimension_mismatch_is_a_located_warning_without_a_digest() {
     assert!(!skipped.diagnostics.iter().any(|d| d.code == "A07"));
 }
 
+/// A directory with `logo.png` (16x16) and a `proxy.png` of `w`x`h`.
+fn proxy_dir(name: &str, w: u32, h: u32) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("sr-model-proxy-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(options().base_dir.unwrap().join("logo.png"), dir.join("logo.png")).unwrap();
+    image::RgbaImage::new(w, h).save(dir.join("proxy.png")).unwrap();
+    dir
+}
+
 #[test]
 fn matching_images_and_smaller_proxy_representations_do_not_warn() {
+    let dir = proxy_dir("match", 8, 8);
     let xml = scene(
         r#"<image id="im" src="logo.png" width="16" height="16">
-<representation name="proxy" src="logo.png" width="8" height="8"/>
+<representation name="proxy" src="proxy.png" width="8" height="8"/>
 </image>"#,
     );
-    let report = validate_str(&xml, &options());
+    let report = validate_str(&xml, &LoadOptions { verify_assets: true, base_dir: Some(dir.clone()) });
     assert!(!report.has_errors(), "{report}");
-    assert!(!report.diagnostics.iter().any(|d| d.code == "A07"), "{report}");
+    assert!(!report.diagnostics.iter().any(|d| d.code == "A07" || d.code == "A08"), "{report}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_representation_that_declares_other_dimensions_than_its_file_warns() {
+    let dir = proxy_dir("declared", 8, 8);
+    let xml = scene(
+        r#"<image id="im" src="logo.png" width="16" height="16">
+<representation name="proxy" src="proxy.png" width="4" height="4"/>
+</image>"#,
+    );
+    let doc = load_str(&xml, &LoadOptions { verify_assets: true, base_dir: Some(dir.clone()) })
+        .expect("a mismatch does not prevent rendering");
+    let warning = doc.warnings().iter().find(|d| d.code == "A08").expect("representation dimension warning");
+    assert_eq!(warning.severity, Severity::Warning);
+    assert!(warning.message.contains("4x4") && warning.message.contains("8x8"), "{warning:?}");
+    assert!(warning.message.contains("proxy"), "{warning:?}");
+    assert!(warning.loc.line > 0 && warning.help.is_some());
+    // the asset's own dimensions are right: no A07
+    assert!(!doc.warnings().iter().any(|d| d.code == "A07"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_representation_must_keep_the_aspect_ratio_of_its_asset() {
+    // the file is 8x4 and declared so, but the asset is square: laid out at the asset's size it would distort
+    let dir = proxy_dir("aspect", 8, 4);
+    let xml = scene(
+        r#"<image id="im" src="logo.png" width="16" height="16">
+<representation name="proxy" src="proxy.png" width="8" height="4"/>
+</image>"#,
+    );
+    let doc = load_str(&xml, &LoadOptions { verify_assets: true, base_dir: Some(dir.clone()) }).unwrap();
+    let warning = doc.warnings().iter().find(|d| d.code == "A08").expect("aspect warning");
+    assert!(warning.message.contains("aspect") && warning.message.contains("8x4"), "{warning:?}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_representation_rounded_to_whole_pixels_keeps_the_aspect_ratio() {
+    // 16x16 scaled to 7x7 is square; 16x10 scaled to 7x4 is 1.75 against 1.6 but within one pixel of 7x4.375
+    let dir = proxy_dir("rounded", 7, 4);
+    let xml = scene(
+        r#"<image id="im" src="logo.png" width="16" height="10">
+<representation name="proxy" src="proxy.png" width="7" height="4"/>
+</image>"#,
+    );
+    let report = validate_str(&xml, &LoadOptions { verify_assets: true, base_dir: Some(dir.clone()) });
+    assert!(!report.diagnostics.iter().any(|d| d.code == "A08"), "{report}");
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -74,5 +134,40 @@ fn image_headers_are_identified_by_content_and_each_declaration_is_checked() {
     let report = validate_str(&xml, &LoadOptions { verify_assets: true, base_dir: Some(dir.clone()) });
     assert!(!report.has_errors(), "{report}");
     assert_eq!(report.diagnostics.iter().filter(|d| d.code == "A07").count(), 2, "{report}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn each_optional_representation_dimension_is_checked_independently() {
+    let dir = proxy_dir("one-dimension", 8, 8);
+    for attrs in [r#"width="4""#, r#"height="4""#] {
+        let xml = scene(&format!(
+            r#"<image id="im" src="logo.png" width="16" height="16">
+<representation name="proxy" src="proxy.png" {attrs}/></image>"#
+        ));
+        let report = validate_str(&xml, &LoadOptions { verify_assets: true, base_dir: Some(dir.clone()) });
+        assert!(report.diagnostics.iter().any(|d| d.code == "A08"), "{report}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn video_representation_dimensions_are_checked_against_the_file() {
+    if std::process::Command::new(sr_media::ffmpeg()).arg("-version").output().is_err() {
+        return;
+    }
+    let dir = proxy_dir("video", 8, 8);
+    assert!(std::process::Command::new(sr_media::ffmpeg())
+        .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=s=16x8:r=10:d=0.1", "-c:v", "ffv1"])
+        .arg(dir.join("v.mkv"))
+        .status()
+        .unwrap()
+        .success());
+    let xml = scene(
+        r#"<video id="v" src="v.mkv" width="16" height="8" fps="10" duration="1">
+<representation name="small" src="v.mkv" width="8" height="4"/></video>"#,
+    );
+    let report = validate_str(&xml, &LoadOptions { verify_assets: true, base_dir: Some(dir.clone()) });
+    assert!(report.diagnostics.iter().any(|d| d.code == "A08"), "{report}");
     std::fs::remove_dir_all(dir).unwrap();
 }

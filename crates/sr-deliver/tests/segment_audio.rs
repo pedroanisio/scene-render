@@ -32,10 +32,20 @@ fn deliver_with_options(
     mix: &str,
     opts: &sr_deliver::Options,
 ) -> (Vec<f32>, sr_deliver::pipeline::Report) {
+    deliver_assets(dir, r#"<audio id="a440" src="a440.wav"/><audio id="a1000" src="a1000.wav"/>"#, output, mix, opts)
+}
+
+fn deliver_assets(
+    dir: &Path,
+    assets: &str,
+    output: &str,
+    mix: &str,
+    opts: &sr_deliver::Options,
+) -> (Vec<f32>, sr_deliver::pipeline::Report) {
     let xml = format!(
         r##"<scene version="1.2"><project width="64" height="36" fps="25" duration="4" background="#000000"/>
           {output}
-          <assets><audio id="a440" src="a440.wav"/><audio id="a1000" src="a1000.wav"/></assets>
+          <assets>{assets}</assets>
           <composition/>
           <audioMix>{mix}</audioMix></scene>"##
     );
@@ -430,4 +440,42 @@ fn stretching_keeps_loudness() {
     };
     let (a, b) = (loud("1"), loud("2"));
     assert!((a - b).abs() < 0.5, "{a} LUFS at speed 1, {b} LUFS stretched to half");
+}
+
+#[test]
+fn the_proxy_attribute_feeds_the_mix_when_the_proxy_representation_is_asked_for() {
+    let d = fixtures("proxy-attr");
+    let assets = r#"<audio id="a" src="a440.wav" proxy="a1000.wav"/>"#;
+    let mix = r#"<audioTrack id="t" asset="a"/>"#;
+    for (output, want) in [
+        (
+            r#"<output path="p.wav" codec="audio-only" representation="proxy"><segment from="0" to="1"/></output>"#,
+            1000.0,
+        ),
+        (r#"<output path="o.wav" codec="audio-only"><segment from="0" to="1"/></output>"#, 440.0),
+    ] {
+        let (x, _) = deliver_assets(&d, assets, output, mix, &Default::default());
+        let f = frequency(&x, 0.1, 0.9);
+        assert!((f - want).abs() < 1.0, "{output}: {f} Hz");
+    }
+}
+
+#[test]
+fn a_representation_is_found_by_language_when_no_name_matches() {
+    let d = fixtures("language");
+    let assets = r#"<audio id="a" src="a440.wav">
+        <representation name="english" src="a440.wav" language="en-US"/>
+        <representation name="german" src="a1000.wav" language="de"/>
+      </audio>"#;
+    let mix = r#"<audioTrack id="t" asset="a"/>"#;
+    let out = r#"<output path="l.wav" codec="audio-only"><segment from="0" to="1"/></output>"#;
+    // (requested, Hz): a name wins, then an exact tag, then the primary subtag; no match leaves the asset's own file
+    for (wanted, want) in
+        [("german", 1000.0), ("de", 1000.0), ("DE", 1000.0), ("de-AT", 1000.0), ("en-US", 440.0), ("fr", 440.0)]
+    {
+        let opts = sr_deliver::Options { representation: Some(wanted.into()), ..Default::default() };
+        let (x, _) = deliver_assets(&d, assets, out, mix, &opts);
+        let f = frequency(&x, 0.1, 0.9);
+        assert!((f - want).abs() < 1.0, "{wanted}: {f} Hz");
+    }
 }

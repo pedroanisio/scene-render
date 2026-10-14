@@ -29,6 +29,7 @@ pub(crate) fn audio_language(
     p: &sr_eval::Program,
     output: &m::Output,
     description: Option<(&str, bool)>,
+    wanted: Option<&str>,
     warnings: &mut Vec<String>,
 ) -> String {
     let tracks = p
@@ -47,7 +48,7 @@ pub(crate) fn audio_language(
     let segmented = output.children.iter().any(|c| matches!(c, m::OutputChild::Segment(_)));
     let mut codes = std::collections::BTreeSet::new();
     for (t, composition) in tracks {
-        if t.mute {
+        if t.mute || !crate::audio_language::audible_bus(p, t.bus.as_deref()) {
             continue;
         }
         let selected = if let Some((_, include)) = description.filter(|(id, _)| *id == t.id) {
@@ -58,8 +59,8 @@ pub(crate) fn audio_language(
         if !selected {
             continue;
         }
-        if let Some(language) = &t.language {
-            let tag = language.to_string();
+        let tag = t.language.as_ref().map(|l| l.to_string());
+        if let Some(tag) = tag.or_else(|| crate::audio_language::asset_language(p, &t.asset, wanted)) {
             let code = language_code(&tag).unwrap_or_else(|| {
                 warnings.push(format!(
                     "audio track {}: language {tag:?} has no ISO 639-2 mapping; using und for this track",
@@ -69,6 +70,13 @@ pub(crate) fn audio_language(
             });
             codes.insert(code);
         }
+    }
+    for tag in crate::audio_language::layer_languages(p, output, wanted) {
+        let code = language_code(&tag).unwrap_or_else(|| {
+            warnings.push(format!("video audio: language {tag:?} has no ISO 639-2 mapping; using und for it"));
+            "und"
+        });
+        codes.insert(code);
     }
     if codes.len() > 1 {
         "mul".into()
