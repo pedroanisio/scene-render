@@ -4,7 +4,7 @@
 //!
 //! Lights are binned into 16 px screen tiles on the CPU and each fragment
 //! walks its tile's list. Shadows use one depth-array texture holding every
-//! shadow view. The main pass is 4× multisampled; transmissive surfaces
+//! shadow view. The main pass uses the selected raster sample count; transmissive surfaces
 //! refract a mip-mapped copy of the opaque result composited over the
 //! compositor's backdrop; splats are radix-sorted on the GPU and drawn back
 //! to front; blended surfaces follow, sorted back to front.
@@ -22,11 +22,8 @@ use wgpu::util::DeviceExt;
 
 use crate::resources::FORMAT;
 
-const MSAA: u32 = 4;
-const _: () = assert!(MSAA == 4, "MULTISAMPLED asks for 4x multisampling");
-
 /// The multisampled targets of the 3D pass: each format, the usages it is created with and the capabilities it is
-/// drawn with (4x multisampling, and resolving the colour into a single-sampled texture).
+/// drawn with at the highest `antialias3d` (4x multisampling, and resolving the colour into a single-sampled texture).
 pub(crate) const MULTISAMPLED: [(wgpu::TextureFormat, wgpu::TextureUsages, wgpu::TextureFormatFeatureFlags); 2] = [
     (
         FORMAT,
@@ -667,6 +664,7 @@ pub struct ThreeEngine {
     gbuffer: wgpu::TextureFormat,
     /// Format of the resolved depth and the depth-of-field tile maps.
     scalar: wgpu::TextureFormat,
+    samples: u32,
     targets: Arc<std::sync::Mutex<TargetPool>>,
     queue: Arc<wgpu::Queue>,
     main_mod: wgpu::ShaderModule,
@@ -902,6 +900,18 @@ impl ThreeEngine {
         gbuffer: wgpu::TextureFormat,
         scalar: wgpu::TextureFormat,
     ) -> ThreeEngine {
+        Self::new_with_samples(device, queue, gbuffer, scalar, 1)
+    }
+
+    /// Builds the raster pipelines for an adapter-supported count of 1, 2 or 4 samples.
+    pub fn new_with_samples(
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        gbuffer: wgpu::TextureFormat,
+        scalar: wgpu::TextureFormat,
+        samples: u32,
+    ) -> ThreeEngine {
+        assert!(matches!(samples, 1 | 2 | 4));
         let d = &*device;
         let module = |src: String, label: &str| {
             d.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -912,7 +922,7 @@ impl ThreeEngine {
         let main_mod = module(main_src(), "three");
         let splat_mod = module(splat_src(), "three-splat");
         let post_mod = module(post_src(), "three-post");
-        let depth_mod = module(depth_src(), "three-depth");
+        let depth_mod = module(depth_src_for(samples), "three-depth");
         let sort_mod = module(sort_src(), "three-sort");
         let ro = wgpu::BufferBindingType::Storage { read_only: true };
         let rw = wgpu::BufferBindingType::Storage { read_only: false };
@@ -981,7 +991,7 @@ impl ThreeEngine {
                     wgpu::ShaderStages::FRAGMENT,
                     wgpu::TextureSampleType::Float { filterable: false },
                     D2,
-                    true,
+                    samples > 1,
                 ),
                 buf_entry(1, wgpu::ShaderStages::FRAGMENT, uni, false),
             ],
@@ -1071,7 +1081,7 @@ impl ThreeEngine {
                 cache: None,
             })
         };
-        let ms = wgpu::MultisampleState { count: MSAA, ..Default::default() };
+        let ms = wgpu::MultisampleState { count: samples, ..Default::default() };
         let depth_state = |write: bool| wgpu::DepthStencilState {
             format: wgpu::TextureFormat::Depth32Float,
             depth_write_enabled: Some(write),
@@ -1271,6 +1281,7 @@ impl ThreeEngine {
         let mut eng = ThreeEngine {
             gbuffer,
             scalar,
+            samples,
             targets: Default::default(),
             white: Arc::new(TexGpu {
                 view: texture(d, [1, 1], wgpu::TextureFormat::Rgba8Unorm, 1, 1, 1, "white")
@@ -1370,6 +1381,7 @@ impl ThreeEngine {
     }
 
     fn pipe(&mut self, key: PipeKey) -> &wgpu::RenderPipeline {
+        let samples = self.samples;
         let (d, m, l) = (&self.device, &self.main_mod, &self.main_layout);
         self.pipes.entry(key).or_insert_with(|| {
             {
@@ -1396,7 +1408,7 @@ impl ThreeEngine {
                         stencil: Default::default(),
                         bias: Default::default(),
                     }),
-                    multisample: wgpu::MultisampleState { count: MSAA, ..Default::default() },
+                    multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
                     fragment: Some(wgpu::FragmentState {
                         module: m,
                         entry_point: Some("fs_main"),
@@ -2321,11 +2333,15 @@ impl ThreeEngine {
             ],
         });
         // ------------------------------------------------ targets
-        let color_ms = pool(size, FORMAT, 1, MSAA, 1, "three-color-ms").create_view(&Default::default());
-        let depth_ms = pool(size, wgpu::TextureFormat::Depth32Float, 1, MSAA, 1, "three-depth-ms")
-            .create_view(&Default::default());
         let resolved_t = pool(size, FORMAT, 1, 1, 1, "three-resolved");
         let resolved = resolved_t.create_view(&Default::default());
+        let color_ms = if self.samples == 1 {
+            resolved.clone()
+        } else {
+            pool(size, FORMAT, 1, self.samples, 1, "three-color-ms").create_view(&Default::default())
+        };
+        let depth_ms = pool(size, wgpu::TextureFormat::Depth32Float, 1, self.samples, 1, "three-depth-ms")
+            .create_view(&Default::default());
         let dummy_shadow = pool([1, 1], wgpu::TextureFormat::Depth32Float, 1, 1, 1, "three-no-shadows");
         let dummy_shadow_view = dummy_shadow.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
@@ -2589,7 +2605,7 @@ impl ThreeEngine {
                 label: Some("three-opaque"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &color_ms,
-                    resolve_target: if trans.is_empty() { None } else { Some(&resolved) },
+                    resolve_target: (self.samples > 1 && !trans.is_empty()).then_some(&resolved),
                     depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -2765,7 +2781,7 @@ impl ThreeEngine {
                 label: Some("three-transparent"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &color_ms,
-                    resolve_target: Some(&resolved),
+                    resolve_target: (self.samples > 1).then_some(&resolved),
                     depth_slice: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
                 })],
@@ -2960,9 +2976,19 @@ pub fn post_src() -> String {
     format!("{TYPES}\n{}\n{}", include_str!("three_coc.wgsl"), include_str!("three_post.wgsl"))
 }
 
-/// Multisampled depth resolve.
+/// Single-sample depth resolve.
 pub fn depth_src() -> String {
-    format!("{TYPES}\n{}\n{}", include_str!("three_coc.wgsl"), include_str!("three_depth.wgsl"))
+    depth_src_for(1)
+}
+
+fn depth_src_for(samples: u32) -> String {
+    let (texture, resolve) = if samples == 1 {
+        ("texture_2d<f32>", "return textureLoad(ms_depth, q, 0).r;")
+    } else {
+        ("texture_multisampled_2d<f32>", "var d = 0.0;\n    for (var s = 0u; s < textureNumSamples(ms_depth); s++) { d = max(d, textureLoad(ms_depth, q, i32(s)).r); }\n    return d;")
+    };
+    let body = include_str!("three_depth.wgsl").replace("DEPTH_TEXTURE", texture).replace("DEPTH_RESOLVE", resolve);
+    format!("{TYPES}\n{}\n{body}", include_str!("three_coc.wgsl"))
 }
 
 /// 360 reprojection.
@@ -3760,6 +3786,7 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
             ("splat", super::splat_src()),
             ("post", super::post_src()),
             ("depth", super::depth_src()),
+            ("depth-ms", super::depth_src_for(4)),
             ("sort", super::sort_src()),
             ("sphere", super::sphere_src()),
         ] {

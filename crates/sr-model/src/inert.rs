@@ -1,10 +1,10 @@
 //! Inert attributes (SREP 18, Specification 5): attributes that are valid and have no effect on the picture.
 //!
 //! Each is reported as `INERT-<rule>` at [`Severity::Info`](crate::Severity::Info): the document means what it says,
-//! only less than its author thought, so strict checks never count these findings. The table is closed; a rule is
-//! added only by an SREP.
+//! only less than its author thought, so strict checks never count these findings. The table follows the SREP
+//! rules; I17 is the engine extension awaiting its upstream SREP.
 //!
-//! Rules I1 to I7 and I16 (SREP 73) are properties of the document alone and are found here, during validation, on
+//! Rules I1 to I7, I16 (SREP 73), and I17 are properties of the document alone and are found here, during validation, on
 //! the source elements: an attribute is inert only where the author wrote it. Rule I8 needs the nodes' windows on the
 //! composition timeline, which the evaluator computes, and is found there (`sr-eval`).
 //!
@@ -51,11 +51,15 @@ pub const I13: &str = "INERT-I13";
 /// `INERT-I16` (SREP 73): `orientToVelocity="false"` on a streak flock, which is drawn along the velocity whatever
 /// the value.
 pub const I16: &str = "INERT-I16";
+/// `INERT-I17` (engine, pending an SREP): the 2.5D placement attributes (`zDepth`, `rotationX`, `rotationY`) of a node
+/// without `threeD="true"`, or `margin` / `alignTo` of a node with neither `alignX` nor `alignY`: the renderer reads them
+/// only with those switches.
+pub const I17: &str = "INERT-I17";
 /// `MASK-MISS` (SREP 34): a rect or ellipse mask that adds or intersects and lies wholly outside its node's box, so
 /// the node shows nothing. A warning, not an inert finding: the mask has the strongest effect possible.
 pub const MASK_MISS: &str = "MASK-MISS";
 
-/// The closed table of SREP 18 and its amendment SREP 34: `(code, condition)`.
+/// The inert rules and their amendments, including the pending I17 extension: `(code, condition)`.
 pub const RULES: &[(&str, &str)] = &[
     (I1, "`stroke` is not transparent and `strokeWidth` is 0 or absent, so no stroke is drawn (information)."),
     (I2, "`strokeWidth` > 0 and `stroke` is transparent or absent, so no stroke is drawn (information)."),
@@ -71,6 +75,7 @@ pub const RULES: &[(&str, &str)] = &[
     (I12, "A `key` with `overshoot` on a segment whose curve is not back-*, or `period` on one whose curve is not elastic-* (information, SREP 34)."),
     (I13, "An `effect` carrying an attribute its `type` does not read (`id`, `type`, `enabled` and `mix` are read by every type) (information, SREP 34)."),
     (I16, "A `flock` with `orientToVelocity=\"false\"` whose `shape` is `streak` (the default): a streak is drawn along the velocity whatever the value (information, SREP 73)."),
+    (I17, "A node with `zDepth`, `rotationX` or `rotationY` and without `threeD=\"true\"` (they place a node in camera space only then), or with `margin` or `alignTo` and neither `alignX` nor `alignY` (the alignment needs one of them) (information)."),
     (MASK_MISS, "A `mask` of type rect or ellipse, mode add or intersect, not inverted, whose box lies entirely outside the box of the node it masks, in the node's own coordinates: the node shows nothing (warning, SREP 34; `measured` is how far outside, in pixels)."),
 ];
 
@@ -107,6 +112,7 @@ pub fn validate(doc: &Document<'_>, types: &ElementTypes, out: &mut Vec<Diagnost
         if name == "flock" {
             cx.flock_orient(n, out);
         }
+        cx.node_switches(n, out);
     }
 }
 
@@ -273,6 +279,27 @@ impl<'a> Cx<'a> {
         }
         if self.value(n, "shape").map(str::trim) == Some("streak") {
             push(out, I16, n, "@orientToVelocity false on a streak flock: a streak is drawn along the velocity".into());
+        }
+    }
+
+    /// I17: attributes of a node that need a switch the node does not have on.
+    fn node_switches(&self, n: Node, out: &mut Vec<Diagnostic>) {
+        // only the elements that declare the node attributes (an object3D's rotationX is its own, not this one)
+        if self.types.get(&n.id()).and_then(|t| t.attr("threeD")).is_none() {
+            return;
+        }
+        let set = |names: &[&'static str]| -> Vec<&'static str> {
+            names.iter().copied().filter(|a| n.has_attribute(*a) && !self.dynamic(n, a)).collect()
+        };
+        let on = |attr: &str| matches!(self.value(n, attr).map(str::trim), Some("true" | "1"));
+        let flat = set(&["zDepth", "rotationX", "rotationY"]);
+        if !flat.is_empty() && !on("threeD") && !self.dynamic(n, "threeD") {
+            push(out, I17, n, format!("{} without threeD=\"true\": the node is placed in 2D", attrs(&flat)));
+        }
+        let aligned = n.has_attribute("alignX") || n.has_attribute("alignY");
+        let loose = set(&["margin", "alignTo"]);
+        if !loose.is_empty() && !aligned && !["alignX", "alignY"].iter().any(|a| self.dynamic(n, a)) {
+            push(out, I17, n, format!("{} without alignX or alignY: the node is not aligned", attrs(&loose)));
         }
     }
 

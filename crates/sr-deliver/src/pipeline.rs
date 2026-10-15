@@ -320,8 +320,8 @@ impl Video<'_> {
         match r.mode {
             m::Reframe::Crop => Placement::Crop { focus },
             m::Reframe::FitBlur => Placement::FitBlur { focus },
-            // the focus only places cropped or blurred-fit frames; a plain fit is centred
-            _ => Placement::Fit { focus: [0.5, 0.5] },
+            // a plain fit shares the free space by the focus too (0.5, 0.5 centres it)
+            _ => Placement::Fit { focus },
         }
     }
 }

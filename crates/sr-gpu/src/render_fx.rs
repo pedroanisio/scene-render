@@ -414,7 +414,13 @@ impl Renderer {
         }
     }
 
-    fn finish_builder(plan: &mut Plan, passes: Vec<fx::Pass>, temps: Vec<Arc<Tex>>, problems: Vec<String>, who: &str) {
+    pub(super) fn finish_builder(
+        plan: &mut Plan,
+        passes: Vec<fx::Pass>,
+        temps: Vec<Arc<Tex>>,
+        problems: Vec<String>,
+        who: &str,
+    ) {
         let passes = labelled(fx::fuse_colour(passes), who);
         plan.fx_temps.extend(temps);
         plan.stats.unsupported.extend(problems.into_iter().map(|m| format!("{who}: {m}")));

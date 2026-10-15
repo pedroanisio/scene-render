@@ -18,6 +18,15 @@ use crate::program::{marker_time, tfi, Clock, Kind, LinkSource, Owner, Program};
 use crate::rng;
 use crate::value::Value;
 
+/// An evaluated opacity held to the range the schema gives it, 0 to 1 (NaN counts as 0).
+fn unit_opacity(x: f64) -> f64 {
+    if x.is_nan() {
+        0.0
+    } else {
+        x.clamp(0.0, 1.0)
+    }
+}
+
 /// A 2D affine transform `[a, b, c, d, e, f]`: x' = a·x + c·y + e, y' = b·x + d·y + f.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub struct Affine(pub [f64; 6]);
@@ -955,7 +964,8 @@ impl<'p> Frame<'p> {
         let mut rot = self.num(n, tfi::ROT);
         let (sx, sy) = (self.num(n, tfi::SX), self.num(n, tfi::SY));
         let (kx, ky) = (self.num(n, tfi::KX), self.num(n, tfi::KY));
-        let mut opacity = self.num(n, tfi::OPACITY);
+        // XSD: from 0 to 1. An overshooting easing, a spring or an expression can leave the range
+        let mut opacity = unit_opacity(self.num(n, tfi::OPACITY));
         if let Some(m) = &node.motion {
             let t = self.tl[n as usize];
             let end = m.end.or(node.end).unwrap_or(p.duration);
@@ -1001,7 +1011,7 @@ impl<'p> Frame<'p> {
                 }
             }
             aff = steps.then(&aff);
-            opacity *= o;
+            opacity *= unit_opacity(o);
         }
         if let Some(adj) = self.adjust[n as usize] {
             aff = adj.then(&aff);
@@ -1356,13 +1366,34 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
         }
         let own_box = node.box_size.map(|[w, h]| [resolve_len(w, bx[0], p.size), resolve_len(h, bx[1], p.size)]);
         let cbox = own_box.unwrap_or(bx);
+        // A fitted instance places the symbol's coordinate system inside its box.
+        let kid_world = child_world(f, n, bx, world);
         if node.layout.is_some() || node.children.iter().any(|&k| p.nodes[k as usize].align.is_some()) {
-            f.arrange(&node.doc_children, node.layout.as_ref().map(|l| (l, own_box)), cbox, world);
+            f.arrange(&node.doc_children, node.layout.as_ref().map(|l| (l, own_box)), cbox, kid_world);
         }
         let kids = if node.restack { f.stacked(&node.doc_children) } else { Cow::Borrowed(&node.children[..]) };
         for &k in kids.iter() {
-            visit(f, o, k, Some(ix), depth + 1, cbox, (world, wop), draw);
+            visit(f, o, k, Some(ix), depth + 1, cbox, (kid_world, wop), draw);
         }
+    }
+
+    fn child_world(f: &Frame, n: u32, bx: [f64; 2], world: Affine) -> Affine {
+        let node = &f.p.nodes[n as usize];
+        match (node.name, node.asset_size) {
+            ("instance", Some(src)) => match f.size(n, bx).1 {
+                Some(c) => world.then(&Affine(crate::layout::symbol_transform(src, &c))),
+                None => world,
+            },
+            _ => world,
+        }
+    }
+
+    // Percentages within symbols use their natural box, including a transform parent visited lazily.
+    fn child_box(f: &Frame, n: Option<u32>) -> [f64; 2] {
+        let Some(n) = n else { return f.p.size };
+        let node = &f.p.nodes[n as usize];
+        let bx = child_box(f, node.parent);
+        node.box_size.map(|[w, h]| [resolve_len(w, bx[0], f.p.size), resolve_len(h, bx[1], f.p.size)]).unwrap_or(bx)
     }
 
     fn world_of(f: &mut Frame, o: &mut Out, n: u32) -> Option<(Affine, f64)> {
@@ -1373,8 +1404,12 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
         let p = f.p;
         let node = &p.nodes[n as usize];
         let (pw, bx) = match node.parent.filter(|_| node.parent_link.is_none()) {
-            Some(c) => (world_of(f, o, c)?, p.size),
-            None => ((Affine::IDENTITY, 1.0), p.size),
+            Some(c) => {
+                let pw = world_of(f, o, c)?;
+                let bx = child_box(f, p.nodes[c as usize].parent);
+                ((child_world(f, c, bx, pw.0), pw.1), child_box(f, Some(c)))
+            }
+            None => ((Affine::IDENTITY, 1.0), child_box(f, node.parent)),
         };
         let lc = f.local(n, bx);
         let base = match node.parent_link {

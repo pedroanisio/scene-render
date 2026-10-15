@@ -792,3 +792,98 @@ fn draft_quality_360_renders_its_faces_at_the_tier_size() {
     assert!(mostly(r.at(40, 1), 1), "up along the top row: {:?}", r.at(40, 1));
     assert_eq!(r.at(64, 100)[3], 0.0, "nothing to the lower left");
 }
+
+#[test]
+fn a6_antialias3d_controls_raster_edge_coverage() {
+    let at = |samples: &str| {
+        let xml = format!(
+            r##"<scene version="1.2"><project width="64" height="64" fps="10" duration="1" background="#00000000" {samples}/><composition><object3D id="p" primitive="plane" width="37" height="29" x="32" y="32" rotation="23"/></composition></scene>"##
+        );
+        render(&sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap())
+    };
+    let (Some(default), Some(one), Some(two), Some(three), Some(four)) = (
+        at(""),
+        at(r#"antialias3d="1""#),
+        at(r#"antialias3d="2""#),
+        at(r#"antialias3d="3""#),
+        at(r#"antialias3d="4""#),
+    ) else {
+        return;
+    };
+    let alpha = |r: &Rendered| (0..64).flat_map(|y| (0..64).map(move |x| r.at(x, y)[3])).collect::<Vec<_>>();
+    let (a, b) = (alpha(&one), alpha(&four));
+    assert_eq!(alpha(&default), a, "default is one sample");
+    assert!(a.iter().all(|v| *v == 0.0 || *v == 1.0), "one sample has binary coverage");
+    let fallback = |r: &Rendered| r.stats.unsupported.iter().any(|s| s.contains("antialias3d"));
+    let two_alpha = alpha(&two);
+    if fallback(&two) {
+        assert_eq!(two_alpha, a, "unsupported two samples falls back to one");
+    } else {
+        assert!(two_alpha.iter().all(|v| [0.0, 0.5, 1.0].contains(v)));
+        assert!(two_alpha.contains(&0.5), "two samples resolve half coverage");
+    }
+    if fallback(&four) {
+        assert!(b == a || b == two_alpha);
+    } else {
+        assert!(b.iter().any(|v| *v == 0.25 || *v == 0.75), "four samples resolve quarter coverage");
+    }
+    assert_eq!(alpha(&three), b, "three rounds up to four");
+    assert!(one.stats.errors.is_empty() && two.stats.errors.is_empty() && four.stats.errors.is_empty());
+}
+
+#[test]
+fn a6_instance_fit_places_and_crops_symbol_pixels() {
+    for fit in ["contain", "cover", "fill", "scale-down", "contain-blur"] {
+        let xml = format!(
+            r##"<scene version="1.2"><project width="128" height="128" fps="10" duration="1" background="#00000000"/><symbols><symbol id="s" width="100" height="50"><shape id="r" shape="rect" width="100%" height="100%" fill="#FF0000"/></symbol></symbols><composition><instance id="i" symbol="s" x="24" y="24" fit="{fit}" boxWidth="80" boxHeight="80"/></composition></scene>"##
+        );
+        let d = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
+        let Some(r) = render(&d) else { return };
+        assert!(problems(&r).is_empty(), "{fit}: {:?}", problems(&r));
+        assert!(r.at(64, 64)[0] > 0.99, "{fit}: centre");
+        assert_eq!(r.at(12, 64)[3], 0.0, "{fit}: outside box");
+        if matches!(fit, "contain" | "scale-down") {
+            assert_eq!(r.at(64, 30)[3], 0.0, "{fit}: top margin");
+        } else {
+            assert!(r.at(64, 30)[0] > 0.9, "{fit}: fills box");
+        }
+    }
+}
+
+#[test]
+fn a6_sensor_height_changes_only_a_narrow_frame_with_a_physical_lens() {
+    let at = |w, h, sensor_h, lens: &str| {
+        let xml = format!(
+            r##"<scene version="1.2"><project width="{w}" height="{h}" fps="10" duration="1" background="#00000000"/><composition><camera id="c" x="{}" y="{}" z="-100" {lens} sensorHeight="{sensor_h}"/><object3D id="p" primitive="plane" width="20" height="20" x="{}" y="{}"/></composition></scene>"##,
+            w / 2,
+            h / 2,
+            w / 2,
+            h / 2
+        );
+        render(&sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap())
+    };
+    for (w, h, lens, changes) in [
+        (64, 128, r#"focalLength="50""#, true),
+        (128, 64, r#"focalLength="50""#, false),
+        (64, 128, r#"fov="60""#, false),
+    ] {
+        let (Some(a), Some(b)) = (at(w, h, 24, lens), at(w, h, 30, lens)) else { return };
+        assert_eq!(a.px != b.px, changes, "{w}x{h} {lens}");
+    }
+}
+
+#[test]
+fn a6_antialias3d_unsupported_count_warns_and_uses_one_sample() {
+    let Some(mut gpu) = gpu() else { return };
+    // Exercise the real render path with an adapter capability set that supports only one sample.
+    gpu.raster_sample_counts = wgpu::TextureFormatFeatureFlags::empty();
+    let d = sr_model::load_str(r##"<scene version="1.2"><project width="64" height="64" fps="10" duration="1" antialias3d="4" background="#00000000"/><composition><object3D id="p" primitive="plane" width="37" height="29" x="32" y="32" rotation="23"/></composition></scene>"##, &sr_model::LoadOptions::without_assets()).unwrap();
+    let r = render_times_on(gpu, &d, &[0.0]).unwrap();
+    assert!(r.stats.errors.is_empty(), "{:?}", r.stats.errors);
+    assert!(
+        r.stats.unsupported.iter().any(|s| s.contains("antialias3d") && s.contains("using 1")),
+        "{:?}",
+        r.stats.unsupported
+    );
+    assert!((0..64).all(|y| (0..64).all(|x| [0.0, 1.0].contains(&r.at(x, y)[3]))));
+}

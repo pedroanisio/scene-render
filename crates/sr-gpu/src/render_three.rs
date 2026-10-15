@@ -315,8 +315,15 @@ impl Renderer {
 
     pub(super) fn three_engine(&mut self) -> &mut ThreeEngine {
         let g = &self.gpu;
+        let samples = self.raster_samples;
         self.three.get_or_insert_with(|| {
-            let mut engine = ThreeEngine::new_with(g.device.clone(), g.queue.clone(), g.gbuffer_depth, g.scalar_target);
+            let mut engine = ThreeEngine::new_with_samples(
+                g.device.clone(),
+                g.queue.clone(),
+                g.gbuffer_depth,
+                g.scalar_target,
+                samples,
+            );
             engine.software_adapter = g.is_software();
             Box::new(engine)
         })
@@ -337,6 +344,11 @@ impl Renderer {
         match n.parent {
             // a viewport3D's children are in the viewport's own 3D space (SREP 74 §1)
             Some(p) if g.nodes[p as usize].kind == "viewport3D" => own,
+            // Fitting inserts a transform between the instance and its child's local transform.
+            Some(p) if g.nodes[p as usize].kind == "instance" && g.nodes[p as usize].content.is_some() => {
+                let base = n.local.inverse().map(|inv| n.world.then(&inv)).unwrap_or(g.nodes[p as usize].world);
+                embed(&base) * own
+            }
             Some(p) => embed(&g.nodes[p as usize].world) * own,
             None => own,
         }
@@ -373,8 +385,8 @@ impl Renderer {
                 kind if sr_eval::draws_in_3d(kind) => Self::world3(g, lights, j, depth),
                 // the camera as it looks: its pose, look-at target and shake
                 "camera" => {
-                    let cp = Self::cam_params(g, lights, j, depth);
                     let [w, h] = Self::frame_of(g, j);
+                    let cp = Self::cam_params(g, lights, j, depth, [w, h]);
                     camera::resolve(&cp, w, h).view.inverse()
                 }
                 _ => embed(&n.world),
@@ -415,21 +427,28 @@ impl Renderer {
         Some(Self::world_of(g, lights, id, depth)?.transform_point3(Vec3::ZERO))
     }
 
-    /// Horizontal field of view of a camera node: `fov`, or `focalLength` over `sensorWidth`.
-    fn cam_fov(a: &Attrs) -> f32 {
+    /// Horizontal field of view of a camera node for a `frame`-sized picture: `fov`, or `focalLength` on the sensor
+    /// gate (`sensorWidth` for a frame at least as wide as the sensor, else `sensorHeight`).
+    fn cam_fov(a: &Attrs, frame: [f32; 2]) -> f32 {
         match a.opt("focalLength") {
-            Some(f) => camera::fov_of_lens(f as f32, a.num("sensorWidth", 36.0) as f32),
+            Some(f) => camera::fov_of_lens_in_frame(
+                f as f32,
+                a.num("sensorWidth", 36.0) as f32,
+                a.num("sensorHeight", 24.0) as f32,
+                frame[0],
+                frame[1],
+            ),
             None => a.num("fov", 60.0) as f32,
         }
     }
 
     /// Camera inputs of camera node `ci`: projection, pose (in its parent's frame when parented),
     /// look-at target and shake.
-    fn cam_params(g: &FrameGraph, lights: &[m::Light], ci: usize, depth: u32) -> CameraParams {
+    fn cam_params(g: &FrameGraph, lights: &[m::Light], ci: usize, depth: u32, frame: [f32; 2]) -> CameraParams {
         let n = &g.nodes[ci];
         let a = attrs(n);
         let mut cp = CameraParams {
-            fov: Self::cam_fov(&a),
+            fov: Self::cam_fov(&a, frame),
             orthographic: a.str("projection").as_deref() == Some("orthographic"),
             ortho_height: a.opt("orthoHeight").map(|v| v as f32),
             near: a.num("near", 0.1) as f32,
@@ -494,10 +513,16 @@ impl Renderer {
         let mut focal_mm = camera::lens_of_fov(cp.fov, 36.0);
         let (mut sensor, mut fstop, mut focus, mut blades, mut dof_on, mut focus_target) =
             (36.0f32, 2.8f32, 1000.0f32, 0u32, false, None);
+        // the picture the camera frames: a 360 face is rendered as its own square
+        let base = view_override.map(|o| o.frame).unwrap_or(frame);
+        // whether a focalLength is fitted to the sensor's height (frame narrower than the sensor), and that height
+        let (mut vertical, mut sensor_h) = (false, 24.0f32);
         if let Some(ci) = cam {
             let n = &g.nodes[ci];
             let a = attrs(n);
             sensor = a.num("sensorWidth", 36.0) as f32;
+            sensor_h = a.num("sensorHeight", 24.0) as f32;
+            vertical = a.opt("focalLength").is_some() && camera::vertical_gate(sensor, sensor_h, base[0], base[1]);
             if flag(&a, "ambientOcclusion", false) {
                 ex.ao = Some([a.num("aoRadius", 40.0) as f32, a.num("aoIntensity", 1.0) as f32]);
             }
@@ -509,8 +534,11 @@ impl Renderer {
                     denoise: flag(&a, "denoise", true),
                 });
             }
-            focal_mm = camera::lens_of_fov(Self::cam_fov(&a), sensor);
-            cp = Self::cam_params(g, lights, ci, 0);
+            focal_mm = match a.opt("focalLength") {
+                Some(f) if vertical => f as f32,
+                _ => camera::lens_of_fov(Self::cam_fov(&a, base), sensor),
+            };
+            cp = Self::cam_params(g, lights, ci, 0, base);
             ex.exposure = 2f32.powf(a.num("exposure", 0.0) as f32);
             ex.lens_k1 = a.num("lensDistortion", 0.0) as f32;
             dof_on = flag(&a, "depthOfField", false);
@@ -519,7 +547,6 @@ impl Renderer {
             blades = a.num("apertureBlades", 0.0) as u32;
             focus_target = a.str("focusTarget").and_then(|t| ref_id(g, &n.scope, &t));
         }
-        let base = view_override.map(|o| o.frame).unwrap_or(frame);
         let mut view = camera::resolve(&cp, base[0], base[1]);
         let mut size = frame;
         if let Some(o) = view_override {
@@ -560,7 +587,12 @@ impl Renderer {
                 focus = view.depth_of(t).max(1.0);
             }
             ex.dof = Some(Dof {
-                coc_scale: camera::coc_scale(focal_mm, fstop, sensor, size[0]),
+                // the circle of confusion is measured on the sensor gate the lens is fitted to
+                coc_scale: if vertical {
+                    camera::coc_scale(focal_mm, fstop, sensor_h, size[1])
+                } else {
+                    camera::coc_scale(focal_mm, fstop, sensor, size[0])
+                },
                 focus,
                 max_coc: (size[0] / 40.0).clamp(4.0, 48.0),
                 blades,
@@ -1306,7 +1338,7 @@ impl Renderer {
         };
         let density = grid(&frames.first, &channel, "density")?;
         let next_density = grid(&frames.second, &channel, "density")?;
-        let mut optical = Optical { albedo: [1.0; 3], ..Default::default() };
+        let mut optical = Optical::default();
         let mut march = March { step_size: 1.0, max_steps: 2048 };
         // Declaring a channel is an asset contract even when this instance does
         // not emit thermally. Missing files alone may become transparent.
@@ -1331,7 +1363,9 @@ impl Renderer {
             let key = format!("{}/medium[0]", n.id);
             let props = n.parts.iter().find(|p| *p.key == key).map(|p| &p.props);
             let a = Attrs { e: child, props };
-            let albedo = self.working_color(a.paint("albedo"), self.literal_linear([1.0; 4]));
+            let white = optical.albedo;
+            let albedo =
+                self.working_color(a.paint("albedo"), self.literal_linear([white[0], white[1], white[2], 1.0]));
             let emission = self.working_color(a.paint("emissionColor"), self.literal_linear([0.0, 0.0, 0.0, 1.0]));
             optical = Optical {
                 density_scale: a.num("densityScale", 1.0),
@@ -3188,9 +3222,15 @@ impl Renderer {
         };
         let to_world = cam.view.inverse();
         let scale = if cam_size[0] > 0.0 { size[0] as f32 / cam_size[0] } else { 1.0 };
-        let samples = attrs(&g.nodes[camera.expect("geodesics needs a camera")])
-            .num("pathSamples", 16.0)
-            .clamp(1.0, 4096.0) as u32;
+        let camera_node = &g.nodes[camera.expect("geodesics needs a camera")];
+        let requested = attrs(camera_node).num("pathSamples", 64.0);
+        if requested > 4096.0 {
+            unsupported.push(format!(
+                "W14: {}: geodesic pathSamples {requested} exceeds 4096; using 4096 samples per pixel",
+                camera_node.id
+            ));
+        }
+        let samples = (requested as u32).clamp(1, 4096);
         Ok(Some(GeodesicScene {
             size,
             eye: cam.eye,
@@ -3405,6 +3445,9 @@ impl Renderer {
                     .extend(crate::pathtrace::notes(&scene).into_iter().map(|m| format!("{}: {m}", n.id)));
                 scene.path = Some(opts);
             }
+        }
+        if scene.path.is_none() && scene.geodesic.is_none() {
+            plan.stats.unsupported.extend(self.raster_warning.iter().map(|m| format!("{}: {m}", n.id)));
         }
         if scene.path.is_none() && scene.draws.iter().any(|d| d.material.foam_mix.is_some()) {
             // the foam is mixed into the water by the path tracer's shading; the raster renderer has no such mix
@@ -3730,6 +3773,85 @@ mod scope_tests {
         assert!(!over.contains("renderer=\"pathtrace\""), "the camera already asks for it: {over}");
     }
 
+    #[test]
+    fn a6_native_3d_child_uses_the_fitted_symbol_space() {
+        let xml = r#"<scene version="1.2"><project width="128" height="128" fps="10" duration="1"/><symbols><symbol id="s" width="100" height="50"><object3D id="o" primitive="box" x="10" y="5"/></symbol></symbols><composition><instance id="i" symbol="s" fit="contain" boxWidth="200" boxHeight="200"/></composition></scene>"#;
+        let d = sr_model::load_str(xml, &sr_model::LoadOptions::without_assets()).unwrap();
+        let g = sr_eval::Evaluator::new(&d, &Default::default()).unwrap().evaluate(0.0);
+        let i = g.nodes.iter().position(|n| &*n.id == "i/o").unwrap();
+        let world = Renderer::world3(&g, &[], i, 0);
+        assert_eq!(world.transform_point3(Vec3::ZERO), Vec3::new(20.0, 60.0, 0.0));
+        assert_eq!(world.transform_vector3(Vec3::X), Vec3::new(2.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn a6_geodesic_sample_count_uses_the_schema_default_and_reports_runtime_clamping() {
+        for (attr, keys, t, expected, warned) in [
+            ("", "", 0.0, 64, false),
+            (r#"pathSamples="16""#, "", 0.0, 16, false),
+            (r#"pathSamples="4096""#, "", 0.0, 4096, false),
+            (r#"pathSamples="5000""#, "", 0.0, 4096, true),
+            (
+                "",
+                r#"<animate property="pathSamples"><key time="0" value="16"/><key time="1" value="5000"/></animate>"#,
+                1.0,
+                4096,
+                true,
+            ),
+        ] {
+            let xml = format!(
+                r#"<scene version="1.3"><project width="64" height="64" fps="10" duration="2"/><composition><camera id="c" geodesics="true" z="-60" {attr}>{keys}</camera><blackHole id="b" mass="1"/></composition></scene>"#
+            );
+            let doc = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
+            let ev = sr_eval::Evaluator::new(&doc, &Default::default()).unwrap();
+            let g = ev.evaluate(t);
+            let ci = g.nodes.iter().position(|n| &*n.id == "c").unwrap();
+            let bi = g.nodes.iter().position(|n| &*n.id == "b").unwrap();
+            let cp = Renderer::cam_params(&g, &[], ci, 0, [64.0; 2]);
+            let cam = camera::resolve(&cp, 64.0, 64.0);
+            let ex = CamExtras { exposure: 1.0, dof: None, lens_k1: 0.0, ao: None, ssr: false, path: None };
+            let mut warnings = Vec::new();
+            let scene = Renderer::geodesic_scene(
+                &g,
+                ev.program(),
+                Some(ci),
+                &[bi],
+                &cam,
+                &ex,
+                [64; 2],
+                [64.0; 2],
+                &mut warnings,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(scene.samples, expected);
+            assert_eq!(warnings.iter().any(|w| w.contains("W14")), warned, "{warnings:?}");
+        }
+    }
+
+    /// `sensorHeight` is the vertical gate: a frame narrower than the sensor takes its vertical field of view from it
+    /// (P4-02); a frame at least as wide keeps the horizontal gate and ignores the sensor height.
+    #[test]
+    fn a6_sensor_height_gates_a_narrow_frame() {
+        let fov_in = |sensor_h: &str, frame: [f32; 2]| {
+            let xml = format!(
+                r#"<scene version="1.2"><project width="32" height="32" fps="10" duration="1"/><composition>
+                <camera id="cam" focalLength="50" sensorHeight="{sensor_h}"/></composition></scene>"#
+            );
+            let doc = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
+            let g = sr_eval::Evaluator::new(&doc, &Default::default()).unwrap().evaluate(0.0);
+            let ci = g.nodes.iter().position(|n| &*n.id == "cam").unwrap();
+            Renderer::cam_params(&g, &[], ci, 0, frame).fov
+        };
+        let wide = fov_in("24", [1920.0, 1080.0]);
+        assert_eq!(wide, camera::fov_of_lens(50.0, 36.0));
+        assert_eq!(fov_in("30", [1920.0, 1080.0]), wide, "sensorHeight must not matter for a wide frame");
+        let portrait = fov_in("24", [1080.0, 1920.0]);
+        let vfov = 2.0 * ((1920.0f32 / 1080.0) * (portrait.to_radians() * 0.5).tan()).atan().to_degrees();
+        assert!((vfov - camera::fov_of_lens(50.0, 24.0)).abs() < 1e-3, "{vfov}");
+        assert_ne!(fov_in("30", [1080.0, 1920.0]), portrait);
+    }
+
     /// A `<motionPath>` moves a camera and an object3D like any other node. In v0.1.4 the 3D renderer read their
     /// position from the `x` and `y` attributes only, so the path was ignored with no error (Inova probe A: the
     /// eye stayed at x = 0, y = 0).
@@ -3749,7 +3871,7 @@ mod scope_tests {
         ] {
             let g = ev.evaluate(t);
             let at = |id: &str| g.nodes.iter().position(|n| &*n.id == id).unwrap();
-            let eye = Renderer::cam_params(&g, &[], at("cam"), 0).position.unwrap();
+            let eye = Renderer::cam_params(&g, &[], at("cam"), 0, [32.0, 32.0]).position.unwrap();
             assert!((eye - Vec3::new(cam[0], cam[1], -500.0)).length() < 1e-3, "camera at {t} s: {eye:?}");
             for (id, want, z) in [("box", abs, 10.0), ("offset", add, 0.0)] {
                 let p = Renderer::world3(&g, &[], at(id), 0).transform_point3(Vec3::ZERO);

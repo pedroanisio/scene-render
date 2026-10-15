@@ -203,6 +203,35 @@ fn layouts_crop_by_focus_and_segments_move_it() {
 }
 
 #[test]
+fn a6_a_plain_fit_places_the_picture_by_the_focus() {
+    if gpu().is_none() {
+        return;
+    }
+    // 64 x 36 into 36 x 64: the fitted picture is a 36 x 20 band. focusY 0 puts it at the top (rows 0..20), 1 at the
+    // bottom (rows 44..64); a segment's focus overrides the layout's, as for a crop (P6-21)
+    let d = dir("fitfocus");
+    let xml = format!(
+        r##"<scene version="1.2"><project width="64" height="36" fps="10" duration="1" background="#000000"/>
+          <output path="{}/f_%03d.png" codec="png-sequence" layout="tall">
+            <segment from="0" to="0.1"/>
+            <segment from="0" to="0.1" focusY="1"/>
+            <segment from="0" to="0.2"><animate property="focusY"><key time="0" value="0"/><key time="0.2" value="1"/></animate></segment>
+          </output>
+          <layouts><layout id="tall" width="36" height="64" reframe="fit" focusY="0"/></layouts>
+          <composition>{HALVES}</composition></scene>"##,
+        d.display()
+    );
+    let (frames, _) = render(&d, &xml);
+    assert_eq!(frames.len(), 4);
+    assert!(near(&frames[0], 2, 4, [255, 0, 0]) && near(&frames[0], 2, 60, [0, 0, 0]), "layout focus 0: top");
+    assert!(near(&frames[1], 2, 60, [255, 0, 0]) && near(&frames[1], 2, 4, [0, 0, 0]), "segment focus 1: bottom");
+    assert!(
+        near(&frames[3], 2, 30, [255, 0, 0]) && near(&frames[3], 2, 4, [0, 0, 0]),
+        "animated segment focus: centre"
+    );
+}
+
+#[test]
 fn fit_blur_fills_the_margins_with_the_picture() {
     if gpu().is_none() {
         return;

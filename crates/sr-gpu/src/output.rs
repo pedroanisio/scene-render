@@ -765,6 +765,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a6_a_fitted_frame_shares_the_free_space_by_the_focus() {
+        // 64 x 36 into 36 x 64: scale 0.5625, a 36 x 20.25 band with 43.75 rows free
+        let frame = [64.0, 36.0];
+        for (focus, top) in [([0.5, 0.5], 21.875), ([0.0, 0.0], 0.0), ([0.0, 1.0], 43.75), ([1.0, 0.25], 10.9375)] {
+            let (scale, offset) = Placement::place(frame, [36, 64], false, focus);
+            assert!((scale - 0.5625).abs() < 1e-6 && offset[0].abs() < 1e-4, "{focus:?}: {scale} {offset:?}");
+            assert!((offset[1] - top).abs() < 1e-4, "{focus:?}: {offset:?}");
+        }
+    }
+
+    #[test]
     fn nv12_blocks_match_piecewise_packing_byte_for_byte() {
         let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "nv12_blocks_match_piecewise_packing_byte_for_byte");
         let layout = crate::resources::source_layout(&gpu.device);

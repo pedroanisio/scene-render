@@ -549,6 +549,7 @@ WARN_CASES = [
     ("a04-sequence-hold", ["A04"], sub('first="1" last="5"', 'first="1" last="9" missingFrame="hold"')),
     ("w02-open-face", ["W02"], lambda _: PYRO.replace('width="8" height="8" depth="8" voxelSize="1"', 'width="64" height="64" depth="64" voxelSize="1" boundary="open"').replace('<pyroSource shape="sphere" radius="2"', '<pyroSource shape="sphere" y="-28" radius="2"')),
     ("w12-denoise", ["W12"], lambda _: BLACKHOLE.replace('geodesics="true"', 'geodesics="true" denoise="true"')),
+    ("w14-path-samples", ["W14"], lambda _: BLACKHOLE.replace('geodesics="true"', 'geodesics="true" pathSamples="5000"')),
     ("w05-lights", ["W05"], lambda _: BLACKHOLE.replace('</composition>', '</composition><lights><light id="sun" type="directional"/></lights>')),
     ("w06-foam-material", ["W06"], lambda _: OCEAN.replace('</composition>', '<camera id="cam" renderer="pathtrace"/></composition>').replace('</ocean>', '<whitewater foamMode="albedo" foamMaterial="foam"/></ocean>').replace('<composition>', '<materials><material id="foam"/></materials><composition>')),
     ("w08-foam-unlit", ["W08"], lambda _: OCEAN.replace('</composition>', '<camera id="cam" renderer="pathtrace"/></composition>').replace('<ocean id="sea" ', '<ocean id="sea" material="glow" ').replace('</ocean>', '<whitewater foamMode="albedo"/></ocean>').replace('<composition>', '<materials><material id="glow" unlit="true"/></materials><composition>')),
@@ -760,6 +761,8 @@ VALID["metal-without-environment"] = ('<scene version="1.1"><project width="64" 
     '<object3D id="ball" primitive="sphere" radius="20" x="32" y="32" material="chrome"/></composition></scene>\n')
 WARN_CASES += [
     ("inert-i16-streak-flock", ["INERT-I16"], lambda _: FLOCK_UPRIGHT.replace(' shape="disc"', '')),
+    ("inert-i17-zdepth-without-threed", ["INERT-I17"], lambda _: MINIMAL.replace('<composition/>', '<composition><shape id="s" shape="rect" width="10" height="10" zDepth="5"/></composition>')),
+    ("inert-i17-margin-without-align", ["INERT-I17"], lambda _: MINIMAL.replace('<composition/>', '<composition><shape id="s" shape="rect" width="10" height="10" margin="8"/></composition>')),
 ]
 
 # SREP 71: subsurface, the procedural sky and generator-fed maps; no version gate (new attributes, neutral defaults)

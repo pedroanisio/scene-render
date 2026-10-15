@@ -136,3 +136,9 @@ fn invalid_domain_coefficients_and_density_fail_before_transport() {
     assert_eq!(r.transmittance, 1.0);
     assert_eq!(r.steps, 0);
 }
+
+#[test]
+fn a6_a_medium_without_an_albedo_is_white_as_the_schema_says() {
+    // medium/@albedo defaults to #FFFFFFFF (XSD); the renderer takes its fallback from this value (P6-22)
+    assert_eq!(Optical::default().albedo, [1.0; 3]);
+}

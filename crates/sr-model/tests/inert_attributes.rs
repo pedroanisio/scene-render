@@ -139,3 +139,29 @@ fn every_rule_is_explained() {
         assert_eq!(c.stage, "inert");
     }
 }
+
+#[test]
+fn a6_i17_node_switches_without_their_switch() {
+    // P2-08: zDepth, rotationX and rotationY place a node in camera space only with threeD="true"
+    assert_eq!(codes("", &shape(r#"zDepth="5""#)), ["INERT-I17"]);
+    assert_eq!(codes("", &shape(r#"zDepth="5" rotationX="10" rotationY="20""#)), ["INERT-I17"], "once per element");
+    assert!(codes("", &shape(r#"threeD="true" zDepth="5" rotationX="10""#)).is_empty());
+    // the value can change: an animation drives the property or the switch
+    let animated = r#"<shape id="s" shape="rect" width="10" height="10" zDepth="5"><animate property="zDepth"><key time="0" value="0"/><key time="1" value="9"/></animate></shape>"#;
+    assert!(codes("", animated).is_empty());
+    let switched = r#"<shape id="s" shape="rect" width="10" height="10" zDepth="5"><animate property="threeD"><key time="0" value="0"/></animate></shape>"#;
+    assert!(codes("", switched).is_empty());
+    // an object3D's rotationX is its own attribute, not the 2.5D one
+    assert!(codes("", r#"<object3D id="o" primitive="box" rotationX="30"/>"#).is_empty());
+}
+
+#[test]
+fn a6_i17_margin_and_align_to_need_an_alignment() {
+    // P2-09: margin and alignTo apply with alignX or alignY only
+    assert_eq!(codes("", &shape(r#"margin="8""#)), ["INERT-I17"]);
+    assert_eq!(codes("", &shape(r#"margin="8" alignTo="frame""#)), ["INERT-I17"]);
+    assert!(codes("", &shape(r#"margin="8" alignX="left""#)).is_empty());
+    assert!(codes("", &shape(r#"alignTo="frame" alignY="top""#)).is_empty());
+    // centring ignores the margin, which is documented, and is not reported
+    assert!(codes("", &shape(r#"margin="8" alignX="center" alignY="middle""#)).is_empty());
+}

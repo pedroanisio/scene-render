@@ -84,7 +84,8 @@ impl Default for Optical {
         Self {
             density_scale: 1.0,
             extinction: 1.0,
-            albedo: [0.0; 3],
+            // white, as the schema's medium/@albedo default (#FFFFFFFF) says; the renderer takes this value too
+            albedo: [1.0; 3],
             emission: [0.0; 3],
             anisotropy: 0.0,
             scatter_bounces: 1,

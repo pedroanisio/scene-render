@@ -15,7 +15,7 @@ fn slab(extinction: f64, emission: [f64; 3], lo: f64, hi: f64) -> VolumeDraw {
         Arc::new(SparseGrid::new(Transform::identity(), 1.0, 0).unwrap()),
         Some(Bounds::new([-1000.0, -1000.0, lo], [1000.0, 1000.0, hi]).unwrap()),
         Transform::identity(),
-        Optical { extinction, emission, ..Default::default() },
+        Optical { albedo: [0.0; 3], extinction, emission, ..Default::default() },
     )
     .unwrap();
     VolumeDraw::new(Arc::new(medium), March { step_size: 0.25, max_steps: 65536 }).unwrap()
@@ -62,7 +62,7 @@ fn gpu_volume_transport_matches_analytic_slabs_and_overlapping_media() {
         Arc::new(sparse),
         None,
         Transform::new(glam::DMat4::from_scale(glam::DVec3::new(1.0, 1.0, 3.0)).to_cols_array()).unwrap(),
-        Optical { emission: [0.2, 0.1, 0.0], ..Default::default() },
+        Optical { albedo: [0.0; 3], emission: [0.2, 0.1, 0.0], ..Default::default() },
     )
     .unwrap();
     let thermal = slab(0.7, [0.01, 0.02, 0.0], 0.0, 3.0);
@@ -128,17 +128,22 @@ fn gpu_volume_transport_matches_analytic_slabs_and_overlapping_media() {
     let (d0, t0) = moving_fields(-5, 2000.);
     let (d1, t1) = moving_fields(5, 8000.);
     let velocity = [10., 0., 0.].map(|v| Arc::new(SparseGrid::new(Transform::identity(), v, 0).unwrap()));
-    let advected = Medium::new(d0, None, Transform::identity(), Optical { extinction: 0.7, ..Default::default() })
-        .unwrap()
-        .with_temperature(t0, 1., 0.3)
-        .unwrap()
-        .with_next_frame(d1, Some(t1), 0.5)
-        .unwrap()
-        .with_advection(
-            sr_volume::advection::Advection::new(velocity.clone(), 0.5).unwrap(),
-            sr_volume::advection::Advection::new(velocity, -0.5).unwrap(),
-        )
-        .unwrap();
+    let advected = Medium::new(
+        d0,
+        None,
+        Transform::identity(),
+        Optical { albedo: [0.0; 3], extinction: 0.7, ..Default::default() },
+    )
+    .unwrap()
+    .with_temperature(t0, 1., 0.3)
+    .unwrap()
+    .with_next_frame(d1, Some(t1), 0.5)
+    .unwrap()
+    .with_advection(
+        sr_volume::advection::Advection::new(velocity.clone(), 0.5).unwrap(),
+        sr_volume::advection::Advection::new(velocity, -0.5).unwrap(),
+    )
+    .unwrap();
     for volumes in [
         vec![VolumeDraw::new(Arc::new(advected), March { step_size: 0.125, max_steps: 65536 }).unwrap()],
         vec![VolumeDraw::new(Arc::new(transformed_pair), March { step_size: 0.25, max_steps: 65536 }).unwrap()],
@@ -300,7 +305,7 @@ fn gpu_volume_rejects_unrepresentable_data_and_excessive_work_before_upload() {
             density,
             Some(Bounds::new([0.0; 3], [10.0; 3]).unwrap()),
             Transform::identity(),
-            Optical::default(),
+            Optical { albedo: [0.0; 3], ..Default::default() },
         )
         .unwrap(),
     );
@@ -984,7 +989,7 @@ fn shadow_march_dims_by_the_optical_depth_of_thin_dense_media_and_ignores_neglig
             Arc::new(grid),
             Some(Bounds::new([-4.0, -4.0, 0.0], [4.0, 4.0, 2.0]).unwrap()),
             Transform::identity(),
-            Optical { extinction, ..Default::default() },
+            Optical { albedo: [0.0; 3], extinction, ..Default::default() },
         )
         .unwrap();
         let scene = Scene3 {

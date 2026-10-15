@@ -263,7 +263,16 @@ fn splats_sort_back_to_front() {
 
 #[test]
 fn depth_of_field_blurs_out_of_focus() {
-    let Some(mut eng) = engine() else { return };
+    // 4 samples: the gather softens the inside of an object only through the partly covered pixels at its edge
+    // (empty background never spreads onto a nearer pixel), which a single sample does not leave
+    let Some(g) = common::gpu() else { return };
+    let mut eng = ThreeEngine::new_with_samples(
+        g.device.clone(),
+        g.queue.clone(),
+        wgpu::TextureFormat::Rgba32Float,
+        wgpu::TextureFormat::R32Float,
+        4,
+    );
     let sphere = prim::sphere(10.0, 32);
     let mat = MaterialParams { unlit: true, ..Default::default() };
     let mut s = scene(vec![draw(&eng, &sphere, Vec3::new(64.0, 64.0, 400.0), mat)], Vec::new());

@@ -849,3 +849,156 @@ fn object3d_and_camera_depth_is_not_paint_order() {
     );
     assert_eq!(paint_order(&eval(&d, 0.0)), ["back", "cam", "near", "far", "front"]);
 }
+
+#[test]
+fn a6_an_evaluated_opacity_is_held_to_the_unit_range() {
+    // Facet clamping already bounds finite animation values; the final opacity guard must preserve that.
+    let d = doc(
+        "",
+        r##"<group id="g" opacity="0.8"><shape id="s" shape="rect" width="10" height="10" fill="#FFFFFF">
+             <animate property="opacity"><key time="0" value="1.3"/><key time="4" value="-0.2"/></animate>
+           </shape></group>"##,
+    );
+    for t in [0.0, 1.0, 3.9] {
+        let f = eval(&d, t);
+        for n in &f.nodes {
+            assert!((0.0..=1.0).contains(&n.opacity), "{} at {t}: opacity {}", n.id, n.opacity);
+            assert!((0.0..=1.0).contains(&n.world_opacity), "{} at {t}: world {}", n.id, n.world_opacity);
+        }
+    }
+    assert_eq!(node(&eval(&d, 0.0), "s").opacity, 1.0);
+    assert_eq!(node(&eval(&d, 3.9), "s").opacity, 0.0);
+}
+
+const TEN_SECOND_SYMBOL: &str = r#"<symbols><symbol id="ten" width="100" height="50" duration="10"><layer id="bg" asset="img"/></symbol></symbols>"#;
+
+#[test]
+fn a6_an_instance_plays_from_clip_in_to_clip_out() {
+    // P4-01a: clipOut ends playback where it says, as for a layer
+    let d = doc_after(TEN_SECOND_SYMBOL, r#"<instance id="i" symbol="ten" clipIn="1" clipOut="3"/>"#, "");
+    assert_eq!(node(&eval(&d, 0.0), "i").source_time, Some(1.0));
+    let last = eval(&d, 1.9);
+    assert!(has(&last, "i/bg"));
+    assert!(close(node(&last, "i").source_time.unwrap(), 2.9), "{:?}", node(&last, "i").source_time);
+    assert!(!has(&eval(&d, 2.1), "i/bg"), "2 s of symbol: the instance ends at t = 2");
+    // absent clipOut is the end of the symbol
+    let d = doc_after(TEN_SECOND_SYMBOL, r#"<instance id="i" symbol="ten" clipIn="1"/>"#, "");
+    assert!(has(&eval(&d, 8.9), "i/bg") && !has(&eval(&d, 9.1), "i/bg"));
+    // a clipOut at or before clipIn has no length, and does not panic
+    for out in ["1", "0.5"] {
+        let d =
+            doc_after(TEN_SECOND_SYMBOL, &format!(r#"<instance id="i" symbol="ten" clipIn="1" clipOut="{out}"/>"#), "");
+        for t in [0.0, 0.5, 2.0] {
+            assert!(!has(&eval(&d, t), "i/bg"), "clipOut {out} at {t}");
+        }
+    }
+}
+
+#[test]
+fn a6_an_instance_fits_its_symbol_into_its_box() {
+    // P4-01b: a 100x50 symbol in a 200x200 box
+    let at = |fit: &str| {
+        let box_ = if fit == "none" { "" } else { r#" boxWidth="200" boxHeight="200""# };
+        let d = doc_after(TEN_SECOND_SYMBOL, &format!(r#"<instance id="i" symbol="ten" fit="{fit}"{box_}/>"#), "");
+        let f = eval(&d, 0.0);
+        let (i, bg) = (node(&f, "i").size, node(&f, "i/bg").world);
+        (i, bg.apply([0.0, 0.0]), bg.apply([100.0, 50.0]))
+    };
+    let (size, a, b) = at("none");
+    assert_eq!((size, a, b), (Some([100.0, 50.0]), [0.0, 0.0], [100.0, 50.0]), "none keeps the natural size");
+    let (size, a, b) = at("contain");
+    assert_eq!(size, Some([200.0, 200.0]));
+    assert!(close(a[0], 0.0) && close(a[1], 50.0) && close(b[0], 200.0) && close(b[1], 150.0), "{a:?} {b:?}");
+    let (_, a, b) = at("cover");
+    assert!(close(a[0], -100.0) && close(a[1], 0.0) && close(b[0], 300.0) && close(b[1], 200.0), "{a:?} {b:?}");
+    let (_, a, b) = at("fill");
+    assert!(close(a[0], 0.0) && close(a[1], 0.0) && close(b[0], 200.0) && close(b[1], 200.0), "{a:?} {b:?}");
+    let (_, a, b) = at("scale-down");
+    assert_eq!((a, b), ([50.0, 75.0], [150.0, 125.0]), "scale-down does not magnify the symbol");
+}
+
+#[test]
+fn a6_centred_alignment_ignores_the_margin() {
+    // P2-09: centring puts the box at the exact centre whatever the margin says
+    let d = doc(
+        "",
+        r##"<shape id="s" shape="rect" width="100" height="50" fill="#FFFFFF" alignX="center" alignY="middle" margin="50"/>"##,
+    );
+    let o = origin(node(&eval(&d, 0.0), "s"));
+    assert!(close(o[0], 450.0) && close(o[1], 225.0), "{o:?}");
+}
+
+#[test]
+fn a6_instance_clip_out_respects_speed_loop_reverse_and_explicit_end() {
+    for (attrs, source) in
+        [(r#"speed="2" loop="1""#, 1.5), (r#"speed="-2" loop="1""#, 2.5), (r#"speed="2" loop="1" reverse="true""#, 2.5)]
+    {
+        let d = doc_after(
+            TEN_SECOND_SYMBOL,
+            &format!(r#"<instance id="i" symbol="ten" clipIn="1" clipOut="3" {attrs}/>"#),
+            "",
+        );
+        assert!(close(node(&eval(&d, 1.25), "i").source_time.unwrap(), source));
+        assert!(!has(&eval(&d, 2.0), "i/bg"), "end is exclusive");
+    }
+    let d = doc_after(TEN_SECOND_SYMBOL, r#"<instance id="i" symbol="ten" clipIn="1" clipOut="3" end="5"/>"#, "");
+    assert!(has(&eval(&d, 4.0), "i/bg"), "explicit end overrides automatic duration");
+    assert_eq!(node(&eval(&d, 4.0), "i").source_time, Some(5.0));
+}
+
+#[test]
+fn a6_fitted_instance_resolves_percentages_in_symbol_space() {
+    let symbols = r##"<symbols><symbol id="s" width="100" height="50"><shape id="r" shape="rect" width="50%" height="100%" x="50%" fill="#FFFFFF"/></symbol></symbols>"##;
+    let d = doc_after(symbols, r#"<instance id="i" symbol="s" fit="contain" boxWidth="20%" boxHeight="40%"/>"#, "");
+    let f = eval(&d, 0.0);
+    assert_eq!(node(&f, "i").size, Some([200.0, 200.0]));
+    assert_eq!(node(&f, "i/r").size, Some([50.0, 50.0]));
+    assert_eq!(node(&f, "i/r").world.apply([0.0, 0.0]), [100.0, 50.0]);
+}
+
+#[test]
+fn a6_nonfinite_opacity_keys_are_bounded_before_repeat_inheritance() {
+    for (expr, expected) in [("NaN", 0.0), ("INF", 1.0), ("-INF", 0.0)] {
+        let d = doc(
+            "",
+            &format!(
+                r##"<repeat id="r" count="3" opacityStep="0.5"><shape id="s" shape="rect" width="10" height="10" fill="#FFFFFF"><animate property="opacity"><key time="0" value="{expr}"/></animate></shape></repeat>"##
+            ),
+        );
+        let f = eval(&d, 0.0);
+        for (copy, factor) in [(0, 1.0), (1, 0.5), (2, 0.0)] {
+            let n = node(&f, &format!("r[{copy}]/s"));
+            assert_eq!(n.opacity, expected, "{expr}: own opacity");
+            assert_eq!(n.world_opacity, expected * factor, "{expr}: repeat {copy}");
+        }
+    }
+}
+
+#[test]
+fn a6_fitted_instance_parent_references_are_independent_of_sibling_order() {
+    for children in [
+        r#"<layer id="child" asset="img" parent="pivot" x="5"/><layer id="pivot" asset="img" x="10"/>"#,
+        r#"<layer id="pivot" asset="img" x="10"/><layer id="child" asset="img" parent="pivot" x="5"/>"#,
+        r#"<layer id="child" asset="img" parent="pivot" x="5"/><layer id="pivot" asset="img" parent="origin" x="10%"/><layer id="origin" asset="img"/>"#,
+        r#"<layer id="origin" asset="img"/><layer id="pivot" asset="img" parent="origin" x="10%"/><layer id="child" asset="img" parent="pivot" x="5"/>"#,
+    ] {
+        let symbols = format!(r#"<symbols><symbol id="s" width="100" height="50">{children}</symbol></symbols>"#);
+        let d =
+            doc_after(&symbols, r#"<instance id="i" symbol="s" fit="contain" boxWidth="200" boxHeight="200"/>"#, "");
+        assert_eq!(node(&eval(&d, 0.0), "i/child").world.apply([0.0, 0.0]), [30.0, 50.0]);
+    }
+}
+
+#[test]
+fn a6_nonfinite_opacity_expressions_keep_the_existing_fallback() {
+    // Expression conversion rejects nonfinite results before they become an evaluated opacity.
+    for expr in ["NaN", "Infinity", "-Infinity"] {
+        let d = doc(
+            "",
+            &format!(
+                r##"<shape id="s" shape="rect" width="10" height="10" opacity="0.4" fill="#FFFFFF"><expression property="opacity">{expr}</expression></shape>"##
+            ),
+        );
+        assert_eq!(node(&eval(&d, 0.0), "s").opacity, 0.4);
+    }
+}

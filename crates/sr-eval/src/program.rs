@@ -2261,12 +2261,34 @@ impl Builder {
             }
         }
         let dur = sym.duration.map(|d| d.get()).unwrap_or(self.doc(ctx.doc).duration);
-        self.symbol_clock(idx, dur, inst.speed, inst.clip_in, inst.r#loop, inst.reverse, remap);
+        // clipOut ends playback where it says (a layer's rule); absent = the end of the symbol
+        self.symbol_clock(
+            idx,
+            inst.clip_out.unwrap_or(dur),
+            inst.speed,
+            inst.clip_in,
+            inst.r#loop,
+            inst.reverse,
+            remap,
+        );
         let size = self.doc(ctx.doc).size;
-        self.nodes[idx as usize].box_size = Some([
-            Length::px(sym.width.map(|w| w as f64).unwrap_or(size[0])),
-            Length::px(sym.height.map(|h| h as f64).unwrap_or(size[1])),
-        ]);
+        let sym_size =
+            [sym.width.map(|w| w as f64).unwrap_or(size[0]), sym.height.map(|h| h as f64).unwrap_or(size[1])];
+        self.nodes[idx as usize].box_size = Some([Length::px(sym_size[0]), Length::px(sym_size[1])]);
+        if inst.fit != m::Fit::None {
+            // the symbol's own size is placed in the box like a layer's asset (Eval::size); the children follow the
+            // content placement (Eval::visit)
+            let node = &mut self.nodes[idx as usize];
+            node.asset_size = Some(sym_size);
+            node.fit = Some(crate::layout::FitSpec {
+                fit: inst.fit,
+                box_w: inst.box_width,
+                box_h: inst.box_height,
+                focus: [0.5, 0.5],
+                crop: [0.0; 4],
+                flip: [false; 2],
+            });
+        }
         let mut stack = ctx.stack.clone();
         stack.push(key);
         let cctx = Ctx { scope: id, stack, ..ctx.clone() };

@@ -448,6 +448,8 @@ pub struct Gpu {
     pub scalar_target: wgpu::TextureFormat,
     /// The first error the device reported outside an error scope since it was last taken (see [`Gpu::take_error`]).
     uncaptured: Arc<std::sync::Mutex<Option<String>>>,
+    /// Sample counts supported by both the raster colour and depth targets, with colour resolve available.
+    pub raster_sample_counts: wgpu::TextureFormatFeatureFlags,
 }
 
 /// What the renderer's shaders need of a device, tried on a minimal pipeline: a fragment shader that reads a runtime-sized
@@ -560,11 +562,27 @@ impl Gpu {
         check_3d_formats(|f| adapter.get_texture_format_features(f))?;
         let limits = device_limits(&adapter.limits());
         // timestamp queries, where the adapter has them, so renders can report GPU time; and blending into and
-        // filtering 32-bit float textures, where it has them, for project/@precision="f32" (SREP 72)
+        // filtering 32-bit float textures for project/@precision="f32" (SREP 72), and adapter-specific raster sample counts.
         let features = adapter.features()
             & (wgpu::Features::TIMESTAMP_QUERY
                 | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
-                | crate::resources::F32_FEATURES);
+                | crate::resources::F32_FEATURES
+                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
+        let format_flags = |format: wgpu::TextureFormat| {
+            if features.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES) {
+                adapter.get_texture_format_features(format).flags
+            } else {
+                format.guaranteed_format_features(features).flags
+            }
+        };
+        let color = format_flags(crate::resources::FORMAT);
+        let depth = format_flags(wgpu::TextureFormat::Depth32Float);
+        use wgpu::TextureFormatFeatureFlags as F;
+        let raster_sample_counts = if color.contains(F::MULTISAMPLE_RESOLVE) {
+            color & depth & (F::MULTISAMPLE_X2 | F::MULTISAMPLE_X4)
+        } else {
+            F::empty()
+        };
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("scene-render"),
             required_features: features,
@@ -602,6 +620,7 @@ impl Gpu {
             gbuffer_depth,
             scalar_target,
             uncaptured,
+            raster_sample_counts,
         })
     }
 
@@ -613,6 +632,16 @@ impl Gpu {
             Some(e) => Err(GpuError::Uncaptured(e)),
             None => Ok(()),
         }
+    }
+
+    /// Selects a supported raster sample count and reports any fallback from the requested count.
+    pub fn raster_samples(&self, requested: u64) -> (u32, Option<String>) {
+        let (wanted, selected) = select_raster_samples(requested, self.raster_sample_counts);
+        let warning = (selected != wanted).then(|| format!(
+            "antialias3d={requested} requests {wanted} raster samples, but adapter {} does not support them; using {selected}",
+            self.info.name
+        ));
+        (selected, warning)
     }
 
     /// A new device on the same adapter, for work that needs a device of its own.
@@ -642,5 +671,31 @@ impl Gpu {
     /// Waits for one submission (and everything before it), leaving later submissions in flight.
     pub fn wait_for(&self, idx: wgpu::SubmissionIndex) {
         let _ = self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None });
+    }
+}
+
+fn select_raster_samples(requested: u64, flags: wgpu::TextureFormatFeatureFlags) -> (u32, u32) {
+    let requested = requested.clamp(1, 4) as u32;
+    let wanted = if requested == 3 { 4 } else { requested };
+    let selected = [4, 2, 1].into_iter().find(|&n| n <= wanted && flags.sample_count_supported(n)).unwrap_or(1);
+    (wanted, selected)
+}
+
+#[cfg(test)]
+mod raster_sample_tests {
+    #[test]
+    fn a6_raster_samples_round_up_three_and_fall_back_only_to_supported_counts() {
+        use wgpu::TextureFormatFeatureFlags as F;
+        for (flags, expected) in [
+            (F::MULTISAMPLE_X2 | F::MULTISAMPLE_X4, [1, 2, 4, 4]),
+            (F::MULTISAMPLE_X2, [1, 2, 2, 2]),
+            (F::MULTISAMPLE_X4, [1, 1, 4, 4]),
+            (F::empty(), [1, 1, 1, 1]),
+        ] {
+            for (requested, selected) in (1..=4).zip(expected) {
+                let wanted = if requested == 3 { 4 } else { requested as u32 };
+                assert_eq!(super::select_raster_samples(requested, flags), (wanted, selected));
+            }
+        }
     }
 }

@@ -31,8 +31,9 @@ fn ground() -> Occupancy {
 }
 
 fn document(file: &Path, camera: &str) -> String {
+    // antialias3d="4": the raster edges are compared with the path tracer's, which samples within each pixel
     format!(
-        r##"<scene version="1.3"><project width="96" height="96" fps="24" duration="2" background="#101010"/>
+        r##"<scene version="1.3"><project width="96" height="96" fps="24" duration="2" background="#101010" antialias3d="4"/>
     <assets><voxelAsset id="model" src="{}"/></assets>
     <materials><material id="stone" baseColor="#b0b0b0" roughness="0.9"/></materials>
     <composition>

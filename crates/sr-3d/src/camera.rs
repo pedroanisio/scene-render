@@ -174,6 +174,23 @@ pub fn lens_of_fov(fov: f32, sensor_mm: f32) -> f32 {
     sensor_mm / (2.0 * (fov.to_radians() * 0.5).tan())
 }
 
+/// Whether a `w`×`h` frame is narrower than a `sensor_w`×`sensor_h` sensor, so that the lens is fitted to the sensor's
+/// height (the vertical gate) instead of its width. A frame of exactly the sensor's aspect uses the width.
+pub fn vertical_gate(sensor_w: f32, sensor_h: f32, w: f32, h: f32) -> bool {
+    w * sensor_h < h * sensor_w
+}
+
+/// Horizontal field of view (degrees) of a lens of `focal_mm` on a `sensor_w`×`sensor_h` sensor for a `w`×`h` frame:
+/// from the sensor's width when the frame is at least as wide as the sensor, else from its height (the frame then
+/// shows the full sensor height, so the vertical angle is fixed by `focal_mm` and `sensor_h`).
+pub fn fov_of_lens_in_frame(focal_mm: f32, sensor_w: f32, sensor_h: f32, w: f32, h: f32) -> f32 {
+    if vertical_gate(sensor_w, sensor_h, w, h) {
+        2.0 * ((sensor_h / (2.0 * focal_mm)) * (w / h)).atan().to_degrees()
+    } else {
+        fov_of_lens(focal_mm, sensor_w)
+    }
+}
+
 /// Depth-of-field constant: the circle of confusion in pixels is
 /// `k · |1/focus − 1/depth|` with depths in scene units (100 per metre).
 pub fn coc_scale(focal_mm: f32, f_stop: f32, sensor_mm: f32, width_px: f32) -> f32 {
@@ -211,5 +228,40 @@ mod look_at_tests {
             }
             assert!(b.determinant() > 0.0, "look-at view must not mirror");
         }
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    #[test]
+    fn a6_a_wide_frame_keeps_the_horizontal_gate() {
+        for (w, h) in [(1920.0, 1080.0), (1500.0, 1000.0), (2000.0, 1000.0)] {
+            assert!(!vertical_gate(36.0, 24.0, w, h));
+            assert_eq!(fov_of_lens_in_frame(50.0, 36.0, 24.0, w, h), fov_of_lens(50.0, 36.0));
+        }
+    }
+
+    #[test]
+    fn a6_a_narrow_frame_takes_its_vertical_field_of_view_from_sensor_height() {
+        for (w, h) in [(1080.0f32, 1920.0f32), (1000.0, 1000.0), (1200.0, 900.0)] {
+            assert!(vertical_gate(36.0, 24.0, w, h), "{w}x{h}");
+            let fov = fov_of_lens_in_frame(50.0, 36.0, 24.0, w, h);
+            let vfov = 2.0 * ((h / w) * (fov.to_radians() * 0.5).tan()).atan().to_degrees();
+            assert!((vfov - fov_of_lens(50.0, 24.0)).abs() < 1e-3, "{w}x{h}: {vfov}");
+        }
+    }
+
+    #[test]
+    fn a6_the_sensor_height_does_not_matter_for_a_wide_frame() {
+        assert_eq!(
+            fov_of_lens_in_frame(35.0, 36.0, 24.0, 1920.0, 1080.0),
+            fov_of_lens_in_frame(35.0, 36.0, 30.0, 1920.0, 1080.0)
+        );
+        assert_ne!(
+            fov_of_lens_in_frame(35.0, 36.0, 24.0, 1080.0, 1920.0),
+            fov_of_lens_in_frame(35.0, 36.0, 30.0, 1080.0, 1920.0)
+        );
     }
 }

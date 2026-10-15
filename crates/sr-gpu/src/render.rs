@@ -356,6 +356,8 @@ type CachedVolume = Result<Option<Arc<sr_volume::Volume>>, String>;
 /// The compositor for one program.
 pub struct Renderer {
     gpu: Gpu,
+    raster_samples: u32,
+    raster_warning: Option<String>,
     // General shading, plain/antialiased texture, and solid colour variants. The simple
     // variants avoid the mask/gradient machinery for common full-frame draws.
     over: [wgpu::RenderPipeline; 5],
@@ -939,6 +941,7 @@ impl Renderer {
 
     /// Builds pipelines and resources for `program`.
     pub fn new(gpu: Gpu, program: &Program) -> Renderer {
+        let (raster_samples, raster_warning) = gpu.raster_samples(program.scene.project.antialias3d);
         let d = &gpu.device;
         // SREP 72: the working format of every offscreen, effect pass and the frame
         let (format, precision_error) = working_format(&gpu, program.scene.project.precision);
@@ -1121,6 +1124,8 @@ impl Renderer {
         let (gpu_device, gpu_queue) = (gpu.device.clone(), gpu.queue.clone());
         let raster = Raster::new_as(&gpu.device, format);
         Renderer {
+            raster_samples,
+            raster_warning,
             seed: program.seed,
             tokens: token_table(&program.scene),
             gpu,
@@ -3029,8 +3034,50 @@ impl Renderer {
                         self.emit(plan, ctx, c, &inner, n.world_opacity, &mut inner_cmds, false, 0);
                     }
                     self.flush_vec(plan, &mut inner_cmds);
-                    self.planes.truncate(depth);
                     plan.jobs.push(Job::draws(target.clone(), true, inner_cmds, false));
+                    let target = match n.content.filter(|_| n.kind == "instance") {
+                        Some(content) if content.blur_fill.is_some() => {
+                            let (dest, uv) = content.blur_fill.unwrap();
+                            let fit = Affine(sr_eval::layout::symbol_transform([1.0; 2], &content));
+                            let cover = sr_eval::layout::Content { dest, uv, blur_fill: None };
+                            let cover = Affine(sr_eval::layout::symbol_transform([1.0; 2], &cover));
+                            let cover_space = Space {
+                                xform: inner
+                                    .xform
+                                    .then(&n.world)
+                                    .then(&cover)
+                                    .then(&fit.inverse().unwrap_or(Affine::IDENTITY))
+                                    .then(&n.world.inverse().unwrap_or(Affine::IDENTITY)),
+                                ..inner
+                            };
+                            // Draw at cover scale before blurring, retaining the symbol's detail and child effects.
+                            let background = self.temp(plan, inner.size);
+                            let mut cover_cmds = Vec::new();
+                            for c in Self::depth_sorted(g, &kids[i]) {
+                                self.emit(plan, ctx, c, &cover_space, n.world_opacity, &mut cover_cmds, false, 0);
+                            }
+                            self.flush_vec(plan, &mut cover_cmds);
+                            plan.jobs.push(Job::draws(background.clone(), true, cover_cmds, false));
+                            let mut b = self.builder(plan);
+                            let background = b.py_gaussian(&background, 16.0, 16.0, true, true);
+                            let mut v = [[0.0; 4]; 8];
+                            v[0][0] = 1.0;
+                            let out = b.run(
+                                fx::Entry::Combine,
+                                [2, 0, 0, 0],
+                                v,
+                                &target,
+                                fx::Aux::Tex(background),
+                                None,
+                                None,
+                                inner.size,
+                            );
+                            Self::finish_builder(plan, b.passes, b.temps, b.problems, &n.id);
+                            out
+                        }
+                        _ => target,
+                    };
+                    self.planes.truncate(depth);
                     self.subtree.insert(key, (hash, target.clone()));
                     target
                 }

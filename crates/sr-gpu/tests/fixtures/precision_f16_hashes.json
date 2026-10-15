@@ -3,10 +3,10 @@
   "hashes": {
     "effects": "0306d37e195100d7dcb8a31334b9ac61fb6895610b361660ff8b7b1dcc494e8f",
     "golden": "699bfbaadcee8322598f2de9a4eedb5b34225dca16e9fee6b3d4a77b0b16d516",
-    "object3d": "7ce760201b2400bf177b44376571a3bc8dbbd01ca47168de87d17874ac56320f",
+    "object3d": "7c184cdafc32bef5ed2d16de068728f22a4d47d76c58065824591206e6b0282b",
     "particles": "654e8310a97241b9753af0b04ac2c3e05b7ee64b0340857b773c3727890b6837",
     "vectors": "245c1b1462a553033a46f84bc9414e82de64159c037eafac73dda30814338ffb"
   },
   "baseline_commit": "4bf7a9ea0a0a9ffa999f20f98f44d557be82e26d",
-  "rebaselined": "fix/aligned-composite (2026-10-10): composites that land texel for pixel are texel copies. Against 5e835dd6 (which matched the previous hashes) on this adapter: pixels changed of 9216 golden 1, vectors 148, effects 298, particles 8, object3d 102; largest absolute difference 9.8e-4"
+  "rebaselined": "fix/aligned-composite (2026-10-10): composites that land texel for pixel are texel copies. Against 5e835dd6 (which matched the previous hashes) on this adapter: pixels changed of 9216 golden 1, vectors 148, effects 298, particles 8, object3d 102; largest absolute difference 9.8e-4; A6 P6-11 (2026-10-13): object3d alone now uses the schema default of one raster sample instead of the formerly hardcoded four; the other four hashes are unchanged on the same adapter."
 }

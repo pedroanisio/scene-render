@@ -69,3 +69,12 @@ This release draws 3D objects on OpenGL, gives every command a versioned JSON ou
 The Linux archive contains the executable, source commit identifier, capability manifest, README, changelog, disclaimer, licence, notice, commercial-licence page and third-party notices. Its executable comes from the successful CI run for the release commit and is checksum-verified and smoke-tested before packaging.
 
 Verify the download with `sha256sum -c scene-render-v0.6.0-linux-x86_64.tar.gz.sha256`, extract it, then run `./scene-render --help`.
+
+## Unreleased
+
+- Instances honor `clipOut` for their playback span and automatic end, and `fit`/`boxWidth`/`boxHeight` for symbol placement, including cover clipping and a blurred cover behind contain-blur.
+- Physical cameras use the sensor height for frames narrower than the sensor aspect, including depth of field. With default sensor dimensions, square and portrait scenes using `focalLength` intentionally change; wider frames retain the horizontal gate. Geodesic `pathSamples` above 4096 now emit W14 before clamping.
+- `antialias3d` selects 1 (default), 2 or 4 raster samples, rounding 3 up to 4. Unsupported counts fall back with a warning. Previously the renderer always used four samples: default 3D edge coverage therefore intentionally changes; set 4 to retain that sampling.
+- Plain fit output reframing honors layout and segment focus, including animated segment focus.
+- Medium albedo defaults to white in the volume library and renderer, using the library default as the renderer fallback.
+- NaN opacity from animation keys becomes zero before inheritance, and repeat-copy opacity factors are clamped to 0..1. INERT-I17 identifies 2.5D attributes without threeD and alignment attributes without alignment; centered alignment still ignores margin.

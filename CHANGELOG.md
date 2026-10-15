@@ -5,6 +5,15 @@ at each tag; edit `RELEASE_NOTES.md`, not this file. Entries are kept as release
 been removed since: "the cinematic impact SREP" is sr-core SREP 40, whose working draft this repository removed after v0.3.2.
 Versions up to v0.4.1 were released under the MIT License from github.com/pedroanisio/rs-scene-render.
 
+## Unreleased
+
+- Instances honor `clipOut` for their playback span and automatic end, and `fit`/`boxWidth`/`boxHeight` for symbol placement, including cover clipping and a blurred cover behind contain-blur.
+- Physical cameras use the sensor height for frames narrower than the sensor aspect, including depth of field. With default sensor dimensions, square and portrait scenes using `focalLength` intentionally change; wider frames retain the horizontal gate. Geodesic `pathSamples` above 4096 now emit W14 before clamping.
+- `antialias3d` selects 1 (default), 2 or 4 raster samples, rounding 3 up to 4. Unsupported counts fall back with a warning. Previously the renderer always used four samples: default 3D edge coverage therefore intentionally changes; set 4 to retain that sampling.
+- Plain fit output reframing honors layout and segment focus, including animated segment focus.
+- Medium albedo defaults to white in the volume library and renderer, using the library default as the renderer fallback.
+- NaN opacity from animation keys becomes zero before inheritance, and repeat-copy opacity factors are clamped to 0..1. INERT-I17 identifies 2.5D attributes without threeD and alignment attributes without alignment; centered alignment still ignores margin.
+
 ## v0.6.0 — 2026-10-14
 
 This release draws 3D objects on OpenGL, gives every command a versioned JSON output and a read-only MCP server, adds image scopes and fuller loudness measurement, implements schema attributes that earlier versions declared but did not apply, and turns malformed or oversized input into reported errors instead of panics. The vendored schema is still sr-core 1.7.0.

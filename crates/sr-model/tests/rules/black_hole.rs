@@ -69,6 +69,16 @@ fn denoise_on_a_geodesic_camera_is_warned_as_w12() {
 }
 
 #[test]
+fn a6_path_samples_above_the_geodesic_limit_are_warned_as_w14() {
+    let with = |n: &str| SCENE.replace(r#"geodesics="true""#, &format!(r#"geodesics="true" pathSamples="{n}""#));
+    assert_eq!(codes(&with("5000")), ["W14"]);
+    assert!(codes(&with("4096")).is_empty());
+    // a camera that does not trace geodesics keeps the full 65536
+    let plain = SCENE.replace(r#" geodesics="true""#, r#" pathSamples="5000""#);
+    assert!(!codes(&plain).contains(&"W14".to_string()));
+}
+
+#[test]
 fn black_holes_need_version_1_3_or_later() {
     // SREP 76, open issue 2: the gate is "1.3 or later", so a black hole can sit in a 1.6 document (V15, V16)
     for later in ["1.3", "1.4", "1.5", "1.6"] {

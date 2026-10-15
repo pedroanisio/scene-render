@@ -1591,6 +1591,12 @@
     "inert-i16-streak-flock.scene.xml": [
       "INERT-I16"
     ],
+    "inert-i17-margin-without-align.scene.xml": [
+      "INERT-I17"
+    ],
+    "inert-i17-zdepth-without-threed.scene.xml": [
+      "INERT-I17"
+    ],
     "ocn3-wavelength-inf.scene.xml": [
       "W01"
     ],
@@ -1686,6 +1692,9 @@
     ],
     "w12-denoise.scene.xml": [
       "W12"
+    ],
+    "w14-path-samples.scene.xml": [
+      "W14"
     ]
   }
 }

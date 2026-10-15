@@ -736,6 +736,14 @@ impl<'a> Eval<'a> {
                             .into(),
                     );
                 }
+                if number(n, "pathSamples", 64.0) > 4096.0 {
+                    self.warn(
+                        n,
+                        "W14",
+                        "a camera with geodesics=\"true\" traces at most 4096 pathSamples: the larger value is clamped."
+                            .into(),
+                    );
+                }
                 if all("light").next().is_some() {
                     self.warn(n, "W05", "lights are not used by a camera with geodesics=\"true\".".into());
                 }

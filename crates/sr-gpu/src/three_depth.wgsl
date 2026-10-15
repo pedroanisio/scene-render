@@ -1,7 +1,7 @@
-// Resolves the nearest reverse-Z multisampled depth into a float texture. The depth is bound as a multisampled float
-// texture, not a depth one, so that OpenGL, whose shaders cannot read multisampled depth, runs it too.
+// Resolves the nearest reverse-Z depth into a float texture. The depth is bound as a float texture, multisampled or
+// not as the pass is, not a depth one, so that OpenGL, whose shaders cannot read multisampled depth, runs it too.
 @group(0) @binding(1) var<uniform> pfr: Frame;
-@group(0) @binding(0) var ms_depth: texture_multisampled_2d<f32>;
+@group(0) @binding(0) var ms_depth: DEPTH_TEXTURE;
 
 struct PostOut {
     @builtin(position) pos: vec4<f32>,
@@ -21,9 +21,7 @@ fn vs_post(@builtin(vertex_index) vi: u32) -> PostOut {
 fn resolve_depth(i: PostOut) -> f32 {
     let dims = vec2<f32>(textureDimensions(ms_depth));
     let q = vec2<i32>(clamp(i.uv * dims, vec2(0.0), dims - 1.0));
-    var d = 0.0;
-    for (var s = 0; s < 4; s++) { d = max(d, textureLoad(ms_depth, q, s).r); }
-    return d;
+    DEPTH_RESOLVE
 }
 
 @fragment

@@ -443,7 +443,8 @@ fn every_kind_the_3d_pass_draws_is_drawn_on_opengl() {
     // nothing out
     let cases = [
         ("object3D", r#"<object3D id="n" primitive="sphere" radius="10" x="32" y="16"/>"#),
-        ("particles3D", r#"<particles3D id="n" rate="50" lifetime="1" dt="0.05" x="32" y="16"/>"#),
+        // particles of the default size 1 are smaller than a pixel and can miss every pixel centre at one raster sample
+        ("particles3D", r#"<particles3D id="n" rate="50" lifetime="1" dt="0.05" size="4" x="32" y="16"/>"#),
         // the default camera sees the flat water edge-on, so this one looks down at it
         (
             "ocean",

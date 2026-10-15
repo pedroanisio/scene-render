@@ -99,6 +99,11 @@ const FIXED: &[(&str, &str, &str)] = &[
         "model",
         "A bare reference names an id that no element of the document has and that exactly one build-mode program emitted: it resolves to that program's namespaced id (program id, '.', id); write that form instead (SREP 87).",
     ),
+    (
+        "W14",
+        "rules",
+        "A camera with geodesics=\"true\" has pathSamples above 4096: a geodesic camera traces at most 4096 samples per pixel (default 64), so the value is clamped.",
+    ),
     ("A01", "assets", "A referenced input file does not exist."),
     ("A02", "assets", "A file's SHA-256 digest differs from the declared sha256 or cacheSha256."),
     ("A03", "assets", "A remote input (http, https, s3, …) could not be verified offline."),

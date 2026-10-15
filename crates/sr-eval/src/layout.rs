@@ -8,7 +8,7 @@
 use sr_model::model::{AlignItems, AlignTo, AlignX, AlignY, Fit, GroupLayout, Justify, SafeAreaPreset};
 use sr_model::values::Length;
 
-/// Media placement inside a layer's box, in the layer's local space.
+/// Content placement inside a layer or instance box, in that node's local space.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub struct Content {
     /// Destination rectangle x0, y0, x1, y1.
@@ -21,7 +21,7 @@ pub struct Content {
     pub blur_fill: Option<([f64; 4], [f64; 4])>,
 }
 
-/// Static fit parameters of a layer.
+/// Static fit parameters of a layer or symbol instance.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FitSpec {
     /// Fit mode.
@@ -91,6 +91,16 @@ pub fn place(src: [f64; 2], spec: &FitSpec, box_size: Option<[f64; 2]>) -> ([f64
         Fit::Fill | Fit::None => Content { dest: [0.0, 0.0, bw, bh], uv: flip([u0, v0, u1, v1]), blur_fill: None },
     };
     (bx, c)
+}
+
+/// The transform from a symbol's own space (origin at its top-left, size `src`) into its instance's box for a content
+/// placement computed by [`place`]: the part of the symbol that `content.uv` selects lands on `content.dest`.
+pub fn symbol_transform(src: [f64; 2], content: &Content) -> [f64; 6] {
+    let [x0, y0, x1, y1] = content.dest;
+    let [u0, v0, u1, v1] = content.uv;
+    let sx = (x1 - x0) / ((u1 - u0) * src[0]).max(1e-9);
+    let sy = (y1 - y0) / ((v1 - v0) * src[1]).max(1e-9);
+    [sx, 0.0, 0.0, sy, x0 - u0 * src[0] * sx, y0 - v0 * src[1] * sy]
 }
 
 /// Layout parameters of a group.
