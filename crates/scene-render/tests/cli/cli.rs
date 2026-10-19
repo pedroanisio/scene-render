@@ -606,6 +606,59 @@ fn encode_writes_adhoc_outputs() {
     assert!(dir.join("f_002.png").is_file());
 }
 
+/// A render fixture whose document defines `<output id="master">` at 24×16, half the project size.
+fn master_fixture(name: &str) -> (PathBuf, String) {
+    let dir = render_fixture(name);
+    let file = dir.join("r.scene.xml");
+    let xml = std::fs::read_to_string(&file).unwrap().replace(
+        "<assets>",
+        r#"<output id="master" path="master.mp4" codec="h264" width="24" height="16" crf="30"/>
+<output id="proxy" path="proxy.mp4" codec="h264"/><assets>"#,
+    );
+    std::fs::write(&file, xml).unwrap();
+    (dir, file.display().to_string())
+}
+
+#[test]
+fn encode_redirects_a_named_output_and_keeps_its_settings() {
+    let (dir, scene) = master_fixture("redirect");
+    if !crate::common::ffmpeg("encode_redirects_a_named_output_and_keeps_its_settings") {
+        return;
+    }
+    let to = dir.join("elsewhere.mp4").display().to_string();
+    let o = run(&["encode", &scene, "--output", "master", "-o", &to, "--hw", "software", "--json"]);
+    if no_gpu(&o) {
+        return;
+    }
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    let outputs = json_result(&o)["outputs"].as_array().cloned().unwrap_or_default();
+    assert_eq!(outputs.len(), 1, "only the selected output renders: {outputs:?}");
+    assert_eq!(outputs[0]["size"], serde_json::json!([24, 16]), "the output's own size, not the project's");
+    assert!(std::fs::metadata(dir.join("elsewhere.mp4")).unwrap().len() > 100);
+    assert!(!dir.join("master.mp4").exists() && !dir.join("proxy.mp4").exists());
+}
+
+#[test]
+fn encode_path_with_ambiguous_or_unknown_outputs_is_a_usage_error() {
+    let (dir, scene) = master_fixture("redirect-usage");
+    let cases: [(&str, &[&str], &str); 4] = [
+        ("x.mp4", &["--output", "master", "--output", "proxy"], "one --output"),
+        ("x.mp4", &["--output", "nope"], "no <output id=\"nope\">"),
+        ("x.mp4", &["--output", "master", "--codec", "prores"], "--codec"),
+        ("f_%03d.png", &["--output", "master"], "writes .mp4 files"),
+    ];
+    for (file, extra, message) in cases {
+        let to = dir.join(file).display().to_string();
+        let mut args = vec!["encode", scene.as_str(), "-o", to.as_str()];
+        args.extend_from_slice(extra);
+        let o = run(&args);
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(2), "{extra:?}: {err}");
+        assert!(err.contains(message), "{extra:?}: {err}");
+        assert!(!dir.join("x.mp4").exists() && !dir.join("f_000.png").exists(), "{extra:?} wrote a file");
+    }
+}
+
 #[test]
 fn simulate_writes_a_verified_physics_cache() {
     let dir = std::env::temp_dir().join(format!("sr-cli-sim-{}", std::process::id()));

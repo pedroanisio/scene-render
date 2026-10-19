@@ -371,11 +371,12 @@ enum Command {
         /// Render only these outputs (by id); all outputs by default.
         #[arg(long = "output", value_name = "ID")]
         outputs: Vec<String>,
-        /// Ad-hoc output path instead of the document's outputs.
+        /// Output path. With one --output, that output is written here with all its settings; on its own, an
+        /// ad-hoc output with default settings replaces the document's outputs.
         #[arg(short = 'o', long = "path", value_name = "PATH")]
         path: Option<String>,
-        /// Codec of the ad-hoc output (default from the extension).
-        #[arg(long, requires = "path")]
+        /// Codec of the ad-hoc output (default from the extension); a named output keeps its own.
+        #[arg(long, requires = "path", conflicts_with = "outputs")]
         codec: Option<String>,
         /// Directory relative output paths resolve against (default: the document's).
         #[arg(long, value_name = "DIR")]
@@ -1762,6 +1763,21 @@ fn watch(
     }
 }
 
+/// How `to` would change the file type `from` writes, if it would: the extension, or a frame pattern (`%`) in
+/// the file name. The container and the sequence writer follow both, so a redirect may change neither.
+fn file_type_change(from: &str, to: &str) -> Option<String> {
+    let kind = |p: &str| {
+        let name =
+            Path::new(p.strip_prefix("file://").unwrap_or(p)).file_name().map(|n| n.to_string_lossy().to_lowercase());
+        let name = name.unwrap_or_default();
+        let ext = Path::new(&name).extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+        (ext, name.contains('%'))
+    };
+    let ((ext, seq), (to_ext, to_seq)) = (kind(from), kind(to));
+    let what = |e: &str, s: bool| format!("{}.{e} files", if s { "numbered " } else { "" });
+    (ext != to_ext || seq != to_seq).then(|| format!("writes {}, not {}", what(&ext, seq), what(&to_ext, to_seq)))
+}
+
 fn codec_for_path(p: &str) -> &'static str {
     let lower = p.to_ascii_lowercase();
     let ext = lower.rsplit('.').next().unwrap_or("");
@@ -1847,13 +1863,14 @@ fn encode(
             let findings: Vec<Finding> = r.diagnostics.iter().map(Finding::of_diagnostic).collect();
             let mut targets: Vec<(PathBuf, OutputInfo)> = Vec::new();
             match &path {
-                Some(_) => {
+                Some(_) if ids.is_empty() => {
                     if let Some(rp) = report_to {
                         let info = OutputInfo { id: None, width: 0, height: 0, start: 0.0, end: 0.0 };
                         targets.push((cli_report_path(rp, None), info));
                     }
                 }
-                None => {
+                // the document's outputs, or the one -o redirects
+                _ => {
                     for o in writer.raw_outputs() {
                         if !ids.is_empty() && !o.info.id.as_ref().is_some_and(|i| ids.contains(i)) {
                             continue;
@@ -1873,15 +1890,30 @@ fn encode(
             return Ok(exit);
         }
     };
-    let outputs: Vec<sr_model::model::Output> = match path {
-        Some(p) => {
+    let outputs: Vec<sr_model::model::Output> = match (path, ids) {
+        (Some(p), []) => {
             let c = codec.unwrap_or_else(|| codec_for_path(&p).to_string());
             match sr_deliver::adhoc_output(&p, &c) {
                 Ok(o) => vec![o],
                 Err(e) => return Ok(out.fail(ErrorKind::Usage, e.to_string())),
             }
         }
-        None => doc
+        // a named output written elsewhere keeps every setting but its path, so the path keeps its file type
+        (Some(p), [id]) => match doc.scene.outputs.iter().find(|o| o.id.as_deref() == Some(id.as_str())) {
+            Some(o) => match file_type_change(&o.path, &p) {
+                None => vec![sr_model::model::Output { path: p, ..o.clone() }],
+                Some(e) => return Ok(out.fail(ErrorKind::Usage, format!("-o {p}: output {id:?} {e}"))),
+            },
+            None => {
+                let message = format!("{} has no <output id=\"{id}\"> for -o to redirect", file.display());
+                return Ok(out.fail(ErrorKind::Usage, message));
+            }
+        },
+        (Some(_), several) => {
+            let message = format!("-o redirects one --output; {} were given", several.len());
+            return Ok(out.fail(ErrorKind::Usage, message));
+        }
+        (None, _) => doc
             .scene
             .outputs
             .iter()
