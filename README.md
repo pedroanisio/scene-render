@@ -489,6 +489,12 @@ a uniform clock, otherwise at composition time zero. Solver configuration stays 
 Default wave speed uses this converted acceleration; impact cavities and
 buoyancy use physical gravity. This changes wave motion in scenes whose world units are not metres.
 
+`examples/glass-of-water/glass-of-water.scene.xml` is a starting point for small transparent liquids built from these
+elements alone: a glass and its water as transmissive materials (`transmission`, `ior`, `attenuationColor`) under
+the path tracer, an `ocean` with `boundary="closed"` inside the glass that a falling drop drives through
+`<waterImpulse source="drop"/>`, and the ocean's `whitewater` spray as the splash. It works in centimetres
+(`pixelsPerMeter="100"`). Its README lists the choices that make it render cleanly.
+
 The 2D rigid-body solver clamps mass to at least `1e-6` kg. Contact fractures use an `energyFraction` of 0.3 when
 absent, for both surface and voxel fragments. Stepping programs require explicit positive `width` and `height`;
 build-mode programs ignore them. Unknown chart kinds are errors, including at the renderer boundary; no column
@@ -1028,6 +1034,7 @@ tests/corpus/               conformance documents, media fixtures, manifest.json
 examples/splat/             a synthetic 3DGS capture generator and a turntable scene
 examples/cinematic-impact/  the impact scenes of the cinematic-impact ledger, and their sky
 examples/program-maze/      a maze made by a WebAssembly program, with its Rust source and build script
+examples/glass-of-water/    a drop falling into a glass of water, from native 3D, ocean and whitewater elements only
 tools/                      oracle.py, build_corpus.py, oracle_diff.py, kitchen_sink.xml.in, perf_layers.py,
                             perf_video.py, perf_vector.py, perf_text.py, perf_effects.py, perf_3d.py,
                             perf_physics.py, evidence.py and evidence/ (cases, probe scenes),

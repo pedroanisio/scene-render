@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A drop falling into a glass of water, in centimetres and seconds (physics/@pixelsPerMeter is 100: a scene unit
+     is a centimetre; y points down). The tumbler is a square glass 8 cm across and 12 cm tall, filled to 8 cm. The
+     drop, 0.4 cm across, is let go 8.2 cm above the water and reaches it at about 1.27 m/s, 0.129 s in. The ripples
+     are an ocean bounded by the glass walls, which the drop drives by entering it (waterImpulse names the drop and
+     says nothing about when, where or how big); the splash is the ocean's own spray, raised where the ripples are
+     steep. Everything is a native element: no shader, effect or program. -->
+<scene version="1.6">
+  <project width="1280" height="720" fps="30" duration="3" background="#20242A"/>
+  <metadata>
+    <meta name="example" value="glass-of-water"/>
+    <meta name="units" value="centimetres and seconds"/>
+  </metadata>
+  <materials>
+    <!-- soda-lime glass: clear, n = 1.5; the colour of a thick wall comes from attenuation, not from baseColor -->
+    <material id="glass" baseColor="#FFFFFF" roughness="0" transmission="1" ior="1.5" attenuationColor="#E6F4EE" attenuationDistance="20" doubleSided="true"/>
+    <!-- water: n = 1.333, with the faint blue-green of a few centimetres of it -->
+    <material id="water" baseColor="#FFFFFF" roughness="0" transmission="1" ior="1.333" attenuationColor="#CDE8EC" attenuationDistance="25" doubleSided="true"/>
+    <material id="table" baseColor="#6B5442" roughness="0.55"/>
+    <!-- spray droplets are a millimetre across: at that size what reads is their highlight, so they are drawn as small
+         bright opaque beads rather than as refracting water -->
+    <material id="spray" baseColor="#EEF5F7" roughness="0.25"/>
+  </materials>
+  <composition>
+    <camera id="camera" x="0" y="-15.2" z="-38" pitch="-13" fov="48" renderer="pathtrace" pathSamples="64" maxBounces="12" denoise="true"/>
+    <!-- the table top is at y = 0; the glass stands on it -->
+    <object3D id="tableTop" primitive="box" width="200" height="2" depth="200" y="1" material="table" receiveShadow="true">
+      <rigidBody type="static" shape="auto"/>
+    </object3D>
+    <!-- the tumbler: a 0.8 cm base and four 0.3 cm walls around an 8 x 8 cm inside -->
+    <object3D id="glassBase" primitive="box" width="8.6" height="0.8" depth="8.6" y="-0.4" material="glass" castShadow="true">
+      <rigidBody type="static" shape="auto"/>
+    </object3D>
+    <object3D id="wallFront" primitive="box" width="8.6" height="12" depth="0.3" y="-6" z="-4.15" material="glass" castShadow="true"/>
+    <object3D id="wallBack" primitive="box" width="8.6" height="12" depth="0.3" y="-6" z="4.15" material="glass" castShadow="true"/>
+    <object3D id="wallLeft" primitive="box" width="0.3" height="12" depth="8" x="-4.15" y="-6" material="glass" castShadow="true"/>
+    <object3D id="wallRight" primitive="box" width="0.3" height="12" depth="8" x="4.15" y="-6" material="glass" castShadow="true"/>
+    <!-- the body of the water under the moving surface: from 0.05 cm above the base to 0.15 cm below the rest level,
+         0.01 cm clear of the walls, so that no two transmissive surfaces coincide -->
+    <object3D id="waterBody" primitive="box" width="7.98" height="7.8" depth="7.98" y="-4.75" material="water"/>
+    <!-- the drop: 0.2 cm radius, 0.034 g, let go 8.2 cm above the surface. It joins the water at 0.129 s and stops
+         being drawn at 0.135 s, under a centimetre into it, where it would have merged; the rigid body still enters the
+         water, which is what the waterImpulse reads -->
+    <object3D id="drop" primitive="sphere" radius="0.2" segments="24" x="0.6" y="-17" z="0.4" material="water" end="0.135">
+      <rigidBody shape="sphere" mass="0.0000335" restitution="0" linearDamping="0" angularDamping="0"/>
+    </object3D>
+    <!-- the surface: 8 x 8 cm in 0.1 cm cells, 8 cm deep, at y = -8.8 (the base's top is at -0.8) -->
+    <ocean id="surface" y="-8.8" width="8" depth="8" cellSize="0.1" bottomDepth="8" material="water" boundary="closed" colliders="drop" maxWork="4000000000">
+      <waterImpulse source="drop"/>
+      <whitewater emissionRate="3000" threshold="0.15" launchSpeed="50" radius="0.05" lifetime="0.3" sprayFraction="1" maxParticles="30000" maxMemoryMiB="256" maxWork="2000000000" sprayMaterial="spray"/>
+    </ocean>
+  </composition>
+  <lights>
+    <light id="sky" type="dome" sky="gradient" skyZenith="#9DB8D6" skyHorizon="#E8E2D6" skyGround="#3A3430" sunElevation="35" sunIntensity="2" intensity="1" environmentVisible="true"/>
+    <light id="key" type="directional" color="#FFF1DE" yaw="-30" pitch="-40" intensity="3" castShadow="true"/>
+  </lights>
+  <physics pixelsPerMeter="100" fixedStep="0.002" bounds="none"/>
+</scene>

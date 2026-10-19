@@ -133,3 +133,43 @@ fn hero_hires_differs_from_hero_only_in_the_documented_attributes() {
     let unused: Vec<_> = allowed.iter().filter(|d| !diff.contains(d)).collect();
     assert!(unused.is_empty(), "HIRES_DIFFERENCES entries that no longer differ: {unused:?}");
 }
+
+/// `examples/glass-of-water` shows a drop falling into a glass of water with the engine's own 3D elements: the glass
+/// and the water are transmissive materials, the ripples an ocean the drop's impulse drives, and the splash the ocean's
+/// own spray. Nothing in it is a shader effect or a program, so an author can start from it without writing GLSL.
+#[test]
+fn the_glass_of_water_example_is_built_from_native_elements_only() {
+    let path = root().join("examples/glass-of-water/glass-of-water.scene.xml");
+    let xml = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let doc = roxmltree::Document::parse(&xml).unwrap();
+    let all = |tag: &str| doc.descendants().filter(move |n| n.has_tag_name(tag)).collect::<Vec<_>>();
+    let num = |n: &roxmltree::Node, a: &str| n.attribute(a).and_then(|v| v.parse::<f64>().ok());
+    let material = |id: &str| {
+        all("material")
+            .into_iter()
+            .find(|m| m.attribute("id") == Some(id))
+            .unwrap_or_else(|| panic!("no material {id}"))
+    };
+    let glass = material("glass");
+    assert!(num(&glass, "transmission").is_some_and(|t| t > 0.9), "the glass transmits");
+    assert!(num(&glass, "ior").is_some_and(|i| (1.45..=1.55).contains(&i)), "soda-lime glass, n ≈ 1.5");
+    let water = material("water");
+    assert!(num(&water, "transmission").is_some_and(|t| t > 0.9), "the water transmits");
+    assert_eq!(num(&water, "ior"), Some(1.333), "water, n = 1.333");
+    let ocean = all("ocean");
+    assert_eq!(ocean.len(), 1, "one water body");
+    assert_eq!(ocean[0].attribute("material"), Some("water"));
+    assert_eq!(ocean[0].attribute("boundary"), Some("closed"), "the glass walls reflect the ripples");
+    let drop = ocean[0].children().find(|n| n.has_tag_name("waterImpulse")).and_then(|w| w.attribute("source"));
+    let drop = drop.expect("the drop drives the water through a waterImpulse");
+    let body = all("object3D").into_iter().find(|o| o.attribute("id") == Some(drop)).expect("the drop is an object3D");
+    assert!(body.children().any(|n| n.has_tag_name("rigidBody")), "the drop falls under gravity");
+    assert!(
+        ocean[0].children().any(|n| n.has_tag_name("whitewater")),
+        "the splash is the water's own spray, which the ripples raise where they are steep"
+    );
+    for tag in ["effect", "program", "compute", "shader"] {
+        assert!(all(tag).is_empty(), "<{tag}> is not a native scene element for this example");
+    }
+    assert!(doc.descendants().any(|n| n.has_tag_name("camera") && n.attribute("renderer") == Some("pathtrace")));
+}

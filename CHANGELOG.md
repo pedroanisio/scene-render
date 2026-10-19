@@ -8,6 +8,7 @@ Versions up to v0.4.1 were released under the MIT License from github.com/pedroa
 ## Unreleased
 
 - `encode --output ID -o PATH` writes that output to PATH with every setting it declares. Before, `-o` silently replaced the named output with an ad-hoc one at the project size with default settings. PATH must keep the output's file type; several `--output` ids, an unknown id, or `--codec` with `--output` are usage errors (exit status 2).
+- `examples/glass-of-water/` drops a drop into a glass of water with native elements only: transmissive glass and water materials under the path tracer, an ocean bounded by the glass that the drop's `waterImpulse` drives, and the ocean's `whitewater` spray as the splash. A test holds it to those elements.
 - Instances honor `clipOut` for their playback span and automatic end, and `fit`/`boxWidth`/`boxHeight` for symbol placement, including cover clipping and a blurred cover behind contain-blur.
 - Physical cameras use the sensor height for frames narrower than the sensor aspect, including depth of field. With default sensor dimensions, square and portrait scenes using `focalLength` intentionally change; wider frames retain the horizontal gate. Geodesic `pathSamples` above 4096 now emit W14 before clamping.
 - `antialias3d` selects 1 (default), 2 or 4 raster samples, rounding 3 up to 4. Unsupported counts fall back with a warning. Previously the renderer always used four samples: default 3D edge coverage therefore intentionally changes; set 4 to retain that sampling.
