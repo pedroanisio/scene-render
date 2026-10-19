@@ -11,6 +11,7 @@ mod model_select_rules;
 mod ocean_body;
 mod ocean_rules;
 mod particles3d_rules;
+mod path_cost;
 mod physics_rules;
 mod pyro_crater;
 mod pyro_faces;

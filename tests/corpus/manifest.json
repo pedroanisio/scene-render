@@ -1695,6 +1695,9 @@
     ],
     "w14-path-samples.scene.xml": [
       "W14"
+    ],
+    "w15-path-cost.scene.xml": [
+      "W15"
     ]
   }
 }

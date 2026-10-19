@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- expect: W15 -->
+<scene version="1.3"><project width="1920" height="1080" fps="24" duration="1"/><composition><camera id="eye" z="-10" renderer="pathtrace" pathSamples="320" maxBounces="20"/><object3D id="ball" primitive="sphere" radius="1"/></composition></scene>

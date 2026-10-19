@@ -562,6 +562,10 @@ struct Eval<'a> {
     out: Vec<Diagnostic>,
 }
 
+/// W15: the path segments a path-traced frame may take before it is warned about, 1920 × 1080 pixels at 256 samples
+/// and 4 bounces, four times the default 64 samples.
+const PATH_COST_LIMIT: f64 = 1920.0 * 1080.0 * 256.0 * 4.0;
+
 /// Cells between a pyro source and an open face below which W02 warns. It comes from one plume (the hero scene's,
 /// 64 x 52 x 64 cells), one face (the bottom) and one kind of source, and the side faces were not measured.
 const OPEN_FACE_CELLS: f64 = 12.0;
@@ -757,6 +761,39 @@ impl<'a> Eval<'a> {
                 n,
                 "W11",
                 "no camera has geodesics=\"true\", so the black hole and its disk are not rendered.".into(),
+            );
+        }
+    }
+
+    /// W15: a path-traced camera whose frame takes more than [`PATH_COST_LIMIT`] path segments, width × height ×
+    /// pathSamples × maxBounces with the values the renderer clamps to (1 to 65536 samples, 1 to 64 bounces). The
+    /// frame is the camera's viewport3D, else the project's. A geodesic camera traces no bounces and has its own
+    /// limit (W14).
+    fn path_cost(&mut self, n: Node) {
+        if n.attribute("renderer") != Some("pathtrace") || xs_true(n.attribute("geodesics")) {
+            return;
+        }
+        let number = |e: Node, k: &str| e.attribute(k).map(xs_number).filter(|v| v.is_finite());
+        let frame = n
+            .ancestors()
+            .skip(1)
+            .find(|a| is(*a, "viewport3D"))
+            .or_else(|| kids(n.document().root_element(), "project").next());
+        let Some((w, h)) = frame.and_then(|f| Some((number(f, "width")?, number(f, "height")?))) else { return };
+        let samples = number(n, "pathSamples").unwrap_or(64.0).clamp(1.0, 65536.0).trunc();
+        let bounces = number(n, "maxBounces").unwrap_or(4.0).clamp(1.0, 64.0).trunc();
+        let cost = w * h * samples * bounces;
+        if cost > PATH_COST_LIMIT {
+            self.warn(
+                n,
+                "W15",
+                format!(
+                    "a {w}×{h} frame at pathSamples=\"{samples}\" and maxBounces=\"{bounces}\" traces {:.1} billion path \
+                     segments per frame, {:.1} times the most this camera is expected to need (256 samples and 4 \
+                     bounces at 1920×1080): lower pathSamples or maxBounces, or render a smaller frame.",
+                    cost / 1e9,
+                    cost / PATH_COST_LIMIT
+                ),
             );
         }
     }
@@ -2499,6 +2536,9 @@ impl<'a> Eval<'a> {
         }
 
         self.black_hole(n, local);
+        if local == "camera" {
+            self.path_cost(n);
+        }
 
         // p9, p25 — layer
         if local == "layer" {

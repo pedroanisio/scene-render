@@ -7,6 +7,7 @@ Versions up to v0.4.1 were released under the MIT License from github.com/pedroa
 
 ## Unreleased
 
+- W15 warns when a `renderer="pathtrace"` camera traces more than 1920 × 1080 × 256 × 4 path segments per frame: its frame's width × height × `pathSamples` × `maxBounces`, the frame being its `viewport3D`'s or the project's. 320 samples at 20 bounces in 1080p is 6.25 times that.
 - `encode --output ID -o PATH` writes that output to PATH with every setting it declares. Before, `-o` silently replaced the named output with an ad-hoc one at the project size with default settings. PATH must keep the output's file type; several `--output` ids, an unknown id, or `--codec` with `--output` are usage errors (exit status 2).
 - `examples/glass-of-water/` drops a drop into a glass of water with native elements only: transmissive glass and water materials under the path tracer, an ocean bounded by the glass that the drop's `waterImpulse` drives, and the ocean's `whitewater` spray as the splash. A test holds it to those elements.
 - Instances honor `clipOut` for their playback span and automatic end, and `fit`/`boxWidth`/`boxHeight` for symbol placement, including cover clipping and a blurred cover behind contain-blur.
