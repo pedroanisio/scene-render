@@ -60,9 +60,9 @@ fn scatter_flight(o: vec3<f32>, d: vec3<f32>, sigma_water: vec3<f32>) -> Scatter
                 var sigma=0.0; var source=vec3(0.0);
                 for (var i=0u; i<pp.media.y; i++) {
                     let base=volume_base(i);
-                    let density=volume_density(base,point);
+                    let sampled=volume_sample(base,point,true); let density=sampled.x;
                     sigma+=density*tverts[base+5u].w;
-                    source+=density*volume_emission(base,point);
+                    source+=density*sampled.yzw;
                 }
                 let length=select(ds,min(ds,tau/max(sigma,1e-30)),sigma>0.0);
                 emission+=source*length*exp(-sigma_water*(cursor+f32(k)*ds+0.5*length));
@@ -106,7 +106,7 @@ fn scatter_walk(reservoir: ScatterReservoir, toward_viewer: vec3<f32>, sigma_wat
         if (bounce>=limit) { break; }
         beta*=tverts[base+6u].rgb*exp(-sigma_water*hit.distance);
         if (max(beta.x,max(beta.y,beta.z))<=0.0) { break; }
-        color+=beta*scatter_incident(point, outgoing, base);
+        color+=beta*volume_scattering(point,outgoing,base).rgb;
     }
     return color;
 }

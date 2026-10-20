@@ -154,15 +154,7 @@ fn water_transport(o: vec3<f32>, d: vec3<f32>, distance: f32, sigma_water: vec3<
             let n = max(1u, u32(ceil((next - cursor) / step))); let ds = (next - cursor) / f32(n);
             for (var k = 0u; k < n; k++) {
                 let point = o + d * (cursor + (f32(k) + 0.5) * ds);
-                var sigma = 0.0; var source = vec3(0.0);
-                for (var i = 0u; i < pp.media.y; i++) {
-                    let base = volume_base(i); let density = volume_density(base, point);
-                    if (density <= 0.0) { continue; }
-                    let extinction = density * tverts[base + 5u].w;
-                    sigma += extinction; source += density * volume_emission(base, point);
-                    let albedo = tverts[base + 6u];
-                    if (MEDIUM_LIGHTING && any(albedo.rgb > vec3(0.0))) { source += extinction * albedo.rgb * volume_incident(point, -d, albedo.w, tverts[base + 13u].y > 0.5); }
-                }
+                let media = volume_scattering(point, -d, NO_DOMAIN); let sigma = media.w; let source = media.rgb;
                 let total = vec3(sigma) + sigma_water;
                 let optical_depth = total * ds;
                 let attenuation = exp(-optical_depth);

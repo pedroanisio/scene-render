@@ -1,5 +1,5 @@
-// Light grids (lighting="grid"): appended to the path tracer's shader in place of the exact
-// volume_incident (see grid_source in pathtrace.rs, which keeps the plain one as volume_incident_exact). A world-space lattice of nodes covers
+// Light grids (lighting="grid"): appended to the path tracer's shader in place of the volume_incident_grid that
+// reads none (see grid_source in pathtrace.rs). A world-space lattice of nodes covers
 // the media that ask for it; per analytic light a scalar grid holds the volume's transmittance
 // times the surfaces' visibility from the node toward the light's centre (averaged over points
 // jittered within a cell), and the dome is held either as radiance pre-integrated over fixed directions (isotropic scattering) or as one scalar
@@ -120,10 +120,10 @@ fn volume_grid_contains(p: vec3<f32>) -> bool {
     let q=(p-head.xyz)/head.w;
     return all(q>=vec3(0.0)) && all(q<=vec3<f32>(dims-vec3(1u)));
 }
-// In-scattered radiance at `p` of the domain at `base`: from the grids when that domain asks for
-// them and `p` is on the lattice, else by the exact march.
-fn volume_incident(p: vec3<f32>, outgoing: vec3<f32>, g: f32, shadows: bool, base: u32) -> vec3<f32> {
-    if (tverts[base+13u].z<0.5 || !shadows || !volume_grid_contains(p)) { return volume_incident_exact(p,outgoing,g,shadows); }
+// In-scattered radiance at `p` of the domain at `base` (rgb, w 1) from the grids when that domain asks for them and
+// `p` is on the lattice; else w is 0, and volume_scattering marches it.
+fn volume_incident_grid(p: vec3<f32>, outgoing: vec3<f32>, g: f32, shadows: bool, base: u32) -> vec4<f32> {
+    if (tverts[base+13u].z<0.5 || !shadows || !volume_grid_contains(p)) { return vec4(0.0); }
     var light=vec3(0.0);
     for (var i=0u; i<u32(pp.ambient.w); i++) {
         let lt=plights[i];
@@ -135,7 +135,7 @@ fn volume_incident(p: vec3<f32>, outgoing: vec3<f32>, g: f32, shadows: bool, bas
     if (pp.env.x>0.5) {
         let flags=bitcast<u32>(lgrid[1].w);
         // isotropic scattering reads the pre-integrated radiance
-        if (tverts[base+6u].w==0.0 && (flags&1u)!=0u) { return light+volume_grid_dome(p).rgb; }
+        if (tverts[base+6u].w==0.0 && (flags&1u)!=0u) { return vec4(light+volume_grid_dome(p).rgb,1.0); }
         // otherwise one of the fixed directions, each with its own grid
         let info=bitcast<vec4<u32>>(lgrid[2]);
         let k=min(u32(rnd()*f32(info.z)),info.z-1u);
@@ -145,5 +145,5 @@ fn volume_incident(p: vec3<f32>, outgoing: vec3<f32>, g: f32, shadows: bool, bas
         let env=textureSampleLevel(env_tex,smp,uv,0.0).rgb*pp.env.y;
         light+=env*(4.0*PI*volume_phase(dot(-d,outgoing),g)*volume_grid_transmittance(info.w+k,p));
     }
-    return light;
+    return vec4(light,1.0);
 }

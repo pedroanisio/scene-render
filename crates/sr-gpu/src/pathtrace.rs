@@ -799,6 +799,185 @@ mod tests {
     }
 
     #[test]
+    fn specialize_takes_out_the_blocks_a_false_override_guards_and_keeps_the_rest() {
+        let source = "override A: bool = false;\noverride B: bool = false;\noverride C: bool = true;\nfn f() {\n    \
+                      if (A) { x(); }\n    if (A && y > 0.0) { if (z) { w(); } }\n    if (B) { b(); }\n    \
+                      if (q) { r(); } else if (A) { s(); }\n    if (C) { c(); }\n    if (AB) { t(); }\n}\n";
+        assert_eq!(
+            specialize(source, &[("B", 1.0)]),
+            "override A: bool = false;\noverride B: bool = false;\noverride C: bool = true;\nfn f() {\n    \
+             if (B) { b(); }\n    if (q) { r(); }\n    if (C) { c(); }\n    if (AB) { t(); }\n}\n",
+            "A is false by default, B is set, C is true by default; AB is not an override"
+        );
+        // a constant turns a default off
+        assert_eq!(
+            specialize("override C: bool = true;\nfn f() {\n    if (C) { c(); }\n}\n", &[("C", 0.0)]),
+            "override C: bool = true;\nfn f() {\n}\n"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a use of A that specialize does not take out")]
+    fn specialize_refuses_a_guard_it_cannot_take_out_exactly() {
+        specialize("override A: bool = false;\nfn f() {\n    if (!A) { x(); }\n}\n", &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "an else after a false guard of A")]
+    fn specialize_refuses_an_else_after_a_false_guard() {
+        specialize("override A: bool = false;\nfn f() {\n    if (A) { x(); } else { y(); }\n}\n", &[]);
+    }
+
+    /// NVIDIA's OpenGL compiler inlines and optimizes what an `if (false)` holds before it drops it, so the volume and
+    /// water calls under false overrides cost every trace shader minutes and gigabytes to compile (the `backends` test
+    /// was killed for memory). Every trace shader the pipelines are given has them taken out, and interpolates sparse
+    /// grids with one loop instead of eight inlined lookups.
+    #[test]
+    fn every_trace_shader_is_handed_over_without_the_code_its_false_overrides_guard() {
+        for media in [false, true] {
+            for lighting in [false, true] {
+                for grid in [false, true] {
+                    for water in [false, true] {
+                        for foam in [false, true] {
+                            for scatter in [false, true] {
+                                let (source, constants) = trace_shader(media, lighting, grid, water, foam, scatter);
+                                let which = format!("media {media} lighting {lighting} grid {grid} water {water} foam {foam} scatter {scatter}");
+                                for flag in ["HAS_MEDIA", "MEDIUM_LIGHTING", "WATER", "FOAM"] {
+                                    let on = constants.iter().any(|(k, v)| *k == flag && *v != 0.0);
+                                    assert_eq!(
+                                        source.contains(&format!("if ({flag}")),
+                                        on,
+                                        "{which}: the blocks {flag} guards are there exactly when it is on"
+                                    );
+                                }
+                                assert!(
+                                    !source.contains("for (var z=0; z<2; z++)"),
+                                    "{which}: sparse grids are interpolated with one runtime loop"
+                                );
+                                crate::three::assert_translates_to_glsl("path tracer", &source, &constants);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Drivers inline every call (NVIDIA's OpenGL compiler then takes minutes and gigabytes per copy of the sparse
+    /// search), so each step of sampling a domain is called from one place: a march samples density and emission
+    /// together, each frame's point is advected once, and the stages, components and corners are runtime loops.
+    #[test]
+    fn every_trace_shader_samples_a_domain_from_one_call_site_of_each_step() {
+        let calls = |source: &str, name: &str| {
+            regex::Regex::new(&format!(r"\b{name}\(")).unwrap().find_iter(source).count()
+                - source.matches(&format!("fn {name}(")).count()
+        };
+        for (grid, water, foam, scatter) in
+            (0..16u8).map(|bits| (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0, bits & 8 != 0))
+        {
+            for lighting in [false, true] {
+                let (source, _) = trace_shader(true, lighting, grid, water, foam, scatter);
+                let which = format!("lighting {lighting} grid {grid} water {water} foam {foam} scatter {scatter}");
+                for (name, sites) in [
+                    ("volume_voxel", 1),
+                    ("volume_grid_sample", 2),
+                    ("volume_grid", 1),
+                    ("volume_advected_point", 1),
+                    ("volume_velocity", 0),
+                    ("volume_emission", 0),
+                ] {
+                    assert_eq!(calls(&source, name), sites, "{which}: call sites of {name}");
+                }
+            }
+        }
+    }
+
+    /// The functions of a WGSL source by name, each with the text of its body.
+    fn wgsl_functions(source: &str) -> std::collections::HashMap<String, String> {
+        let head = regex::Regex::new(r"(?m)^fn (\w+)\(").unwrap();
+        head.captures_iter(source)
+            .map(|c| {
+                let start = c.get(0).unwrap().end();
+                let open = start + source[start..].find('{').expect("a body");
+                let mut depth = 0;
+                let end = open
+                    + source[open..]
+                        .char_indices()
+                        .find(|&(_, ch)| {
+                            depth += match ch {
+                                '{' => 1,
+                                '}' => -1,
+                                _ => 0,
+                            };
+                            depth == 0
+                        })
+                        .expect("the body closes")
+                        .0;
+                (c[1].to_string(), source[open..=end].to_string())
+            })
+            .collect()
+    }
+
+    /// The functions `from` calls, directly or through others.
+    fn wgsl_reached(
+        functions: &std::collections::HashMap<String, String>,
+        from: &str,
+    ) -> std::collections::BTreeSet<String> {
+        let mut reached = std::collections::BTreeSet::new();
+        let mut pending = vec![from.to_string()];
+        while let Some(f) = pending.pop() {
+            for name in functions.keys() {
+                let call = regex::Regex::new(&format!(r"\b{name}\(")).unwrap();
+                if *name != f && call.is_match(&functions[&f]) && reached.insert(name.clone()) {
+                    pending.push(name.clone());
+                }
+            }
+        }
+        reached
+    }
+
+    /// Drivers inline every call, so a march that marches a shadow ray at each of its steps holds a copy of the shadow
+    /// ray's march, of the BVH walk past surfaces and of the map lookup of their opacity inside its own loops: NVIDIA's
+    /// OpenGL compiler takes over 7 GB and minutes on the shader of lit smoke. The light a lit domain scatters is the
+    /// events of one loop instead (each light, each domain its shadow ray crosses and each step of it, each surface in
+    /// its way), called once by each march, which reaches no function that marches a shadow ray of its own.
+    #[test]
+    fn no_trace_shader_marches_a_shadow_ray_inside_a_march() {
+        let walk_call = regex::Regex::new(r"\bvolume_scattering\(").unwrap();
+        for (grid, water, foam, scatter) in
+            (0..16u8).map(|bits| (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0, bits & 8 != 0))
+        {
+            let (source, _) = trace_shader(true, true, grid, water, foam, scatter);
+            let which = format!("grid {grid} water {water} foam {foam} scatter {scatter}");
+            let functions = wgsl_functions(&source);
+            let marches: Vec<&str> = ["volume_transport", "water_transport", "scatter_walk"]
+                .into_iter()
+                .filter(|m| functions.contains_key(*m))
+                .collect();
+            assert_eq!(marches.len(), 1 + water as usize + scatter as usize, "{which}: the marches {marches:?}");
+            for march in &marches {
+                let reached = wgsl_reached(&functions, march);
+                for inner in ["volume_transmittance", "visibility", "volume_incident"] {
+                    assert!(!reached.contains(inner), "{which}: {march} reaches {inner}");
+                }
+                assert!(reached.contains("volume_scattering"), "{which}: {march} lights the media");
+            }
+            let walk = wgsl_reached(&functions, "volume_scattering");
+            for name in ["volume_sample", "trace", "light_sample", "map_sample"] {
+                assert!(walk.contains(name), "{which}: the walk reaches {name}");
+            }
+            let calls = |name: &str| {
+                regex::Regex::new(&format!(r"\b{name}\(")).unwrap().find_iter(&functions["volume_scattering"]).count()
+            };
+            for name in ["volume_sample", "trace", "light_sample", "map_sample", "volume_incident_grid"] {
+                assert_eq!(calls(name), 1, "{which}: the walk calls {name} from one place");
+            }
+            let sites = walk_call.find_iter(&source).count() - 1;
+            assert_eq!(sites, marches.len(), "{which}: each march calls the walk once");
+        }
+    }
+
+    #[test]
     fn scatter_shader_validates_with_water_foam_and_grid_combinations() {
         let plain = format!(
             "{}\n{}\n{}",
@@ -930,31 +1109,29 @@ mod tests {
     }
 
     #[test]
-    fn the_grid_shader_replaces_the_exact_lighting_and_leaves_the_rest() {
+    fn the_grid_shader_reads_a_lit_domains_light_from_its_grids_and_leaves_the_rest() {
         let source = grid_source();
-        assert_eq!(source.matches("fn volume_incident(").count(), 1, "one volume_incident");
-        assert!(source.contains("fn volume_incident_exact("), "the exact function stays for other media");
-        // it is the plain function renamed, not a second copy that could drift from it
-        assert!(
-            !include_str!("volume_grid.wgsl").contains("fn volume_incident_exact("),
-            "the grid file does not carry its own copy of the exact lighting"
-        );
+        let plain = include_str!("volume.wgsl");
+        assert_eq!(source.matches("fn volume_incident_grid(").count(), 1, "one function reads a domain's light");
+        assert_eq!(plain.matches("fn volume_incident_grid(").count(), 1, "the shader without grids has its own");
         let body = |text: &str, name: &str| {
             let start = text.find(name).expect("function");
             let end = start + text[start..].find("\n}\n").expect("end of function");
             text[start + name.len()..end].to_string()
         };
         assert_eq!(
-            body(&source, "fn volume_incident_exact("),
-            body(include_str!("volume.wgsl"), "fn volume_incident("),
-            "the exact function is the plain one"
+            body(&source, "fn volume_incident_grid("),
+            body(include_str!("volume_grid.wgsl"), "fn volume_incident_grid("),
+            "the grid shader's is the one that reads the grids"
         );
-        assert!(source.contains("tverts[base+13u].y>0.5,base)"), "the call that lights a domain passes the domain");
-        assert!(!source.contains("//@exact-incident"), "the markers are removed");
+        assert!(
+            body(plain, "fn volume_incident_grid(").contains("return vec4(0.0);"),
+            "without grids every lit domain is marched"
+        );
+        assert!(!source.contains("//@incident-grid"), "the markers are removed");
         // everything outside the replaced span is the shader without grids
-        let plain = include_str!("volume.wgsl");
-        assert!(plain.matches("fn volume_incident(").count() == 1 && plain.contains("//@exact-incident-begin"));
-        assert!(source.contains("fn volume_transmittance("), "shared code is kept");
+        let (a, b) = (plain.find("//@incident-grid-begin\n").unwrap(), plain.find("//@incident-grid-end\n").unwrap());
+        assert!(source.contains(&plain[..a]) && source.contains(&plain[b + "//@incident-grid-end\n".len()..]));
     }
 
     /// Brute-force nearest hit versus BVH traversal on the CPU.
@@ -1108,25 +1285,20 @@ struct Params {
 
 /// Compute pipelines of the shader variant with light grids.
 struct GridPipelines {
-    module: wgpu::ShaderModule,
     layout: wgpu::PipelineLayout,
     light: wgpu::ComputePipeline,
     dome: wgpu::ComputePipeline,
 }
 
-/// The shader with light grids: the exact in-scattering function and the call that lights a domain
-/// are replaced, everything else is the shader without grids.
+/// The shader with light grids: the function the media's walk asks for a lit domain's light from grids is the one
+/// that reads them, everything else is the shader without grids.
 fn grid_source() -> String {
-    const BEGIN: &str = "//@exact-incident-begin\n";
-    const END: &str = "//@exact-incident-end\n";
-    const CALL: &str = "volume_incident(point,-d,albedo.w,tverts[base+13u].y>0.5)";
+    const BEGIN: &str = "//@incident-grid-begin\n";
+    const END: &str = "//@incident-grid-end\n";
     let volume = include_str!("volume.wgsl");
-    let (a, b) = (volume.find(BEGIN).expect("incident begin marker"), volume.find(END).expect("incident end marker"));
-    assert!(volume.matches(CALL).count() == 1, "one call lights a domain");
-    // the plain function stays, renamed: the grid's `volume_incident` falls back to it for a domain without grids
-    let exact = volume[a + BEGIN.len()..b].replacen("fn volume_incident(", "fn volume_incident_exact(", 1);
-    let shared = format!("{}{}{}", &volume[..a], exact, &volume[b + END.len()..])
-        .replace(CALL, "volume_incident(point,-d,albedo.w,tverts[base+13u].y>0.5,base)");
+    let (a, b) = (volume.find(BEGIN).expect("grid begin marker"), volume.find(END).expect("grid end marker"));
+    // the function that reads no grids goes; volume_grid.wgsl brings the one that reads them
+    let shared = format!("{}{}", &volume[..a], &volume[b + END.len()..]);
     format!(
         "{}\n{}\n{}\n{}",
         include_str!("sampling.wgsl"),
@@ -1213,16 +1385,7 @@ fn water_source(base: &str) -> String {
                  \x20           }}\n{VISIBLE}"
             ),
         );
-    let water = include_str!("pathtrace_water.wgsl");
-    let water = if base.contains("fn volume_incident_exact(") {
-        water.replace(
-            "volume_incident(point, -d, albedo.w, tverts[base + 13u].y > 0.5)",
-            "volume_incident(point, -d, albedo.w, tverts[base + 13u].y > 0.5, base)",
-        )
-    } else {
-        water.to_string()
-    };
-    format!("{hooked}\n{water}")
+    format!("{hooked}\n{}", include_str!("pathtrace_water.wgsl"))
 }
 
 /// The shader for scenes where some surface has foam mixed into its material: the shader it is given plus the foam at the hit. A
@@ -1309,6 +1472,96 @@ fn variant_constants(media: bool, lighting: bool, water: bool, foam: bool) -> Ve
     constants
 }
 
+/// The trace shader of a scene, and the override constants its pipeline is given: with volumes (`media`, `lighting` when
+/// one needs albedo, `grid` when they are lit by light grids), transmissive materials (`water`), foam and multiple
+/// scattering, specialized for those constants.
+fn trace_shader(
+    media: bool,
+    lighting: bool,
+    grid: bool,
+    water: bool,
+    foam: bool,
+    scatter: bool,
+) -> (String, Vec<(&'static str, f64)>) {
+    let base = if media && grid {
+        grid_source()
+    } else {
+        format!(
+            "{}\n{}\n{}",
+            include_str!("sampling.wgsl"),
+            include_str!("pathtrace.wgsl"),
+            include_str!("volume.wgsl")
+        )
+    };
+    let (source, constants) = if water || foam || scatter {
+        (variant_source(&base, water, foam, scatter), variant_constants(media, lighting, water, foam))
+    } else if media {
+        (base, vec![("HAS_MEDIA", 1.0), ("MEDIUM_LIGHTING", lighting as u8 as f64)])
+    } else {
+        (base, Vec::new())
+    };
+    (specialize(&source, &constants), constants)
+}
+
+/// `source` with the code its false boolean overrides guard taken out: `if (F) {…}`, `if (F && …) {…}` and
+/// `else if (F) {…}` for every `override F: bool` that `constants`, or its default, leaves false. The pipeline is given
+/// the same constants, so what it computes is unchanged; what changes is the text the driver compiles. NVIDIA's
+/// OpenGL compiler inlines and optimizes what an `if (false)` holds before it drops it, so the volume calls under the
+/// false overrides of the plain shader cost its compilation as much as the volumes' own shader.
+///
+/// Panics on a use of a false override it cannot take out exactly (a negation, an `||`, an `else` after the guard).
+fn specialize(source: &str, constants: &[(&str, f64)]) -> String {
+    let declaration = regex::Regex::new(r"override (\w+): bool = (true|false);").expect("pattern");
+    let mut out = source.to_string();
+    for flag in declaration.captures_iter(source) {
+        let name = &flag[1];
+        let on = constants.iter().find(|(k, _)| *k == name).map_or(&flag[2] == "true", |(_, v)| *v != 0.0);
+        if on {
+            continue;
+        }
+        let guard = regex::Regex::new(&format!(r"(\}} else )?if \({name}(\)| && )")).expect("pattern");
+        while let Some(found) = guard.captures(&out) {
+            let whole = found.get(0).expect("match");
+            // an `else if` leaves the closing brace of the branch before it
+            let mut start = whole.start() + usize::from(found.get(1).is_some());
+            let open = whole.end() + out[whole.end()..].find('{').expect("the guarded block");
+            let mut end = open + block_length(&out[open..]);
+            assert!(
+                !out[end..].trim_start().starts_with("else"),
+                "an else after a false guard of {name}: specialize keeps no else branch"
+            );
+            // a guard on lines of its own goes with its indentation and line break
+            let line = out[..start].rfind('\n').map_or(0, |i| i + 1);
+            if out[line..start].trim().is_empty() && out[end..].starts_with('\n') {
+                start = line;
+                end += 1;
+            }
+            out.replace_range(start..end, "");
+        }
+        let uses = regex::Regex::new(&format!(r"\b{name}\b")).expect("pattern").find_iter(&out).count();
+        assert!(uses == 1, "a use of {name} that specialize does not take out ({} besides the declaration)", uses - 1);
+    }
+    out
+}
+
+/// The length of the brace-delimited block `text` starts with.
+fn block_length(text: &str) -> usize {
+    let mut depth = 0usize;
+    for (i, c) in text.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("an unclosed block");
+}
+
 /// The shader text of a variant: the base with the water additions when `water`, and the foam at the hit when `foam`.
 fn variant_source_without_scatter(base: &str, water: bool, foam: bool) -> String {
     let source = if water { water_source(base) } else { base.to_string() };
@@ -1329,43 +1582,28 @@ fn variant_source(base: &str, water: bool, foam: bool, scatter: bool) -> String 
     if !scatter {
         return source;
     }
-    let source = source
-        // Keep sparse interpolation as one runtime loop in the larger scatter
-        // shader. Unrolling its eight lookups at every call site exhausts the
-        // software Vulkan driver's coroutine-frame analysis memory.
-        .replace(
-            "for (var z=0; z<2; z++) { for (var y=0; y<2; y++) { for (var x=0; x<2; x++) {\n        let delta=vec3(x,y,z);",
-            "for (var corner=0u; corner<pp.media.w; corner++) {\n        let delta=vec3<i32>(i32(corner&1u),i32((corner>>1u)&1u),i32(corner>>2u));",
-        )
-        .replacen("    }}}\n    return value;", "    }\n    return value;", 1)
-        .replace("var color=vec3(0.0); var trans=1.0; var cursor=0.0;",
-            "var color=vec3(0.0); var trans=1.0; var cursor=0.0; var reservoir: ScatterReservoir;")
-        .replace("if (MEDIUM_LIGHTING && any(albedo.rgb>vec3(0.0)))",
-            "if (MEDIUM_LIGHTING && tverts[base+13u].w > 0.0 && any(albedo.rgb>vec3(0.0)))")
-        .replace("color+=trans*source*weight; trans*=attenuation;",
-            "scatter_offer(&reservoir, point, vec3(trans*weight)); color+=trans*source*weight; trans*=attenuation;")
-        .replace("return vec4(color,trans);", "return vec4(color+scatter_walk(reservoir,-d,vec3(0.0)),trans);")
-        .replace("var color = vec3(0.0); var trans = vec3(1.0); var open = 1.0; var cursor = 0.0;",
-            "var color = vec3(0.0); var trans = vec3(1.0); var open = 1.0; var cursor = 0.0; var reservoir: ScatterReservoir;")
-        .replace("if (MEDIUM_LIGHTING && any(albedo.rgb > vec3(0.0)))",
-            "if (MEDIUM_LIGHTING && tverts[base + 13u].w > 0.0 && any(albedo.rgb > vec3(0.0)))")
-        .replace("color += trans * source * weight; trans *= attenuation; open *= exp(-sigma * ds);",
-            "scatter_offer(&reservoir, point, trans*weight); color += trans * source * weight; trans *= attenuation; open *= exp(-sigma * ds);")
-        .replace("return Transport(color, trans, open);",
-            "return Transport(color+scatter_walk(reservoir,-d,sigma_water), trans, open);");
-    let extra = include_str!("pathtrace_scatter.wgsl");
-    let extra = if source.contains("fn volume_incident_exact(") {
-        extra.replace(
-            "scatter_incident(point, outgoing, base)",
-            "volume_incident(point,outgoing,tverts[base+6u].w,tverts[base+13u].y>0.5,base)",
-        )
-    } else {
-        extra.replace(
-            "scatter_incident(point, outgoing, base)",
-            "volume_incident(point,outgoing,tverts[base+6u].w,tverts[base+13u].y>0.5)",
-        )
-    };
-    format!("{source}\n{extra}")
+    // each march (the water's only in the shader with water) is hooked in once; the media's own light, which both
+    // marches share, once
+    let mut source = source;
+    for (hook, replacement, sites) in [
+        ("var color=vec3(0.0); var trans=1.0; var cursor=0.0;",
+            "var color=vec3(0.0); var trans=1.0; var cursor=0.0; var reservoir: ScatterReservoir;", 1),
+        ("if (MEDIUM_LIGHTING && any(albedo.rgb>vec3(0.0)))",
+            "if (MEDIUM_LIGHTING && tverts[base+13u].w > 0.0 && any(albedo.rgb>vec3(0.0)))", 1),
+        ("color+=trans*source*weight; trans*=attenuation;",
+            "scatter_offer(&reservoir, point, vec3(trans*weight)); color+=trans*source*weight; trans*=attenuation;", 1),
+        ("return vec4(color,trans);", "return vec4(color+scatter_walk(reservoir,-d,vec3(0.0)),trans);", 1),
+        ("var color = vec3(0.0); var trans = vec3(1.0); var open = 1.0; var cursor = 0.0;",
+            "var color = vec3(0.0); var trans = vec3(1.0); var open = 1.0; var cursor = 0.0; var reservoir: ScatterReservoir;", water as usize),
+        ("color += trans * source * weight; trans *= attenuation; open *= exp(-sigma * ds);",
+            "scatter_offer(&reservoir, point, trans*weight); color += trans * source * weight; trans *= attenuation; open *= exp(-sigma * ds);", water as usize),
+        ("return Transport(color, trans, open);",
+            "return Transport(color+scatter_walk(reservoir,-d,sigma_water), trans, open);", water as usize),
+    ] {
+        assert_eq!(source.matches(hook).count(), sites, "the random walk hooks in at {hook}");
+        source = source.replace(hook, replacement);
+    }
+    format!("{source}\n{}", include_str!("pathtrace_scatter.wgsl"))
 }
 
 /// Pipelines of the path tracer (built on first use).
@@ -1396,15 +1634,7 @@ impl PtGpu {
     pub fn new(d: &wgpu::Device, format: wgpu::TextureFormat) -> PtGpu {
         let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("pathtrace"),
-            source: wgpu::ShaderSource::Wgsl(
-                format!(
-                    "{}\n{}\n{}",
-                    include_str!("sampling.wgsl"),
-                    include_str!("pathtrace.wgsl"),
-                    include_str!("volume.wgsl")
-                )
-                .into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(trace_shader(false, false, false, false, false, false).0.into()),
         });
         let vis = wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT;
         let buf = |binding: u32, ty: wgpu::BufferBindingType, dynamic: bool| wgpu::BindGroupLayoutEntry {
@@ -1531,7 +1761,7 @@ impl PtGpu {
         self.grid.get_or_init(|| {
             let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("pathtrace-light-grid"),
-                source: wgpu::ShaderSource::Wgsl(grid_source().into()),
+                source: wgpu::ShaderSource::Wgsl(specialize(&grid_source(), &[]).into()),
             });
             let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("pathtrace-light-grid"),
@@ -1551,7 +1781,7 @@ impl PtGpu {
             };
             let light = kernel("cs_light_grid");
             let dome = kernel("cs_dome_grid");
-            GridPipelines { module, layout, light, dome }
+            GridPipelines { layout, light, dome }
         })
     }
 
@@ -1568,14 +1798,19 @@ impl PtGpu {
         if grid {
             return self.trace_grid[lighting as usize].get_or_init(|| {
                 let g = self.grid_pipelines(d);
+                let (source, constants) = trace_shader(true, lighting, true, false, false, false);
+                let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("pathtrace-volumes-grid"),
+                    source: wgpu::ShaderSource::Wgsl(source.into()),
+                });
                 let _creation = crate::gpu::creation_lock();
                 d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some("pathtrace-volumes-grid"),
                     layout: Some(&g.layout),
-                    module: &g.module,
+                    module: &module,
                     entry_point: Some("cs_trace"),
                     compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[("HAS_MEDIA", 1.0), ("MEDIUM_LIGHTING", lighting as u8 as f64)],
+                        constants: &constants,
                         ..Default::default()
                     },
                     cache: None,
@@ -1583,25 +1818,25 @@ impl PtGpu {
             });
         }
         self.trace_volume[lighting as usize].get_or_init(|| {
+            let (source, constants) = trace_shader(true, lighting, false, false, false, false);
+            let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("pathtrace-volumes"),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
             let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("pathtrace-volumes"),
                 bind_group_layouts: &[Some(&self.bgl0)],
                 immediate_size: 0,
             });
-            {
-                let _creation = crate::gpu::creation_lock();
-                d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("pathtrace-volumes"),
-                    layout: Some(&layout),
-                    module: &self.module,
-                    entry_point: Some("cs_trace"),
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[("HAS_MEDIA", 1.0), ("MEDIUM_LIGHTING", lighting as u8 as f64)],
-                        ..Default::default()
-                    },
-                    cache: None,
-                })
-            }
+            let _creation = crate::gpu::creation_lock();
+            d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("pathtrace-volumes"),
+                layout: Some(&layout),
+                module: &module,
+                entry_point: Some("cs_trace"),
+                compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
+                cache: None,
+            })
         })
     }
 
@@ -1621,18 +1856,7 @@ impl PtGpu {
         let media = !scene.volumes.is_empty();
         let slot = variant_slot(media, grid, lighting, water, foam, scatter);
         self.trace_water[slot].get_or_init(|| {
-            let constants = variant_constants(media, lighting, water, foam);
-            let base = if media && grid {
-                grid_source()
-            } else {
-                format!(
-                    "{}\n{}\n{}",
-                    include_str!("sampling.wgsl"),
-                    include_str!("pathtrace.wgsl"),
-                    include_str!("volume.wgsl")
-                )
-            };
-            let source = variant_source(&base, water, foam, scatter);
+            let (source, constants) = trace_shader(media, lighting, grid, water, foam, scatter);
             let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("pathtrace-variant"),
                 source: wgpu::ShaderSource::Wgsl(source.into()),
