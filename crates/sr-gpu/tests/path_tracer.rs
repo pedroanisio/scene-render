@@ -1,9 +1,11 @@
-//! The path tracer: adaptive sampling, light through water and glass, foam mixed into the water, the specular lobe, the horizon, instances and tiles, and the geodesic pass.
+//! The path tracer: adaptive sampling, the denoiser, light through water and glass, foam mixed into the water, the specular lobe, the horizon, instances and tiles, and the geodesic pass.
 
 mod common;
 
 #[path = "path_tracer/adaptive_samples.rs"]
 mod adaptive_samples;
+#[path = "path_tracer/denoiser.rs"]
+mod denoiser;
 #[path = "path_tracer/foam_albedo.rs"]
 mod foam_albedo;
 #[path = "path_tracer/geodesic.rs"]

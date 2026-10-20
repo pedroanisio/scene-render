@@ -24,8 +24,8 @@ struct Params {
     ambient: vec4<f32>,
     // backdrop present, total samples, denoise step, exposure
     misc: vec4<f32>,
-    // encode sRGB, `fin` holds means (denoised), first denoise pass (reads sums), noise target of adaptive sampling
-    // (0 traces every sample)
+    // encode sRGB, `fin` holds means (denoised), first denoise pass (reads sums), and in the trace passes the noise
+    // target of adaptive sampling (0 traces every sample), in the denoise passes 1 on the last (it remodulates)
     out: vec4<f32>,
     // Global origin (xy) and extent (zw) of this tile's working buffers.
     tile: vec4<u32>,
@@ -879,32 +879,96 @@ fn cs_count(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invoca
 }
 
 // ---------------------------------------------------------------- à-trous denoising
-// One pass of the edge-aware à-trous filter at `misc.z` pixels between taps: src → dst. The
-// first pass reads the sample sums (out.z set) and writes means.
+// One pass of the edge-aware à-trous filter at `misc.z` pixels between taps: src → dst, each two halves of w × h rows,
+// the colour, then its variance (x) and the pixel's coverage (y). The first pass (out.z set) reads the sample sums and
+// statistics of `accum` and divides the colour by the coverage and the albedo at the first hit, so the passes smooth
+// the light and not the surface or its silhouette; the last (out.w set) multiplies it back by the pixel's own. How
+// far a tap may differ in luminance follows the standard deviation of the pixel's mean, so a clean pixel is barely
+// smoothed and a noisy one is smoothed more.
 
 @group(1) @binding(0) var<storage, read> src: array<vec4<f32>>;
 @group(1) @binding(1) var<storage, read_write> dst: array<vec4<f32>>;
+
+// the smallest albedo a colour is divided by: a black surface keeps its own colour, which its neighbours' weights
+// (in the light divided by theirs) keep apart
+const ALBEDO_FLOOR: f32 = 0.01;
+// standard deviations of a pixel's mean luminance a tap may differ by before its weight falls to 1/e
+const SIGMA_LUMINANCE: f32 = 4.0;
+
+fn albedo_at(i: i32) -> vec3<f32> {
+    let g = guide[i * 2];
+    return max(g.rgb / max(g.w, 1e-6), vec3(ALBEDO_FLOOR));
+}
+
+// the light at pixel i as the passes filter it: the mean over the samples that hit, divided by the albedo it was
+// reflected by
+fn denoise_colour(i: i32, first: bool) -> vec3<f32> {
+    if (!first) { return src[i].rgb; }
+    let c = src[i] / max(pp.misc.y, 1.0);
+    return c.rgb / (albedo_at(i) * max(c.a, 1e-6));
+}
+
+// the variance of pixel i's mean luminance, divided by the coverage and the albedo like its colour: in the first pass
+// from the sum of squares of its samples (a pixel of one sample counts as varying by its whole mean), after it what
+// the last pass left
+fn denoise_variance(i: i32, first: bool) -> f32 {
+    let wh = i32(pp.tile.z * pp.tile.w);
+    if (!first) { return src[wh + i].x; }
+    let st = src[wh + i];
+    let n = st.z;
+    let c = src[i] / max(pp.misc.y, 1.0);
+    let mean = dot(c.rgb, LUMA);
+    let a = max(dot(albedo_at(i), LUMA), ALBEDO_FLOOR) * max(c.a, 1e-6);
+    if (n < 2.0) { return mean * mean / (a * a); }
+    return max(st.x - n * mean * mean, 0.0) / (n * (n - 1.0)) / (a * a);
+}
 
 @compute @workgroup_size(8, 8)
 fn cs_atrous(@builtin(global_invocation_id) gid: vec3<u32>) {
     let w = i32(pp.tile.z);
     let h = i32(pp.tile.w);
     if (i32(gid.x) >= w || i32(gid.y) >= h) { return; }
+    let wh = w * h;
     let step = i32(pp.misc.z);
-    let spp = max(pp.misc.y, 1.0);
-    let scale = select(1.0, 1.0 / spp, pp.out.z > 0.5);
+    let first = pp.out.z > 0.5;
+    let last = pp.out.w > 0.5;
     let pi = i32(gid.y) * w + i32(gid.x);
-    let cp = src[pi] * scale;
     let gp = guide[pi * 2];
-    let gcount = max(gp.w, 1e-6);
-    let ap = gp.rgb / gcount;
-    let np = guide[pi * 2 + 1].xyz / gcount;
-    if (gp.w <= 0.0) { dst[pi] = cp; return; }
+    if (gp.w <= 0.0) {
+        // nothing was hit: no albedo to divide by and nothing to filter
+        dst[pi] = select(src[pi], src[pi] / max(pp.misc.y, 1.0), first);
+        dst[wh + pi] = vec4(0.0);
+        return;
+    }
+    let cp = denoise_colour(pi, first);
+    let coverage = select(src[wh + pi].y, src[pi].a / max(pp.misc.y, 1.0), first);
+    let ap = gp.rgb / gp.w;
+    let np = guide[pi * 2 + 1].xyz / gp.w;
+    // a few samples estimate their own variance poorly: the first pass takes the 3 × 3 neighbourhood's
+    var vp = 0.0;
+    if (first) {
+        var weights = 0.0;
+        for (var dy = -1; dy <= 1; dy++) {
+            for (var dx = -1; dx <= 1; dx++) {
+                let q = vec2(i32(gid.x) + dx, i32(gid.y) + dy);
+                if (q.x < 0 || q.y < 0 || q.x >= w || q.y >= h) { continue; }
+                let qi = q.y * w + q.x;
+                if (guide[qi * 2].w <= 0.0) { continue; }
+                let k = f32((2 - abs(dx)) * (2 - abs(dy)));
+                vp += k * denoise_variance(qi, true);
+                weights += k;
+            }
+        }
+        vp /= weights;
+    } else {
+        vp = src[wh + pi].x;
+    }
+    let lp = dot(cp, LUMA);
+    let sigma = SIGMA_LUMINANCE * sqrt(vp) + 1e-4 + 1e-3 * abs(lp);
     let kern = array<f32, 3>(0.375, 0.25, 0.0625);
-    var sum = vec4(0.0);
+    var sum = vec3(0.0);
     var wsum = 0.0;
-    let lum_p = dot(cp.rgb, vec3(0.2126, 0.7152, 0.0722));
-    let sigma_c = 0.4 * max(lum_p, 0.05) + 0.02;
+    var vsum = 0.0;
     for (var dy = -2; dy <= 2; dy++) {
         for (var dx = -2; dx <= 2; dx++) {
             let q = vec2(i32(gid.x) + dx * step, i32(gid.y) + dy * step);
@@ -912,21 +976,28 @@ fn cs_atrous(@builtin(global_invocation_id) gid: vec3<u32>) {
             let qi = q.y * w + q.x;
             let gq = guide[qi * 2].w;
             if (gq <= 0.0) { continue; }
-            let cq = src[qi] * scale;
+            let cq = denoise_colour(qi, first);
             let aq = guide[qi * 2].rgb / gq;
             let nq = guide[qi * 2 + 1].xyz / gq;
             let k = kern[abs(dx)] * kern[abs(dy)];
-            let dc = cq.rgb - cp.rgb;
-            let wc = exp(-dot(dc, dc) / (sigma_c * sigma_c));
+            let wl = exp(-abs(dot(cq, LUMA) - lp) / sigma);
             let wn = pow(max(dot(np, nq), 0.0), 64.0);
             let da = aq - ap;
             let wa = exp(-dot(da, da) / 0.02);
-            let wt = k * wc * wn * wa;
+            let wt = k * wl * wn * wa;
             sum += cq * wt;
             wsum += wt;
+            vsum += wt * wt * denoise_variance(qi, first);
         }
     }
-    dst[pi] = select(cp, sum / wsum, wsum > 1e-8);
+    var c = cp;
+    var v = vp;
+    if (wsum > 1e-8) {
+        c = sum / wsum;
+        v = vsum / (wsum * wsum);
+    }
+    dst[pi] = vec4(select(c, c * albedo_at(pi) * coverage, last), coverage);
+    dst[wh + pi] = vec4(v, coverage, 0.0, 0.0);
 }
 
 // ---------------------------------------------------------------- output

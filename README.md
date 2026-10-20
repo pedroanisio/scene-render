@@ -559,7 +559,7 @@ Directional lights under a perspective camera cast through four shadow cascades 
 - The prepared scene is flattened on the CPU (instances expanded, deformed vertices, materials, lights) under a binned-SAH bounding volume hierarchy.
 - A compute shader traces in dispatches of four samples: thin-lens camera rays for depth of field; next-event estimation with shadow rays to every analytic light, sampling area lights on their shape; the rasteriser's Lambert and GGX BSDF sampled by lobe; smooth dielectric transmission; Russian roulette; and the dome and ambient light for rays that leave.
 - Rays leaving through glass see the 2D layers where they meet the composition plane.
-- `denoise` applies five passes of an edge-aware à-trous filter guided by first-hit albedo and normals.
+- `denoise` applies five passes of an edge-aware à-trous filter guided by first-hit albedo and normals. It filters the light, not the surface: each pixel's colour is divided by its coverage and its first-hit albedo before filtering and multiplied by its own after, so textures and silhouettes stay sharp. A tap's luminance may differ from the pixel's by about four standard deviations of the pixel's mean, estimated from its own samples (over its 3 × 3 neighbourhood in the first pass) and carried through the passes, so a clean pixel is barely smoothed.
 - The random numbers are a hash of pixel and sample, so a frame renders identically every time.
 - Texture maps, displacement, vertex colours, Gaussian splats with spherical-harmonic colours, IES profiles and lens distortion are supported. The tracer shares map coordinates with the rasteriser and includes splats in its acceleration structure. Shadow rays respect texture alpha masks and blending.
 - Perspective and orthographic cameras use the full projection, including resized offscreens.
@@ -568,7 +568,7 @@ Tests:
 - The BVH finds the same nearest hits as brute force.
 - Traced frames match the rasteriser for a white furnace (ambient light only) and for a directional light.
 - A sphere shadows the floor, and glass shows the red layer behind it.
-- The denoiser halves the pixel-to-pixel variation while keeping the mean.
+- The denoiser halves the pixel-to-pixel variation while keeping the mean. Against a 4096-sample reference it halves the error at 8 samples while keeping a fine albedo texture, lowers it at 256 samples, and leaves the coverage at silhouettes as traced.
 
 **Limitations.** Shadow rays treat glass as opaque (no caustics), and indirect light samples are clamped against fireflies. Geometry, textures and frame buffers that exceed device limits fall back to rasterisation with a diagnostic.
 

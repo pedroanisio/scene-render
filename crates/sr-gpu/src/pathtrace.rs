@@ -2156,8 +2156,9 @@ pub(crate) fn render_cached(
     let lens = scene.dof.map(|f| f.coc_scale / scene.cam.focal_px.max(1e-6) * 0.5).unwrap_or(0.0);
     // These buffers are reused by every tile in command order, bounding peak memory
     // independently of frame area. Clear sums and guides before tracing each tile.
-    let ping = opts.denoise.then(|| zeroed("pt-denoise-a", pixels * 16));
-    let pong = opts.denoise.then(|| zeroed("pt-denoise-b", pixels * 16));
+    // the colour, then its variance
+    let ping = opts.denoise.then(|| zeroed("pt-denoise-a", pixels * 32));
+    let pong = opts.denoise.then(|| zeroed("pt-denoise-b", pixels * 32));
     let noise = opts.noise_target();
     // the counter of traced samples, which only a pass with a noise target needs
     let counter = noise.map(|_| {
@@ -2224,7 +2225,7 @@ pub(crate) fn render_cached(
         for k in 0..PASSES {
             slots.push(Params {
                 misc: [base.misc[0], base.misc[1], (1u32 << k) as f32, base.misc[3]],
-                out: [base.out[0], 0.0, (k == 0) as u32 as f32, 0.0],
+                out: [base.out[0], 0.0, (k == 0) as u32 as f32, (k + 1 == PASSES) as u32 as f32],
                 ..base
             });
         }
