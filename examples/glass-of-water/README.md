@@ -4,7 +4,7 @@ disclaimer:
     No information within this document should be taken for granted.
     Any statement or premise not backed by a real logical definition
     or verifiable reference may be invalid, erroneous, or a hallucination.
-  generated_by: "AI-assisted (Claude Opus 5.5, Claude Code)"
+  generated_by: "AI-assisted"
   date: "2026-10-19"
 ---
 
