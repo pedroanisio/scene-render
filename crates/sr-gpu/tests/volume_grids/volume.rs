@@ -182,7 +182,7 @@ fn gpu_volume_transport_matches_analytic_slabs_and_overlapping_media() {
             &mut enc,
             &scene,
             &data,
-            PathOpts { samples: 1, bounces: 1, denoise: false },
+            PathOpts { samples: 1, bounces: 1, denoise: false, noise: None },
             &input,
             &target.create_view(&Default::default()),
         );
@@ -217,7 +217,7 @@ fn gpu_volume_transport_matches_analytic_slabs_and_overlapping_media() {
         &mut enc,
         &scene,
         &data,
-        PathOpts { samples: 1, bounces: 1, denoise: false },
+        PathOpts { samples: 1, bounces: 1, denoise: false, noise: None },
         &input,
         &target.create_view(&Default::default()),
     );
@@ -270,7 +270,7 @@ fn gpu_volume_transport_matches_analytic_slabs_and_overlapping_media() {
             &mut enc,
             &scene,
             &data,
-            PathOpts { samples: 1, bounces: 1, denoise: false },
+            PathOpts { samples: 1, bounces: 1, denoise: false, noise: None },
             &input,
             &target.create_view(&Default::default()),
         );
@@ -1020,7 +1020,7 @@ fn shadow_march_dims_by_the_optical_depth_of_thin_dense_media_and_ignores_neglig
             encode_srgb: false,
             ao: None,
             ssr: false,
-            path: Some(PathOpts { samples: 1, bounces: 1, denoise: false }),
+            path: Some(PathOpts { samples: 1, bounces: 1, denoise: false, noise: None }),
             geodesic: None,
         };
         let data = pathtrace::build(&scene);
@@ -1082,7 +1082,7 @@ fn multiple_scattering_matches_the_independent_homogeneous_slab_reference() {
         encode_srgb: false,
         ao: None,
         ssr: false,
-        path: Some(PathOpts { samples: 128, bounces: 1, denoise: false }),
+        path: Some(PathOpts { samples: 128, bounces: 1, denoise: false, noise: None }),
         geodesic: None,
     };
     scene.lights.push(sr_gpu::three::Light3 {

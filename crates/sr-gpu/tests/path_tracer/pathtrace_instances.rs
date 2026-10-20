@@ -46,7 +46,7 @@ fn repeated_prototypes_fit_without_triangle_expansion_and_match_expanded_pixels(
         encode_srgb: false,
         ao: None,
         ssr: false,
-        path: Some(PathOpts { samples: 4, bounces: 2, denoise: false }),
+        path: Some(PathOpts { samples: 4, bounces: 2, denoise: false, noise: None }),
         geodesic: None,
     };
     let mut limits = gpu.device.limits();

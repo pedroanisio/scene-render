@@ -25,9 +25,26 @@ pub use cache::BuildCache;
 /// Path-tracing options of a pass.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PathOpts {
+    /// Samples per pixel; with `noise`, the most a pixel traces.
     pub samples: u32,
     pub bounces: u32,
     pub denoise: bool,
+    /// Adaptive sampling: a pixel stops once the standard error of its mean is at most this fraction of the mean
+    /// (luminance, with a floor of 0.01 after exposure) and this much coverage. It is tested from
+    /// [`ADAPTIVE_MIN_SAMPLES`] samples on, after each dispatch. None (or a value that is not positive) traces every
+    /// sample.
+    pub noise: Option<f32>,
+}
+
+/// The samples a pixel traces before adaptive sampling tests it: fewer would let a run of similar samples stop a
+/// noisy pixel. `pathtrace.wgsl` holds the same number.
+pub const ADAPTIVE_MIN_SAMPLES: u32 = 16;
+
+impl PathOpts {
+    /// The noise target in effect: a positive, finite `noise`.
+    pub fn noise_target(&self) -> Option<f32> {
+        self.noise.filter(|n| n.is_finite() && *n > 0.0)
+    }
 }
 
 /// A material as the tracer reads it (16-byte rows).
@@ -142,6 +159,34 @@ pub struct RenderTiming {
     pub pack_seconds: f64,
     /// Timestamps of the trace and denoise passes, when requested and supported.
     pub gpu: Option<crate::fx::Timer>,
+    /// The samples the pass traced.
+    pub samples: SampleCount,
+}
+
+/// The samples a pass traced, halos of tiles included. Without a noise target that is the budget; with one, a counter the
+/// pass fills and [`SampleCount::traced`] reads back.
+#[derive(Default)]
+pub struct SampleCount {
+    /// What `samples` per pixel over the pass's tiles traces.
+    pub budget: u64,
+    /// The mappable copy of the counter: two u32 words, low then high.
+    counter: Option<wgpu::Buffer>,
+}
+
+impl SampleCount {
+    /// The samples traced, once the pass's work has completed (waits for it).
+    pub fn traced(&self, device: &wgpu::Device) -> u64 {
+        let Some(read) = &self.counter else { return self.budget };
+        let slice = read.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let words: [u32; 2] = {
+            let bytes = slice.get_mapped_range().expect("mapped");
+            bytemuck::pod_read_unaligned(&bytes[..8])
+        };
+        read.unmap();
+        u64::from(words[0]) | (u64::from(words[1]) << 32)
+    }
 }
 
 fn srgb_luma(c: [f32; 3]) -> f32 {
@@ -1186,7 +1231,7 @@ fn water_source(base: &str) -> String {
 /// (and then the light that gets through keeps the water's tint), so the picture is the mean of the two, weighted by the share. The
 /// albedo guide of the denoiser takes the mean albedo. Scenes without such a surface keep the text, and so the compiled code, they had.
 fn foam_source(base: &str) -> String {
-    const TRACE: &str = "        rng = pcg(global_pix * 9781u + pcg(si * 6271u + 1u));\n";
+    const TRACE: &str = "            rng = pcg(global_pix * 9781u + pcg(si * 6271u + 1u));\n";
     const GUIDE: &str = "            guide[pix * 2u] += vec4(m.base.rgb, 1.0);\n";
     const SURFACE: &str = "        let s = surf_of(m);\n";
     for hook in [TRACE, GUIDE, SURFACE] {
@@ -1198,7 +1243,7 @@ fn foam_source(base: &str) -> String {
         .replace(
             TRACE,
             &format!(
-                "{TRACE}        foam_u = fract(f32(pcg(global_pix * 2654435761u + 40503u)) * (1.0 / 4294967296.0) + f32(si) * 0.6180339887);\n"
+                "{TRACE}            foam_u = fract(f32(pcg(global_pix * 2654435761u + 40503u)) * (1.0 / 4294967296.0) + f32(si) * 0.6180339887);\n"
             ),
         )
         .replace(
@@ -1339,6 +1384,9 @@ pub struct PtGpu {
     grid: std::sync::OnceLock<GridPipelines>,
     trace_grid: [std::sync::OnceLock<wgpu::ComputePipeline>; 2],
     atrous: wgpu::ComputePipeline,
+    /// The kernel that counts the samples an adaptive pass traced, with its group-1 layout (built on first use).
+    bgl_count: wgpu::BindGroupLayout,
+    count: std::sync::OnceLock<wgpu::ComputePipeline>,
     output: wgpu::RenderPipeline,
     tile_bytes: u64,
     packed: std::sync::Mutex<packed::Cache>,
@@ -1409,6 +1457,10 @@ impl PtGpu {
             label: Some("pathtrace-output"),
             entries: &[buf(0, ro, false)],
         });
+        let bgl_count = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("pathtrace-count"),
+            entries: &[buf(0, rw, false)],
+        });
         let layout = |groups: &[&wgpu::BindGroupLayout]| {
             let groups: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(|g| Some(*g)).collect();
             d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1466,6 +1518,8 @@ impl PtGpu {
             grid: std::sync::OnceLock::new(),
             trace_grid: std::array::from_fn(|_| std::sync::OnceLock::new()),
             atrous,
+            bgl_count,
+            count: std::sync::OnceLock::new(),
             output,
             tile_bytes: DEFAULT_TILE_BYTES,
             packed: Default::default(),
@@ -1601,6 +1655,26 @@ impl PtGpu {
                 module: &module,
                 entry_point: Some("cs_trace"),
                 compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
+                cache: None,
+            })
+        })
+    }
+
+    /// The kernel that adds up the samples each pixel of a tile traced.
+    fn count_pipeline(&self, d: &wgpu::Device) -> &wgpu::ComputePipeline {
+        self.count.get_or_init(|| {
+            let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("pathtrace-count"),
+                bind_group_layouts: &[Some(&self.bgl0), Some(&self.bgl_count)],
+                immediate_size: 0,
+            });
+            let _creation = crate::gpu::creation_lock();
+            d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("cs_count"),
+                layout: Some(&layout),
+                module: &self.module,
+                entry_point: Some("cs_count"),
+                compilation_options: Default::default(),
                 cache: None,
             })
         })
@@ -1846,7 +1920,8 @@ pub(crate) fn render_cached(
         }
     }
     let lights = storage("pt-lights", bytemuck::cast_slice(&lights));
-    let accum = zeroed("pt-accum", pixels * 16);
+    // the sums, then the sample statistics of each pixel
+    let accum = zeroed("pt-accum", pixels * 32);
     let guide = zeroed("pt-guides", pixels * 32);
     let stand_in = zeroed("pt-stand-in", 16);
     // parameter slots: trace dispatches, denoise passes, output
@@ -1859,6 +1934,22 @@ pub(crate) fn render_cached(
     // independently of frame area. Clear sums and guides before tracing each tile.
     let ping = opts.denoise.then(|| zeroed("pt-denoise-a", pixels * 16));
     let pong = opts.denoise.then(|| zeroed("pt-denoise-b", pixels * 16));
+    let noise = opts.noise_target();
+    // the counter of traced samples, which only a pass with a noise target needs
+    let counter = noise.map(|_| {
+        let buffer = |label: &str, usage: wgpu::BufferUsages| {
+            d.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: 8, usage, mapped_at_creation: false })
+        };
+        let counter = buffer("pt-traced", wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
+        let read = buffer("pt-traced-read", wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ);
+        let group = d.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("pathtrace-count"),
+            layout: &pt.bgl_count,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: counter.as_entire_binding() }],
+        });
+        (counter, read, group)
+    });
+    let budget = tiles.iter().map(|t| u64::from(t.size[0]) * u64::from(t.size[1])).sum::<u64>() * u64::from(samples);
     let pack_seconds = started.elapsed().as_secs_f64();
     let make_base = |tile: &Tile| Params {
         cam_to_world: scene.cam.view.inverse().to_cols_array_2d(),
@@ -1876,7 +1967,7 @@ pub(crate) fn render_cached(
         ],
         ambient: [ambient.x, ambient.y, ambient.z, data.lights.len() as f32],
         misc: [inputs.backdrop.is_some() as u32 as f32, samples as f32, 1.0, scene.exposure],
-        out: [scene.encode_srgb as u32 as f32, 0.0, 0.0, 0.0],
+        out: [scene.encode_srgb as u32 as f32, 0.0, 0.0, noise.unwrap_or(0.0)],
         tile: [tile.origin[0], tile.origin[1], tile.size[0], tile.size[1]],
         media,
         sky: scene.env.as_ref().and_then(|e| e.sky).map(|s| s.uniforms()).unwrap_or([[0.0; 4]; 5]),
@@ -1974,6 +2065,12 @@ pub(crate) fn render_cached(
                 cp.set_bind_group(0, &g_trace, &[(c as u64 * SLOT) as u32]);
                 cp.dispatch_workgroups(groups[0], groups[1], 1);
             }
+            if let Some((_, _, group)) = &counter {
+                cp.set_pipeline(pt.count_pipeline(d));
+                cp.set_bind_group(0, &g_trace, &[0]);
+                cp.set_bind_group(1, group, &[]);
+                cp.dispatch_workgroups(groups[0], groups[1], 1);
+            }
         }
         let mut fin = &accum;
         if let (Some(ping), Some(pong)) = (&ping, &pong) {
@@ -2043,13 +2140,23 @@ pub(crate) fn render_cached(
     if let Some(t) = &timer {
         t.resolve(enc);
     }
-    RenderTiming { pack_seconds, gpu: timer, geometry_uploads }
+    let counter = counter.map(|(counter, read, _)| {
+        enc.copy_buffer_to_buffer(&counter, 0, &read, 0, 8);
+        read
+    });
+    RenderTiming { pack_seconds, gpu: timer, geometry_uploads, samples: SampleCount { budget, counter } }
 }
 
 #[cfg(test)]
 mod wgsl_layout_tests {
     //! The Rust structs bound to WGSL structs have their layout (`crate::wgsl_layout`).
     use crate::wgsl_layout::{assert_agree, rust_fields};
+
+    #[test]
+    fn the_shader_tests_convergence_from_the_same_minimum() {
+        let line = format!("const ADAPTIVE_MIN_SAMPLES: f32 = {}.0;", super::ADAPTIVE_MIN_SAMPLES);
+        assert_eq!(include_str!("pathtrace.wgsl").matches(&line).count(), 1, "{line}");
+    }
 
     #[test]
     fn pt_mat_matches_wgsl_mat() {

@@ -44,6 +44,8 @@ pub struct Options {
     pub parallel: Parallel,
     /// Quality tier overriding the document's `project@quality`.
     pub quality: Option<m::ProjectQuality>,
+    /// The noise target of adaptive sampling for path-traced cameras (`sr_gpu::Renderer::path_noise`).
+    pub path_noise: Option<f32>,
     /// Measure what only a render report reads (SREP 18): text that does not fit its box. The checks the document
     /// asks for (accessibility, safe area) run either way.
     pub report: bool,
@@ -84,6 +86,7 @@ impl Default for Options {
             row: None,
             parallel: Parallel::default(),
             quality: None,
+            path_noise: None,
             report: false,
         }
     }
@@ -1190,6 +1193,7 @@ fn run_delivery(
         };
         let mut renderer = Renderer::new(gpu.clone(), p);
         renderer.quality = opts.quality;
+        renderer.path_noise = opts.path_noise;
         renderer.representation = representation.clone();
         renderer.burn_captions = output.burn_captions.clone();
         // with segments, captions burn in output time over the placed picture
@@ -1562,6 +1566,7 @@ fn run_delivery(
                             let gpu = gpu.clone();
                             let mut renderer = Renderer::new(gpu.clone(), p);
                             renderer.quality = opts.quality;
+                            renderer.path_noise = opts.path_noise;
                             renderer.representation = representation.clone();
                             renderer.burn_captions = output.burn_captions.clone();
                             renderer.audio = audio.clone();

@@ -69,6 +69,14 @@ pub struct VoxelSurfaceStat {
     pub planes: Vec<(u8, i32)>,
 }
 
+/// The path samples a frame traced (`Renderer::path_samples`), halos of tiles included.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct PathSamples {
+    pub traced: u64,
+    /// What every pixel tracing its camera's `pathSamples` traces.
+    pub budget: u64,
+}
+
 /// Counters for one rendered frame.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct RenderStats {
@@ -456,6 +464,9 @@ pub struct Renderer {
     pub quality: Option<m::ProjectQuality>,
     /// Measure GPU time with timestamp queries (where the device has them); see `gpu_times`.
     pub time_gpu: bool,
+    /// The noise target of adaptive sampling for every path-traced camera (`pathtrace::PathOpts::noise`); the camera's
+    /// `pathSamples` caps it.
+    pub path_noise: Option<f32>,
     /// The last frame's timestamps.
     last_timer: Option<fx::Timer>,
     /// The tier of the frame being rendered.
@@ -1191,6 +1202,7 @@ impl Renderer {
             view_override: None,
             quality: None,
             time_gpu: false,
+            path_noise: None,
             last_timer: None,
             tier: Tier::of(m::ProjectQuality::Final),
             sphere: None,
@@ -1252,6 +1264,16 @@ impl Renderer {
             times.extend(raster.read(&self.gpu.device, period));
         }
         Some(times)
+    }
+
+    /// The samples the last frame's path-traced passes traced and the most they could have, None without such a pass;
+    /// waits for that frame's work to complete.
+    pub fn path_samples(&self) -> Option<PathSamples> {
+        let counts = self.three.as_ref().map(|e| e.pt_samples.as_slice()).unwrap_or_default();
+        (!counts.is_empty()).then(|| PathSamples {
+            traced: counts.iter().map(|c| c.traced(&self.gpu.device)).sum(),
+            budget: counts.iter().map(|c| c.budget).sum(),
+        })
     }
 
     pub fn gpu(&self) -> &Gpu {
@@ -4899,6 +4921,7 @@ impl Renderer {
         if let Some(eng) = self.three.as_mut() {
             eng.time_gpu = self.time_gpu && self.gpu.timestamps;
             eng.pt_timers.clear();
+            eng.pt_samples.clear();
             eng.raster_timers.clear();
         }
         if self.time_gpu && self.gpu.timestamps {

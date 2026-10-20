@@ -532,6 +532,7 @@ impl Renderer {
                     samples: a.num("pathSamples", 64.0).clamp(1.0, 65536.0) as u32,
                     bounces: a.num("maxBounces", 4.0).clamp(1.0, 64.0) as u32,
                     denoise: flag(&a, "denoise", true),
+                    noise: self.path_noise,
                 });
             }
             focal_mm = match a.opt("focalLength") {
@@ -3429,7 +3430,12 @@ impl Renderer {
         // passes containing media use the transport pipeline with deterministic samples.
         let mut path_limit: Option<String> = None;
         let transport = ex.path.or_else(|| {
-            (!scene.volumes.is_empty()).then_some(crate::pathtrace::PathOpts { samples: 4, bounces: 2, denoise: true })
+            (!scene.volumes.is_empty()).then_some(crate::pathtrace::PathOpts {
+                samples: 4,
+                bounces: 2,
+                denoise: true,
+                noise: None,
+            })
         });
         if let Some(opts) = transport {
             if let Some(m) = crate::pathtrace::limit_note(&scene, &limits) {

@@ -121,7 +121,7 @@ fn scene(eng: &ThreeEngine, draws: Vec<Draw3>, dome: Option<f32>, sun: bool, eye
         encode_srgb: false,
         ao: None,
         ssr: false,
-        path: Some(PathOpts { samples: 256, bounces: 4, denoise: false }),
+        path: Some(PathOpts { samples: 256, bounces: 4, denoise: false, noise: None }),
         geodesic: None,
     }
 }
@@ -236,7 +236,7 @@ fn the_denoiser_keeps_the_edge_of_the_foam_because_its_albedo_guide_is_the_mixed
     let render = |eng: &mut ThreeEngine, samples: u32, denoise: bool| {
         let draw = plane_of(eng, 6.0, 120, 0.0, water(Some(FOAM)), |x| if x < 0.0 { 1.0 } else { 0.0 });
         let mut s = scene(eng, vec![draw], Some(dome), false, TOP);
-        s.path = Some(PathOpts { samples, bounces: 4, denoise });
+        s.path = Some(PathOpts { samples, bounces: 4, denoise, noise: None });
         eng.render_now(&s, None)
     };
     let reference = render(&mut eng, 1024, false);
@@ -411,7 +411,7 @@ fn noise_of(eng: &mut ThreeEngine, mix: Option<FoamMix>, share: f32, samples: u3
     let dome = srgb_to_linear(128.0 / 255.0);
     let draw = plane(eng, 0.0, water(mix), move |_| share);
     let mut s = scene(eng, vec![draw], Some(dome), false, TOP);
-    s.path = Some(PathOpts { samples, bounces: 4, denoise });
+    s.path = Some(PathOpts { samples, bounces: 4, denoise, noise: None });
     let px = eng.render_now(&s, None);
     let mut v: Vec<f32> = Vec::new();
     for y in 24..40u32 {
@@ -456,7 +456,7 @@ fn half_sea_window(eng: &mut ThreeEngine, samples: u32) -> Vec<f32> {
     let dome = srgb_to_linear(128.0 / 255.0);
     let draw = plane(eng, 0.0, water(Some(FOAM)), |_| 0.5);
     let mut s = scene(eng, vec![draw], Some(dome), false, TOP);
-    s.path = Some(PathOpts { samples, bounces: 4, denoise: false });
+    s.path = Some(PathOpts { samples, bounces: 4, denoise: false, noise: None });
     let px = eng.render_now(&s, None);
     let mut v = Vec::new();
     for y in 16..48u32 {

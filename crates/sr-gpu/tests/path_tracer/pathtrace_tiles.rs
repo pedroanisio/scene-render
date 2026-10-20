@@ -90,7 +90,7 @@ fn tiled_paths_match_whole_frame_at_edges_and_denoise_seams() {
         sc.cam = resolve(&CameraParams { orthographic, ..Default::default() }, size[0] as f32, size[1] as f32);
         let data = pathtrace::build(&sc);
         for denoise in [false, true] {
-            let opts = PathOpts { samples: 5, bounces: 2, denoise };
+            let opts = PathOpts { samples: 5, bounces: 2, denoise, noise: None };
             let mut images = Vec::new();
             for budget in [32 << 20, 192 * 192 * 32, 192 * 192 * 32] {
                 pt.limit_buffers(budget).unwrap();

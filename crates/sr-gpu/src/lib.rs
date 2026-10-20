@@ -36,7 +36,7 @@ pub mod volume;
 
 pub use fx::{GpuTimes, PassTime};
 pub use gpu::{Gpu, GpuError};
-pub use render::{ContrastTarget, Frame, RenderStats, Renderer, Tier, VoxelSurfaceStat};
+pub use render::{ContrastTarget, Frame, PathSamples, RenderStats, Renderer, Tier, VoxelSurfaceStat};
 pub use wgpu::SubmissionIndex;
 
 /// The FrameGraph value of a document paint.

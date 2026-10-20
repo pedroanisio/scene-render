@@ -570,6 +570,53 @@ fn render_bench_reports_timing() {
     assert!(String::from_utf8_lossy(&o.stderr).lines().any(|l| l.contains("\"draws\"")));
 }
 
+/// `--path-noise` turns on adaptive sampling for the path-traced cameras, and `--stats` reports the samples traced
+/// against the most the cameras' `pathSamples` allow.
+#[test]
+fn render_path_noise_traces_fewer_samples_and_reports_them() {
+    let dir = std::env::temp_dir().join(format!("sr-cli-path-noise-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let xml = r#"<scene version="1.7"><project width="64" height="48" fps="1" duration="1"/><composition>
+<camera id="eye" z="-10" renderer="pathtrace" pathSamples="64" maxBounces="2" denoise="false"/>
+<object3D id="ball" primitive="sphere" radius="1"/></composition></scene>"#;
+    let scene = dir.join("p.scene.xml");
+    std::fs::write(&scene, xml).unwrap();
+    let (scene, png) = (scene.display().to_string(), dir.join("p.png").display().to_string());
+    let paths = |o: &Output| -> serde_json::Value {
+        let err = String::from_utf8_lossy(&o.stderr);
+        let line = err.lines().find(|l| l.contains("\"stats\"")).unwrap_or_else(|| panic!("no stats line: {err}"));
+        serde_json::from_str::<serde_json::Value>(line).unwrap()["paths"].clone()
+    };
+    let o = run(&["render", &scene, "-o", &png, "--stats"]);
+    if no_gpu(&o) {
+        return;
+    }
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    let full = paths(&o);
+    assert_eq!(full["budget"], 64 * 48 * 64, "{full}");
+    assert_eq!(full["traced"], full["budget"]);
+    let o = run(&["render", &scene, "-o", &png, "--stats", "--path-noise", "0.05"]);
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    let adaptive = paths(&o);
+    assert_eq!(adaptive["budget"], full["budget"]);
+    let traced = adaptive["traced"].as_u64().unwrap();
+    assert!(traced > 0 && traced < 64 * 48 * 64 / 2, "{adaptive}");
+    // the noise target changes pixels, so a frame rendered under another one is not up to date
+    let only =
+        |extra: &[&str]| rendered(&run(&[&["render", &scene, "-o", &png, "--changed-only"][..], extra].concat()));
+    assert_eq!(only(&[]), (1, 1));
+    assert_eq!(only(&[]), (0, 1), "nothing changed");
+    assert_eq!(only(&["--path-noise", "0.05"]), (1, 1), "another noise target");
+    assert_eq!(only(&["--path-noise", "0.05"]), (0, 1));
+    for bad in ["0", "-0.1", "1.5", "nan", "x"] {
+        let o = run(&["render", &scene, "-o", &png, "--path-noise", bad]);
+        assert_eq!(o.status.code(), Some(2), "--path-noise {bad}");
+    }
+    let o = run(&["encode", &scene, "--path-noise", "0"]);
+    assert_eq!(o.status.code(), Some(2), "encode checks --path-noise too");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn encode_writes_adhoc_outputs() {
     let dir = render_fixture("encode");

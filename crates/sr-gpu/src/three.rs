@@ -736,6 +736,8 @@ pub struct ThreeEngine {
     pub time_gpu: bool,
     /// Timestamps of the path-traced passes recorded since the caller last cleared them.
     pub pt_timers: Vec<crate::fx::Timer>,
+    /// The samples each path-traced pass of the frame traced.
+    pub pt_samples: Vec<crate::pathtrace::SampleCount>,
     /// Timestamps of raster passes recorded since the caller last cleared them.
     pub raster_timers: Vec<crate::fx::Timer>,
 }
@@ -1349,6 +1351,7 @@ impl ThreeEngine {
             stats: Stats3::default(),
             time_gpu: false,
             pt_timers: Vec::new(),
+            pt_samples: Vec::new(),
             raster_timers: Vec::new(),
         };
         // 1×1 white and the BRDF table
@@ -1771,7 +1774,12 @@ impl ThreeEngine {
         }
         let limits = self.device.limits();
         let path = scene.path.or_else(|| {
-            (!scene.volumes.is_empty()).then_some(crate::pathtrace::PathOpts { samples: 4, bounces: 2, denoise: true })
+            (!scene.volumes.is_empty()).then_some(crate::pathtrace::PathOpts {
+                samples: 4,
+                bounces: 2,
+                denoise: true,
+                noise: None,
+            })
         });
         let note = path.and_then(|_| crate::pathtrace::limit_note(scene, &limits));
         if !scene.volumes.is_empty() {
@@ -1805,6 +1813,7 @@ impl ThreeEngine {
                 ticket.as_ref().map(|t| t.id),
             );
             self.pt_timers.extend(timing.gpu);
+            self.pt_samples.push(timing.samples);
             self.stats = Stats3 {
                 draws: scene.draws.len(),
                 triangles: scene.draws.iter().map(Draw3::mesh_triangles).sum::<u64>()

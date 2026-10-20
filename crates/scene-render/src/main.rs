@@ -162,6 +162,14 @@ fn parse_chroma_limit(s: &str) -> Result<f32, String> {
         .ok_or_else(|| format!("expected a positive chroma such as 0.45, got {s:?}"))
 }
 
+fn parse_path_noise(s: &str) -> Result<f32, String> {
+    s.trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|n| n.is_finite() && *n > 0.0 && *n <= 1.0)
+        .ok_or_else(|| format!("expected a relative error above 0 and at most 1, such as 0.02, got {s:?}"))
+}
+
 fn parse_param(s: &str) -> Result<(String, String), String> {
     s.split_once('=')
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -335,6 +343,10 @@ enum Command {
         /// Quality tier overriding the document's project@quality (draft renders at half size).
         #[arg(long, value_enum)]
         quality: Option<QualityArg>,
+        /// Adaptive sampling for path-traced cameras: a pixel stops once the standard error of its mean is this
+        /// fraction of it (0.01 to 0.05 is typical). Each camera's pathSamples caps its pixels.
+        #[arg(long, value_name = "REL", value_parser = parse_path_noise)]
+        path_noise: Option<f32>,
         /// Render only the frames whose file is missing or whose content changed since the last
         /// --changed-only render into the same files (fingerprints in .scene-render-frames.json
         /// beside them).
@@ -423,6 +435,10 @@ enum Command {
         /// its size and is softer.
         #[arg(long, value_enum)]
         quality: Option<QualityArg>,
+        /// Adaptive sampling for path-traced cameras: a pixel stops once the standard error of its mean is this
+        /// fraction of it (0.01 to 0.05 is typical). Each camera's pathSamples caps its pixels.
+        #[arg(long, value_name = "REL", value_parser = parse_path_noise)]
+        path_noise: Option<f32>,
         /// Also write each output's render report (scene-render-report/1, SREP 18) here, as output/@report does;
         /// with several outputs, include {id} in the path for the output's id.
         #[arg(long, value_name = "PATH")]
@@ -1364,6 +1380,7 @@ fn render(
     pipelined: bool,
     strict: bool,
     quality: Option<sr_model::model::ProjectQuality>,
+    path_noise: Option<f32>,
     inc: Incremental,
     out: &mut Out,
 ) -> std::io::Result<u8> {
@@ -1433,6 +1450,7 @@ fn render(
     };
     let adapter = sr_gpu::gpu::describe(&r.gpu().info);
     r.quality = quality;
+    r.path_noise = path_noise;
     // GPU time, where the device has timestamp queries, with --stats: timing every pass costs
     // time itself (much of it on a software rasteriser), so a plain --bench stays untimed
     r.time_gpu = stats;
@@ -1484,7 +1502,8 @@ fn render(
                 gpu_ms.push(ms);
             }
             if stats {
-                eprintln!("{}", serde_json::json!({ "frame": f, "stats": &last, "gpu": gpu }));
+                let paths = if pipelined { None } else { r.path_samples() };
+                eprintln!("{}", serde_json::json!({ "frame": f, "stats": &last, "gpu": gpu, "paths": paths }));
             }
         }
         if let Some(p) = prev.take() {
@@ -1569,7 +1588,7 @@ fn render(
         // written beside the outputs
         let prints = inc.changed_only.then(|| {
             let effective = quality.unwrap_or(doc.scene.project.quality).as_str();
-            let settings = format!("{effective} {bit_depth} {:?}", opts);
+            let settings = format!("{effective} {bit_depth} {:?} {path_noise:?}", opts);
             changes::Fingerprints::new(&text, &doc, &inputs, &settings, ev.has_simulation(), persistent)
         });
         let dir = output.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).to_path_buf();
@@ -1607,7 +1626,11 @@ fn render(
             }
             if stats {
                 let gpu = r.gpu_times();
-                eprintln!("{}", serde_json::json!({ "frame": g.frame, "stats": &frame.stats, "gpu": gpu }));
+                let paths = r.path_samples();
+                eprintln!(
+                    "{}",
+                    serde_json::json!({ "frame": g.frame, "stats": &frame.stats, "gpu": gpu, "paths": paths })
+                );
             }
             let [w, h] = frame.texture.size;
             if sidecar.frames.remove(&name).is_some() {
@@ -1742,6 +1765,7 @@ fn watch(
             false,
             false,
             quality,
+            None,
             Incremental { changed_only: true, keep: Some(&mut keep) },
             out,
         )?;
@@ -2323,6 +2347,7 @@ fn dispatch(command: Command, out: &mut Out) -> std::io::Result<u8> {
             pipelined,
             strict,
             quality,
+            path_noise,
             changed_only,
         } => {
             let opts =
@@ -2344,6 +2369,7 @@ fn dispatch(command: Command, out: &mut Out) -> std::io::Result<u8> {
                 pipelined,
                 strict,
                 quality.map(QualityArg::model),
+                path_noise,
                 Incremental { changed_only, keep: None },
                 out,
             )
@@ -2368,6 +2394,7 @@ fn dispatch(command: Command, out: &mut Out) -> std::io::Result<u8> {
             data,
             strict,
             quality,
+            path_noise,
             report,
         } => {
             let opts = sr_deliver::Options {
@@ -2381,6 +2408,7 @@ fn dispatch(command: Command, out: &mut Out) -> std::io::Result<u8> {
                 row: row.map(|r| (data, r)),
                 parallel,
                 quality: quality.map(QualityArg::model),
+                path_noise,
                 report: false,
             };
             encode(&file, &outputs, path, codec, opts, strict, report.as_deref(), out)

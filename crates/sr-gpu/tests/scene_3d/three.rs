@@ -402,7 +402,7 @@ fn splat_colour_check(path: bool) {
         let mut sc = sc0;
         sc.splats.push(SplatDraw { gpu: gpu.clone(), model, opacity: 1.0 });
         if path {
-            sc.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false });
+            sc.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false, noise: None });
         }
         let px = eng.render_now(&sc, None);
         let got = at(&px, 64, 64);
@@ -434,7 +434,7 @@ fn path_tracing_samples_texture_maps() {
     let mut dr = draw(&eng, &plane, Vec3::new(64.0, 64.0, 0.0), MaterialParams { unlit: true, ..Default::default() });
     dr.maps[0] = Some(eng.upload_rgba8(2, 1, &[255, 0, 0, 255, 0, 255, 0, 255], true));
     let mut s = scene(vec![dr], vec![]);
-    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false });
+    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false, noise: None });
     let pixels = eng.render_now(&s, None);
     let p = at(&pixels, 64, 64);
     assert!(p[1] > 0.9 && p[0] < 0.1 && p[2] < 0.1, "green texel in path-traced material: {p:?}");
@@ -447,7 +447,7 @@ fn path_traced_cutout_textures_do_not_cast_solid_shadows() {
     let plane = prim::plane(100.0, 100.0, 1);
     let receiver = draw(&eng, &plane, Vec3::new(64.0, 64.0, 0.0), MaterialParams::default());
     let mut s = scene(vec![receiver], vec![sun(Vec3::Z, 5.0, true)]);
-    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false });
+    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false, noise: None });
     let reference = lum(at(&eng.render_now(&s, None), 64, 64));
     let mut cutout = draw(
         &eng,
@@ -472,7 +472,7 @@ fn path_tracing_honours_orthographic_cameras_and_ies_profiles() {
     let mut s = scene(vec![dr], vec![]);
     s.cam =
         resolve(&CameraParams { orthographic: true, ortho_height: Some(128.0), ..Default::default() }, 128.0, 128.0);
-    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false });
+    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false, noise: None });
     let pixels = eng.render_now(&s, None);
     assert!(at(&pixels, 96, 64)[3] > 0.9, "orthographic width must not shrink with depth");
     let mut light = sun(Vec3::Z, 10.0, false);
@@ -500,7 +500,7 @@ fn path_tracing_composites_gaussian_splats_in_depth_order() {
     };
     let mut s = scene(vec![], vec![]);
     s.splats.push(SplatDraw { gpu: eng.upload_splats(&splats), model: Mat4::IDENTITY, opacity: 1.0 });
-    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false });
+    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false, noise: None });
     let pixels = eng.render_now(&s, None);
     let center = at(&pixels, 64, 64);
     assert!(center[0] > 0.8 && center[2] < 0.15, "near red splat must cover the far blue splat: {center:?}");
@@ -514,7 +514,7 @@ fn pathtrace_honors_object_shadow_flags() {
     let receiver = draw(&eng, &prim::plane(110.0, 110.0, 1), Vec3::new(64.0, 64.0, 0.0), MaterialParams::default());
     let occluder = draw(&eng, &prim::plane(20.0, 30.0, 1), Vec3::new(44.0, 64.0, -20.0), MaterialParams::default());
     let mut s = scene(vec![receiver, occluder], vec![sun(Vec3::new(1.0, 0.0, 1.0), 5.0, true)]);
-    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false });
+    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false, noise: None });
     let shadow = lum(at(&eng.render_now(&s, None), 64, 64));
     s.draws[1].cast_shadow = false;
     let no_cast = lum(at(&eng.render_now(&s, None), 64, 64));
@@ -533,7 +533,7 @@ fn pathtrace_honors_light_lobe_flags() {
     let Some(mut eng) = engine() else { return };
     let receiver = draw(&eng, &prim::plane(110.0, 110.0, 1), Vec3::new(64.0, 64.0, 0.0), MaterialParams::default());
     let mut s = scene(vec![receiver], vec![sun(Vec3::new(1.0, 0.0, 1.0), 5.0, false)]);
-    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false });
+    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false, noise: None });
     let full = lum(at(&eng.render_now(&s, None), 64, 64));
     s.lights[0].affects_specular = false;
     let diffuse = lum(at(&eng.render_now(&s, None), 64, 64));
@@ -552,7 +552,7 @@ fn pathtrace_honors_ambient_light_lobe_flags() {
     let Some(mut eng) = engine() else { return };
     let receiver = draw(&eng, &prim::plane(110.0, 110.0, 1), Vec3::new(64.0, 64.0, 0.0), MaterialParams::default());
     let mut s = scene(vec![receiver], vec![sun(Vec3::new(1.0, 0.0, 1.0), 5.0, false)]);
-    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false });
+    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false, noise: None });
     s.lights[0].kind = LightKind::Ambient;
     let full = lum(at(&eng.render_now(&s, None), 64, 64));
     s.lights[0].affects_specular = false;
@@ -573,7 +573,7 @@ fn zero_specular_disables_highlights_in_both_renderers() {
     let receiver = draw(&e, &prim::plane(110.0, 110.0, 1), Vec3::new(64.0, 64.0, 0.0), MaterialParams::default());
     let mut s = scene(vec![receiver], vec![sun(Vec3::Z, 2.0, false)]);
     s.lights[0].affects_diffuse = false;
-    for path in [None, Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false })] {
+    for path in [None, Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false, noise: None })] {
         s.path = path;
         let mut values = Vec::new();
         for weight in [0.0, 0.5, 1.0] {
@@ -607,7 +607,7 @@ fn materialx_filtering_survives_upload_and_final_pixel_sampling() {
         let mut dr = draw(&e, &p, Vec3::new(64.0, 64.0, 0.0), MaterialParams { unlit: true, ..material.params });
         dr.maps[0] = Some(tex);
         let mut s = scene(vec![dr], vec![]);
-        for path in [None, Some(sr_gpu::pathtrace::PathOpts { samples: 1, bounces: 1, denoise: false })] {
+        for path in [None, Some(sr_gpu::pathtrace::PathOpts { samples: 1, bounces: 1, denoise: false, noise: None })] {
             s.path = path;
             let got = at(&e.render_now(&s, None), 64, 64);
             assert!(
@@ -663,7 +663,7 @@ fn materialx_address_modes_reach_raster_pathtrace_and_cpu_samples() {
         let mut dr = draw(&e, &p, Vec3::new(64.0, 64.0, 0.0), MaterialParams { unlit: true, ..material.params });
         dr.maps[0] = Some(tex);
         let mut s = scene(vec![dr], vec![]);
-        for path in [None, Some(sr_gpu::pathtrace::PathOpts { samples: 1, bounces: 1, denoise: false })] {
+        for path in [None, Some(sr_gpu::pathtrace::PathOpts { samples: 1, bounces: 1, denoise: false, noise: None })] {
             s.path = path;
             let got = at(&e.render_now(&s, None), 64, 64);
             assert!((0..3).all(|i| (got[i] - expected[i]).abs() < 0.01), "{mode} {path:?}: {got:?}");

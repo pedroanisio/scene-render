@@ -74,7 +74,11 @@ const SITES: &[Site] = &[
         rust: "src/pathtrace.rs",
         anchor: "tile.size[0].div_ceil(8), tile.size[1].div_ceil(8)",
         lines: 1,
-        entries: &[("src/pathtrace.wgsl", "cs_trace"), ("src/pathtrace.wgsl", "cs_atrous")],
+        entries: &[
+            ("src/pathtrace.wgsl", "cs_trace"),
+            ("src/pathtrace.wgsl", "cs_count"),
+            ("src/pathtrace.wgsl", "cs_atrous"),
+        ],
     },
     Site {
         rust: "src/output.rs",
@@ -121,8 +125,8 @@ const SITES: &[Site] = &[
 
 /// How many `.dispatch_workgroups(` calls each source file makes, so that one added or removed fails until the table
 /// above, or the reason it needs none, is brought up to date:
-/// - `compute.rs`, `output.rs`, `video.rs`, `pathtrace.rs`: every call is sized by a `SITES` row (pathtrace's trace and
-///   a-trous passes share one `groups`; its light and dome calls have their own rows);
+/// - `compute.rs`, `output.rs`, `video.rs`, `pathtrace.rs`: every call is sized by a `SITES` row (pathtrace's trace,
+///   sample-count and a-trous passes share one `groups`; its light and dome calls have their own rows);
 /// - `raster.rs`: one group per 16×16 tile, `job.tiles` counts tiles (`raster_group_is_one_tile`), or one per listed
 ///   active tile;
 /// - `three.rs`: the sort passes are sized by `blocks` (a `SITES` row), the scan and the CPU scatter are one group, and
@@ -130,7 +134,7 @@ const SITES: &[Site] = &[
 const DISPATCH_CALLS: &[(&str, usize)] = &[
     ("src/compute.rs", 1),
     ("src/output.rs", 3),
-    ("src/pathtrace.rs", 4),
+    ("src/pathtrace.rs", 5),
     ("src/raster.rs", 2),
     ("src/three.rs", 5),
     ("src/video.rs", 3),
@@ -147,6 +151,7 @@ const ENTRIES: &[(&str, &str)] = &[
     ("src/output.wgsl", "cs_place"),
     ("src/output_blur.wgsl", "cs_blur"),
     ("src/pathtrace.wgsl", "cs_trace"),
+    ("src/pathtrace.wgsl", "cs_count"),
     ("src/pathtrace.wgsl", "cs_atrous"),
     ("src/raster.wgsl", "raster_main"),
     ("src/three_dof_kernel.wgsl", "cs_aperture"),

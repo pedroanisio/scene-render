@@ -168,7 +168,7 @@ fn a_catcher_that_is_not_a_catcher_still_draws_its_colour() {
 fn the_path_tracer_does_not_draw_a_catcher_and_says_so() {
     let Some(mut eng) = engine() else { return };
     let mut s = rig(&eng, true, 1.0, vec![sun(), ambient(1.0)]);
-    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false });
+    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false, noise: None });
     let px = eng.render_now(&s, None);
     assert!(at(&px, LIT.0, LIT.1)[3] < 0.02, "the catcher's material is not drawn: {:?}", at(&px, LIT.0, LIT.1));
     let notes = sr_gpu::pathtrace::notes(&s);

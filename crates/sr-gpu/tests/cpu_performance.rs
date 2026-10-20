@@ -64,7 +64,7 @@ fn camera_and_material_changes_reuse_pathtrace_geometry() {
     let Some(gpu) = common::gpu() else { return };
     let mut engine = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
     let mut s = scene(vec![draw(&engine, Vec3::new(32., 32., 0.))]);
-    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 1, bounces: 1, denoise: false });
+    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 1, bounces: 1, denoise: false, noise: None });
     let original = engine.render_now(&s, None);
     assert!(engine.stats.pt_bvh_seconds > 0.);
     s.cam = resolve(&CameraParams { offset: Vec3::new(4., 0., 0.), ..Default::default() }, 64., 64.);
@@ -365,7 +365,7 @@ fn warm_pathtrace_passes_do_not_upload_unchanged_geometry() {
     let Some(gpu) = common::gpu() else { return };
     let mut engine = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
     let mut s = scene(vec![draw(&engine, Vec3::new(32., 32., 0.))]);
-    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 1, bounces: 1, denoise: false });
+    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 1, bounces: 1, denoise: false, noise: None });
     engine.render_now(&s, None);
     assert_eq!(engine.stats.pt_geometry_uploads, 1);
     s.draws[0].material.base_color = [0.2, 0.8, 0.4, 1.];
@@ -412,7 +412,7 @@ fn packed_geometry_is_immutable_across_reversed_submissions_and_texture_changes(
     let Some(gpu) = common::gpu() else { return };
     let mut e = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
     let mut s = scene(vec![draw(&e, Vec3::new(32., 32., 0.))]);
-    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 1, bounces: 1, denoise: false });
+    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 1, bounces: 1, denoise: false, noise: None });
     let a = e.target(s.size);
     let b = e.target(s.size);
     let mut first = gpu.device.create_command_encoder(&Default::default());

@@ -24,7 +24,8 @@ struct Params {
     ambient: vec4<f32>,
     // backdrop present, total samples, denoise step, exposure
     misc: vec4<f32>,
-    // encode sRGB, `fin` holds means (denoised), first denoise pass (reads sums), unused
+    // encode sRGB, `fin` holds means (denoised), first denoise pass (reads sums), noise target of adaptive sampling
+    // (0 traces every sample)
     out: vec4<f32>,
     // Global origin (xy) and extent (zw) of this tile's working buffers.
     tile: vec4<u32>,
@@ -73,7 +74,8 @@ struct PLight {
 @group(0) @binding(4) var<storage, read> mats: array<Mat>;
 @group(0) @binding(5) var<storage, read> nodes: array<Node>;
 @group(0) @binding(6) var<storage, read> plights: array<PLight>;
-// radiance sum (rgb) and coverage sum (a)
+// Two halves of a tile's w × h rows: the radiance sum (rgb) and coverage sum (a), then the sample statistics of
+// each pixel: the sums of squared luminance and squared coverage, the samples traced, and 1 once converged.
 @group(0) @binding(7) var<storage, read_write> accum: array<vec4<f32>>;
 // denoising guides, two rows a pixel: first-hit albedo sum (rgb) and count (a); normal sum
 // (xyz) and depth sum (w)
@@ -805,16 +807,75 @@ fn cs_trace(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pix = gid.y * w + gid.x;
     let global_xy = pp.tile.xy + gid.xy;
     let global_pix = global_xy.y * u32(pp.size.x) + global_xy.x;
-    var sum = vec4(0.0);
+    let stat = w * h + pix;
+    var st = accum[stat];
+    var acc = accum[pix];
+    let adaptive = pp.out.w > 0.0;
     let start = u32(pp.size.z);
     let count = u32(pp.size.w);
-    for (var s = 0u; s < count; s++) {
-        let si = start + s;
-        rng = pcg(global_pix * 9781u + pcg(si * 6271u + 1u));
-        let jitter = vec2(rnd(), rnd());
-        sum += radiance(vec2<f32>(global_xy) + jitter, pix, true);
+    if (!(adaptive && st.w > 0.5)) {
+        var sum = vec4(0.0);
+        var squares = vec2(0.0);
+        for (var s = 0u; s < count; s++) {
+            let si = start + s;
+            rng = pcg(global_pix * 9781u + pcg(si * 6271u + 1u));
+            let jitter = vec2(rnd(), rnd());
+            let r = radiance(vec2<f32>(global_xy) + jitter, pix, true);
+            sum += r;
+            let l = dot(r.rgb, LUMA);
+            squares += vec2(l * l, r.a * r.a);
+        }
+        acc += sum;
+        st += vec4(squares, f32(count), 0.0);
+        if (adaptive && st.z >= ADAPTIVE_MIN_SAMPLES && converged(acc, st)) { st.w = 1.0; }
+        accum[stat] = st;
     }
-    accum[pix] += sum;
+    // the last dispatch scales a pixel that stopped early to the sums of all the samples, which the passes after
+    // this one divide by
+    let total = pp.misc.y;
+    if (adaptive && f32(start + count) >= total && st.z < total) {
+        acc *= total / st.z;
+    }
+    accum[pix] = acc;
+}
+
+const LUMA: vec3<f32> = vec3(0.2126, 0.7152, 0.0722);
+const ADAPTIVE_MIN_SAMPLES: f32 = 16.0;
+
+// Whether the standard error of a pixel's mean is within the noise target, relative to the pixel's scale: its mean
+// luminance (with a floor of 0.01 after exposure, so that black is not chased) and full coverage. The spread counts one
+// more sample that deviates by that scale. Without it, a pixel that a surface's edge or a light path crosses on few
+// samples, none of them among the first, has no spread at all and would stop without them; with it a constant pixel
+// stops once n (n - 1) >= 1 / noise², and an event of probability p is missed with probability (1 - p)^n.
+fn converged(sum: vec4<f32>, st: vec4<f32>) -> bool {
+    let n = st.z;
+    let mean = vec2(dot(sum.rgb, LUMA), sum.a) / n;
+    let scale = vec2(max(mean.x, 0.01 / max(pp.misc.w, 1e-6)), 1.0);
+    let squares = max(st.xy - n * mean * mean, vec2(0.0));
+    let relative = (squares / (scale * scale) + 1.0) / (n * (n - 1.0));
+    return all(relative <= vec2(pp.out.w * pp.out.w));
+}
+
+// ---------------------------------------------------------------- traced samples
+// Adds the samples each pixel of the tile traced to a 64-bit counter (low word, high word).
+
+@group(1) @binding(0) var<storage, read_write> traced: array<atomic<u32>, 2>;
+var<workgroup> traced_group: atomic<u32>;
+
+@compute @workgroup_size(8, 8)
+fn cs_count(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    let w = pp.tile.z;
+    let h = pp.tile.w;
+    if (gid.x < w && gid.y < h) {
+        atomicAdd(&traced_group, u32(accum[w * h + gid.y * w + gid.x].z));
+    }
+    workgroupBarrier();
+    if (li == 0u) {
+        // 64 pixels of at most 65536 samples fit a word; the carry goes to the high word
+        let n = atomicLoad(&traced_group);
+        let before = atomicAdd(&traced[0], n);
+        if (before + n < before) { atomicAdd(&traced[1], 1u); }
+    }
 }
 
 // ---------------------------------------------------------------- à-trous denoising
