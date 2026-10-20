@@ -74,3 +74,35 @@ fn the_message_names_the_cost_and_what_lowers_it() {
         assert!(w15.message.contains(word), "{word} is not in: {}", w15.message);
     }
 }
+
+/// The cost W15 weighs is also reported per camera (`inspect` lists it), with the size, samples and bounces it is made
+/// of, so the work of a frame is known before it is rendered.
+#[test]
+fn every_path_traced_camera_has_its_cost_listed() {
+    let xml = r##"<scene version="1.7"><project width="1920" height="1080" fps="24" duration="1"/><composition>
+  <camera id="eye" x="0" y="0" z="-10" renderer="pathtrace" pathSamples="320" maxBounces="20"/>
+  <camera id="flat" x="0" y="0" z="-10"/>
+  <viewport3D id="vp" x="0" y="0" width="480" height="270" camera="small">
+    <camera id="small" x="0" y="0" z="-10" renderer="pathtrace"/>
+    <object3D id="ball" primitive="sphere" radius="1"/>
+  </viewport3D>
+</composition></scene>"##;
+    let costs = sr_model::rules::path_costs(xml).unwrap();
+    assert_eq!(costs.len(), 2, "the raster camera has no path cost: {costs:?}");
+    let eye = &costs[0];
+    assert_eq!((eye.camera.as_str(), eye.width, eye.height, eye.samples, eye.bounces), ("eye", 1920, 1080, 320, 20));
+    assert_eq!(eye.segments, 1920 * 1080 * 320 * 20);
+    assert!(eye.over_limit());
+    let small = &costs[1];
+    assert_eq!(
+        (small.camera.as_str(), small.width, small.height, small.samples, small.bounces),
+        ("small", 480, 270, 64, 4)
+    );
+    assert!(!small.over_limit());
+    assert_eq!(sr_model::rules::PATH_COST_LIMIT, 1920 * 1080 * 256 * 4);
+    assert!(sr_model::rules::path_costs("<scene").is_err(), "a document that does not parse is an error");
+    // values past the renderer's range are costed at what it clamps them to
+    let clamped = SCENE.replace(r#"renderer="pathtrace""#, r#"renderer="pathtrace" pathSamples="1e9" maxBounces="0""#);
+    let c = &sr_model::rules::path_costs(&clamped).unwrap()[0];
+    assert_eq!((c.samples, c.bounces), (65536, 1));
+}

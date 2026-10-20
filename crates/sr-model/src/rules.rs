@@ -564,7 +564,64 @@ struct Eval<'a> {
 
 /// W15: the path segments a path-traced frame may take before it is warned about, 1920 × 1080 pixels at 256 samples
 /// and 4 bounces, four times the default 64 samples.
-const PATH_COST_LIMIT: f64 = 1920.0 * 1080.0 * 256.0 * 4.0;
+pub const PATH_COST_LIMIT: u64 = 1920 * 1080 * 256 * 4;
+
+/// The work of one frame of a path-traced camera: its frame's size, the samples and bounces the renderer traces (the
+/// values clamped as it clamps them, 1 to 65536 samples and 1 to 64 bounces) and their product in path segments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathCost {
+    /// The camera's `id`, empty when it has none.
+    pub camera: String,
+    /// The frame's width in pixels.
+    pub width: u64,
+    /// The frame's height in pixels.
+    pub height: u64,
+    /// The samples each pixel traces.
+    pub samples: u64,
+    /// The bounces each path takes at most.
+    pub bounces: u64,
+    /// width × height × samples × bounces.
+    pub segments: u64,
+}
+
+impl PathCost {
+    /// Whether the frame is past [`PATH_COST_LIMIT`], which W15 warns about.
+    pub fn over_limit(&self) -> bool {
+        self.segments > PATH_COST_LIMIT
+    }
+
+    /// The cost of camera `n`: None for a camera that does not path-trace bounces (a raster or a geodesic one, which
+    /// has its own limit, W14) or whose frame has no size. The frame is its viewport3D's, else the project's.
+    fn of(n: Node) -> Option<PathCost> {
+        if n.attribute("renderer") != Some("pathtrace") || xs_true(n.attribute("geodesics")) {
+            return None;
+        }
+        let number = |e: Node, k: &str| e.attribute(k).map(xs_number).filter(|v| v.is_finite());
+        let frame = n
+            .ancestors()
+            .skip(1)
+            .find(|a| is(*a, "viewport3D"))
+            .or_else(|| kids(n.document().root_element(), "project").next())?;
+        let (width, height) = (number(frame, "width")?.max(0.0) as u64, number(frame, "height")?.max(0.0) as u64);
+        let samples = number(n, "pathSamples").unwrap_or(64.0).clamp(1.0, 65536.0) as u64;
+        let bounces = number(n, "maxBounces").unwrap_or(4.0).clamp(1.0, 64.0) as u64;
+        let segments = width.saturating_mul(height).saturating_mul(samples).saturating_mul(bounces);
+        Some(PathCost {
+            camera: n.attribute("id").unwrap_or_default().to_string(),
+            width,
+            height,
+            samples,
+            bounces,
+            segments,
+        })
+    }
+}
+
+/// The [`PathCost`] of every path-traced camera of a document, in document order; an error when it does not parse.
+pub fn path_costs(xml: &str) -> Result<Vec<PathCost>, String> {
+    let doc = Document::parse_with_options(xml, crate::limits::parsing_options()).map_err(|e| e.to_string())?;
+    Ok(doc.descendants().filter(|n| is(*n, "camera")).filter_map(PathCost::of).collect())
+}
 
 /// Cells between a pyro source and an open face below which W02 warns. It comes from one plume (the hero scene's,
 /// 64 x 52 x 64 cells), one face (the bottom) and one kind of source, and the side faces were not measured.
@@ -765,37 +822,21 @@ impl<'a> Eval<'a> {
         }
     }
 
-    /// W15: a path-traced camera whose frame takes more than [`PATH_COST_LIMIT`] path segments, width × height ×
-    /// pathSamples × maxBounces with the values the renderer clamps to (1 to 65536 samples, 1 to 64 bounces). The
-    /// frame is the camera's viewport3D, else the project's. A geodesic camera traces no bounces and has its own
-    /// limit (W14).
+    /// W15: a path-traced camera whose frame takes more than [`PATH_COST_LIMIT`] path segments ([`PathCost`]).
     fn path_cost(&mut self, n: Node) {
-        if n.attribute("renderer") != Some("pathtrace") || xs_true(n.attribute("geodesics")) {
-            return;
-        }
-        let number = |e: Node, k: &str| e.attribute(k).map(xs_number).filter(|v| v.is_finite());
-        let frame = n
-            .ancestors()
-            .skip(1)
-            .find(|a| is(*a, "viewport3D"))
-            .or_else(|| kids(n.document().root_element(), "project").next());
-        let Some((w, h)) = frame.and_then(|f| Some((number(f, "width")?, number(f, "height")?))) else { return };
-        let samples = number(n, "pathSamples").unwrap_or(64.0).clamp(1.0, 65536.0).trunc();
-        let bounces = number(n, "maxBounces").unwrap_or(4.0).clamp(1.0, 64.0).trunc();
-        let cost = w * h * samples * bounces;
-        if cost > PATH_COST_LIMIT {
-            self.warn(
-                n,
-                "W15",
-                format!(
-                    "a {w}×{h} frame at pathSamples=\"{samples}\" and maxBounces=\"{bounces}\" traces {:.1} billion path \
-                     segments per frame, {:.1} times the most this camera is expected to need (256 samples and 4 \
-                     bounces at 1920×1080): lower pathSamples or maxBounces, or render a smaller frame.",
-                    cost / 1e9,
-                    cost / PATH_COST_LIMIT
-                ),
-            );
-        }
+        let Some(c) = PathCost::of(n).filter(PathCost::over_limit) else { return };
+        let (w, h, samples, bounces) = (c.width, c.height, c.samples, c.bounces);
+        self.warn(
+            n,
+            "W15",
+            format!(
+                "a {w}×{h} frame at pathSamples=\"{samples}\" and maxBounces=\"{bounces}\" traces {:.1} billion path \
+                 segments per frame, {:.1} times the most this camera is expected to need (256 samples and 4 \
+                 bounces at 1920×1080): lower pathSamples or maxBounces, or render a smaller frame.",
+                c.segments as f64 / 1e9,
+                c.segments as f64 / PATH_COST_LIMIT as f64
+            ),
+        );
     }
 
     /// p73: a shape placed on a region of a pdf asset (SREP 17).

@@ -118,6 +118,32 @@ fn inspect_summarises_the_model() {
     assert_eq!(v["project"]["workingColorSpace"], "srgb");
 }
 
+/// `inspect` reports the work of each path-traced camera's frame, so a scheduler can route a render before it starts.
+#[test]
+fn inspect_reports_the_path_cost_of_each_path_traced_camera() {
+    let file = path("valid/w15-path-cost.scene.xml");
+    let o = run(&["inspect", &file]);
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("path cost    eye: 1920x1080, 320 samples, 20 bounces, 13.27 billion segments per frame"),
+        "{out}"
+    );
+    let r = json_result(&run(&["inspect", "--json", &file]));
+    let costs = r["path_costs"].as_array().unwrap_or_else(|| panic!("{r}"));
+    assert_eq!(costs.len(), 1, "{r}");
+    let c = &costs[0];
+    assert_eq!(
+        (c["camera"].as_str(), c["samples"].as_u64(), c["bounces"].as_u64()),
+        (Some("eye"), Some(320), Some(20))
+    );
+    assert_eq!(c["segments"], 1920u64 * 1080 * 320 * 20);
+    assert_eq!(r["frames"], 24, "the programme's frames multiply it: {r}");
+    assert_eq!(c["over_limit"], true);
+    let plain = json_result(&run(&["inspect", "--json", &path("valid/minimal.scene.xml")]));
+    assert_eq!(plain["path_costs"], serde_json::json!([]), "a document without a path-traced camera");
+}
+
 #[test]
 fn explain_describes_codes() {
     let o = run(&["explain", "c21"]);

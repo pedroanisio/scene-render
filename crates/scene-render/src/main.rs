@@ -1009,6 +1009,9 @@ fn inspect(file: &Path, no_assets: bool, out: &mut Out) -> std::io::Result<u8> {
     let depth = nodes.iter().map(|(d, _)| d + 1).max().unwrap_or(0);
     let symbols = s.symbols.as_ref().map_or(0, |x| x.symbols.len());
     let effects = s.effects.as_ref().map_or(0, |x| x.effects.len());
+    // the document loaded, so it parses
+    let path_costs =
+        sr_model::read_document(file).ok().and_then(|text| sr_model::rules::path_costs(&text).ok()).unwrap_or_default();
     if out.json() {
         for d in doc.warnings() {
             out.note(file, d);
@@ -1033,6 +1036,15 @@ fn inspect(file: &Path, no_assets: bool, out: &mut Out) -> std::io::Result<u8> {
             "outputs": s.outputs.iter().map(|o| json!({ "id": o.id, "path": o.path, "codec": o.codec.to_string() })).collect::<Vec<_>>(),
             "ids": doc.index().len(),
             "warnings": doc.warnings().len(),
+            "path_costs": path_costs.iter().map(|c| json!({
+                "camera": c.camera,
+                "width": c.width,
+                "height": c.height,
+                "samples": c.samples,
+                "bounces": c.bounces,
+                "segments": c.segments,
+                "over_limit": c.over_limit(),
+            })).collect::<Vec<_>>(),
             "model": &doc.scene,
         }));
         return Ok(0);
@@ -1062,6 +1074,19 @@ fn inspect(file: &Path, no_assets: bool, out: &mut Out) -> std::io::Result<u8> {
     writeln!(out.w, "  outputs      {}", s.outputs.len())?;
     for o in &s.outputs {
         writeln!(out.w, "    {} ({})", o.path, o.codec)?;
+    }
+    for c in &path_costs {
+        writeln!(
+            out.w,
+            "  path cost    {}: {}x{}, {} samples, {} bounces, {:.2} billion segments per frame{}",
+            if c.camera.is_empty() { "(camera)" } else { &c.camera },
+            c.width,
+            c.height,
+            c.samples,
+            c.bounces,
+            c.segments as f64 / 1e9,
+            if c.over_limit() { " (W15)" } else { "" }
+        )?;
     }
     writeln!(out.w, "  ids          {}", doc.index().len())?;
     if !doc.warnings().is_empty() {

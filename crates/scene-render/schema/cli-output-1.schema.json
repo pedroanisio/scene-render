@@ -154,6 +154,24 @@
         },
         "ids": {"$ref": "#/$defs/count"},
         "warnings": {"$ref": "#/$defs/count"},
+        "path_costs": {
+          "description": "per path-traced camera, the path segments one frame traces at most, width x height x samples x bounces as the tracer clamps them; over_limit when W15 warns about it",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["camera", "width", "height", "samples", "bounces", "segments", "over_limit"],
+            "additionalProperties": false,
+            "properties": {
+              "camera": {"type": "string"},
+              "width": {"$ref": "#/$defs/count"},
+              "height": {"$ref": "#/$defs/count"},
+              "samples": {"$ref": "#/$defs/count"},
+              "bounces": {"$ref": "#/$defs/count"},
+              "segments": {"$ref": "#/$defs/count"},
+              "over_limit": {"type": "boolean"}
+            }
+          }
+        },
         "model": {"description": "the document model, the scene element and everything in it", "type": "object"}
       }
     },
