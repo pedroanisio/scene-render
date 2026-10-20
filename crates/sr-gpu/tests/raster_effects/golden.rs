@@ -82,6 +82,7 @@ fn kitchen_scene_matches_goldens() {
 const REFERENCE_PROFILES: &[(u32, &str, wgpu::Backend, &str)] = &[
     (0x10de, "NVIDIA RTX 6000 Ada Generation", wgpu::Backend::Vulkan, "nvidia-rtx6000-ada-vulkan"),
     (0x10de, "NVIDIA GeForce RTX 3050", wgpu::Backend::Vulkan, "nvidia-rtx6000-ada-vulkan"),
+    (0x10de, "NVIDIA GeForce RTX 3070 Ti Laptop GPU", wgpu::Backend::Vulkan, "nvidia-rtx6000-ada-vulkan"),
 ];
 
 fn reference_profile(name: &str, vendor: u32, backend: wgpu::Backend) -> Option<&'static str> {
@@ -136,6 +137,9 @@ fn hardware_reference_profile_requires_the_recorded_adapter_and_backend() {
     let ampere = "NVIDIA GeForce RTX 3050";
     assert_eq!(reference_profile(ampere, 0x10de, wgpu::Backend::Vulkan), Some("nvidia-rtx6000-ada-vulkan"));
     assert_eq!(reference_profile(ampere, 0x10de, wgpu::Backend::Gl), None);
+    let laptop = "NVIDIA GeForce RTX 3070 Ti Laptop GPU";
+    assert_eq!(reference_profile(laptop, 0x10de, wgpu::Backend::Vulkan), Some("nvidia-rtx6000-ada-vulkan"));
+    assert_eq!(reference_profile(laptop, 0x10de, wgpu::Backend::Gl), None);
     assert_eq!(reference_profile("NVIDIA GeForce RTX 3060", 0x10de, wgpu::Backend::Vulkan), None);
 }
 

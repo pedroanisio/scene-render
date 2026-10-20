@@ -36,6 +36,13 @@
       "driver": "615.71.09",
       "review_date": "2026-10-13",
       "method": "Rendered all three frames with the current source; decoded RGBA of each is byte-identical to this set (the decoded_rgba_sha256 values above). Against the llvmpipe references the same output gives the metrics recorded there as previous_reference_comparison (max DeltaE2000 1.175, 1.295, 1.175), which is why it needs this set."
+    },
+    {
+      "adapter": "NVIDIA GeForce RTX 3070 Ti Laptop GPU",
+      "backend": "Vulkan",
+      "driver": "610.57.04",
+      "review_date": "2026-10-20",
+      "method": "Rendered all three frames with the current source; decoded RGBA of each is byte-identical to this set (the decoded_rgba_sha256 values above). Against the llvmpipe references the same output gives max DeltaE2000 1.175, 1.295, 1.175, the metrics recorded for the RTX 3050, which is why it needs this set."
     }
   ]
 }
