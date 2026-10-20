@@ -1746,12 +1746,15 @@ impl PtGpu {
         let bgl_rays = d.features().contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY).then(|| {
             d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("pathtrace-rays"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::AccelerationStructure { vertex_return: false },
-                    count: None,
-                }],
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::AccelerationStructure { vertex_return: false },
+                        count: None,
+                    },
+                    buf(1, ro, false),
+                ],
             })
         });
         let layout = |groups: &[&wgpu::BindGroupLayout]| {

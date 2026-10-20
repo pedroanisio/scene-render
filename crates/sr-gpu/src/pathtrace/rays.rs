@@ -1,10 +1,11 @@
 //! The acceleration structure that hardware ray queries traverse in place of the tracer's own BVH.
 //!
-//! Its top level holds two bottom-level structures with an entry for every primitive of the scene's top level, in the
-//! order the packed records have: one of triangles, where splats and instances are inactive, and one of boxes, where
-//! the triangles are. The primitive index a query reports is then the record's own index, and the shader intersects a
-//! box's splat or instance as the software walk does. Prototype triangles stay out: instances reach them through their
-//! own BVHs in the packed nodes.
+//! Its top level holds two bottom-level structures over the primitives of the scene's top level: one of its triangles
+//! and one of the boxes of its splats and instances. Neither has an inactive entry, which some drivers (lavapipe) let
+//! into their bounds and then miss everything. A table (group 2, binding 1) maps a primitive to its record instead: the
+//! triangles' records, then the boxes', with each top-level instance's custom data the offset of its part. The shader
+//! intersects a box's splat or instance as the software walk does. Prototype triangles stay out: instances reach them
+//! through their own BVHs in the packed nodes.
 
 use super::{PtNode, PtScene};
 
@@ -36,38 +37,41 @@ pub(super) fn top_level(nodes: &[PtNode], primitives: usize) -> usize {
 
 /// What the structures of a scene are built from.
 pub(super) struct Geometry {
-    /// The vertices of the triangle structure: three per primitive, NaN for an inactive one.
+    /// The vertices of the triangle structure: three per triangle.
     vertices: Vec<[f32; 4]>,
-    /// Whether any primitive is an active triangle.
-    triangles: bool,
-    /// The boxes of the box structure, min then max, one per primitive, NaN for an inactive one.
+    /// The boxes of the box structure, min then max, one per splat or instance.
     boxes: Vec<[f32; 6]>,
-    /// Whether any primitive is an active box.
-    others: bool,
+    /// The record of each primitive: the triangles' in their structure's order, then the boxes'.
+    records: Vec<u32>,
 }
 
 /// The geometry of the primitives the top level of `data`'s BVH reaches.
 pub(super) fn geometry(data: &PtScene) -> Geometry {
     let top = top_level(&data.nodes, data.tri_mat.len());
-    let mut vertices = vec![[f32::NAN, 0.0, 0.0, 0.0]; top * 3];
-    let mut boxes = vec![[f32::NAN, 0.0, 0.0, 0.0, 0.0, 0.0]; top];
-    let (mut triangles, mut others) = (false, false);
+    let (mut vertices, mut boxes) = (Vec::new(), Vec::new());
+    let (mut triangle_records, mut box_records) = (Vec::new(), Vec::new());
     for (k, &material) in data.tri_mat.iter().take(top).enumerate() {
         let corners = &data.pos[3 * k..3 * k + 3];
         if material == SPLAT || material == INSTANCE {
             let lo = std::array::from_fn::<f32, 3, _>(|a| corners.iter().map(|c| c[a]).fold(f32::INFINITY, f32::min));
             let hi =
                 std::array::from_fn::<f32, 3, _>(|a| corners.iter().map(|c| c[a]).fold(f32::NEG_INFINITY, f32::max));
-            boxes[k] = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]];
-            others = true;
+            boxes.push([lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]]);
+            box_records.push(k as u32);
         } else {
-            for (c, corner) in corners.iter().enumerate() {
-                vertices[3 * k + c] = [corner[0], corner[1], corner[2], 0.0];
-            }
-            triangles = true;
+            vertices.extend(corners.iter().map(|c| [c[0], c[1], c[2], 0.0]));
+            triangle_records.push(k as u32);
         }
     }
-    Geometry { vertices, triangles, boxes, others }
+    triangle_records.append(&mut box_records);
+    Geometry { vertices, boxes, records: triangle_records }
+}
+
+/// Whether structures of `vertices` triangle corners and `boxes` boxes have something to hit and fit a device whose
+/// structures hold at most `most` primitives. wgpu checks a triangle structure's vertex count against that limit, and a
+/// box's offset into the table is an instance's custom data, which has 24 bits.
+fn fits(vertices: usize, boxes: usize, most: u64) -> bool {
+    vertices + boxes > 0 && vertices as u64 <= most && boxes as u64 <= most && vertices / 3 < 1 << 24
 }
 
 /// Builds the structures of `data` into `enc`, before the passes that trace them. None when the scene has nothing to
@@ -78,10 +82,12 @@ pub(super) fn build(
     data: &PtScene,
     layout: &wgpu::BindGroupLayout,
 ) -> Option<Rays> {
-    let Geometry { vertices, triangles, boxes, others } = geometry(data);
-    if !(triangles || others) || boxes.len() as u64 > u64::from(d.limits().max_blas_primitive_count) {
+    let Geometry { vertices, boxes, records } = geometry(data);
+    let triangle_count = vertices.len() / 3;
+    if !fits(vertices.len(), boxes.len(), u64::from(d.limits().max_blas_primitive_count)) {
         return None;
     }
+    let (triangles, others) = (triangle_count > 0, !boxes.is_empty());
     use wgpu::util::DeviceExt;
     let input = |label: &str, bytes: &[u8]| {
         d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -156,14 +162,24 @@ pub(super) fn build(
         update_mode: wgpu::AccelerationStructureUpdateMode::Build,
     });
     const IDENTITY: [f32; 12] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
-    for (i, entry) in entries.iter().enumerate() {
-        tlas[i] = Some(wgpu::TlasInstance::new(entry.blas, IDENTITY, 0, 0xff));
+    // the triangles' part of the table starts at 0, the boxes' after it
+    let offsets = [triangles.then_some(0), others.then_some(triangle_count as u32)].into_iter().flatten();
+    for (i, (entry, offset)) in entries.iter().zip(offsets).enumerate() {
+        tlas[i] = Some(wgpu::TlasInstance::new(entry.blas, IDENTITY, offset, 0xff));
     }
     enc.build_acceleration_structures(&entries, [&tlas]);
+    let table = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("pt-ray-records"),
+        contents: bytemuck::cast_slice(&records),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
     let group = d.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("pathtrace-rays"),
         layout,
-        entries: &[wgpu::BindGroupEntry { binding: 0, resource: tlas.as_binding() }],
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: tlas.as_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: table.as_entire_binding() },
+        ],
     });
     Some(Rays { group })
 }
@@ -207,13 +223,39 @@ mod tests {
             ],
             ..PtScene::default()
         };
-        let Geometry { vertices, triangles, boxes, others } = geometry(&data);
-        assert!(triangles && others);
-        assert_eq!(vertices.len(), 9, "the prototype triangle after the top level is left out");
-        assert_eq!(&vertices[..3], &[[0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]);
-        assert!(vertices[3..].iter().all(|v| v[0].is_nan()), "splats and instances are no triangles");
-        assert!(boxes[0][0].is_nan(), "a triangle is no box");
-        assert_eq!(boxes[1], [-1.0, -2.0, -3.0, 1.0, 2.0, 3.0]);
-        assert_eq!(boxes[2], [0.0, 0.0, 0.0, 4.0, 5.0, 6.0]);
+        let Geometry { vertices, boxes, records } = geometry(&data);
+        assert_eq!(vertices, [[0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]], "the triangle alone");
+        assert_eq!(
+            boxes,
+            [[-1.0, -2.0, -3.0, 1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 4.0, 5.0, 6.0]],
+            "the splat, the instance"
+        );
+        assert_eq!(records, [0, 1, 2], "the triangle's record, then the boxes'; the prototype triangle is left out");
+    }
+
+    #[test]
+    fn structures_the_device_cannot_hold_are_left_to_the_software_walk() {
+        assert!(fits(6, 6, 6), "two triangles' vertices and six boxes");
+        assert!(!fits(9, 0, 6), "wgpu counts a triangle structure's vertices against the limit, not its triangles");
+        assert!(!fits(0, 7, 6));
+        assert!(!fits(0, 0, 6), "nothing to hit");
+        assert!(fits(3 * ((1 << 24) - 1), 1, u64::MAX));
+        assert!(!fits(3 << 24, 1, u64::MAX), "the boxes' offset is an instance's custom data, which has 24 bits");
+    }
+
+    #[test]
+    fn no_structure_holds_an_inactive_primitive() {
+        // drivers that let an inactive (NaN) entry into their bounds miss every primitive: lavapipe does
+        let data = PtScene {
+            nodes: vec![node(0, 4)],
+            tri_mat: vec![SPLAT, 0, INSTANCE, 1],
+            pos: (0..12).map(|i| [i as f32, 1.0, 2.0, 0.0]).collect(),
+            ..PtScene::default()
+        };
+        let Geometry { vertices, boxes, records } = geometry(&data);
+        assert!(vertices.iter().flatten().chain(boxes.iter().flatten()).all(|v| v.is_finite()));
+        assert_eq!((vertices.len(), boxes.len()), (6, 2));
+        assert_eq!(records, [1, 3, 0, 2], "the records of the triangles in order, then the boxes'");
+        assert_eq!(vertices[3], [9.0, 1.0, 2.0, 0.0], "the second triangle is record 3's");
     }
 }

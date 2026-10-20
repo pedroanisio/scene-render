@@ -1,8 +1,10 @@
 // The nearest hit through the driver's acceleration structure (ray-tracing units where the GPU has them), in place of
-// the walk over `nodes`. Primitive k of the top level is triangle k of one bottom-level structure, or box k of the
-// other: a splat's or an instance's bounds, which `tri_hit` and `prototype_hit` intersect as the software walk does.
-// Every other entry of each is inactive, so the primitive index the driver reports is the record's index.
+// the walk over `nodes`. The top level holds a structure of triangles and one of boxes, a splat's or an instance's
+// bounds, which `tri_hit` and `prototype_hit` intersect as the software walk does. Neither has inactive entries, so a
+// primitive's record is `ray_records[custom data + primitive index]`: each top-level instance's custom data is the
+// offset of its structure's part of the table.
 @group(2) @binding(0) var scene_as: acceleration_structure;
+@group(2) @binding(1) var<storage, read> ray_records: array<u32>;
 
 fn trace(o: vec3<f32>, d: vec3<f32>, tmax: f32) -> Hit {
     var best: Hit;
@@ -14,7 +16,7 @@ fn trace(o: vec3<f32>, d: vec3<f32>, tmax: f32) -> Hit {
     rayQueryInitialize(&q, scene_as, RayDesc(RAY_FLAG_NONE, 0xffu, 1e-4, tmax, o, d));
     while (rayQueryProceed(&q)) {
         let candidate = rayQueryGetCandidateIntersection(&q);
-        let k = candidate.primitive_index;
+        let k = ray_records[candidate.instance_custom_data + candidate.primitive_index];
         var h = best;
         let committed = rayQueryGetCommittedIntersection(&q);
         if (committed.kind == RAY_QUERY_INTERSECTION_TRIANGLE) { h.t = min(h.t, committed.t); }
@@ -34,7 +36,7 @@ fn trace(o: vec3<f32>, d: vec3<f32>, tmax: f32) -> Hit {
         h.t = committed.t;
         h.u = committed.barycentrics.x;
         h.v = committed.barycentrics.y;
-        h.tri = committed.primitive_index;
+        h.tri = ray_records[committed.instance_custom_data + committed.primitive_index];
         h.instance = 0xffffffffu;
         return h;
     }
