@@ -5,6 +5,8 @@
 //! machine with a GPU never renders on the CPU unless asked to. Between equal devices a native
 //! backend (Vulkan, Metal, DirectX 12) beats OpenGL, whose submission costs more.
 //! `SR_GPU_ADAPTER` names an adapter explicitly and `SR_GPU_BACKEND` restricts the backends.
+//! Where the adapter has ray queries the device asks for them, and the path tracer traverses the driver's
+//! acceleration structures (the GPU's ray-tracing units where it has them); `SR_GPU_RAY_QUERY=0` leaves them off.
 
 use std::sync::Arc;
 
@@ -294,6 +296,27 @@ pub fn device_limits(adapter: &wgpu::Limits) -> wgpu::Limits {
     }
 }
 
+/// The ray-query feature when `adapter` has it and `setting` (`SR_GPU_RAY_QUERY`) does not switch it off with `0`,
+/// `off` or `false`.
+pub fn ray_query_features(adapter: wgpu::Features, setting: Option<&str>) -> wgpu::Features {
+    let off =
+        setting.map(|v| v.trim().to_ascii_lowercase()).is_some_and(|v| ["0", "off", "false"].contains(&v.as_str()));
+    if off {
+        return wgpu::Features::empty();
+    }
+    adapter & wgpu::Features::EXPERIMENTAL_RAY_QUERY
+}
+
+/// The acknowledgement wgpu asks for before it enables a feature it calls experimental, which ray queries are.
+#[allow(unsafe_code)]
+fn experimental_features() -> wgpu::ExperimentalFeatures {
+    // SAFETY: the token only acknowledges that wgpu's experimental features may still have bugs; it has no
+    // precondition for the caller to uphold. The only such feature requested is EXPERIMENTAL_RAY_QUERY, used through
+    // wgpu's validated API: the structures are built in the encoder that records the passes reading them, and the
+    // shaders pass naga's validation. SR_GPU_RAY_QUERY=0 leaves the feature, and this token, out of the device.
+    unsafe { wgpu::ExperimentalFeatures::enabled() }
+}
+
 /// A one-line description: name, backend and device type.
 pub fn describe(info: &wgpu::AdapterInfo) -> String {
     format!("{} ({:?}, {:?})", info.name, info.backend, info.device_type)
@@ -308,6 +331,12 @@ pub fn adapters(opts: &GpuOptions) -> (Vec<wgpu::AdapterInfo>, Result<usize, Gpu
     };
     let chosen = choose_adapter(&found, opts.adapter.as_deref());
     (found, chosen)
+}
+
+/// Every adapter the backends in `opts` expose, in enumeration order, with the features it offers a device.
+pub fn adapter_features(opts: &GpuOptions) -> Vec<(wgpu::AdapterInfo, wgpu::Features)> {
+    let creation = creation_lock();
+    enumerate(opts.backends, &creation).into_iter().map(|a| (a.get_info(), a.features())).collect()
 }
 
 /// Instance flags: the debug and validation layers the build config would turn on (debug builds) only when asked for with
@@ -560,14 +589,20 @@ impl Gpu {
         let info = adapter.get_info();
         check_gl_version(&info)?;
         check_3d_formats(|f| adapter.get_texture_format_features(f))?;
-        let limits = device_limits(&adapter.limits());
+        let rays = ray_query_features(adapter.features(), std::env::var("SR_GPU_RAY_QUERY").ok().as_deref());
+        let limits = if rays.is_empty() {
+            device_limits(&adapter.limits())
+        } else {
+            device_limits(&adapter.limits()).using_acceleration_structure_values(adapter.limits())
+        };
         // timestamp queries, where the adapter has them, so renders can report GPU time; and blending into and
         // filtering 32-bit float textures for project/@precision="f32" (SREP 72), and adapter-specific raster sample counts.
         let features = adapter.features()
             & (wgpu::Features::TIMESTAMP_QUERY
                 | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
                 | crate::resources::F32_FEATURES
-                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
+                | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+            | rays;
         let format_flags = |format: wgpu::TextureFormat| {
             if features.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES) {
                 adapter.get_texture_format_features(format).flags
@@ -587,6 +622,11 @@ impl Gpu {
             label: Some("scene-render"),
             required_features: features,
             required_limits: limits,
+            experimental_features: if rays.is_empty() {
+                wgpu::ExperimentalFeatures::disabled()
+            } else {
+                experimental_features()
+            },
             ..Default::default()
         }))
         .map_err(|e| GpuError::Device(e.to_string()))?;

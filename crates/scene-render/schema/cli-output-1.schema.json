@@ -298,6 +298,7 @@
               "device_type": {"type": "string"},
               "driver": {"type": "string"},
               "software": {"type": "boolean"},
+              "ray_query": {"description": "whether a device opened on this adapter finds path-traced hits with hardware ray queries; false when SR_GPU_RAY_QUERY=0", "type": "boolean"},
               "chosen": {"type": "boolean"}
             }
           }

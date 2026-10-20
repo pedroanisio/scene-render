@@ -1071,7 +1071,19 @@ fn inspect(file: &Path, no_assets: bool, out: &mut Out) -> std::io::Result<u8> {
 }
 
 fn gpus(out: &mut Out) -> std::io::Result<u8> {
-    let (found, chosen) = sr_gpu::gpu::adapters(&sr_gpu::gpu::GpuOptions::from_env());
+    let opts = sr_gpu::gpu::GpuOptions::from_env();
+    let (found, chosen) = sr_gpu::gpu::adapters(&opts);
+    // whether a device opened on each adapter traverses with ray queries (SR_GPU_RAY_QUERY=0 turns them off)
+    let setting = std::env::var("SR_GPU_RAY_QUERY").ok();
+    let features = sr_gpu::gpu::adapter_features(&opts);
+    let ray_query: Vec<bool> = found
+        .iter()
+        .map(|a| {
+            features
+                .iter()
+                .any(|(info, f)| info == a && !sr_gpu::gpu::ray_query_features(*f, setting.as_deref()).is_empty())
+        })
+        .collect();
     if found.is_empty() {
         let e = sr_gpu::GpuError::NoAdapter("no adapter was found".into());
         out.set_result(json!({ "adapters": [] }));
@@ -1094,6 +1106,7 @@ fn gpus(out: &mut Out) -> std::io::Result<u8> {
                 "device_type": format!("{:?}", a.device_type),
                 "driver": a.driver,
                 "software": sr_gpu::gpu::is_software(a),
+                "ray_query": ray_query[i],
                 "chosen": chosen == Some(i),
             })
         })
@@ -1102,7 +1115,8 @@ fn gpus(out: &mut Out) -> std::io::Result<u8> {
     for (i, a) in found.iter().enumerate() {
         let mark = if chosen == Some(i) { '*' } else { ' ' };
         let soft = if sr_gpu::gpu::is_software(a) { ", software" } else { "" };
-        writeln!(out.w, "{mark} {} ({:?}, {:?}{soft})", a.name, a.backend, a.device_type)?;
+        let rays = if ray_query[i] { ", ray queries" } else { "" };
+        writeln!(out.w, "{mark} {} ({:?}, {:?}{soft}{rays})", a.name, a.backend, a.device_type)?;
     }
     Ok(if chosen.is_some() { 0 } else { ErrorKind::Unavailable.exit() })
 }

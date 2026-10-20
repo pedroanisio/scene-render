@@ -268,6 +268,10 @@ fn gpus_lists_adapters_and_marks_the_one_chosen() {
     assert!(!list.is_empty());
     assert_eq!(list.iter().filter(|a| a["chosen"] == true).count(), 1, "{r}");
     assert!(list.iter().all(|a| a["name"].is_string() && a["backend"].is_string() && a["software"].is_boolean()));
+    // whether path tracing traverses with the adapter's ray queries, which SR_GPU_RAY_QUERY=0 turns off
+    assert!(list.iter().all(|a| a["ray_query"].is_boolean()), "{r}");
+    let off = json_result(&run_env(&["gpus", "--json"], &[("SR_GPU_RAY_QUERY", "0")]));
+    assert!(off["adapters"].as_array().unwrap().iter().all(|a| a["ray_query"] == false), "{off}");
 }
 
 #[test]
@@ -615,6 +619,41 @@ fn render_path_noise_traces_fewer_samples_and_reports_them() {
     let o = run(&["encode", &scene, "--path-noise", "0"]);
     assert_eq!(o.status.code(), Some(2), "encode checks --path-noise too");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--stats` says whether the path-traced passes found their hits with the adapter's ray queries, and
+/// `SR_GPU_RAY_QUERY=0` keeps them to the tracer's own BVH walk.
+#[test]
+fn render_stats_report_whether_paths_were_traced_with_ray_queries() {
+    let dir = std::env::temp_dir().join(format!("sr-cli-ray-query-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let xml = r#"<scene version="1.7"><project width="32" height="24" fps="1" duration="1"/><composition>
+<camera id="eye" z="-10" renderer="pathtrace" pathSamples="4" maxBounces="2" denoise="false"/>
+<object3D id="ball" primitive="sphere" radius="1"/></composition></scene>"#;
+    let scene = dir.join("q.scene.xml");
+    std::fs::write(&scene, xml).unwrap();
+    let (scene, png) = (scene.display().to_string(), dir.join("q.png").display().to_string());
+    let paths = |o: &Output| -> serde_json::Value {
+        let err = String::from_utf8_lossy(&o.stderr);
+        let line = err.lines().find(|l| l.contains("\"stats\"")).unwrap_or_else(|| panic!("no stats line: {err}"));
+        serde_json::from_str::<serde_json::Value>(line).unwrap()["paths"].clone()
+    };
+    let o = run(&["render", &scene, "-o", &png, "--stats"]);
+    if no_gpu(&o) {
+        return;
+    }
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    let chosen = json_result(&run(&["gpus", "--json"]))["adapters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["chosen"] == true)
+        .map(|a| a["ray_query"].clone())
+        .unwrap();
+    assert_eq!(paths(&o)["hardware_rays"], chosen, "the chosen adapter's ray queries trace: {}", paths(&o));
+    let o = run_env(&["render", &scene, "-o", &png, "--stats"], &[("SR_GPU_RAY_QUERY", "0")]);
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(paths(&o)["hardware_rays"], false, "{}", paths(&o));
 }
 
 #[test]

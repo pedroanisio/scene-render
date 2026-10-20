@@ -20,7 +20,7 @@ pub const FORMAT: &str = "scene-render-cli/1";
 
 /// The envelope's `schema_version` (semantic versioning): a new optional key is a minor change, a key removed or
 /// whose meaning changes is a new `FORMAT`.
-pub const SCHEMA_VERSION: &str = "1.1.0";
+pub const SCHEMA_VERSION: &str = "1.2.0";
 
 /// Why a command did not succeed; the exit status follows from it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

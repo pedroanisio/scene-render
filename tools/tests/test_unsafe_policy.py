@@ -30,6 +30,8 @@ ALLOWED = {
         "a cached rustybuzz face borrows the font bytes that the same cache entry owns",
     ("crates/sr-volume/src/openvdb/codec.rs", "fn block"):
         "the Blosc decompressor is reached only through its C API",
+    ("crates/sr-gpu/src/gpu.rs", "fn experimental_features"):
+        "wgpu asks for an unsafe acknowledgement before it enables ray queries, an experimental feature",
     # test code: a #[global_allocator] that counts allocations and forwards them to System
     ("crates/sr-eval/tests/crater_memory.rs", "unsafe impl GlobalAlloc for ObservedSystem"): "allocation count",
     ("crates/sr-eval/tests/terrain_memory.rs", "unsafe impl GlobalAlloc for ObservedSystem"): "allocation count",

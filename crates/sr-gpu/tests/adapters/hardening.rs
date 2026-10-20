@@ -5,7 +5,7 @@ use super::common;
 use common::*;
 
 use glam::Vec3;
-use sr_gpu::gpu::device_limits;
+use sr_gpu::gpu::{adapter_features, device_limits, ray_query_features, GpuOptions};
 use sr_gpu::output::{OutputColor, OutputStage};
 use sr_gpu::three::{self, Light3, LightKind, ThreeEngine};
 use sr_media::encode::InputFormat;
@@ -44,6 +44,41 @@ fn the_device_asks_for_the_adapters_buffer_binding_and_layer_limits() {
     assert!(l.check_limits(&gl));
     assert_eq!(l.max_storage_buffer_binding_size, gl.max_storage_buffer_binding_size);
     assert_eq!(l.max_storage_buffers_per_shader_stage, 8);
+}
+
+/// Ray queries are asked for where the adapter has them, so the path tracer can use the GPU's ray-tracing units, unless
+/// `SR_GPU_RAY_QUERY` switches them off; an adapter without them gets a device all the same.
+#[test]
+fn the_device_asks_for_ray_queries_where_the_adapter_has_them() {
+    let rq = wgpu::Features::EXPERIMENTAL_RAY_QUERY;
+    let other = wgpu::Features::TIMESTAMP_QUERY;
+    assert_eq!(ray_query_features(rq | other, None), rq);
+    assert_eq!(ray_query_features(rq, Some("")), rq, "an empty setting is no setting");
+    assert_eq!(ray_query_features(rq, Some("1")), rq);
+    for off in ["0", "off", "false", " OFF "] {
+        assert_eq!(ray_query_features(rq, Some(off)), wgpu::Features::empty(), "SR_GPU_RAY_QUERY={off:?}");
+    }
+    assert_eq!(ray_query_features(other, None), wgpu::Features::empty(), "the adapter has none");
+}
+
+#[test]
+fn the_shared_device_has_ray_queries_when_its_adapter_does() {
+    let Some(g) = gpu() else { return };
+    if std::env::var("SR_GPU_RAY_QUERY").is_ok() {
+        println!("SKIPPED: SR_GPU_RAY_QUERY is set, which this test leaves to the unit above");
+        return;
+    }
+    let backends = wgpu::Backends::from(g.info.backend);
+    let (_, features) = adapter_features(&GpuOptions { backends, adapter: None })
+        .into_iter()
+        .find(|(info, _)| *info == g.info)
+        .expect("the device's adapter is enumerated");
+    let wanted = features.contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY);
+    assert_eq!(g.device.features().contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY), wanted, "{}", g.info.name);
+    if wanted {
+        let l = g.device.limits();
+        assert!(l.max_acceleration_structures_per_shader_stage >= 1 && l.max_blas_primitive_count > 0, "{l:?}");
+    }
 }
 
 #[test]
@@ -409,7 +444,7 @@ fn emitters_sharing_a_sprite_id_keep_their_own_textures() {
 fn every_opengl_adapter_gets_a_context_new_enough_for_the_shaders() {
     // the NVIDIA driver gives exactly the desktop version asked for, so a request for 3.3 left the GPU without storage
     // buffers and compute shaders on OpenGL; Mesa gives its newest version whatever is asked
-    use sr_gpu::gpu::{adapters, check_gl_version, GpuOptions};
+    use sr_gpu::gpu::{adapters, check_gl_version};
     let (found, _) = adapters(&GpuOptions { backends: wgpu::Backends::GL, adapter: None });
     let probe = if found.is_empty() { Err("none found") } else { Ok(found) };
     let Some(found) = sr_testkit::gl(probe, "OpenGL context versions") else { return };

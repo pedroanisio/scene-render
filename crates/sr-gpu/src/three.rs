@@ -738,6 +738,9 @@ pub struct ThreeEngine {
     pub pt_timers: Vec<crate::fx::Timer>,
     /// The samples each path-traced pass of the frame traced.
     pub pt_samples: Vec<crate::pathtrace::SampleCount>,
+    /// Whether path-traced passes traverse with ray queries where the device has them, and whether the last one did.
+    rays: bool,
+    traced_with_rays: bool,
     /// Timestamps of raster passes recorded since the caller last cleared them.
     pub raster_timers: Vec<crate::fx::Timer>,
 }
@@ -1352,6 +1355,8 @@ impl ThreeEngine {
             time_gpu: false,
             pt_timers: Vec::new(),
             pt_samples: Vec::new(),
+            rays: true,
+            traced_with_rays: false,
             raster_timers: Vec::new(),
         };
         // 1×1 white and the BRDF table
@@ -1790,9 +1795,8 @@ impl ThreeEngine {
         // a scene too large for the tracer's buffers is rasterised (the caller reports `limit_note`)
         if let Some(opts) = path.filter(|_| note.is_none()) {
             let (data, ticket) = self.pt_geometry.build_for_render(scene);
-            if self.pt.is_none() {
-                self.pt = Some(crate::pathtrace::PtGpu::new(&self.device, FORMAT));
-            }
+            let pt = self.pt.get_or_insert_with(|| crate::pathtrace::PtGpu::new(&self.device, FORMAT));
+            pt.set_hardware_rays(self.rays);
             let env_view = scene.env.as_ref().map(|e| &e.env.view).unwrap_or(&self.black_env);
             let inputs = crate::pathtrace::PtInputs {
                 env: env_view,
@@ -1813,6 +1817,7 @@ impl ThreeEngine {
                 ticket.as_ref().map(|t| t.id),
             );
             self.pt_timers.extend(timing.gpu);
+            self.traced_with_rays = timing.samples.hardware_rays;
             self.pt_samples.push(timing.samples);
             self.stats = Stats3 {
                 draws: scene.draws.len(),
@@ -2943,6 +2948,17 @@ impl ThreeEngine {
             }
         }
         out
+    }
+
+    /// Whether path-traced passes find their hits with the device's ray queries where it has them (the default), or
+    /// always walk the tracer's own BVH.
+    pub fn set_hardware_rays(&mut self, on: bool) {
+        self.rays = on;
+    }
+
+    /// Whether the last path-traced pass found its hits with ray queries.
+    pub fn hardware_rays(&self) -> bool {
+        self.traced_with_rays
     }
 
     /// Records and submits one render (tests and tools).

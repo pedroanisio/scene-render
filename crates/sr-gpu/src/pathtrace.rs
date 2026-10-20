@@ -20,6 +20,7 @@ use crate::three::{Draw3, LightKind, MeshSrc, Scene3};
 mod cache;
 mod instances;
 mod packed;
+mod rays;
 pub use cache::BuildCache;
 
 /// Path-tracing options of a pass.
@@ -171,6 +172,8 @@ pub struct SampleCount {
     pub budget: u64,
     /// The mappable copy of the counter: two u32 words, low then high.
     counter: Option<wgpu::Buffer>,
+    /// Whether the pass found its hits with ray queries of an acceleration structure rather than its own BVH walk.
+    pub hardware_rays: bool,
 }
 
 impl SampleCount {
@@ -1005,6 +1008,35 @@ mod tests {
     }
 
     #[test]
+    fn every_trace_shader_validates_with_hardware_traversal_in_place_of_the_bvh_walk() {
+        let plain = format!(
+            "{}\n{}\n{}",
+            include_str!("sampling.wgsl"),
+            include_str!("pathtrace.wgsl"),
+            include_str!("volume.wgsl")
+        );
+        for base in [plain, grid_source()] {
+            for water in [false, true] {
+                for foam in [false, true] {
+                    for scatter in [false, true] {
+                        let source = ray_query_source(&variant_source(&base, water, foam, scatter));
+                        assert!(!source.contains("var stack: array<u32, 64>;\n    var sp = 0;\n    stack[0] = 0u;"));
+                        assert_eq!(source.matches("fn trace(o: vec3<f32>").count(), 1);
+                        let module = naga::front::wgsl::parse_str(&source)
+                            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&source)));
+                        naga::valid::Validator::new(
+                            naga::valid::ValidationFlags::all(),
+                            naga::valid::Capabilities::all(),
+                        )
+                        .validate(&module)
+                        .unwrap_or_else(|e| panic!("{e:?}"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_variant_pipeline_is_given_water_only_for_water_and_foam_only_for_foam() {
         let plain = format!(
             "{}\n{}\n{}",
@@ -1576,6 +1608,20 @@ fn needs_scatter(mut bounces: impl Iterator<Item = u32>) -> bool {
     bounces.any(|b| b != 1)
 }
 
+/// A trace shader with the walk over the top-level BVH replaced by a ray query of the driver's acceleration structure
+/// (`pathtrace_ray_query.wgsl`, bound at group 2), everything else as it was.
+fn ray_query_source(source: &str) -> String {
+    const HEAD: &str = "fn trace(o: vec3<f32>, d: vec3<f32>, tmax: f32) -> Hit {";
+    let start = source.find(HEAD).expect("the trace shader walks the BVH in trace()");
+    let end = start + source[start..].find("\n}\n").expect("trace() ends") + 3;
+    format!(
+        "enable wgpu_ray_query;\n{}{}{}",
+        &source[..start],
+        include_str!("pathtrace_ray_query.wgsl"),
+        &source[end..]
+    )
+}
+
 /// Keep the single-scattering shader unchanged; the random walk is compiled only when requested.
 fn variant_source(base: &str, water: bool, foam: bool, scatter: bool) -> String {
     let source = variant_source_without_scatter(base, water, foam);
@@ -1625,6 +1671,12 @@ pub struct PtGpu {
     /// The kernel that counts the samples an adaptive pass traced, with its group-1 layout (built on first use).
     bgl_count: wgpu::BindGroupLayout,
     count: std::sync::OnceLock<wgpu::ComputePipeline>,
+    /// The group-2 layout of the acceleration structure, on a device with ray queries, and the trace pipelines that
+    /// traverse it: the software ones' variants, by [`PtGpu::hardware_slot`] (built on first use).
+    bgl_rays: Option<wgpu::BindGroupLayout>,
+    hardware: [std::sync::OnceLock<wgpu::ComputePipeline>; 45],
+    /// Whether passes traverse with ray queries where the device has them.
+    rays: bool,
     output: wgpu::RenderPipeline,
     tile_bytes: u64,
     packed: std::sync::Mutex<packed::Cache>,
@@ -1691,6 +1743,17 @@ impl PtGpu {
             label: Some("pathtrace-count"),
             entries: &[buf(0, rw, false)],
         });
+        let bgl_rays = d.features().contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY).then(|| {
+            d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("pathtrace-rays"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::AccelerationStructure { vertex_return: false },
+                    count: None,
+                }],
+            })
+        });
         let layout = |groups: &[&wgpu::BindGroupLayout]| {
             let groups: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().map(|g| Some(*g)).collect();
             d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1750,10 +1813,77 @@ impl PtGpu {
             atrous,
             bgl_count,
             count: std::sync::OnceLock::new(),
+            bgl_rays,
+            hardware: std::array::from_fn(|_| std::sync::OnceLock::new()),
+            rays: true,
             output,
             tile_bytes: DEFAULT_TILE_BYTES,
             packed: Default::default(),
         }
+    }
+
+    /// Whether passes find their hits with ray queries where the device has them (the default), or always walk the
+    /// tracer's own BVH.
+    pub fn set_hardware_rays(&mut self, on: bool) {
+        self.rays = on;
+    }
+
+    /// The group-2 layout of the acceleration structure when passes traverse with ray queries.
+    fn rays_layout(&self) -> Option<&wgpu::BindGroupLayout> {
+        self.bgl_rays.as_ref().filter(|_| self.rays)
+    }
+
+    /// The slot of a scene's hardware trace pipeline: the variant slots, then the plain shader, then with volumes by
+    /// grid lighting and medium lighting.
+    fn hardware_slot(scene: &Scene3, grid: bool) -> usize {
+        let (water, foam) = variant_of(scene.draws.iter().map(|dr| &dr.material));
+        let scatter = needs_scatter(scene.volumes.iter().map(|v| v.medium().optical().scatter_bounces));
+        let lighting = scene.volumes.iter().any(|v| v.medium().optical().albedo.iter().any(|v| *v > 0.0));
+        let media = !scene.volumes.is_empty();
+        if water || foam || scatter {
+            variant_slot(media, grid, lighting, water, foam, scatter)
+        } else if !media {
+            40
+        } else {
+            41 + 2 * grid as usize + lighting as usize
+        }
+    }
+
+    /// The trace pipeline of `scene` that traverses the acceleration structure in group 2: the shader and constants
+    /// of [`PtGpu::trace_pipeline`]'s, with [`ray_query_source`]'s traversal.
+    fn hardware_pipeline(
+        &self,
+        d: &wgpu::Device,
+        scene: &Scene3,
+        grid: bool,
+        rays: &wgpu::BindGroupLayout,
+    ) -> &wgpu::ComputePipeline {
+        self.hardware[Self::hardware_slot(scene, grid)].get_or_init(|| {
+            let (water, foam) = variant_of(scene.draws.iter().map(|dr| &dr.material));
+            let scatter = needs_scatter(scene.volumes.iter().map(|v| v.medium().optical().scatter_bounces));
+            let lighting = scene.volumes.iter().any(|v| v.medium().optical().albedo.iter().any(|v| *v > 0.0));
+            let media = !scene.volumes.is_empty();
+            let grid = media && grid;
+            let (source, constants) = trace_shader(media, lighting, grid, water, foam, scatter);
+            let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("pathtrace-rays"),
+                source: wgpu::ShaderSource::Wgsl(ray_query_source(&source).into()),
+            });
+            let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("pathtrace-rays"),
+                bind_group_layouts: &[Some(&self.bgl0), grid.then_some(&self.bgl_grid), Some(rays)],
+                immediate_size: 0,
+            });
+            let _creation = crate::gpu::creation_lock();
+            d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("pathtrace-rays"),
+                layout: Some(&layout),
+                module: &module,
+                entry_point: Some("cs_trace"),
+                compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
+                cache: None,
+            })
+        })
     }
 
     /// The pipelines of the shader with light grids, compiled the first time a pass needs them.
@@ -2136,6 +2266,8 @@ pub(crate) fn render_cached(
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
         })
     });
+    // built into this encoder ahead of the passes that trace it, so no pass reads a structure still being built
+    let rays = pt.rays_layout().and_then(|layout| Some((layout, rays::build(d, enc, data, layout)?)));
     let mats = storage("pt-mats", bytemuck::cast_slice(&materials));
     let mut lights = data.lights.clone();
     for light in &mut lights {
@@ -2282,7 +2414,12 @@ pub(crate) fn render_cached(
                     end_of_pass_write_index: Some(a + 1),
                 }),
             });
-            cp.set_pipeline(pt.trace_pipeline(d, scene, grid_group.is_some()));
+            if let Some((layout, rays)) = &rays {
+                cp.set_pipeline(pt.hardware_pipeline(d, scene, grid_group.is_some(), layout));
+                cp.set_bind_group(2, &rays.group, &[]);
+            } else {
+                cp.set_pipeline(pt.trace_pipeline(d, scene, grid_group.is_some()));
+            }
             if let Some(group) = &grid_group {
                 cp.set_bind_group(1, group, &[]);
             }
@@ -2369,7 +2506,12 @@ pub(crate) fn render_cached(
         enc.copy_buffer_to_buffer(&counter, 0, &read, 0, 8);
         read
     });
-    RenderTiming { pack_seconds, gpu: timer, geometry_uploads, samples: SampleCount { budget, counter } }
+    RenderTiming {
+        pack_seconds,
+        gpu: timer,
+        geometry_uploads,
+        samples: SampleCount { budget, counter, hardware_rays: rays.is_some() },
+    }
 }
 
 #[cfg(test)]

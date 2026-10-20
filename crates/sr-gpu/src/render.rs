@@ -75,6 +75,8 @@ pub struct PathSamples {
     pub traced: u64,
     /// What every pixel tracing its camera's `pathSamples` traces.
     pub budget: u64,
+    /// Whether every path-traced pass found its hits with the adapter's ray queries.
+    pub hardware_rays: bool,
 }
 
 /// Counters for one rendered frame.
@@ -1273,6 +1275,7 @@ impl Renderer {
         (!counts.is_empty()).then(|| PathSamples {
             traced: counts.iter().map(|c| c.traced(&self.gpu.device)).sum(),
             budget: counts.iter().map(|c| c.budget).sum(),
+            hardware_rays: counts.iter().all(|c| c.hardware_rays),
         })
     }
 
