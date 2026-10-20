@@ -42,6 +42,11 @@ def long_flags(source):
     return found
 
 
+def names_flag(text, flag):
+    """Whether `text` names `--flag` itself, not a longer flag that starts with it, such as `--path-noise`."""
+    return re.search(rf"--{re.escape(flag)}(?![\w-])", text) is not None
+
+
 def subcommands(source):
     body = source[source.index("enum Command {"):]
     body = body[: body.index("\n}\n")]
@@ -67,17 +72,23 @@ class CommandLineTests(unittest.TestCase):
         '''
         self.assertEqual(long_flags(src), {"first", "param", "path"})
 
+    def test_a_longer_flag_does_not_name_its_prefix(self):
+        self.assertFalse(names_flag("render --path-noise 0.02", "path"))
+        self.assertFalse(names_flag("--path_x", "path"))
+        self.assertTrue(names_flag("encode -o PATH (`--path PATH`)", "path"))
+        self.assertTrue(names_flag("`--path`, or `--path=out.mp4`", "path"))
+
     def test_every_long_flag_is_in_the_readme(self):
         flags = long_flags(self.source)
         self.assertGreater(len(flags), 40, "main.rs was not parsed")
-        missing = sorted(f for f in flags if f"--{f}" not in self.readme and f not in UNDOCUMENTED_FLAGS)
+        missing = sorted(f for f in flags if not names_flag(self.readme, f) and f not in UNDOCUMENTED_FLAGS)
         self.assertEqual(missing, [], "document these flags in README.md, or list them with a reason")
 
     def test_the_exemptions_are_still_flags(self):
         self.assertEqual(sorted(set(UNDOCUMENTED_FLAGS) - long_flags(self.source)), [])
 
     def test_a_flag_exemption_is_dropped_once_the_readme_documents_the_flag(self):
-        documented = sorted(f for f in UNDOCUMENTED_FLAGS if re.search(rf"--{f}\b", self.readme))
+        documented = sorted(f for f in UNDOCUMENTED_FLAGS if names_flag(self.readme, f))
         self.assertEqual(documented, [], "remove these from UNDOCUMENTED_FLAGS: the README names them now")
 
     def test_every_subcommand_is_in_the_readme(self):
