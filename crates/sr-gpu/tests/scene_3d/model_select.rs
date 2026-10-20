@@ -13,7 +13,7 @@ const MODEL: &str = r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[
  "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}]}"#;
 
 fn scene(attrs: &str) -> sr_model::Document {
-    std::fs::write(fixtures().join("two.gltf"), MODEL).unwrap();
+    write_fixture("two.gltf", MODEL);
     let xml = format!(
         r##"<scene version="1.2"><project width="256" height="128" fps="10" duration="2" background="#00000000"/>
         <assets><mesh id="two" src="two.gltf"/></assets>

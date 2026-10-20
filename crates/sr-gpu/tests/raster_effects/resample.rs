@@ -11,7 +11,7 @@ fn project(asset: &str, attrs: &str, scale: f64) -> sr_model::Document {
         let v = TEXELS[x as usize];
         image::Rgba([v, v, v, 255])
     });
-    img.save(fixtures().join("ramp4.png")).unwrap();
+    write_fixture_png("ramp4.png", &img);
     let assets = ASSETS.replace("</assets>", r#"<image id="ramp4" src="ramp4.png" width="4" height="1"/></assets>"#);
     let xml = format!(
         r##"<scene version="1.1"><project width="64" height="16" fps="10" duration="2" background="#000000"/>{assets}<composition><layer id="l" asset="{asset}" x="0" y="0" scaleX="{scale}" scaleY="{scale}" {attrs}/></composition></scene>"##

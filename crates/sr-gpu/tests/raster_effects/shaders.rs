@@ -70,11 +70,10 @@ fn params_attributes_and_defaults_feed_uniforms() {
     let Some(r) = render(&d) else { return };
     assert_px(&r, 16, 16, [1.0, 0.0, 0.0, 1.0], 1e-2);
     // an attribute of the effect reaches a uniform of the same name (color, straight sRGB)
-    std::fs::write(
-        fixtures().join("tint.glsl"),
+    write_fixture(
+        "tint.glsl",
         "uniform vec4 color;\nvoid main() { vec4 c = texture(inputTexture, uv); fragColor = vec4(color.rgb, c.a); }\n",
-    )
-    .unwrap();
+    );
     let d = fx_doc(&square("t"), r##"<effect id="t" type="shader" src="tint.glsl" color="#00FF00"/>"##);
     let r = render(&d).unwrap();
     assert!(problems(&r).is_empty(), "{:?}", problems(&r));
@@ -85,11 +84,10 @@ fn params_attributes_and_defaults_feed_uniforms() {
 fn an_animated_shader_parameter_redraws_a_cached_group() {
     // the square never changes; only the effect's animated parameter does, inside an isolated
     // group whose cached pixels must not outlive it
-    std::fs::write(
-        fixtures().join("level.glsl"),
+    write_fixture(
+        "level.glsl",
         "uniform float k;\nvoid main() { vec4 c = texture(inputTexture, uv); fragColor = vec4(k, 0.0, 0.0, 1.0) * c.a; }\n",
-    )
-    .unwrap();
+    );
     let d = fx_doc(
         &format!(r#"<group id="g" isolate="true">{}</group>"#, square("l")),
         r#"<effect id="l" type="shader" src="level.glsl"><param name="k" value="0"/>
@@ -164,7 +162,7 @@ fn data_uris_and_compile_errors() {
 
 #[test]
 fn identity_round_trips_every_space() {
-    std::fs::write(fixtures().join("id.glsl"), "void main() { fragColor = texture(inputTexture, uv); }\n").unwrap();
+    write_fixture("id.glsl", "void main() { fragColor = texture(inputTexture, uv); }\n");
     for space in [
         "srgb",
         "linear-srgb",
@@ -188,11 +186,10 @@ fn identity_round_trips_every_space() {
 
 #[test]
 fn source_channel_and_named_samplers() {
-    std::fs::write(
-        fixtures().join("two.glsl"),
+    write_fixture(
+        "two.glsl",
         "uniform sampler2D extra;\nvoid main() { vec4 a = texture(inputTexture, uv); vec4 b = texture(sourceTexture, uv); vec4 e = texture(extra, uv); fragColor = vec4(b.r, e.g, a.b, a.a); }\n",
-    )
-    .unwrap();
+    );
     let body = r#"<layer id="w" asset="white" x="8" y="8" scaleX="4" scaleY="4" visible="false"/>
         <layer id="a" asset="red" x="8" y="8" scaleX="4" scaleY="4" effects="s"/>"#;
     let d = fx_doc(
@@ -233,8 +230,8 @@ fn transition_uniforms_direction_and_fallback() {
 
 #[test]
 fn isf_persistent_feedback_accumulates_frame_to_frame() {
-    std::fs::write(
-        fixtures().join("acc.fs"),
+    write_fixture(
+        "acc.fs",
         r#"/*{ "INPUTS": [{"NAME": "inputImage", "TYPE": "image"}],
             "PASSES": [{"TARGET": "acc", "PERSISTENT": true}, {}] }*/
 void main() {
@@ -246,8 +243,7 @@ void main() {
     }
 }
 "#,
-    )
-    .unwrap();
+    );
     let d = fx_doc(&square("f"), r#"<effect id="f" type="shader" src="acc.fs" space="raw"/>"#);
     let Some(one) = render_seq(&d, &[0.0]) else { return };
     let three = render_seq(&d, &[0.0, 0.1, 0.2]).unwrap();

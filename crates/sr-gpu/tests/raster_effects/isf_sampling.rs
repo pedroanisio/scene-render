@@ -34,7 +34,7 @@ void main(){
 
 #[test]
 fn texel_centre_reads_of_a_pass_buffer_are_exact() {
-    std::fs::write(fixtures().join("isf-centres.fs"), CENTRES).unwrap();
+    write_fixture("isf-centres.fs", CENTRES);
     let d = shader_doc(410, 221, "isf-centres.fs", &rect(410, 221));
     let Some(r) = render(&d) else { return };
     assert!(
@@ -91,7 +91,7 @@ fn persistent_cellular_automaton_reads_like_texel_fetch() {
         ("isf-ca-norm.fs", "IMG_NORM_PIXEL(st, ((p) + 0.5) / G).x"),
         ("isf-ca-pixel.fs", "IMG_PIXEL(st, (p) + 0.5).x"),
     ] {
-        std::fs::write(fixtures().join(name), atlas_ca(read)).unwrap();
+        write_fixture(name, atlas_ca(read));
         let d = shader_doc(821, 442, name, &body);
         let Some(r) = render(&d) else { return };
         assert!(
@@ -125,7 +125,7 @@ void main(){
   gl_FragColor = vec4(IMG_THIS_PIXEL(st).xyz, 1.0);
 }
 "#;
-    std::fs::write(fixtures().join("isf-names.fs"), code).unwrap();
+    write_fixture("isf-names.fs", code);
     let d = shader_doc(8, 4, "isf-names.fs", &rect(8, 4));
     let Some(r) = render(&d) else { return };
     assert!(
@@ -155,7 +155,7 @@ fn unsupported_glsl_gets_a_named_diagnostic() {
             "shader:2: [GLSL-SAMPLER-ARG]",
         ),
     ] {
-        std::fs::write(fixtures().join(name), code).unwrap();
+        write_fixture(name, code);
         let d = shader_doc(8, 4, name, &rect(8, 4));
         let Some(r) = render(&d) else { return };
         let all = r.stats.errors.iter().chain(&r.stats.unsupported).cloned().collect::<Vec<_>>().join("\n");

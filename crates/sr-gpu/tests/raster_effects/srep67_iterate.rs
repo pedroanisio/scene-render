@@ -32,7 +32,7 @@ void main() {
 "#;
 
 fn doc(iterate: &str, shader: &str, name: &str) -> sr_model::Document {
-    std::fs::write(fixtures().join(name), shader).unwrap();
+    write_fixture(name, shader);
     let xml = format!(
         r##"<scene version="1.6"><project width="64" height="32" fps="10" duration="4" background="#00000000"/>{ASSETS}<composition><iterate id="it" {iterate}><layer id="a" asset="red" x="8" y="8" scaleX="4" scaleY="4" effects="f"/></iterate></composition><effects><effect id="f" type="shader" src="{name}" space="raw" stepsPerFrame="7" prewarm="3"/></effects></scene>"##
     );
@@ -95,7 +95,7 @@ fn until_converged_stops_early_and_never_passes_the_ceiling() {
 
 #[test]
 fn a_node_outside_the_iterate_keeps_its_state_from_frame_to_frame() {
-    std::fs::write(fixtures().join("srep67-counter.fs"), COUNTER).unwrap();
+    write_fixture("srep67-counter.fs", COUNTER);
     let xml = format!(
         r##"<scene version="1.6"><project width="64" height="32" fps="10" duration="4" background="#00000000"/>{ASSETS}<composition><iterate id="it" steps="5"><layer id="a" asset="red" x="0" y="0" scaleX="2" scaleY="2" effects="f"/></iterate><layer id="b" asset="red" x="40" y="8" scaleX="4" scaleY="4" effects="f"/></composition><effects><effect id="f" type="shader" src="srep67-counter.fs" space="raw"/></effects></scene>"##
     );

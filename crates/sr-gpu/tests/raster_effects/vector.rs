@@ -15,7 +15,7 @@ fn doc_assets(assets: &str, body: &str) -> sr_model::Document {
 }
 
 fn write(name: &str, data: &str) {
-    std::fs::write(fixtures().join(name), data).unwrap();
+    write_fixture(name, data);
 }
 
 #[test]

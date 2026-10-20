@@ -49,7 +49,7 @@ fn scene(object_attrs: &str, morphs: &str) -> sr_model::Document {
 fn scene_with(names: &str, object_attrs: &str, morphs: &str) -> sr_model::Document {
     // one file per variant: the tests run in parallel
     let file = if names.is_empty() { "morphs-plain.gltf" } else { "morphs-named.gltf" };
-    std::fs::write(fixtures().join(file), model(names)).unwrap();
+    write_fixture(file, model(names));
     let xml = format!(
         r##"<scene version="1.2"><project width="256" height="256" fps="10" duration="2" background="#00000000"/>
         <assets><mesh id="m" src="{file}"/></assets>
@@ -125,7 +125,7 @@ fn a_model_without_target_names_reports_that_it_has_none() {
 
 #[test]
 fn morph_needs_version_1_2() {
-    std::fs::write(fixtures().join("morphs-named.gltf"), model(NAMES)).unwrap();
+    write_fixture("morphs-named.gltf", model(NAMES));
     let xml = r##"<scene version="1.1"><project width="64" height="64" fps="10" duration="1"/><assets><mesh id="m" src="morphs-named.gltf"/></assets><composition><object3D id="o" primitive="mesh" mesh="m"><morph name="right" weight="1"/></object3D></composition></scene>"##;
     let opts = sr_model::LoadOptions { verify_assets: false, base_dir: Some(fixtures()) };
     match sr_model::load_str(xml, &opts) {

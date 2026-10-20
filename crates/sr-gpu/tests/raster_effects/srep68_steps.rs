@@ -27,7 +27,7 @@ void main() {
 "#;
 
 fn doc(effect_attrs: &str, node_attrs: &str, shader: &str, name: &str) -> sr_model::Document {
-    std::fs::write(fixtures().join(name), shader).unwrap();
+    write_fixture(name, shader);
     doc_with(
         r##"background="#00000000""##,
         "",
@@ -118,7 +118,7 @@ fn a_node_that_starts_later_steps_from_its_first_frame() {
 #[test]
 fn a_frame_at_which_the_node_is_not_drawn_takes_no_step() {
     let keys = r#"<animate property="opacity"><key time="0" value="1" interpolation="hold"/><key time="0.1" value="0" interpolation="hold"/><key time="0.3" value="1" interpolation="hold"/></animate>"#;
-    std::fs::write(fixtures().join("srep68-counter.fs"), COUNTER).unwrap();
+    write_fixture("srep68-counter.fs", COUNTER);
     let d = doc_with(
         r##"background="#00000000""##,
         "",
@@ -158,7 +158,7 @@ fn the_defaults_keep_frameindex_and_timedelta_as_before() {
 /// rest of the scene, and the frame is the same as in order.
 #[test]
 fn a_seek_replays_the_stateful_node_alone() {
-    std::fs::write(fixtures().join("srep68-counter.fs"), COUNTER).unwrap();
+    write_fixture("srep68-counter.fs", COUNTER);
     let scene = |crowd: usize| {
         let crowd: String = (0..crowd)
             .map(|k| format!(r#"<layer id="c{k}" asset="red" x="{}" y="{}" effects="soft"/>"#, k % 8 * 8, k / 8 * 8))
@@ -244,7 +244,7 @@ fn float32_checkpoints_preserve_state_across_a_fresh_renderer() {
         return;
     }
     let name = "srep68-f32-checkpoint.fs";
-    std::fs::write(fixtures().join(name), COUNTER.replace("prev.r + 1.0", "prev.r + 0.0001")).unwrap();
+    write_fixture(name, COUNTER.replace("prev.r + 1.0", "prev.r + 0.0001"));
     let d = doc_with(
         r##"precision="f32" background="#00000000""##,
         "",

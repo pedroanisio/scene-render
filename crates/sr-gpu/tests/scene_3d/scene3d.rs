@@ -102,7 +102,7 @@ const TRI_GLTF: &str = r#"{"asset":{"version":"2.0"},"extensionsUsed":["KHR_mate
 
 #[test]
 fn imported_meshes_with_variants() {
-    std::fs::write(fixtures().join("tri.gltf"), TRI_GLTF).unwrap();
+    write_fixture("tri.gltf", TRI_GLTF);
     let asset = r#"<mesh id="tri" src="tri.gltf"/>"#;
     // 1 m triangle = 100 px, y up in glTF → pointing up from the origin
     let obj = |variant: &str| format!(r#"<object3D id="t" primitive="mesh" mesh="tri" x="30" y="100" {variant}/>"#);
@@ -128,7 +128,7 @@ const MORPH_GLTF: &str = r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nod
 #[test]
 fn keyed_morph_weights_move_the_mesh() {
     // the triangle's apex is 100 px above the origin; the morph target lowers it by 80 px at weight 1
-    std::fs::write(fixtures().join("morph.gltf"), MORPH_GLTF).unwrap();
+    write_fixture("morph.gltf", MORPH_GLTF);
     let asset = r#"<mesh id="morph" src="morph.gltf"/>"#;
     let obj = |weights: &str| {
         format!(r#"<object3D id="m" primitive="mesh" mesh="morph" x="30" y="100">{weights}</object3D>"#)

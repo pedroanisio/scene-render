@@ -315,13 +315,11 @@ fn shader_uniforms_and_samplers_beyond_the_device_fall_back() {
     let l = g.device.limits();
     let elements = (l.max_uniform_buffer_binding_size / 16 + 1).min(u32::MAX as u64);
     let textures = l.max_sampled_textures_per_shader_stage + 1;
-    let dir = fixtures();
     for (name, decl, read) in [
         ("big.glsl", format!("uniform vec4 table[{elements}];"), "table[1]"),
         ("many.glsl", (0..textures).map(|k| format!("uniform sampler2D s{k};\n")).collect(), "texture(s7, uv)"),
     ] {
-        let path = dir.join(name);
-        std::fs::write(&path, format!("{decl}\nvoid main() {{ fragColor = {read}; }}")).unwrap();
+        let path = write_fixture(name, format!("{decl}\nvoid main() {{ fragColor = {read}; }}"));
         let d = doc_with(
             r##"background="#00000000""##,
             "",

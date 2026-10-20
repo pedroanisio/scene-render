@@ -45,7 +45,7 @@ fn model() -> String {
 }
 
 fn scene(attrs: &str, children: &str) -> sr_model::Document {
-    std::fs::write(fixtures().join("clips.gltf"), model()).unwrap();
+    write_fixture("clips.gltf", model());
     let xml = format!(
         r##"<scene version="1.2"><project width="256" height="128" fps="10" duration="2" background="#00000000"/>
         <assets><mesh id="m" src="clips.gltf"/></assets>

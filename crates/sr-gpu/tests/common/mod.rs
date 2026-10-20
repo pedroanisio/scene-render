@@ -121,6 +121,27 @@ pub fn fixtures() -> PathBuf {
     .clone()
 }
 
+/// Writes `bytes` to the fixture `name`, returning its path. Test threads share the directory and read its files while
+/// others write the same ones, so the bytes go to a file of their own that then replaces the fixture: a reader sees the
+/// old file or the new one, whole, never one written in place and half written.
+pub fn write_fixture(name: &str, bytes: impl AsRef<[u8]>) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let path = fixtures().join(name);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let file = path.file_name().unwrap().to_string_lossy();
+    let scratch = path.with_file_name(format!(".{file}.{n}.tmp"));
+    std::fs::write(&scratch, bytes).unwrap();
+    std::fs::rename(&scratch, &path).unwrap();
+    path
+}
+
+/// Writes `image` as the PNG fixture `name`, through [`write_fixture`].
+pub fn write_fixture_png(name: &str, image: &image::RgbaImage) -> PathBuf {
+    let mut png = Vec::new();
+    image.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    write_fixture(name, png)
+}
+
 pub const ASSETS: &str = r##"<assets>
   <image id="red" src="red.png" width="4" height="4"/>
   <image id="half" src="half.png" width="4" height="4"/>

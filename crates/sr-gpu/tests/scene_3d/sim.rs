@@ -93,7 +93,7 @@ fn physics_cache_round_trip() {
     assert!(bytes.starts_with(b"SRPHYS04"));
     use sha2::Digest;
     let sha: String = sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
-    std::fs::write(fixtures().join("fall.physics"), &bytes).unwrap();
+    write_fixture("fall.physics", &bytes);
     // a version 1 file (no 3D bodies, no fracture count, no identity or contacts) reads the same
     let mut v1 = b"SRPHYS01".to_vec();
     v1.extend_from_slice(&bytes[8..40]);
@@ -102,7 +102,7 @@ fn physics_cache_round_trip() {
     assert_eq!(u64::from_le_bytes(bytes[40..48].try_into().unwrap()), 0, "no 3D bodies");
     assert_eq!(u64::from_le_bytes(bytes[96..104].try_into().unwrap()), 0, "no contacts");
     let sha1: String = sha2::Sha256::digest(&v1).iter().map(|b| format!("{b:02x}")).collect();
-    std::fs::write(fixtures().join("fall-v1.physics"), &v1).unwrap();
+    write_fixture("fall-v1.physics", &v1);
     let old = scene(
         r#"<layer id="box" asset="red" x="24" y="0" scaleX="4" scaleY="4"><rigidBody/></layer>"#,
         &format!(r#"<physics bounds="floor" pixelsPerMeter="20" cache="fall-v1.physics" cacheSha256="{sha1}"/>"#),
@@ -298,7 +298,7 @@ fn ball_joints_swing_and_3d_caches_replay() {
     let bytes = ev.physics_cache().unwrap();
     use sha2::Digest;
     let sha: String = sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
-    std::fs::write(fixtures().join("bob.physics"), &bytes).unwrap();
+    write_fixture("bob.physics", &bytes);
     let cached = scene3(objects, &physics(&format!(r#" cache="bob.physics" cacheSha256="{sha}""#)));
     let ev2 = sr_eval::Evaluator::new(&cached, &Default::default()).unwrap();
     let g = ev2.evaluate(1.7);

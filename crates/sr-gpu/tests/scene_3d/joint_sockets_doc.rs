@@ -51,7 +51,7 @@ fn scene(parent_attrs: &str, child_attrs: &str) -> sr_model::Document {
 }
 
 fn scene_with(parent_attrs: &str, child_attrs: &str, child_children: &str) -> sr_model::Document {
-    std::fs::write(fixtures().join("joints.gltf"), model()).unwrap();
+    write_fixture("joints.gltf", model());
     let xml = format!(
         r##"<scene version="1.2"><project width="256" height="128" fps="10" duration="2" background="#00000000"/>
         <assets><mesh id="m" src="joints.gltf"/></assets>

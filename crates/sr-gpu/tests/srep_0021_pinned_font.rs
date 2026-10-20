@@ -15,7 +15,7 @@ fn sha256(bytes: &[u8]) -> String {
 #[test]
 fn srep_0021_pinned_font_draws_notdef() {
     let bytes = test_font::build("SREP Test", test_font::Metrics::default());
-    std::fs::write(fixtures().join("srep21.ttf"), &bytes).unwrap();
+    write_fixture("srep21.ttf", &bytes);
     let xml = format!(
         r##"<scene version="1.2"><project width="640" height="360" fps="10" duration="1" background="#000000" fontPolicy="pinned"/>
   <assets>

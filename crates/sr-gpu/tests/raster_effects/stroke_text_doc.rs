@@ -32,7 +32,7 @@ fn font() -> String {
 }
 
 fn doc(attrs: &str) -> sr_model::Document {
-    std::fs::write(fixtures().join("stroke-text.jhf"), font()).unwrap();
+    write_fixture("stroke-text.jhf", font());
     let xml = format!(
         r##"<scene version="1.2"><project width="400" height="100" fps="10" duration="2" background="#000000"/>
         <assets><strokeFont id="hand" src="stroke-text.jhf"/></assets>

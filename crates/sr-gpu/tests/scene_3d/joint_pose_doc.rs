@@ -45,7 +45,7 @@ fn model() -> String {
 }
 
 fn scene(joints: &str, target: &str) -> sr_model::Document {
-    std::fs::write(fixtures().join("joint-pose.gltf"), model()).unwrap();
+    write_fixture("joint-pose.gltf", model());
     let xml = format!(
         r##"<scene version="1.2"><project width="256" height="256" fps="10" duration="2" background="#00000000"/>
         <assets><mesh id="m" src="joint-pose.gltf"/></assets>

@@ -71,11 +71,7 @@ fn mattes_follow_the_paints_they_are_filled_with() {
 fn effects_follow_the_nodes_they_read() {
     // a still layer displaced by, keyed against, or sampling in a shader, a node that moves
     let moving = r#"<layer id="bg" asset="wide" x="0" y="0" scaleX="4" scaleY="4" visible="false"><animate property="x"><key time="0" value="0"/><key time="1" value="24"/></animate></layer>"#;
-    std::fs::write(
-        fixtures().join("other.glsl"),
-        "uniform sampler2D other;\nvoid main() { fragColor = texture(other, uv); }\n",
-    )
-    .unwrap();
+    write_fixture("other.glsl", "uniform sampler2D other;\nvoid main() { fragColor = texture(other, uv); }\n");
     for effect in [
         r#"<effect id="fx" type="displacement-map" source="bg" amount="6"/>"#,
         r#"<effect id="fx" type="difference-key" source="bg" tolerance="0.1"/>"#,
