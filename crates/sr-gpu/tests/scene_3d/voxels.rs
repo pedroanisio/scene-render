@@ -154,6 +154,18 @@ fn palette_materials_of_the_document_are_one_draw_each_and_the_object_material_f
 }
 
 #[test]
+fn an_index_neither_the_palette_nor_the_object_names_takes_the_colour_of_the_file() {
+    let Some(gpu) = gpu() else { return };
+    // the material of a cell is the one of its index, else the object's own material, else the colour of the file
+    let halves: Vec<_> = block(8, 1).into_iter().map(|(c, _)| (c, if c[0] < 4 { 1 } else { 2 })).collect();
+    let file = vox_file("short-palette.vox", &halves, &[RED, BLUE]);
+    let materials = r##"<material id="stone" baseColor="#808080"/>"##;
+    let shot = render(&gpu, &document(&file, r#"palette="stone""#, "", materials));
+    assert!(shot.errors.is_empty(), "{:?}", shot.errors);
+    assert_eq!((shot.draws, shot.groups), (2, 2), "the document material and the colour of the file");
+}
+
+#[test]
 fn a_surface_over_its_memory_budget_is_an_error_with_its_cause_and_draws_nothing() {
     let Some(gpu) = gpu() else { return };
     // a checkerboard of 12 (864 cells, 5184 quads, 6.4 MB at the peak) under a budget of 1 MiB

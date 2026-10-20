@@ -222,11 +222,8 @@ impl Renderer {
             Some("file") | None => Vec::new(),
             Some(list) => list.split_whitespace().map(str::to_string).collect(),
         };
-        let from_file = match palette.as_deref().map(str::trim) {
-            Some("file") => true,
-            None => model.colours.is_some(),
-            Some(_) => false,
-        };
+        // an index the palette and the object leave without a material takes the colour of the file, if it has colours
+        let from_file = palette.as_deref().map(str::trim) == Some("file") || model.colours.is_some();
         let object_material = a.str("material");
         let mut used = [false; 256];
         for body in &bodies {
