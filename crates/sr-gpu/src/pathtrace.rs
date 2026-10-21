@@ -716,6 +716,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tracers_on_one_device_share_its_pipelines_and_keep_their_own_settings() {
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "tracers_on_one_device_share_its_pipelines_and_keep_their_own_settings"
+        );
+        let mut a = PtGpu::new(&gpu.device, crate::resources::FORMAT);
+        let b = PtGpu::new(&gpu.device, crate::resources::FORMAT);
+        assert!(std::sync::Arc::ptr_eq(&a.pipelines, &b.pipelines), "one set per device and output format");
+        let other = PtGpu::new(&gpu.device, wgpu::TextureFormat::Rgba8Unorm);
+        assert!(!std::sync::Arc::ptr_eq(&a.pipelines, &other.pipelines), "another output format has its own");
+        assert_ne!(a.pipelines.output, other.pipelines.output);
+        a.set_hardware_rays(false);
+        a.limit_buffers(MIN_TILE_BYTES).unwrap();
+        assert_eq!((a.rays, a.tile_bytes), (false, MIN_TILE_BYTES));
+        assert_eq!((b.rays, b.tile_bytes), (true, DEFAULT_TILE_BYTES), "settings stay with their tracer");
+        assert_eq!(a.rays_layout(), None);
+        assert_eq!(b.rays_layout(), b.pipelines.bgl_rays.as_ref());
+    }
+
+    #[test]
     fn foam_alone_selects_the_foam_variant_and_never_the_water_one_and_every_variant_has_its_own_pipeline_slot() {
         let plain = sr_3d::MaterialParams::default();
         let glass = sr_3d::MaterialParams { transmission: 1.0, ..Default::default() };
@@ -1316,6 +1336,7 @@ struct Params {
 }
 
 /// Compute pipelines of the shader variant with light grids.
+#[derive(Debug)]
 struct GridPipelines {
     layout: wgpu::PipelineLayout,
     light: wgpu::ComputePipeline,
@@ -1652,8 +1673,21 @@ fn variant_source(base: &str, water: bool, foam: bool, scatter: bool) -> String 
     format!("{source}\n{}", include_str!("pathtrace_scatter.wgsl"))
 }
 
-/// Pipelines of the path tracer (built on first use).
+/// The path tracer of an engine: the device's pipelines for its output format, and the engine's own ray-query choice,
+/// buffer budget and packed geometry.
 pub struct PtGpu {
+    pipelines: std::sync::Arc<crate::gpu::OfDevice<Pipelines>>,
+    /// Whether passes traverse with ray queries where the device has them.
+    rays: bool,
+    tile_bytes: u64,
+    packed: std::sync::Mutex<packed::Cache>,
+}
+
+/// The shaders, layouts and pipelines of the path tracer for one device and output format (the variants built on first
+/// use). They are immutable objects of the device, so the tracers on it share one set while any of them is alive
+/// ([`PIPELINES`]): on a software adapter a set holds hundreds of megabytes.
+#[derive(Debug)]
+struct Pipelines {
     bgl0: wgpu::BindGroupLayout,
     bgl_pair: wgpu::BindGroupLayout,
     bgl_fin: wgpu::BindGroupLayout,
@@ -1672,18 +1706,52 @@ pub struct PtGpu {
     bgl_count: wgpu::BindGroupLayout,
     count: std::sync::OnceLock<wgpu::ComputePipeline>,
     /// The group-2 layout of the acceleration structure, on a device with ray queries, and the trace pipelines that
-    /// traverse it: the software ones' variants, by [`PtGpu::hardware_slot`] (built on first use).
+    /// traverse it: the software ones' variants, by [`Pipelines::hardware_slot`] (built on first use).
     bgl_rays: Option<wgpu::BindGroupLayout>,
     hardware: [std::sync::OnceLock<wgpu::ComputePipeline>; 45],
-    /// Whether passes traverse with ray queries where the device has them.
-    rays: bool,
     output: wgpu::RenderPipeline,
-    tile_bytes: u64,
-    packed: std::sync::Mutex<packed::Cache>,
 }
 
+/// The pipelines of the tracers alive, by device and output format.
+static PIPELINES: crate::gpu::PerDevice<wgpu::TextureFormat, Pipelines> = crate::gpu::PerDevice::new();
+
 impl PtGpu {
+    /// The path tracer of `format` on this device, with the pipelines of any other tracer on it alive.
     pub fn new(d: &wgpu::Device, format: wgpu::TextureFormat) -> PtGpu {
+        PtGpu {
+            pipelines: PIPELINES.get(d, format, || Pipelines::new(d, format)),
+            rays: true,
+            tile_bytes: DEFAULT_TILE_BYTES,
+            packed: Default::default(),
+        }
+    }
+
+    /// Whether passes find their hits with ray queries where the device has them (the default), or always walk the
+    /// tracer's own BVH.
+    pub fn set_hardware_rays(&mut self, on: bool) {
+        self.rays = on;
+    }
+
+    /// The group-2 layout of the acceleration structure when passes traverse with ray queries.
+    fn rays_layout(&self) -> Option<&wgpu::BindGroupLayout> {
+        self.pipelines.bgl_rays.as_ref().filter(|_| self.rays)
+    }
+
+    /// Sets the maximum size of each image storage buffer, additionally bounded by device
+    /// limits. Useful for constraining memory and verifying that tiled output is identical.
+    /// The budget must fit a 64×64 output core and its complete denoising halo
+    /// (1,131,008 bytes), bounding the amount of repeated halo work.
+    pub fn limit_buffers(&mut self, bytes: u64) -> Result<(), String> {
+        if bytes < MIN_TILE_BYTES {
+            return Err(format!("path tracing needs at least {MIN_TILE_BYTES} bytes per tile buffer"));
+        }
+        self.tile_bytes = bytes;
+        Ok(())
+    }
+}
+
+impl Pipelines {
+    fn new(d: &wgpu::Device, format: wgpu::TextureFormat) -> Pipelines {
         let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("pathtrace"),
             source: wgpu::ShaderSource::Wgsl(trace_shader(false, false, false, false, false, false).0.into()),
@@ -1802,7 +1870,7 @@ impl PtGpu {
                 cache: None,
             })
         };
-        PtGpu {
+        Pipelines {
             bgl0,
             bgl_pair,
             bgl_fin,
@@ -1818,22 +1886,8 @@ impl PtGpu {
             count: std::sync::OnceLock::new(),
             bgl_rays,
             hardware: std::array::from_fn(|_| std::sync::OnceLock::new()),
-            rays: true,
             output,
-            tile_bytes: DEFAULT_TILE_BYTES,
-            packed: Default::default(),
         }
-    }
-
-    /// Whether passes find their hits with ray queries where the device has them (the default), or always walk the
-    /// tracer's own BVH.
-    pub fn set_hardware_rays(&mut self, on: bool) {
-        self.rays = on;
-    }
-
-    /// The group-2 layout of the acceleration structure when passes traverse with ray queries.
-    fn rays_layout(&self) -> Option<&wgpu::BindGroupLayout> {
-        self.bgl_rays.as_ref().filter(|_| self.rays)
     }
 
     /// The slot of a scene's hardware trace pipeline: the variant slots, then the plain shader, then with volumes by
@@ -1853,7 +1907,7 @@ impl PtGpu {
     }
 
     /// The trace pipeline of `scene` that traverses the acceleration structure in group 2: the shader and constants
-    /// of [`PtGpu::trace_pipeline`]'s, with [`ray_query_source`]'s traversal.
+    /// of [`Pipelines::trace_pipeline`]'s, with [`ray_query_source`]'s traversal.
     fn hardware_pipeline(
         &self,
         d: &wgpu::Device,
@@ -2036,18 +2090,6 @@ impl PtGpu {
             })
         })
     }
-
-    /// Sets the maximum size of each image storage buffer, additionally bounded by device
-    /// limits. Useful for constraining memory and verifying that tiled output is identical.
-    /// The budget must fit a 64×64 output core and its complete denoising halo
-    /// (1,131,008 bytes), bounding the amount of repeated halo work.
-    pub fn limit_buffers(&mut self, bytes: u64) -> Result<(), String> {
-        if bytes < MIN_TILE_BYTES {
-            return Err(format!("path tracing needs at least {MIN_TILE_BYTES} bytes per tile buffer"));
-        }
-        self.tile_bytes = bytes;
-        Ok(())
-    }
 }
 
 /// Views and samplers the tracer reads that the 3D engine owns.
@@ -2116,7 +2158,7 @@ fn build_light_grids(
     let entries = |acc: &wgpu::Buffer| {
         d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("pathtrace-grid-build"),
-            layout: &pt.bgl0,
+            layout: &pt.pipelines.bgl0,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -2142,7 +2184,7 @@ fn build_light_grids(
         })
     };
     let build = entries(buffers.stand_in);
-    let g = pt.grid_pipelines(d);
+    let g = pt.pipelines.grid_pipelines(d);
     let stamp = timer.as_mut().and_then(|t| t.labelled_pair("pathtrace light grid"));
     let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
         label: Some("pathtrace-light-grid"),
@@ -2265,7 +2307,7 @@ pub(crate) fn render_cached(
     let grid_group = grid_buffer.as_ref().map(|buffer| {
         d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("pathtrace-light-grid"),
-            layout: &pt.bgl_grid,
+            layout: &pt.pipelines.bgl_grid,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
         })
     });
@@ -2304,7 +2346,7 @@ pub(crate) fn render_cached(
         let read = buffer("pt-traced-read", wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ);
         let group = d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("pathtrace-count"),
-            layout: &pt.bgl_count,
+            layout: &pt.pipelines.bgl_count,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: counter.as_entire_binding() }],
         });
         (counter, read, group)
@@ -2378,7 +2420,7 @@ pub(crate) fn render_cached(
         let group0 = |acc: &wgpu::Buffer| {
             d.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("pathtrace"),
-                layout: &pt.bgl0,
+                layout: &pt.pipelines.bgl0,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -2418,10 +2460,10 @@ pub(crate) fn render_cached(
                 }),
             });
             if let Some((layout, rays)) = &rays {
-                cp.set_pipeline(pt.hardware_pipeline(d, scene, grid_group.is_some(), layout));
+                cp.set_pipeline(pt.pipelines.hardware_pipeline(d, scene, grid_group.is_some(), layout));
                 cp.set_bind_group(2, &rays.group, &[]);
             } else {
-                cp.set_pipeline(pt.trace_pipeline(d, scene, grid_group.is_some()));
+                cp.set_pipeline(pt.pipelines.trace_pipeline(d, scene, grid_group.is_some()));
             }
             if let Some(group) = &grid_group {
                 cp.set_bind_group(1, group, &[]);
@@ -2431,7 +2473,7 @@ pub(crate) fn render_cached(
                 cp.dispatch_workgroups(groups[0], groups[1], 1);
             }
             if let Some((_, _, group)) = &counter {
-                cp.set_pipeline(pt.count_pipeline(d));
+                cp.set_pipeline(pt.pipelines.count_pipeline(d));
                 cp.set_bind_group(0, &g_trace, &[0]);
                 cp.set_bind_group(1, group, &[]);
                 cp.dispatch_workgroups(groups[0], groups[1], 1);
@@ -2448,7 +2490,7 @@ pub(crate) fn render_cached(
                     end_of_pass_write_index: Some(a + 1),
                 }),
             });
-            cp.set_pipeline(&pt.atrous);
+            cp.set_pipeline(&pt.pipelines.atrous);
             for k in 0..PASSES {
                 let (src, dst) = if k == 0 {
                     (&accum, ping)
@@ -2459,7 +2501,7 @@ pub(crate) fn render_cached(
                 };
                 let pair = d.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("pathtrace-denoise"),
-                    layout: &pt.bgl_pair,
+                    layout: &pt.pipelines.bgl_pair,
                     entries: &[
                         wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: dst.as_entire_binding() },
@@ -2473,7 +2515,7 @@ pub(crate) fn render_cached(
         }
         let gfin = d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("pathtrace-output"),
-            layout: &pt.bgl_fin,
+            layout: &pt.pipelines.bgl_fin,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: fin.as_entire_binding() }],
         });
         let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2496,7 +2538,7 @@ pub(crate) fn render_cached(
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        rp.set_pipeline(&pt.output);
+        rp.set_pipeline(&pt.pipelines.output);
         rp.set_scissor_rect(tile.output_origin[0], tile.output_origin[1], tile.output_size[0], tile.output_size[1]);
         rp.set_bind_group(0, &g_read, &[((chunks + PASSES) as u64 * SLOT) as u32]);
         rp.set_bind_group(1, &gfin, &[]);

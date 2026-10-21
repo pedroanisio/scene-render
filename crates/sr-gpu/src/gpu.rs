@@ -382,6 +382,56 @@ pub fn creation_lock() -> std::sync::MutexGuard<'static, ()> {
     CREATION.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Objects built once for a device and key and shared by every user on that device while any of them holds one: users
+/// that run at once (the workers of a parallel delivery, the threads of a test binary) hold a single copy, not one each.
+/// The registry holds its objects weakly, so it keeps neither them nor their device alive; an object nobody holds is
+/// built again by the next user that asks.
+pub(crate) struct PerDevice<K, T> {
+    slots: std::sync::Mutex<Vec<(K, std::sync::Weak<OfDevice<T>>)>>,
+}
+
+/// An object of a [`PerDevice`] registry, which dereferences to the object.
+#[derive(Debug)]
+pub(crate) struct OfDevice<T> {
+    device: wgpu::Device,
+    value: std::sync::OnceLock<T>,
+}
+
+impl<T> std::ops::Deref for OfDevice<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.value.get().expect("a registry hands an object out only once it is built")
+    }
+}
+
+impl<K: PartialEq, T> PerDevice<K, T> {
+    pub(crate) const fn new() -> Self {
+        PerDevice { slots: std::sync::Mutex::new(Vec::new()) }
+    }
+
+    /// The object of `key` on `device`, built by `build` when no user holds one. Users asking at once for one key wait for
+    /// a single build; other keys build alongside it.
+    pub(crate) fn get(&self, device: &wgpu::Device, key: K, build: impl FnOnce() -> T) -> Arc<OfDevice<T>> {
+        let slot = {
+            let mut slots = self.slots.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            slots.retain(|(_, slot)| slot.strong_count() > 0);
+            let held = slots
+                .iter()
+                .filter(|(k, _)| *k == key)
+                .filter_map(|(_, slot)| slot.upgrade())
+                .find(|slot| slot.device == *device);
+            held.unwrap_or_else(|| {
+                let slot = Arc::new(OfDevice { device: device.clone(), value: std::sync::OnceLock::new() });
+                slots.push((key, Arc::downgrade(&slot)));
+                slot
+            })
+        };
+        slot.value.get_or_init(build);
+        slot
+    }
+}
+
 /// The adapters of a new instance. The caller holds [`creation_lock`], and still holds it when the adapters it does not
 /// keep are dropped (the last one drops the instance).
 fn enumerate(backends: wgpu::Backends, _creation: &std::sync::MutexGuard<'static, ()>) -> Vec<wgpu::Adapter> {
@@ -760,5 +810,56 @@ mod raster_sample_tests {
                 assert_eq!(super::select_raster_samples(requested, flags), (wanted, selected));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod per_device_tests {
+    use super::PerDevice;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn users_asking_at_once_share_one_build_that_the_registry_does_not_keep_alive() {
+        let gpu = sr_testkit::require_gpu!(
+            super::test_gpu(),
+            "users_asking_at_once_share_one_build_that_the_registry_does_not_keep_alive"
+        );
+        let registry = PerDevice::<u32, usize>::new();
+        let builds = AtomicUsize::new(0);
+        let start = Barrier::new(8);
+        let shared: Vec<_> = std::thread::scope(|s| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    s.spawn(|| {
+                        start.wait();
+                        registry.get(&gpu.device, 1, || {
+                            builds.fetch_add(1, Ordering::SeqCst);
+                            7
+                        })
+                    })
+                })
+                .collect();
+            threads.into_iter().map(|t| t.join().unwrap()).collect()
+        });
+        assert_eq!(builds.load(Ordering::SeqCst), 1, "eight users asking at once wait for one build");
+        assert!(shared.iter().all(|s| Arc::ptr_eq(s, &shared[0]) && ***s == 7));
+        let other = registry.get(&gpu.device, 2, || {
+            builds.fetch_add(1, Ordering::SeqCst);
+            9
+        });
+        assert_eq!((builds.load(Ordering::SeqCst), **other), (2, 9), "another key builds its own");
+        let gone = Arc::downgrade(&shared[0]);
+        drop(shared);
+        assert!(gone.upgrade().is_none(), "the registry holds no user's object alive");
+        assert_eq!(
+            **registry.get(&gpu.device, 1, || {
+                builds.fetch_add(1, Ordering::SeqCst);
+                7
+            }),
+            7
+        );
+        assert_eq!(builds.load(Ordering::SeqCst), 3, "a key nobody holds builds again");
+        assert_eq!(registry.slots.lock().unwrap().len(), 2, "released entries are pruned, not accumulated");
     }
 }
