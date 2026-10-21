@@ -34,6 +34,9 @@ runs:
         echo "SR_REQUIRE_FFMPEG=1" >> "$GITHUB_ENV"
         echo "SR_REQUIRE_VULKAN=1" >> "$GITHUB_ENV"
         echo "SR_REQUIRE_GL=1" >> "$GITHUB_ENV"
+        # the corpus goldens compare only on an adapter provenance.json lists: a Mesa update the set has not been
+        # verified on fails them, naming the adapter, instead of skipping every comparison
+        echo "SR_REQUIRE_GOLDEN_ADAPTER=1" >> "$GITHUB_ENV"
         echo "SR_GPU_BACKEND=vulkan" >> "$GITHUB_ENV"
         icd=$(find /usr/share/vulkan/icd.d -name '*lvp*.json' -print -quit)
         test -n "$icd"
