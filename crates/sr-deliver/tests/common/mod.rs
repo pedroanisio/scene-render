@@ -1,6 +1,8 @@
 //! GPU and FFmpeg availability is mandatory in renderer CI and optional on developer machines.
 #![allow(dead_code)]
 use std::sync::OnceLock;
+
+sr_testkit::one_malloc_arena!();
 /// The adapter, created once; without one, each caller skips (or fails under `SR_REQUIRE_GPU=1`, as in CI).
 pub fn gpu() -> Option<sr_gpu::Gpu> {
     static GPU: OnceLock<Result<sr_gpu::Gpu, String>> = OnceLock::new();

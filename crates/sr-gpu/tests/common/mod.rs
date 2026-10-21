@@ -7,6 +7,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use sr_gpu::{Gpu, RenderStats, Renderer};
 
+sr_testkit::one_malloc_arena!();
+
 /// The name the harness gives a test, for one that runs itself in a child process with `--exact`: its module path
 /// below the root of the test crate (nothing when the file is a crate of its own), then its name.
 pub fn exact_test_name(module_path: &str, name: &str) -> String {

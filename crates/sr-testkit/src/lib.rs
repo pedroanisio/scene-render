@@ -9,6 +9,9 @@
 //! A test that stands in a fake tool (`curl`, `ffmpeg`) writes its script with [`executable`], never `std::fs::write`.
 //!
 //! A property test runs through [`property::check`], which draws the same cases on every run.
+//!
+//! A test binary that renders on the GPU invokes [`one_malloc_arena!`] once, so that its test threads share one malloc
+//! arena.
 
 #![forbid(unsafe_code)]
 
@@ -194,6 +197,101 @@ macro_rules! require_heic {
         match $crate::heic($probe, $context) {
             ::core::option::Option::Some(value) => value,
             ::core::option::Option::None => return,
+        }
+    };
+}
+
+/// The variable under which the test of [`one_malloc_arena!`] runs its child half.
+#[doc(hidden)]
+pub const ARENA_CHILD: &str = "SR_TESTKIT_ARENA_CHILD";
+
+/// How many malloc arenas glibc's `malloc_stats` reported (its `Arena <n>:` lines) in a child of this test binary that
+/// ran the test `name` of `module` alone, with [`ARENA_CHILD`] set.
+///
+/// # Panics
+///
+/// When the child cannot run or fails, or reports no arena: a test that cannot see what it checks.
+#[doc(hidden)]
+pub fn child_arenas(module: &str, name: &str) -> usize {
+    let exact = match module.split_once("::") {
+        Some((_, below)) => format!("{below}::{name}"),
+        None => name.to_string(),
+    };
+    let exe = std::env::current_exe().unwrap_or_else(|e| panic!("cannot find the test binary: {e}"));
+    let out = Command::new(&exe)
+        .args(["--exact", &exact, "--test-threads=1"])
+        .env(ARENA_CHILD, "1")
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run {} --exact {exact}: {e}", exe.display()));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{} --exact {exact}: {}\n{stderr}", exe.display(), out.status);
+    let arenas = stderr.lines().filter(|l| l.starts_with("Arena ") && l.ends_with(':')).count();
+    assert!(arenas > 0, "malloc_stats reported no arena:\n{stderr}");
+    arenas
+}
+
+/// Gives the test binary that invokes it one malloc arena, and a test that its threads share it.
+///
+/// glibc gives each thread that allocates while others do an arena of its own, and an arena keeps what is freed in it
+/// for its next allocations instead of returning it to the system. Mesa's software drivers (lavapipe for Vulkan,
+/// llvmpipe for OpenGL) allocate and free several hundred megabytes on the thread that renders a large frame, and the
+/// test harness runs each test on a thread of its own, so a test binary's memory grew by what one render freed for each
+/// test thread that had rendered. On lavapipe with four test threads, `sr-gpu`'s backend tests peaked at 3.4 GiB and
+/// 1.4 GiB on one arena, its path tracer tests at 2.7 GiB and 1.9 GiB, neither taking longer. The cap is set before
+/// `main` (a constructor), because glibc no longer applies it once the process has eight arenas, which opening a device
+/// on a software adapter gives it.
+#[macro_export]
+macro_rules! one_malloc_arena {
+    () => {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        mod one_malloc_arena {
+            const M_ARENA_MAX: i32 = -8;
+
+            extern "C" {
+                fn mallopt(param: i32, value: i32) -> i32;
+                fn malloc_stats();
+            }
+
+            #[allow(unsafe_code)]
+            extern "C" fn cap() {
+                // SAFETY: mallopt takes two integers; it runs before main, with no other thread yet.
+                unsafe { mallopt(M_ARENA_MAX, 1) };
+            }
+
+            /// Writes glibc's report of the process's malloc arenas to stderr.
+            #[allow(unsafe_code)]
+            fn report_arenas() {
+                // SAFETY: malloc_stats takes nothing and only reads the allocator's state.
+                unsafe { malloc_stats() };
+            }
+
+            /// Run by the loader before `main`, as every `.init_array` entry is.
+            #[allow(unsafe_code)]
+            #[used]
+            #[link_section = ".init_array"]
+            static CAP: extern "C" fn() = cap;
+
+            /// Run alone in a child (see [`sr_testkit::child_arenas`]), four threads allocate at once; the child then
+            /// reports its arenas.
+            #[test]
+            fn test_threads_share_one_malloc_arena() {
+                const NAME: &str = "test_threads_share_one_malloc_arena";
+                if ::std::env::var_os($crate::ARENA_CHILD).is_some() {
+                    let all = ::std::sync::Barrier::new(4);
+                    ::std::thread::scope(|s| {
+                        for _ in 0..4 {
+                            s.spawn(|| {
+                                let block = ::std::hint::black_box(vec![1u8; 1 << 20]);
+                                all.wait();
+                                drop(block);
+                            });
+                        }
+                    });
+                    report_arenas();
+                    return;
+                }
+                assert_eq!($crate::child_arenas(module_path!(), NAME), 1, "malloc arenas of four test threads");
+            }
         }
     };
 }

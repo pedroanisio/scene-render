@@ -42,6 +42,13 @@ ALLOWED = {
     ("crates/sr-sim/tests/pyro_blast_memory.rs", "unsafe impl GlobalAlloc for Counting"): "allocation count",
     ("crates/sr-sim/tests/pyro_export_memory.rs", "unsafe impl GlobalAlloc for Counting"): "allocation count",
     ("crates/sr-vector/tests/cpu_allocations.rs", "unsafe impl GlobalAlloc for Counting"): "allocation count",
+    # test code: sr_testkit::one_malloc_arena!, expanded only into GPU test binaries, caps glibc's malloc arenas
+    ("crates/sr-testkit/src/lib.rs", "fn cap"):
+        "glibc's mallopt is the only way to cap the arenas from inside the process",
+    ("crates/sr-testkit/src/lib.rs", "static CAP: extern fn() = cap"):
+        "an .init_array entry is the only code that runs before main, while glibc still applies the cap",
+    ("crates/sr-testkit/src/lib.rs", "fn report_arenas"):
+        "glibc's malloc_stats is the only report of how many arenas the process has",
 }
 
 # An attribute that lowers the lint: allow, expect or warn, also inside cfg_attr.

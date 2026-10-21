@@ -60,3 +60,7 @@ pub(crate) fn value_of_paint_tok(p: &sr_model::values::Paint) -> sr_eval::Value 
 
 #[cfg(test)]
 mod wgsl_layout;
+
+// the unit tests render on the shared device from the harness's threads
+#[cfg(test)]
+sr_testkit::one_malloc_arena!();
