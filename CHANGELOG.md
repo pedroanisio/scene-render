@@ -5,6 +5,10 @@ at each tag; edit `RELEASE_NOTES.md`, not this file. Entries are kept as release
 been removed since: "the cinematic impact SREP" is sr-core SREP 40, whose working draft this repository removed after v0.3.2.
 Versions up to v0.4.1 were released under the MIT License from github.com/pedroanisio/rs-scene-render.
 
+## Unreleased
+
+- Clay objects mesh their field on every core: each pass of the surface-nets extraction runs over independent slabs and joins them in order, so the mesh is the same, vertex for vertex and index for index, as before. A fingerprinted seven-blob object at `resolution="160"` meshed in 359.5 ms on one core and meshes in 45.4 ms on a 12-thread Ryzen 5 5600X; boiling clay re-meshes on every boil frame, so a 5 s clay film encoded in 4.6 s instead of 21.7 s there.
+
 ## v0.7.1 — 2026-10-21
 
 This release fixes the path tracer's hardware ray queries on Mesa's lavapipe, which missed most surfaces of a path-traced scene, and falls back to the BVH walk for every scene too large for the adapter's acceleration structures. The vendored schema is still sr-core 1.7.0.

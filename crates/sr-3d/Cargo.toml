@@ -23,6 +23,7 @@ half.workspace = true
 bytemuck.workspace = true
 spade = "2.15.1"
 thiserror.workspace = true
+rayon.workspace = true
 sr-vector = { path = "../sr-vector" }
 
 [lints]

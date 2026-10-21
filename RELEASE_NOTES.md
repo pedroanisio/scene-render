@@ -18,3 +18,7 @@ This release fixes the path tracer's hardware ray queries on Mesa's lavapipe, wh
 The Linux archive contains the executable, source commit identifier, capability manifest, README, changelog, disclaimer, licence, notice, commercial-licence page and third-party notices. Its executable comes from the successful CI run for the release commit and is checksum-verified and smoke-tested before packaging.
 
 Verify the download with `sha256sum -c scene-render-v0.7.1-linux-x86_64.tar.gz.sha256`, extract it, then run `./scene-render --help`.
+
+## Unreleased
+
+- Clay objects mesh their field on every core: each pass of the surface-nets extraction runs over independent slabs and joins them in order, so the mesh is the same, vertex for vertex and index for index, as before. A fingerprinted seven-blob object at `resolution="160"` meshed in 359.5 ms on one core and meshes in 45.4 ms on a 12-thread Ryzen 5 5600X; boiling clay re-meshes on every boil frame, so a 5 s clay film encoded in 4.6 s instead of 21.7 s there.

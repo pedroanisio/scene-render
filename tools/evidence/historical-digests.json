@@ -27,6 +27,10 @@
       "origin": "previous-repository"
     },
     {
+      "file": "crates/sr-3d/src/clay.rs",
+      "sha256": "727b3a0674e3c291eaa517c6381526e60466857e3c6a33e98ada1b0178e7f8f0"
+    },
+    {
       "file": "crates/sr-3d/src/crater.rs",
       "sha256": "ff22d4b45d2ff261f8babb056fea5e44fd754f38ba0fc0750849deeffb9372d8",
       "origin": "previous-repository"

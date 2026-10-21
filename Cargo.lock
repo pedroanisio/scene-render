@@ -3149,6 +3149,7 @@ dependencies = [
  "half",
  "image",
  "lyon_tessellation",
+ "rayon",
  "roxmltree 0.20.0",
  "serde_json",
  "spade",

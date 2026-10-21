@@ -9,6 +9,7 @@
 //! clay between frames.
 
 use glam::{Quat, Vec3};
+use rayon::prelude::*;
 
 use crate::{Primitive, Vertex};
 
@@ -232,18 +233,19 @@ pub fn mesh_with_budget(
     let sample = |p: Vec3| field(blobs, p) - roughness(finish, seed, p);
     // field at the grid points
     let at = |i: usize, j: usize, k: usize| lo + Vec3::new(i as f32, j as f32, k as f32) * cell;
+    // Every pass below works on independent z slabs in parallel and joins them in slab order, so
+    // the mesh is the same, vertex for vertex and index for index, as a serial sweep.
     let mut d = vec![0.0f32; nx * ny * nz];
-    for k in 0..nz {
+    d.par_chunks_mut(nx * ny).enumerate().for_each(|(k, slab)| {
         for j in 0..ny {
             for i in 0..nx {
-                d[(k * ny + j) * nx + i] = sample(at(i, j, k));
+                slab[j * nx + i] = sample(at(i, j, k));
             }
         }
-    }
+    });
     let idx = |i: usize, j: usize, k: usize| (k * ny + j) * nx + i;
     // one vertex per cell crossed by the surface
     let (cx, cy, cz) = (nx - 1, ny - 1, nz - 1);
-    let mut vert_of = vec![u32::MAX; cx * cy * cz];
     let corners = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0), (0, 0, 1), (1, 0, 1), (0, 1, 1), (1, 1, 1)];
     let edges = [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7)];
     let grad = |p: Vec3| {
@@ -255,100 +257,119 @@ pub fn mesh_with_budget(
         )
         .normalize_or_zero()
     };
-    for k in 0..cz {
-        for j in 0..cy {
-            for i in 0..cx {
-                let v: [f32; 8] = std::array::from_fn(|c| {
-                    let (a, b, e) = corners[c];
-                    d[idx(i + a, j + b, k + e)]
-                });
-                let inside = v.iter().filter(|x| **x < 0.0).count();
-                if inside == 0 || inside == 8 {
-                    continue;
-                }
-                let (mut sum, mut count) = (Vec3::ZERO, 0.0);
-                for (a, b) in edges {
-                    if (v[a] < 0.0) != (v[b] < 0.0) {
-                        let s = v[a] / (v[a] - v[b]);
-                        let (pa, pb) = (corners[a], corners[b]);
-                        let pa = Vec3::new(pa.0 as f32, pa.1 as f32, pa.2 as f32);
-                        let pb = Vec3::new(pb.0 as f32, pb.1 as f32, pb.2 as f32);
-                        sum += pa + (pb - pa) * s;
-                        count += 1.0;
+    let slabs: Vec<Vec<(usize, Vertex)>> = (0..cz)
+        .into_par_iter()
+        .map(|k| {
+            let mut slab = Vec::new();
+            for j in 0..cy {
+                for i in 0..cx {
+                    let v: [f32; 8] = std::array::from_fn(|c| {
+                        let (a, b, e) = corners[c];
+                        d[idx(i + a, j + b, k + e)]
+                    });
+                    let inside = v.iter().filter(|x| **x < 0.0).count();
+                    if inside == 0 || inside == 8 {
+                        continue;
                     }
+                    let (mut sum, mut count) = (Vec3::ZERO, 0.0);
+                    for (a, b) in edges {
+                        if (v[a] < 0.0) != (v[b] < 0.0) {
+                            let s = v[a] / (v[a] - v[b]);
+                            let (pa, pb) = (corners[a], corners[b]);
+                            let pa = Vec3::new(pa.0 as f32, pa.1 as f32, pa.2 as f32);
+                            let pb = Vec3::new(pb.0 as f32, pb.1 as f32, pb.2 as f32);
+                            sum += pa + (pb - pa) * s;
+                            count += 1.0;
+                        }
+                    }
+                    let p = lo + (Vec3::new(i as f32, j as f32, k as f32) + sum / count) * cell;
+                    slab.push((
+                        (k * cy + j) * cx + i,
+                        Vertex {
+                            pos: p.into(),
+                            normal: grad(p).into(),
+                            uv: [0.0, 0.0],
+                            tangent: [1.0, 0.0, 0.0, 1.0],
+                            ..Default::default()
+                        },
+                    ));
                 }
-                let p = lo + (Vec3::new(i as f32, j as f32, k as f32) + sum / count) * cell;
-                vert_of[(k * cy + j) * cx + i] = prim.vertices.len() as u32;
-                prim.vertices.push(Vertex {
-                    pos: p.into(),
-                    normal: grad(p).into(),
-                    uv: [0.0, 0.0],
-                    tangent: [1.0, 0.0, 0.0, 1.0],
-                    ..Default::default()
-                });
             }
-        }
+            slab
+        })
+        .collect();
+    let mut vert_of = vec![u32::MAX; cx * cy * cz];
+    prim.vertices.reserve(slabs.iter().map(Vec::len).sum());
+    for (c, vertex) in slabs.into_iter().flatten() {
+        vert_of[c] = prim.vertices.len() as u32;
+        prim.vertices.push(vertex);
     }
     // one quad per grid edge the surface crosses, between the four cells around it
     let cell_vert = |i: usize, j: usize, k: usize| vert_of[(k * cy + j) * cx + i];
-    for k in 0..nz - 1 {
-        for j in 0..ny - 1 {
-            for i in 0..nx - 1 {
-                let here = d[idx(i, j, k)];
-                for axis in 0..3 {
-                    // A crossed edge may start on the first grid plane along
-                    // its own axis. Only its two transverse coordinates need
-                    // preceding cells; skipping all first planes opens holes.
-                    if match axis {
-                        0 => j == 0 || k == 0,
-                        1 => i == 0 || k == 0,
-                        _ => i == 0 || j == 0,
-                    } {
-                        continue;
+    let quads: Vec<Vec<u32>> = (0..nz - 1)
+        .into_par_iter()
+        .map(|k| {
+            let mut indices = Vec::new();
+            for j in 0..ny - 1 {
+                for i in 0..nx - 1 {
+                    let here = d[idx(i, j, k)];
+                    for axis in 0..3 {
+                        // A crossed edge may start on the first grid plane along
+                        // its own axis. Only its two transverse coordinates need
+                        // preceding cells; skipping all first planes opens holes.
+                        if match axis {
+                            0 => j == 0 || k == 0,
+                            1 => i == 0 || k == 0,
+                            _ => i == 0 || j == 0,
+                        } {
+                            continue;
+                        }
+                        let (ni, nj, nk) = match axis {
+                            0 => (i + 1, j, k),
+                            1 => (i, j + 1, k),
+                            _ => (i, j, k + 1),
+                        };
+                        if ni >= nx || nj >= ny || nk >= nz {
+                            continue;
+                        }
+                        let there = d[idx(ni, nj, nk)];
+                        if (here < 0.0) == (there < 0.0) {
+                            continue;
+                        }
+                        // the four cells sharing the edge (i, j, k) → (ni, nj, nk)
+                        let q = match axis {
+                            0 => [
+                                cell_vert(i, j - 1, k - 1),
+                                cell_vert(i, j, k - 1),
+                                cell_vert(i, j, k),
+                                cell_vert(i, j - 1, k),
+                            ],
+                            1 => [
+                                cell_vert(i - 1, j, k - 1),
+                                cell_vert(i - 1, j, k),
+                                cell_vert(i, j, k),
+                                cell_vert(i, j, k - 1),
+                            ],
+                            _ => [
+                                cell_vert(i - 1, j - 1, k),
+                                cell_vert(i, j - 1, k),
+                                cell_vert(i, j, k),
+                                cell_vert(i - 1, j, k),
+                            ],
+                        };
+                        if q.contains(&u32::MAX) {
+                            continue;
+                        }
+                        // wind outward: inside → outside along the axis keeps the order
+                        let (a, b, c, e) = if here < 0.0 { (q[0], q[1], q[2], q[3]) } else { (q[0], q[3], q[2], q[1]) };
+                        indices.extend_from_slice(&[a, b, c, a, c, e]);
                     }
-                    let (ni, nj, nk) = match axis {
-                        0 => (i + 1, j, k),
-                        1 => (i, j + 1, k),
-                        _ => (i, j, k + 1),
-                    };
-                    if ni >= nx || nj >= ny || nk >= nz {
-                        continue;
-                    }
-                    let there = d[idx(ni, nj, nk)];
-                    if (here < 0.0) == (there < 0.0) {
-                        continue;
-                    }
-                    // the four cells sharing the edge (i, j, k) → (ni, nj, nk)
-                    let q = match axis {
-                        0 => [
-                            cell_vert(i, j - 1, k - 1),
-                            cell_vert(i, j, k - 1),
-                            cell_vert(i, j, k),
-                            cell_vert(i, j - 1, k),
-                        ],
-                        1 => [
-                            cell_vert(i - 1, j, k - 1),
-                            cell_vert(i - 1, j, k),
-                            cell_vert(i, j, k),
-                            cell_vert(i, j, k - 1),
-                        ],
-                        _ => [
-                            cell_vert(i - 1, j - 1, k),
-                            cell_vert(i, j - 1, k),
-                            cell_vert(i, j, k),
-                            cell_vert(i - 1, j, k),
-                        ],
-                    };
-                    if q.contains(&u32::MAX) {
-                        continue;
-                    }
-                    // wind outward: inside → outside along the axis keeps the order
-                    let (a, b, c, e) = if here < 0.0 { (q[0], q[1], q[2], q[3]) } else { (q[0], q[3], q[2], q[1]) };
-                    prim.indices.extend_from_slice(&[a, b, c, a, c, e]);
                 }
             }
-        }
-    }
+            indices
+        })
+        .collect();
+    prim.indices = quads.concat();
     Ok(prim)
 }
 
@@ -395,6 +416,30 @@ mod tests {
             );
             assert!(pieces.is_ok(), "radius={radius}: {pieces:?}");
         }
+    }
+
+    /// FNV-1a over the mesh's vertex and index bytes.
+    fn digest(p: &Primitive) -> u64 {
+        let bytes = bytemuck::cast_slice::<Vertex, u8>(&p.vertices).iter().chain(bytemuck::cast_slice(&p.indices));
+        bytes.fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    /// Pinned from the serial extraction: how the work is split must not change a single vertex,
+    /// normal or index, nor their order.
+    #[test]
+    fn extraction_reproduces_the_serial_mesh_bit_for_bit() {
+        let mut ear = sphere(-30., 14., 12.);
+        ear.shape = BlobShape::Capsule;
+        ear.center.y = -60.;
+        ear.rotation = Quat::from_rotation_z(-0.4);
+        let mut socket = sphere(-12., 9., 4.);
+        socket.center.z = -28.;
+        socket.subtract = true;
+        let blobs = [sphere(0., 40., 0.), sphere(30., 20., 18.), ear, socket];
+        let finish = Finish { amount: 0.55, seed: 9, boil: 12.0 };
+        let m = mesh(&blobs, &finish, 72, 0.25);
+        assert_eq!((m.vertices.len(), m.indices.len()), (8127, 48756));
+        assert_eq!(digest(&m), 5_028_264_707_182_578_705);
     }
 
     /// Signed volume by the divergence theorem (positive for outward winding).
