@@ -479,7 +479,12 @@ pub struct Gpu {
     uncaptured: Arc<std::sync::Mutex<Option<String>>>,
     /// Sample counts supported by both the raster colour and depth targets, with colour resolve available.
     pub raster_sample_counts: wgpu::TextureFormatFeatureFlags,
+    /// The compositor of each working format, built by the first renderer on this device that needs it and shared by
+    /// every other (see [`Gpu::compositor`]).
+    compositors: Arc<std::sync::Mutex<CompositorSlots>>,
 }
+
+type CompositorSlots = Vec<(wgpu::TextureFormat, Arc<std::sync::OnceLock<Arc<crate::render::Compositor>>>)>;
 
 /// What the renderer's shaders need of a device, tried on a minimal pipeline: a fragment shader that reads a runtime-sized
 /// storage buffer. An OpenGL adapter older than 4.3 (the one a WSL2 host without a D3D12 driver falls back to) opens a
@@ -661,7 +666,25 @@ impl Gpu {
             scalar_target,
             uncaptured,
             raster_sample_counts,
+            compositors: Default::default(),
         })
+    }
+
+    /// The compositor of `format` on this device: built on first use, and the same for every renderer after. Two
+    /// renderers asking at once for one format wait for a single build; other formats build alongside it.
+    pub(crate) fn compositor(&self, format: wgpu::TextureFormat) -> Arc<crate::render::Compositor> {
+        let slot = {
+            let mut slots = self.compositors.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match slots.iter().find(|(f, _)| *f == format) {
+                Some((_, slot)) => slot.clone(),
+                None => {
+                    let slot = Arc::<std::sync::OnceLock<_>>::default();
+                    slots.push((format, slot.clone()));
+                    slot
+                }
+            }
+        };
+        slot.get_or_init(|| Arc::new(crate::render::Compositor::new(&self.device, format))).clone()
     }
 
     /// The error the device reported outside an error scope since the last call, if any, and clears it. A renderer

@@ -379,7 +379,8 @@ pub struct Renderer {
     generator: wgpu::RenderPipeline,
     mask_coverage: HashMap<Vec<u8>, MaskCoverage>,
     mask_coverage_budget: u64,
-    mask_coverage_pipelines: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
+    /// The device's compositor for this working format, which the pipelines and layouts above are of.
+    compositor: Arc<Compositor>,
     bgl0: wgpu::BindGroupLayout,
     bgl1: wgpu::BindGroupLayout,
     bgl2: wgpu::BindGroupLayout,
@@ -851,113 +852,30 @@ fn to_clip(p: [f64; 2], size: [u32; 2]) -> [f32; 4] {
     [(2.0 * p[0] / size[0] as f64 - 1.0) as f32, (1.0 - 2.0 * p[1] / size[1] as f64) as f32, 0.0, 1.0]
 }
 
-#[allow(clippy::too_many_arguments)]
-fn compositor_pipeline(
-    device: &wgpu::Device,
-    module: &wgpu::ShaderModule,
-    layout: &wgpu::PipelineLayout,
+/// The compositor's layouts, shader and pipelines for one working format. They are immutable objects of the device, so
+/// every renderer on a device shares one set per format ([`Gpu::compositor`]): built once, they are neither compiled nor
+/// held again for each renderer, which on a software adapter costs hundreds of megabytes a renderer.
+#[derive(Debug)]
+pub(crate) struct Compositor {
+    device: wgpu::Device,
     format: wgpu::TextureFormat,
-    fragment: &str,
-    blend: Option<wgpu::BlendState>,
-    full_screen: bool,
-    ellipse: bool,
-) -> wgpu::RenderPipeline {
-    let vertices = [Some(wgpu::VertexBufferLayout {
-        array_stride: std::mem::size_of::<Vertex>() as u64,
-        step_mode: wgpu::VertexStepMode::Vertex,
-        attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x2, 2 => Float32x2],
-    })];
-    {
-        let _creation = crate::gpu::creation_lock();
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(fragment),
-            layout: Some(layout),
-            vertex: wgpu::VertexState {
-                module,
-                entry_point: Some(if full_screen { "vs_full" } else { "vs_main" }),
-                buffers: if full_screen { &[] } else { &vertices },
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module,
-                entry_point: Some(fragment),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: if fragment == "fs_mask_coverage" { wgpu::TextureFormat::R32Float } else { format },
-                    blend,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[("SINGLE_FEATHERED_ELLIPSE", ellipse as u32 as f64)],
-                    ..Default::default()
-                },
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        })
-    }
+    module: wgpu::ShaderModule,
+    layout: wgpu::PipelineLayout,
+    bgl0: wgpu::BindGroupLayout,
+    bgl1: wgpu::BindGroupLayout,
+    bgl2: wgpu::BindGroupLayout,
+    bgl3: wgpu::BindGroupLayout,
+    over: [wgpu::RenderPipeline; 5],
+    under: [wgpu::RenderPipeline; 5],
+    blend: [wgpu::RenderPipeline; 2],
+    additive: [wgpu::RenderPipeline; 5],
+    generator: wgpu::RenderPipeline,
+    /// The pipelines that render a mask's coverage and draw it from the cache (built on first use).
+    mask_coverage: std::sync::OnceLock<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
 }
 
-/// `project/@precision="f32"` asked of a device that cannot blend into or filter 32-bit float textures: SREP 72's
-/// error PREC10, which its message starts with.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrecisionError {
-    /// The adapter.
-    pub adapter: String,
-    /// The features it lacks, by name.
-    pub missing: Vec<&'static str>,
-}
-
-impl std::fmt::Display for PrecisionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "PREC10: precision=\"f32\" needs 32-bit float working textures that the compositor can blend into and \
-             filter; the adapter {} lacks {}; this is an error, not a silent fallback to f16",
-            self.adapter,
-            self.missing.join(" and ")
-        )
-    }
-}
-
-impl std::error::Error for PrecisionError {}
-
-/// The working format for `precision` on `gpu`, and the error when f32 is asked of a device without the features it
-/// needs (the format is then f16, and every frame reports the error).
-pub fn working_format(gpu: &Gpu, precision: m::Precision) -> (wgpu::TextureFormat, Option<PrecisionError>) {
-    if precision != m::Precision::F32 {
-        return (resources::FORMAT, None);
-    }
-    let have = gpu.device.features();
-    let missing: Vec<&'static str> = [
-        (wgpu::Features::FLOAT32_BLENDABLE, "FLOAT32_BLENDABLE"),
-        (wgpu::Features::FLOAT32_FILTERABLE, "FLOAT32_FILTERABLE"),
-    ]
-    .into_iter()
-    .filter(|(f, _)| !have.contains(*f))
-    .map(|(_, n)| n)
-    .collect();
-    if missing.is_empty() {
-        (resources::FORMAT_F32, None)
-    } else {
-        (resources::FORMAT, Some(PrecisionError { adapter: gpu.info.name.clone(), missing }))
-    }
-}
-
-impl Renderer {
-    /// The working format of this renderer's offscreens and frames (SREP 72 `project/@precision`).
-    pub fn format(&self) -> wgpu::TextureFormat {
-        self.format
-    }
-
-    /// Builds pipelines and resources for `program`.
-    pub fn new(gpu: Gpu, program: &Program) -> Renderer {
-        let (raster_samples, raster_warning) = gpu.raster_samples(program.scene.project.antialias3d);
-        let d = &gpu.device;
-        // SREP 72: the working format of every offscreen, effect pass and the frame
-        let (format, precision_error) = working_format(&gpu, program.scene.project.precision);
+impl Compositor {
+    pub(crate) fn new(d: &wgpu::Device, format: wgpu::TextureFormat) -> Compositor {
         let storage = |b: u32| wgpu::BindGroupLayoutEntry {
             binding: b,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -1087,6 +1005,155 @@ impl Renderer {
         let additive = variants
             .map(|(fs, ellipse)| pipe(fs, Some(wgpu::BlendState { color: add, alpha: premul.alpha }), false, ellipse));
         let generator = pipe("fs_generator", None, true, false);
+        Compositor {
+            device: d.clone(),
+            format,
+            module,
+            layout,
+            bgl0,
+            bgl1,
+            bgl2,
+            bgl3,
+            over,
+            under,
+            blend,
+            additive,
+            generator,
+            mask_coverage: Default::default(),
+        }
+    }
+
+    /// The pipelines that render a mask's coverage once and draw the cached coverage.
+    pub(crate) fn mask_coverage(&self) -> &(wgpu::RenderPipeline, wgpu::RenderPipeline) {
+        self.mask_coverage.get_or_init(|| {
+            let pipe = |fs: &str, blend: Option<wgpu::BlendState>, ellipse: bool| {
+                compositor_pipeline(&self.device, &self.module, &self.layout, self.format, fs, blend, false, ellipse)
+            };
+            (
+                pipe("fs_mask_coverage", None, true),
+                pipe("fs_cached_mask", Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), false),
+            )
+        })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compositor_pipeline(
+    device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    fragment: &str,
+    blend: Option<wgpu::BlendState>,
+    full_screen: bool,
+    ellipse: bool,
+) -> wgpu::RenderPipeline {
+    let vertices = [Some(wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<Vertex>() as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x2, 2 => Float32x2],
+    })];
+    {
+        let _creation = crate::gpu::creation_lock();
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(fragment),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module,
+                entry_point: Some(if full_screen { "vs_full" } else { "vs_main" }),
+                buffers: if full_screen { &[] } else { &vertices },
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module,
+                entry_point: Some(fragment),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: if fragment == "fs_mask_coverage" { wgpu::TextureFormat::R32Float } else { format },
+                    blend,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[("SINGLE_FEATHERED_ELLIPSE", ellipse as u32 as f64)],
+                    ..Default::default()
+                },
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+}
+
+/// `project/@precision="f32"` asked of a device that cannot blend into or filter 32-bit float textures: SREP 72's
+/// error PREC10, which its message starts with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrecisionError {
+    /// The adapter.
+    pub adapter: String,
+    /// The features it lacks, by name.
+    pub missing: Vec<&'static str>,
+}
+
+impl std::fmt::Display for PrecisionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PREC10: precision=\"f32\" needs 32-bit float working textures that the compositor can blend into and \
+             filter; the adapter {} lacks {}; this is an error, not a silent fallback to f16",
+            self.adapter,
+            self.missing.join(" and ")
+        )
+    }
+}
+
+impl std::error::Error for PrecisionError {}
+
+/// The working format for `precision` on `gpu`, and the error when f32 is asked of a device without the features it
+/// needs (the format is then f16, and every frame reports the error).
+pub fn working_format(gpu: &Gpu, precision: m::Precision) -> (wgpu::TextureFormat, Option<PrecisionError>) {
+    if precision != m::Precision::F32 {
+        return (resources::FORMAT, None);
+    }
+    let have = gpu.device.features();
+    let missing: Vec<&'static str> = [
+        (wgpu::Features::FLOAT32_BLENDABLE, "FLOAT32_BLENDABLE"),
+        (wgpu::Features::FLOAT32_FILTERABLE, "FLOAT32_FILTERABLE"),
+    ]
+    .into_iter()
+    .filter(|(f, _)| !have.contains(*f))
+    .map(|(_, n)| n)
+    .collect();
+    if missing.is_empty() {
+        (resources::FORMAT_F32, None)
+    } else {
+        (resources::FORMAT, Some(PrecisionError { adapter: gpu.info.name.clone(), missing }))
+    }
+}
+
+impl Renderer {
+    /// The working format of this renderer's offscreens and frames (SREP 72 `project/@precision`).
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+
+    /// Builds pipelines and resources for `program`.
+    pub fn new(gpu: Gpu, program: &Program) -> Renderer {
+        let (raster_samples, raster_warning) = gpu.raster_samples(program.scene.project.antialias3d);
+        let d = &gpu.device;
+        // SREP 72: the working format of every offscreen, effect pass and the frame
+        let (format, precision_error) = working_format(&gpu, program.scene.project.precision);
+        let compositor = gpu.compositor(format);
+        let (bgl0, bgl1, bgl2, bgl3) =
+            (compositor.bgl0.clone(), compositor.bgl1.clone(), compositor.bgl2.clone(), compositor.bgl3.clone());
+        let (over, under, additive, blend, generator) = (
+            compositor.over.clone(),
+            compositor.under.clone(),
+            compositor.additive.clone(),
+            compositor.blend.clone(),
+            compositor.generator.clone(),
+        );
         let sampler = |mode: wgpu::AddressMode| {
             d.create_sampler(&wgpu::SamplerDescriptor {
                 address_mode_u: mode,
@@ -1149,7 +1216,7 @@ impl Renderer {
             generator,
             mask_coverage: HashMap::new(),
             mask_coverage_budget: 32 * 1024 * 1024,
-            mask_coverage_pipelines: None,
+            compositor,
             bgl0,
             bgl1,
             bgl2,
@@ -4795,32 +4862,9 @@ impl Renderer {
                 out.insert(c.draw, (view, true));
             }
         }
-        if !out.is_empty() && self.mask_coverage_pipelines.is_none() {
-            let d = &self.gpu.device;
-            let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("mask coverage"),
-                source: wgpu::ShaderSource::Wgsl(
-                    concat!(include_str!("common.wgsl"), include_str!("d24.wgsl"), include_str!("shaders.wgsl")).into(),
-                ),
-            });
-            let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[Some(&self.bgl0), Some(&self.bgl1), Some(&self.bgl2), Some(&self.bgl3)],
-                immediate_size: 0,
-            });
-            self.mask_coverage_pipelines = Some((
-                compositor_pipeline(d, &module, &layout, self.format, "fs_mask_coverage", None, false, true),
-                compositor_pipeline(
-                    d,
-                    &module,
-                    &layout,
-                    self.format,
-                    "fs_cached_mask",
-                    Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    false,
-                    false,
-                ),
-            ));
+        if !out.is_empty() {
+            // built here, before any pass records
+            self.compositor.mask_coverage();
         }
         out
     }
@@ -5010,7 +5054,7 @@ impl Renderer {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                pass.set_pipeline(&self.mask_coverage_pipelines.as_ref().expect("coverage pipelines").0);
+                pass.set_pipeline(&self.compositor.mask_coverage().0);
                 pass.set_vertex_buffer(0, verts.slice(..));
                 pass.set_bind_group(0, &bg0, &[c.draw * draw_stride]);
                 pass.set_bind_group(1, &self.dummy.bind, &[]);
@@ -5209,7 +5253,7 @@ impl Renderer {
                             0
                         };
                         pass.set_pipeline(if coverage.contains_key(&c.draw) {
-                            &self.mask_coverage_pipelines.as_ref().expect("coverage pipelines").1
+                            &self.compositor.mask_coverage().1
                         } else if c.backdrop.is_some() {
                             &self.blend[ellipse as usize]
                         } else if draw.blend == BLEND_UNDER {
@@ -5660,6 +5704,37 @@ mod draw_uniform_tests {
         renderer.gpu.scalar_target = wgpu::TextureFormat::R16Float;
         assert!(renderer.prepare_mask_coverage(&mut plan).is_empty(), "never cache at reduced precision");
         assert!(renderer.mask_coverage.is_empty());
+    }
+
+    #[test]
+    fn renderers_on_one_device_share_its_compositor_pipelines() {
+        let gpu =
+            sr_testkit::require_gpu!(crate::gpu::test_gpu(), "renderers_on_one_device_share_its_compositor_pipelines");
+        let load = |precision: &str| {
+            let xml = format!(
+                r#"<scene version="1.2"><project width="8" height="8" fps="1" duration="1"{precision}/><composition/></scene>"#
+            );
+            sr_eval::Evaluator::new(
+                &sr_model::load_str(&xml, &sr_model::LoadOptions::default()).unwrap(),
+                &Default::default(),
+            )
+            .unwrap()
+        };
+        let f16 = load("");
+        let (a, b) = (Renderer::new(gpu.clone(), f16.program()), Renderer::new(gpu.clone(), f16.program()));
+        assert!(Arc::ptr_eq(&a.compositor, &b.compositor), "one compositor per device and working format");
+        assert_eq!((&a.over, &a.under, &a.additive, &a.blend), (&b.over, &b.under, &b.additive, &b.blend));
+        assert_eq!(
+            (&a.generator, &a.bgl0, &a.bgl1, &a.bgl2, &a.bgl3),
+            (&b.generator, &b.bgl0, &b.bgl1, &b.bgl2, &b.bgl3)
+        );
+        assert_eq!(a.compositor.mask_coverage(), b.compositor.mask_coverage(), "the mask pipelines too, once built");
+        let f32 = load(r#" precision="f32""#);
+        let c = Renderer::new(gpu.clone(), f32.program());
+        if c.format() != a.format() {
+            assert!(!Arc::ptr_eq(&a.compositor, &c.compositor), "another working format has its own targets");
+            assert_ne!(a.over, c.over);
+        }
     }
 
     #[test]
