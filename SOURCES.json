@@ -374,8 +374,8 @@
     },
     "crates/sr-gpu/tests/golden/corpus/globe_relief.png": {
       "origin": "generated",
-      "sha256": "d9d3049f4f57af67159711e9a82c3e4a45449512deb2c54ce16fa78bddf8d794",
-      "bytes": 3496,
+      "sha256": "2d24b185d3232e3a99188169108da70e78fad96cd4c3ff199d751c597870ed3b",
+      "bytes": 2951,
       "generator": "crates/sr-gpu/tests/raster_effects/corpus_golden.rs",
       "record": "crates/sr-gpu/tests/golden/corpus/provenance.json",
       "note": "a thumbnail rendered on llvmpipe and written by the test under SR_BLESS=1"
@@ -414,24 +414,24 @@
     },
     "crates/sr-gpu/tests/golden/corpus/metal_without_environment.png": {
       "origin": "generated",
-      "sha256": "debd5ef0c5484c05863e631d89da8327403362d908db032a1939116892ab240e",
-      "bytes": 1777,
+      "sha256": "82146a6a5fe9b47c42d8d227808c451cd96fe854e2d56449627113df5653e284",
+      "bytes": 1503,
       "generator": "crates/sr-gpu/tests/raster_effects/corpus_golden.rs",
       "record": "crates/sr-gpu/tests/golden/corpus/provenance.json",
       "note": "a thumbnail rendered on llvmpipe and written by the test under SR_BLESS=1"
     },
     "crates/sr-gpu/tests/golden/corpus/parametric.png": {
       "origin": "generated",
-      "sha256": "5616d55252c0e66a2cdeb17c5631b7cda843f42789c91bf14a0b798908b03836",
-      "bytes": 1142,
+      "sha256": "1eb83966ce5fcf26819d6d9e32370cd4127fce22b887f5b4457e5f6d2c991e38",
+      "bytes": 1093,
       "generator": "crates/sr-gpu/tests/raster_effects/corpus_golden.rs",
       "record": "crates/sr-gpu/tests/golden/corpus/provenance.json",
       "note": "a thumbnail rendered on llvmpipe and written by the test under SR_BLESS=1"
     },
     "crates/sr-gpu/tests/golden/corpus/particles3d_gas.png": {
       "origin": "generated",
-      "sha256": "33bbbfd7be3967e136b9344df6019884940aa3c7aa6da326485a3c845bb06e5c",
-      "bytes": 1554,
+      "sha256": "ef40f892663ecc01237f721312830c692926d8f558b8f2750ad0437cfc56bec5",
+      "bytes": 1295,
       "generator": "crates/sr-gpu/tests/raster_effects/corpus_golden.rs",
       "record": "crates/sr-gpu/tests/golden/corpus/provenance.json",
       "note": "a thumbnail rendered on llvmpipe and written by the test under SR_BLESS=1"
@@ -462,16 +462,16 @@
     },
     "crates/sr-gpu/tests/golden/corpus/subsurface_sky_maps.png": {
       "origin": "generated",
-      "sha256": "a8f8ce2e4e263a8ad0693cc4c0271bf981c9ec75b0c5e71738410f0eb008d6d6",
-      "bytes": 4833,
+      "sha256": "f61c9e103c66c90b19c0264cb09d50eb05685214283c23aa83d91a7a1b8879f4",
+      "bytes": 4774,
       "generator": "crates/sr-gpu/tests/raster_effects/corpus_golden.rs",
       "record": "crates/sr-gpu/tests/golden/corpus/provenance.json",
       "note": "a thumbnail rendered on llvmpipe and written by the test under SR_BLESS=1"
     },
     "crates/sr-gpu/tests/golden/corpus/text3d_tracking.png": {
       "origin": "generated",
-      "sha256": "d663aa6314e6077e87bb1f204844aaf019e1af2ff3811fc0b261d9e1e9690b6a",
-      "bytes": 504,
+      "sha256": "78a7ec959323d362927f186b6e71928f77548534b24c2cfb91d842dada29e339",
+      "bytes": 440,
       "generator": "crates/sr-gpu/tests/raster_effects/corpus_golden.rs",
       "record": "crates/sr-gpu/tests/golden/corpus/provenance.json",
       "note": "a thumbnail rendered on llvmpipe and written by the test under SR_BLESS=1"
@@ -510,8 +510,8 @@
     },
     "crates/sr-gpu/tests/golden/corpus/voxel_fracture.png": {
       "origin": "generated",
-      "sha256": "aa29469e779e4c99cca5aafecfb9c70706dd0d2a83ceafe0adae25d5393cac4c",
-      "bytes": 431,
+      "sha256": "644b9ca9f13631ac757c81bb738280973c7437cb05549752f4b442316ce61b43",
+      "bytes": 378,
       "generator": "crates/sr-gpu/tests/raster_effects/corpus_golden.rs",
       "record": "crates/sr-gpu/tests/golden/corpus/provenance.json",
       "note": "a thumbnail rendered on llvmpipe and written by the test under SR_BLESS=1"

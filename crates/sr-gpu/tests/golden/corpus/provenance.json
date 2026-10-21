@@ -1,5 +1,5 @@
 {
-  "review_date": "2026-10-13",
+  "review_date": "2026-10-21",
   "adapter": "AdapterInfo { name: \"llvmpipe (LLVM 19.1.7, 256 bits)\", vendor: 65541, device: 0, device_type: Cpu, device_pci_bus_id: \"\", driver: \"llvmpipe\", driver_info: \"Mesa 25.0.7-2+deb13u1 (LLVM 19.1.7)\", backend: Vulkan, subgroup_min_size: 8, subgroup_max_size: 8, transient_saves_memory: Some(false), limit_bucket: None }",
   "os": "Debian 13",
   "method": "Rendered each listed corpus scene at its listed time on llvmpipe with SR_GPU_ADAPTER=llvmpipe and SR_BLESS=1, reduced to a thumbnail of at most 64 px on the long side and converted to display sRGB. The set is checked by corpus_golden: every frame has a spread of at least 16 code values and every pair a distinctness of at least 2.0.",
@@ -58,19 +58,19 @@
       "file": "text3d_tracking.png",
       "scene": "text3d-tracking",
       "time": 1.0,
-      "decoded_rgba_sha256": "f2fc9a0225d6ad0de96534eac88ab8f9dabbab3027fd81c801c94a7e9cca0caa"
+      "decoded_rgba_sha256": "eecb57bd3aa9d8febb1de2bbff230f8e482dffd3df004f8d01a11d593e5db618"
     },
     {
       "file": "metal_without_environment.png",
       "scene": "metal-without-environment",
       "time": 0.5,
-      "decoded_rgba_sha256": "cc491fb9d021a7eb15d296537ba692358a964c2f9404ac12c4c5ba8672895fe4"
+      "decoded_rgba_sha256": "0080eb217110c5be41056d36241794fcbe6b604eb37012ba01f00aa56ab923fc"
     },
     {
       "file": "subsurface_sky_maps.png",
       "scene": "srep71-subsurface-sky-maps",
       "time": 0.5,
-      "decoded_rgba_sha256": "8082825cb6f7a0e4e396bc8649f25ebd1cb8dbeaf25b80e64348fb00b5fd9dde"
+      "decoded_rgba_sha256": "c4a8fae9045c4686e6de4adb9a78352b950c5102374cb4e5885f9c2349a5ee2e"
     },
     {
       "file": "viewport3d.png",
@@ -88,7 +88,7 @@
       "file": "globe_relief.png",
       "scene": "globe-relief",
       "time": 1.0,
-      "decoded_rgba_sha256": "b74ee55657bcc4d2d1b8b77d08ec839550998274430768d73ab140bb6ca7aa71"
+      "decoded_rgba_sha256": "9e79a92d8703c9b2edd6c6aee6c514c233bf6eb29ee2c8a3950be15cf34cb37c"
     },
     {
       "file": "mesh_sequence.png",
@@ -100,19 +100,19 @@
       "file": "parametric.png",
       "scene": "parametric",
       "time": 0.5,
-      "decoded_rgba_sha256": "fa0070462782c25863b6ad038056cbba54e6cd0ebb9222641087accd97258872"
+      "decoded_rgba_sha256": "7079ec306c2644a70fe710e8e4fefca70a29f112a5ef5355b34302c8fc4d6bc1"
     },
     {
       "file": "voxel_fracture.png",
       "scene": "voxel-fracture",
       "time": 2.0,
-      "decoded_rgba_sha256": "495bf164fe1178970c8a30d209829c205a9013158bc01e6d55c2a07b90a5b955"
+      "decoded_rgba_sha256": "d1e46d00762f25d0c9fd56be6ba111292735ad0541d6ec62d6d7d8ea04d364a6"
     },
     {
       "file": "particles3d_gas.png",
       "scene": "particles3d-gas",
       "time": 1.0,
-      "decoded_rgba_sha256": "039fe18a8cfb6dfb6e26c79d8c7ad3eaa7554bc9f3fdc883115725f0269c1636"
+      "decoded_rgba_sha256": "bef1ffd5a765f4ab5095989fafa433bdf61228f90b81d2ace5d93716185f91a6"
     },
     {
       "file": "volume.png",
