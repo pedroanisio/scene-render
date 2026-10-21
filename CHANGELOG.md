@@ -5,6 +5,27 @@ at each tag; edit `RELEASE_NOTES.md`, not this file. Entries are kept as release
 been removed since: "the cinematic impact SREP" is sr-core SREP 40, whose working draft this repository removed after v0.3.2.
 Versions up to v0.4.1 were released under the MIT License from github.com/pedroanisio/rs-scene-render.
 
+## v0.7.1 — 2026-10-21
+
+This release fixes the path tracer's hardware ray queries on Mesa's lavapipe, which missed most surfaces of a path-traced scene, and falls back to the BVH walk for every scene too large for the adapter's acceleration structures. The vendored schema is still sr-core 1.7.0.
+
+### Path tracer
+
+- The hardware traversal builds one bottom-level structure of the scene's triangles and one of the bounds of its splats and instances, each holding its own primitives only, and maps a hit to its primitive through a table. Before, each structure also held the other kind's primitives as inactive entries; Mesa's lavapipe (observed on 25.0.7 and 25.2.8) let those into its bounds and then missed nearly every hit, so path-traced frames lost most of their surfaces. A scene with any volume is path-traced, so on lavapipe this also reached scenes whose camera does not ask for the path tracer, such as one with an empty pyro volume.
+- The fallback to the BVH walk compares the triangle structure's vertex count with the adapter's `max_blas_primitive_count`, the count wgpu validates. Before, it compared the triangle count, so a scene with more vertices than that limit but fewer triangles failed to build its structures instead of falling back.
+
+### Changes that can alter output from v0.7.0
+
+- On lavapipe, path-traced frames that use hardware ray queries change: they now show the surfaces the BVH walk and OpenGL show. `SR_GPU_RAY_QUERY=0`, the BVH walk and OpenGL are unchanged.
+
+### Licence
+
+- scene-render is licensed under the PolyForm Noncommercial License 1.0.0, as from 0.5.0 (`LICENSE`, `NOTICE`). Commercial use needs a separate licence (`COMMERCIAL.md`).
+
+The Linux archive contains the executable, source commit identifier, capability manifest, README, changelog, disclaimer, licence, notice, commercial-licence page and third-party notices. Its executable comes from the successful CI run for the release commit and is checksum-verified and smoke-tested before packaging.
+
+Verify the download with `sha256sum -c scene-render-v0.7.1-linux-x86_64.tar.gz.sha256`, extract it, then run `./scene-render --help`.
+
 ## v0.7.0 — 2026-10-20
 
 This release lets the path tracer stop tracing pixels whose mean has converged, denoises lighting apart from surface colour, finds its hits with hardware ray queries where the adapter offers them, and compiles its media shaders on NVIDIA's OpenGL driver. Validation warns about, and `inspect` reports, the cost of each path-traced camera, and more of the declared 3D and layout attributes are implemented. The vendored schema is still sr-core 1.7.0.
