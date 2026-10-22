@@ -31,6 +31,8 @@ struct Params {
     tile: vec4<u32>,
     // Packed medium row offset, domain count, conservative sample budget, reserved.
     media: vec4<u32>,
+    // Trace workgroup permutation stride (x), coprime to the workgroup count; 1 keeps the grid order.
+    perm: vec4<u32>,
     // SREP 71 procedural sky (sr_3d::sky::Sky::uniforms); sky[1].w is 1 when the dome is one
     sky: array<vec4<f32>, 5>,
 };
@@ -800,7 +802,16 @@ fn radiance(px: vec2<f32>, pix: u32, first: bool) -> vec4<f32> {
 }
 
 @compute @workgroup_size(8, 8)
-fn cs_trace(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn cs_trace(
+    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+) {
+    // Workgroups run in index order, so rows of sky finish early and leave the threads idle: visit the tiles in a
+    // coprime-stride order that spreads neighbouring indices over the image. Each pixel is traced as before.
+    let lin = wid.y * nwg.x + wid.x;
+    let p = (lin * pp.perm.x) % (nwg.x * nwg.y);
+    let gid = vec3<u32>(p % nwg.x * 8u + lid.x, p / nwg.x * 8u + lid.y, 0u);
     let w = pp.tile.z;
     let h = pp.tile.w;
     if (gid.x >= w || gid.y >= h) { return; }

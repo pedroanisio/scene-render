@@ -1310,8 +1310,41 @@ struct Params {
     /// Global pixel origin (xy) and extent (zw) of the working tile.
     tile: [u32; 4],
     media: [u32; 4],
+    /// Trace workgroup permutation stride (x), coprime to the workgroup count.
+    perm: [u32; 4],
     /// SREP 71 procedural sky (sr_3d::sky::Sky::uniforms); sky[1][3] is 1 when the dome is one
     sky: [[f32; 4]; 5],
+}
+
+/// The stride of the trace workgroup permutation for `n` workgroups: the coprime number nearest n / phi, so that
+/// consecutive workgroup indices land far apart in the image.
+fn trace_stride(n: u32) -> u32 {
+    fn gcd(a: u32, b: u32) -> u32 {
+        if b == 0 {
+            a
+        } else {
+            gcd(b, a % b)
+        }
+    }
+    if n < 3 {
+        return 1;
+    }
+    // The shader computes `lin * stride` in u32, so the stride stays below u32::MAX / n.
+    let mut s = ((n as f64 * 0.618_033_988_75) as u32).clamp(1, n - 1).min(u32::MAX / n).max(1);
+    while gcd(s, n) != 1 {
+        s -= 1;
+    }
+    s
+}
+
+/// The permutation stride of the trace dispatch: a CPU adapter hands each thread a contiguous run of workgroups, so
+/// it takes the spread order; a GPU keeps the grid order (stride 1), which its caches and scheduler favour.
+fn trace_stride_for(cpu_adapter: bool, n: u32) -> u32 {
+    if cpu_adapter {
+        trace_stride(n)
+    } else {
+        1
+    }
 }
 
 /// Compute pipelines of the shader variant with light grids.
@@ -1679,6 +1712,8 @@ pub struct PtGpu {
     output: wgpu::RenderPipeline,
     tile_bytes: u64,
     packed: std::sync::Mutex<packed::Cache>,
+    /// Whether the device is a CPU adapter (the renderer sets it): the trace workgroups are then permuted.
+    pub cpu_adapter: bool,
 }
 
 impl PtGpu {
@@ -1821,6 +1856,7 @@ impl PtGpu {
             output,
             tile_bytes: DEFAULT_TILE_BYTES,
             packed: Default::default(),
+            cpu_adapter: false,
         }
     }
 
@@ -2329,6 +2365,7 @@ pub(crate) fn render_cached(
         out: [scene.encode_srgb as u32 as f32, 0.0, 0.0, noise.unwrap_or(0.0)],
         tile: [tile.origin[0], tile.origin[1], tile.size[0], tile.size[1]],
         media,
+        perm: [trace_stride_for(pt.cpu_adapter, tile.size[0].div_ceil(8) * tile.size[1].div_ceil(8)), 0, 0, 0],
         sky: scene.env.as_ref().and_then(|e| e.sky).map(|s| s.uniforms()).unwrap_or([[0.0; 4]; 5]),
     };
 
@@ -2546,8 +2583,40 @@ mod wgsl_layout_tests {
     }
 
     #[test]
+    fn trace_stride_is_a_coprime_bijection_that_cannot_overflow() {
+        let gcd = |mut a: u64, mut b: u64| {
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            a
+        };
+        for n in [1u32, 2, 3, 4, 5, 6, 7, 8, 12, 64, 97, 1024, 14400, 14401, 65536, 65537, 129_600, 518_400] {
+            let s = super::trace_stride(n);
+            assert!(s >= 1, "n={n}");
+            assert_eq!(gcd(u64::from(s), u64::from(n)), 1, "n={n} stride={s}");
+            assert!(u64::from(n - 1) * u64::from(s) <= u64::from(u32::MAX), "n={n} stride={s} overflows u32");
+        }
+        for n in [1u32, 2, 3, 6, 7, 64, 97, 1000, 1024, 4096] {
+            let s = super::trace_stride(n);
+            let mut seen = vec![false; n as usize];
+            for lin in 0..n {
+                let p = (lin * s % n) as usize;
+                assert!(!seen[p], "n={n} stride={s} visits {p} twice");
+                seen[p] = true;
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_cpu_adapter_permutes_the_trace_workgroups() {
+        assert_eq!(super::trace_stride_for(false, 14400), 1);
+        assert_eq!(super::trace_stride_for(true, 14400), super::trace_stride(14400));
+        assert_ne!(super::trace_stride_for(true, 14400), 1);
+    }
+
+    #[test]
     fn params_matches_wgsl_params() {
-        let fields = rust_fields!(super::Params; cam_to_world, view_proj, inv_view_proj, env_rot, size, cam, env, ambient, misc, out, tile, media, sky);
+        let fields = rust_fields!(super::Params; cam_to_world, view_proj, inv_view_proj, env_rot, size, cam, env, ambient, misc, out, tile, media, perm, sky);
         assert_agree(include_str!("pathtrace.wgsl"), "Params", std::mem::size_of::<super::Params>(), &fields);
     }
 }

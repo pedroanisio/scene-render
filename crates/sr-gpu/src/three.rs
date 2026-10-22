@@ -1797,6 +1797,7 @@ impl ThreeEngine {
             let (data, ticket) = self.pt_geometry.build_for_render(scene);
             let pt = self.pt.get_or_insert_with(|| crate::pathtrace::PtGpu::new(&self.device, FORMAT));
             pt.set_hardware_rays(self.rays);
+            pt.cpu_adapter = self.software_adapter;
             let env_view = scene.env.as_ref().map(|e| &e.env.view).unwrap_or(&self.black_env);
             let inputs = crate::pathtrace::PtInputs {
                 env: env_view,
