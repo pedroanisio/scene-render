@@ -192,6 +192,9 @@ fn prototype_hit(scene: &PtScene, instance: usize, world_o: [f32; 3], world_d: [
 /// The shader's `trace`: the nearest hit along the ray within `tmax` (`tri == 0xffffffff` when there is none).
 pub(crate) fn trace(scene: &PtScene, o: [f32; 3], d: [f32; 3], tmax: f32) -> Hit {
     let mut h = Hit { t: tmax, u: 0.0, v: 0.0, tri: NONE, instance: NONE };
+    if scene.nodes.is_empty() {
+        return h;
+    }
     let inv = reciprocal(d);
     let mut stack = [0u32; 64];
     let mut sp = 1usize;
@@ -932,5 +935,368 @@ mod texture_tests {
             assert_eq!(got.params[..2], [1.0, 0.5], "unmapped metallic/roughness are unchanged");
             assert_eq!(got.n, [0.0, 0.0, 1.0]);
         }
+    }
+}
+
+/// The shader's `PLight` fields that `light_sample`, `light_radiance` and `light_lobes` read for a directional
+/// light (type 1): `pos.w` the kind, `dir.xyz` the direction of travel, `color.rgb` the radiance, `size.zw` the IES
+/// pixel offset and width (`ies_value`), `right.w` the lobe bits. `spot` is read only by other kinds.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct PLight {
+    pub pos: [f32; 4],
+    pub dir: [f32; 4],
+    pub color: [f32; 4],
+    pub size: [f32; 4],
+    pub right: [f32; 4],
+}
+
+/// The uniform inputs of `radiance` and `cs_trace`'s per-pixel part (`pathtrace.wgsl:587-851`). Matrices are
+/// column-major like `EnvMap::rot`.
+#[derive(Clone, Debug)]
+pub(crate) struct RadianceParams {
+    /// Whole-image size in pixels (`size`), for `global_pix` and the NDC mapping.
+    pub size: [u32; 2],
+    pub inv_view_proj: [[f32; 4]; 4],
+    pub cam_to_world: [[f32; 4]; 4],
+    /// Lens distortion `x`, depth-of-field aperture `y`, focus distance `z`, max bounces `w` (read as `u32(cam.w)`).
+    pub cam: [f32; 4],
+    /// `x` > 1.5 shows the dome to camera rays, `z` > 0.5 selects an orthographic camera.
+    pub env: [f32; 4],
+    pub lights: Vec<PLight>,
+}
+
+fn mat_vec(m: &[[f32; 4]; 4], v: [f32; 4]) -> [f32; 4] {
+    [0, 1, 2, 3].map(|i| m[0][i] * v[0] + m[1][i] * v[1] + m[2][i] * v[2] + m[3][i] * v[3])
+}
+
+fn mul3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] * b[0], a[1] * b[1], a[2] * b[2]]
+}
+
+/// The shader's `radiance` for the camera ray through `px` (pixel coordinates with the jitter added); alpha in `[3]`.
+/// Ports the supported subset (see `supported`): every `rnd()` is drawn where the shader draws it. The guide buffers,
+/// media, water, backdrop, splats, subsurface, transmission, depth of field and ambient lights are not ported.
+pub(crate) fn radiance(scene: &PtScene, env: &EnvMap, p: &RadianceParams, px: [f32; 2], rng: &mut Rng) -> [f32; 4] {
+    let (w, h) = (p.size[0] as f32, p.size[1] as f32);
+    let mut ndc = [px[0] / w * 2.0 - 1.0, 1.0 - px[1] / h * 2.0];
+    let k = 1.0 + p.cam[0] * (ndc[0] * ndc[0] + ndc[1] * ndc[1]);
+    ndc = [ndc[0] * k, ndc[1] * k];
+    let a = mat_vec(&p.inv_view_proj, [ndc[0], ndc[1], 1.0, 1.0]);
+    let b = mat_vec(&p.inv_view_proj, [ndc[0], ndc[1], 0.0, 1.0]);
+    let near = [a[0] / a[3], a[1] / a[3], a[2] / a[3]];
+    let far = [b[0] / b[3], b[1] / b[3], b[2] / b[3]];
+    let mut o = xyz(&mat_vec(&p.cam_to_world, [0.0, 0.0, 0.0, 1.0]));
+    if p.env[2] > 0.5 {
+        o = near;
+    }
+    let mut d = normalize(sub(far, near));
+    let mut thr = [1.0f32; 3];
+    let mut col = [0.0f32; 3];
+    let mut alpha = 0.0f32;
+    let mut bounce = 0u32;
+    let mut met = 0u32;
+    let max_b = p.cam[3] as u32;
+    for _ in 0..64 {
+        let hit = trace(scene, o, d, 1e30);
+        if hit.tri == NONE {
+            if met == 0 {
+                if p.env[0] > 1.5 {
+                    col = add(col, mul3(thr, env_term(env, p, d)));
+                    alpha = 1.0;
+                }
+                break;
+            }
+            col = add(col, mul3(thr, env_term(env, p, d)));
+            break;
+        }
+        let m = shade_hit(scene, &hit);
+        let pt = add(o, scale(d, hit.t));
+        if m.base[3] < 1.0 && rng.rnd() > m.base[3] {
+            o = add(pt, scale(d, 1e-3));
+            continue;
+        }
+        alpha = 1.0;
+        met += 1;
+        let ng0 = m.ng;
+        let ng = if dot(d, ng0) < 0.0 { ng0 } else { scale(ng0, -1.0) };
+        let mut n = m.n;
+        if dot(n, ng) < 0.0 {
+            n = scale(n, -1.0);
+        }
+        col = add(col, mul3(thr, xyz(&m.emissive)));
+        if m.emissive[3] > 0.5 {
+            break;
+        }
+        let s = surf_of(m.base, m.params, m.extra);
+        let v = scale(d, -1.0);
+        if bounce >= max_b {
+            break;
+        }
+        for lt in &p.lights {
+            let ty = lt.pos[3] as u32;
+            if ty == 0 || lt.pos[3] < 0.0 {
+                continue;
+            }
+            let (l, dist) = sun_sample(xyz(&lt.dir));
+            let nl = dot(n, l);
+            if nl <= 0.0 {
+                continue;
+            }
+            let rad = xyz(&lt.color);
+            if rad[0].max(rad[1].max(rad[2])) <= 0.0 {
+                continue;
+            }
+            let mut visible = 1.0;
+            if lt.size[1] > 0.5 && m.extra[2] > 0.5 {
+                visible = visibility(scene, add(pt, scale(ng, 1e-2)), l, dist - 2e-2);
+            }
+            let flags = lt.right[3] as u32;
+            let lobes = [(flags & 1) as f32, ((flags >> 1) & 1) as f32];
+            let f = bsdf(&s, n, v, l, lobes);
+            let mut c = [0, 1, 2].map(|i| thr[i] * f[i] * nl * rad[i] * visible);
+            if bounce > 0 {
+                c = c.map(|x| x.min(20.0));
+            }
+            col = add(col, c);
+        }
+        let l = sample_dir(&s, n, v, rng);
+        let pdf = pdf_of(&s, n, v, l);
+        let nl = dot(n, l);
+        if pdf <= 1e-8 || nl <= 0.0 {
+            break;
+        }
+        let diffuse = bsdf(&s, n, v, l, [1.0, 0.0]);
+        let specular = bsdf(&s, n, v, l, [0.0, 1.0]);
+        for i in 0..3 {
+            thr[i] *= (diffuse[i] + specular[i]) * nl / pdf * m.occlusion;
+        }
+        bounce += 1;
+        if bounce > 2 {
+            let q = thr[0].max(thr[1].max(thr[2])).min(0.95);
+            if rng.rnd() > q {
+                break;
+            }
+            thr = [thr[0] / q, thr[1] / q, thr[2] / q];
+        }
+        o = add(pt, scale(ng, 1e-3));
+        d = l;
+    }
+    [col[0], col[1], col[2], alpha]
+}
+
+/// The dome as `env_radiance` returns it with no ambient lights: black unless `env.x > 0.5`.
+fn env_term(env: &EnvMap, p: &RadianceParams, d: [f32; 3]) -> [f32; 3] {
+    if p.env[0] > 0.5 {
+        env.radiance(d)
+    } else {
+        [0.0; 3]
+    }
+}
+
+/// The shader's `visibility`: transmittance of casters along `d` for `dist`.
+pub(crate) fn visibility(scene: &PtScene, o: [f32; 3], d: [f32; 3], dist: f32) -> f32 {
+    let mut o = o;
+    let mut remaining = dist;
+    let mut result = 1.0f32;
+    for _ in 0..64 {
+        let hit = trace(scene, o, d, remaining);
+        if hit.tri == NONE {
+            return result;
+        }
+        // `shade_hit`'s alpha is the shader's `opacity`: the material's for mode 0, times the map and vertex alpha
+        // otherwise, cut off for mode 1
+        let m = shade_hit(scene, &hit);
+        if m.extra[1] > 0.5 {
+            result *= 1.0 - m.base[3].clamp(0.0, 1.0);
+        }
+        if result < 1e-5 {
+            return 0.0;
+        }
+        let advance = hit.t + 1e-3;
+        o = add(o, scale(d, advance));
+        remaining -= advance;
+        if remaining <= 0.0 {
+            return result;
+        }
+    }
+    0.0
+}
+
+/// `cs_trace`'s per-pixel part: samples `start..start + count` of pixel `(x, y)` summed (not divided).
+pub(crate) fn pixel_sum(
+    scene: &PtScene,
+    env: &EnvMap,
+    p: &RadianceParams,
+    x: u32,
+    y: u32,
+    start: u32,
+    count: u32,
+) -> [f32; 4] {
+    let global_pix = y.wrapping_mul(p.size[0]).wrapping_add(x);
+    let mut sum = [0.0f32; 4];
+    for s in 0..count {
+        let si = start + s;
+        let mut rng = Rng(pcg(global_pix.wrapping_mul(9781).wrapping_add(pcg(si.wrapping_mul(6271).wrapping_add(1)))));
+        let jx = rng.rnd();
+        let jy = rng.rnd();
+        let r = radiance(scene, env, p, [x as f32 + jx, y as f32 + jy], &mut rng);
+        for (acc, c) in sum.iter_mut().zip(r) {
+            *acc += c;
+        }
+    }
+    sum
+}
+
+/// Whether the CPU loop reproduces the shader for this scene: false for any light that is not a plain directional one
+/// (other kinds, IES profiles), subsurface or transmissive materials, normal maps, splats and depth of field. Media,
+/// water, procedural skies and glass backdrops are not part of `RadianceParams`; the caller rejects them.
+pub(crate) fn supported(scene: &PtScene, p: &RadianceParams) -> bool {
+    p.cam[1] <= 0.0
+        && scene.splats.is_empty()
+        && p.lights.iter().all(|l| l.pos[3] == 1.0 && l.size[3] == 0.0)
+        && scene.mats.iter().all(|m| m.params[2] <= 0.0 && m.sss[3] <= 0.0 && m.maps[1][1] == 0)
+}
+
+#[cfg(test)]
+mod radiance_tests {
+    use super::super::PtMat;
+    use super::*;
+
+    const SUN_COLOUR: [f32; 3] = [2.0, 1.5, 1.0];
+
+    fn env_of(c: [f32; 3], intensity: f32) -> EnvMap {
+        let id = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        EnvMap::from_rgb(4, 2, &[c; 8], id, intensity)
+    }
+
+    /// Orthographic camera at z = 4 looking down -z, +-5 units across; world z = 3 + ndc z.
+    fn params(env_x: f32, max_bounces: u32, lights: Vec<PLight>) -> RadianceParams {
+        let id = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        RadianceParams {
+            size: [64, 64],
+            inv_view_proj: [[5.0, 0.0, 0.0, 0.0], [0.0, 5.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 3.0, 1.0]],
+            cam_to_world: id,
+            cam: [0.0, 0.0, 0.0, max_bounces as f32],
+            env: [env_x, 1.0, 1.0, 0.0],
+            lights,
+        }
+    }
+
+    fn sun() -> PLight {
+        PLight {
+            pos: [0.0, 0.0, 0.0, 1.0],
+            dir: [0.0, 0.0, -1.0, 0.0],
+            color: [SUN_COLOUR[0], SUN_COLOUR[1], SUN_COLOUR[2], 0.0],
+            size: [0.0, 1.0, 0.0, 0.0],
+            right: [0.0, 0.0, 0.0, 1.0], // diffuse lobe only
+        }
+    }
+
+    fn material(base: [f32; 4], cast: f32, receive: f32) -> PtMat {
+        let mut m: PtMat = bytemuck::Zeroable::zeroed();
+        m.base = base;
+        m.params = [0.0, 1.0, 0.0, 1.0]; // dielectric, rough, ior 1: f0 = 0, so F = 0 where v.h = 1
+        m.extra = [0.0, cast, receive, 0.0];
+        m
+    }
+
+    /// Large quads facing +z at the given heights, one material each.
+    fn quads(list: &[(f32, PtMat)]) -> PtScene {
+        let mut s = PtScene::default();
+        let mut tris = Vec::new();
+        let mut mat_of = Vec::new();
+        for (i, (z, _)) in list.iter().enumerate() {
+            let c = |x: f32, y: f32| glam::Vec3::new(x, y, *z);
+            tris.push([c(-50.0, -50.0), c(50.0, -50.0), c(-50.0, 50.0)]);
+            tris.push([c(50.0, -50.0), c(50.0, 50.0), c(-50.0, 50.0)]);
+            mat_of.extend([i as u32; 2]);
+        }
+        let order = super::super::bvh(&tris, &mut s.nodes);
+        for &t in &order {
+            for p in tris[t] {
+                s.pos.push([p.x, p.y, p.z, 0.0]);
+                s.nrm.push([0.0, 0.0, 1.0, 0.0]);
+                s.uv.push([[0.0; 2]; 6]);
+                s.colors.push([1.0; 4]);
+            }
+            s.tri_mat.push(mat_of[t]);
+        }
+        s.mats = list.iter().map(|(_, m)| *m).collect();
+        s
+    }
+
+    fn centre(s: &PtScene, env: &EnvMap, p: &RadianceParams) -> [f32; 4] {
+        radiance(s, env, p, [32.0, 32.0], &mut Rng(12345))
+    }
+
+    fn assert_close(got: [f32; 4], want: [f32; 4]) {
+        for k in 0..4 {
+            assert!((got[k] - want[k]).abs() <= 1e-4, "channel {k}: got {got:?}, want {want:?}");
+        }
+    }
+
+    fn lit_floor() -> [f32; 4] {
+        let base = [0.8, 0.6, 0.4];
+        let c = |k: usize| base[k] / PI * SUN_COLOUR[k];
+        [c(0), c(1), c(2), 1.0]
+    }
+
+    #[test]
+    fn empty_scene_shows_the_constant_dome_to_camera_rays() {
+        let env = env_of([0.5, 0.25, 0.125], 1.0);
+        let p = params(2.0, 4, vec![]);
+        assert_close(centre(&PtScene::default(), &env, &p), [0.5, 0.25, 0.125, 1.0]);
+    }
+
+    #[test]
+    fn diffuse_quad_under_the_sun_gives_base_over_pi_times_colour() {
+        let s = quads(&[(0.0, material([0.8, 0.6, 0.4, 1.0], 1.0, 1.0))]);
+        let p = params(0.0, 1, vec![sun()]);
+        assert_close(centre(&s, &env_of([0.0; 3], 1.0), &p), lit_floor());
+    }
+
+    #[test]
+    fn a_shadow_casting_quad_between_floor_and_sun_blocks_the_light() {
+        let floor = material([0.8, 0.6, 0.4, 1.0], 1.0, 1.0);
+        let caster = |cast| material([1.0; 4], cast, 1.0);
+        let env = env_of([0.0; 3], 1.0);
+        let p = params(0.0, 1, vec![sun()]);
+        assert_close(centre(&quads(&[(0.0, floor), (6.0, caster(1.0))]), &env, &p), [0.0, 0.0, 0.0, 1.0]);
+        assert_close(centre(&quads(&[(0.0, floor), (6.0, caster(0.0))]), &env, &p), lit_floor());
+    }
+
+    #[test]
+    fn visibility_through_a_half_transparent_caster_is_one_half() {
+        let s = quads(&[(5.0, material([1.0, 1.0, 1.0, 0.5], 1.0, 1.0))]);
+        assert_eq!(visibility(&s, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 100.0), 0.5);
+        assert_eq!(visibility(&PtScene::default(), [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 100.0), 1.0);
+    }
+
+    #[test]
+    fn supported_rejects_point_lights_transmission_and_dof_and_accepts_dome_plus_sun() {
+        let plain = quads(&[(0.0, material([0.8, 0.6, 0.4, 1.0], 1.0, 1.0))]);
+        assert!(supported(&plain, &params(2.0, 4, vec![sun()])));
+        let mut point = sun();
+        point.pos[3] = 2.0;
+        assert!(!supported(&plain, &params(2.0, 4, vec![point])));
+        let mut glass = quads(&[(0.0, material([0.8, 0.6, 0.4, 1.0], 1.0, 1.0))]);
+        glass.mats[0].params[2] = 0.5;
+        assert!(!supported(&glass, &params(2.0, 4, vec![sun()])));
+        let mut dof = params(2.0, 4, vec![sun()]);
+        dof.cam[1] = 0.1;
+        assert!(!supported(&plain, &dof));
+    }
+
+    #[test]
+    fn pixel_sum_seeds_the_rng_per_pixel_and_sample_and_draws_the_jitter_first() {
+        let env = env_of([0.5, 0.25, 0.125], 1.0);
+        let p = params(2.0, 4, vec![]);
+        let s = PtScene::default();
+        let (x, y, si) = (5u32, 7u32, 3u32);
+        let mut rng = Rng(pcg((y * 64 + x) * 9781 + pcg(si * 6271 + 1)));
+        let (jx, jy) = (rng.rnd(), rng.rnd());
+        let want = radiance(&s, &env, &p, [x as f32 + jx, y as f32 + jy], &mut rng);
+        assert_eq!(pixel_sum(&s, &env, &p, x, y, si, 1), want);
+        assert_eq!(want, [0.5, 0.25, 0.125, 1.0]);
     }
 }
