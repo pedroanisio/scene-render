@@ -1140,7 +1140,10 @@ impl PendingAudio {
     }
 
     fn join(mut self) -> Result<AudioDone, DeliverError> {
-        let handle = self.0.take().expect("a pending audio job is joined once");
+        // `join` takes `self` and only `Drop` empties the slot otherwise, so the handle is always there
+        let Some(handle) = self.0.take() else {
+            return Err(DeliverError::Invalid("the audio chain was joined twice".into()));
+        };
         handle
             .join()
             .unwrap_or_else(|p| Err(DeliverError::Invalid(format!("the audio chain panicked: {}", panic_message(&*p)))))
@@ -2053,10 +2056,11 @@ fn run_delivery(
             video.run(&times, report, &mut judge, |b| {
                 done += 1;
                 progress(done, n);
-                if feeder.is_none() {
-                    feeder = Some(start_encoder(&mut spec, output, &mut pending, &mut late, carries_audio)?);
-                }
-                feeder.as_mut().expect("the encoder is started").send(b)
+                let started = match feeder.take() {
+                    Some(f) => f,
+                    None => start_encoder(&mut spec, output, &mut pending, &mut late, carries_audio)?,
+                };
+                feeder.insert(started).send(b)
             })?;
             let mut feeder = match feeder {
                 Some(f) => f,
