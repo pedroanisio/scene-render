@@ -22,6 +22,59 @@ impl Rng {
     }
 }
 
+/// The dome as the shader reads it: mip 0 of the prefiltered chain, f16-rounded, sampled bilinearly with repeat
+/// addressing; `rot` is `env_rot` in column-major order and `intensity` is `env.y`.
+pub(crate) struct EnvMap {
+    pub w: u32,
+    pub h: u32,
+    pub rgba: Vec<[f32; 4]>,
+    pub rot: [[f32; 4]; 4],
+    pub intensity: f32,
+}
+
+impl EnvMap {
+    /// Rounds rgb texels to f16 as the rgba16float upload does (alpha 1).
+    pub(crate) fn from_rgb(w: u32, h: u32, rgb: &[[f32; 3]], rot: [[f32; 4]; 4], intensity: f32) -> EnvMap {
+        let f = |x: f32| half::f16::from_f32(x).to_f32();
+        let rgba = rgb.iter().map(|p| [f(p[0]), f(p[1]), f(p[2]), 1.0]).collect();
+        EnvMap { w, h, rgba, rot, intensity }
+    }
+
+    fn texel(&self, x: i64, y: i64) -> [f32; 4] {
+        let xi = x.rem_euclid(self.w as i64) as usize;
+        let yi = y.rem_euclid(self.h as i64) as usize;
+        self.rgba[yi * self.w as usize + xi]
+    }
+
+    /// The shader's `env_radiance` environment term (no ambient lights) for world direction `d`.
+    pub(crate) fn radiance(&self, d: [f32; 3]) -> [f32; 3] {
+        let m = &self.rot;
+        let rotated = [
+            m[0][0] * d[0] + m[1][0] * d[1] + m[2][0] * d[2],
+            m[0][1] * d[0] + m[1][1] * d[1] + m[2][1] * d[2],
+            m[0][2] * d[0] + m[1][2] * d[1] + m[2][2] * d[2],
+        ];
+        let r = normalize(rotated);
+        let u = (r[0].atan2(r[2]) + PI) / (2.0 * PI);
+        let v = (-r[1]).clamp(-1.0, 1.0).acos() / PI;
+        let x = u * self.w as f32 - 0.5;
+        let y = v * self.h as f32 - 0.5;
+        let (x0, y0) = (x.floor(), y.floor());
+        let (fx, fy) = (x - x0, y - y0);
+        let (x0, y0) = (x0 as i64, y0 as i64);
+        let top = mix4(self.texel(x0, y0), self.texel(x0 + 1, y0), fx);
+        let bottom = mix4(self.texel(x0, y0 + 1), self.texel(x0 + 1, y0 + 1), fx);
+        let c = mix4(top, bottom, fy);
+        [c[0] * self.intensity, c[1] * self.intensity, c[2] * self.intensity]
+    }
+}
+
+/// Next-event sample of a directional light (the sun) as `light_sample` does: the shader has no angular radius, so
+/// the direction is exactly `-dir` and the distance 1e30; the radiance is the light colour (`light_radiance`, no IES).
+pub(crate) fn sun_sample(dir: [f32; 3]) -> ([f32; 3], f32) {
+    ([-dir[0], -dir[1], -dir[2]], 1e30)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Hit {
     pub t: f32,
@@ -454,6 +507,49 @@ mod bsdf_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const IDENT: [[f32; 4]; 4] = [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]];
+
+    #[test]
+    fn env_lookup_matches_hand_bilinear_values() {
+        // texel (x, y) = x*x + 10*y on a 4x2 map
+        let rgb: Vec<[f32; 3]> = (0..8).map(|k| [((k % 4) * (k % 4) + 10 * (k / 4)) as f32, 0.0, 0.0]).collect();
+        let env = EnvMap::from_rgb(4, 2, &rgb, IDENT, 1.0);
+        let cases = [
+            ([1., 0., 0.], 11.5),
+            ([-1., 0., 0.], 5.5),
+            ([0., 1., 0.], 7.5),
+            ([0., -1., 0.], 7.5),
+            ([0., 0., 1.], 7.5),
+            ([0., 0., -1.], 9.5),
+        ];
+        for (d, want) in cases {
+            let got = env.radiance(d)[0];
+            assert!((got - want).abs() < 1e-3, "{d:?}: {got} vs {want}");
+        }
+    }
+
+    #[test]
+    fn constant_env_is_constant_and_f16_rounded() {
+        let env = EnvMap::from_rgb(4, 2, &[[0.1, 0.2, 0.3]; 8], IDENT, 1.0);
+        let want = [0.1, 0.2, 0.3].map(|x| half::f16::from_f32(x).to_f32());
+        assert_ne!(want[0], 0.1);
+        let mut rng = Rng(7);
+        for _ in 0..100 {
+            let d = normalize([rng.rnd() - 0.5, rng.rnd() - 0.5, rng.rnd() - 0.5]);
+            let got = env.radiance(d);
+            for k in 0..3 {
+                assert!((got[k] - want[k]).abs() < 1e-6, "{d:?}: {got:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn sun_sample_is_the_exact_reversed_direction() {
+        // the shader's directional light has no angular radius: no cone to sample
+        let (l, dist) = sun_sample([0.0, -0.6, 0.8]);
+        assert_eq!((l, dist), ([0.0, 0.6, -0.8], 1e30));
+    }
 
     #[test]
     fn pcg_and_rnd_follow_the_shader_formula() {

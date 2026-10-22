@@ -92,6 +92,9 @@ pub struct EnvGpu {
     pub sky: wgpu::TextureView,
     pub mips: u32,
     pub sh: [[f32; 3]; 9],
+    /// Mip 0 of `view` as the shader reads it: width, height and f16-rounded rgba texels (for the CPU tracer).
+    #[allow(dead_code)] // read by the CPU tracer once it has a caller
+    pub(crate) mip0: Arc<(u32, u32, Vec<[f32; 4]>)>,
 }
 
 /// Splats on the GPU (model space).
@@ -1530,6 +1533,9 @@ impl ThreeEngine {
         } else {
             eq
         };
+        let (w0, h0, px0) = &pf.mips[0];
+        let mip0 =
+            Arc::new((*w0, *h0, px0.iter().map(|p| half4(*p).map(|b| half::f16::from_bits(b).to_f32())).collect()));
         let sky = texture(&self.device, [src.width, src.height], FORMAT, 1, 1, 1, "sky");
         let data: Vec<u16> = src.rgb.iter().flat_map(|p| half4([p[0], p[1], p[2], 1.0])).collect();
         self.write_tex(&sky, 0, [src.width, src.height], bytemuck::cast_slice(&data), 8);
@@ -1538,6 +1544,7 @@ impl ThreeEngine {
             sky: sky.create_view(&Default::default()),
             mips: levels as u32,
             sh: pf.sh,
+            mip0,
         })
     }
 
