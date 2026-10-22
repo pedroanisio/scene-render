@@ -5,6 +5,8 @@
 //! deposit; the map then diffuses (a 3 × 3 mean mixed in by `diffuse`) and decays by `decay`.
 //! One step every 1/60 s; distances are in box pixels.
 
+use rayon::prelude::*;
+
 use crate::rng;
 use crate::timeline::State;
 
@@ -106,39 +108,46 @@ pub fn step(s: &SlimeSpec, sl: &mut Slime, step_index: u64, dt: f64) {
         let (px, py) = ((x + a.cos() * sd).rem_euclid(w), (y + a.sin() * sd).rem_euclid(hgt));
         t[(py as usize).min(ny - 1) * nx + (px as usize).min(nx - 1)]
     };
-    // agents read the map as it was at the start of the step
-    let snapshot = sl.trail.clone();
-    for i in 0..sl.x.len() {
-        let (x, y, hd) = (sl.x[i], sl.y[i], sl.heading[i]);
-        let (f, l, r) = (sense(&snapshot, x, y, hd), sense(&snapshot, x, y, hd - sa), sense(&snapshot, x, y, hd + sa));
-        let mut nh = hd;
-        if f >= l && f >= r {
-        } else if f < l && f < r {
-            let coin = rng::unit(s.seed ^ 0x51A1, i as u64, step_index) < 0.5;
-            nh += if coin { ta } else { -ta };
-        } else if l > r {
-            nh -= ta;
-        } else {
-            nh += ta;
-        }
-        let (mut nx_, mut ny_) = (x + nh.cos() * dist, y + nh.sin() * dist);
-        // bounce off the box edges with a random new heading
-        if nx_ < 0.0 || nx_ >= w || ny_ < 0.0 || ny_ >= hgt {
-            nx_ = nx_.clamp(0.0, w - 1e-3);
-            ny_ = ny_.clamp(0.0, hgt - 1e-3);
-            nh = (rng::unit(s.seed ^ 0xB0A1, i as u64, step_index) * std::f64::consts::TAU) as f32;
-        }
+    // agents read the map as it was at the start of the step, so each one's move depends on it alone and the moves
+    // are made in parallel; the deposits then land in agent order, the sums being the same to the bit as a serial step's
+    let snapshot = &sl.trail;
+    let moves: Vec<(f32, f32, f32)> = (0..sl.x.len())
+        .into_par_iter()
+        .map(|i| {
+            let (x, y, hd) = (sl.x[i], sl.y[i], sl.heading[i]);
+            let (f, l, r) = (sense(snapshot, x, y, hd), sense(snapshot, x, y, hd - sa), sense(snapshot, x, y, hd + sa));
+            let mut nh = hd;
+            if f >= l && f >= r {
+            } else if f < l && f < r {
+                let coin = rng::unit(s.seed ^ 0x51A1, i as u64, step_index) < 0.5;
+                nh += if coin { ta } else { -ta };
+            } else if l > r {
+                nh -= ta;
+            } else {
+                nh += ta;
+            }
+            let (mut nx_, mut ny_) = (x + nh.cos() * dist, y + nh.sin() * dist);
+            // bounce off the box edges with a random new heading
+            if nx_ < 0.0 || nx_ >= w || ny_ < 0.0 || ny_ >= hgt {
+                nx_ = nx_.clamp(0.0, w - 1e-3);
+                ny_ = ny_.clamp(0.0, hgt - 1e-3);
+                nh = (rng::unit(s.seed ^ 0xB0A1, i as u64, step_index) * std::f64::consts::TAU) as f32;
+            }
+            (nx_, ny_, nh)
+        })
+        .collect();
+    for (i, (nx_, ny_, nh)) in moves.into_iter().enumerate() {
         sl.x[i] = nx_;
         sl.y[i] = ny_;
         sl.heading[i] = nh;
         let k = (ny_ as usize).min(ny - 1) * nx + (nx_ as usize).min(nx - 1);
         sl.trail[k] += dep;
     }
-    // diffuse (3 × 3 mean, clamped edges) and decay
+    // diffuse (3 × 3 mean, clamped edges) and decay, row by row
     let t0 = sl.trail.clone();
     let (df, keep) = (s.diffuse as f32, (1.0 - s.decay) as f32);
-    for j in 0..ny {
-        for i in 0..nx {
+    sl.trail.par_chunks_mut(nx).enumerate().for_each(|(j, row)| {
+        for (i, cell) in row.iter_mut().enumerate() {
             let mut sum = 0.0;
             for dj in -1i64..=1 {
                 for di in -1i64..=1 {
@@ -147,9 +156,9 @@ pub fn step(s: &SlimeSpec, sl: &mut Slime, step_index: u64, dt: f64) {
                 }
             }
             let k = j * nx + i;
-            sl.trail[k] = (t0[k] + (sum / 9.0 - t0[k]) * df) * keep;
+            *cell = (t0[k] + (sum / 9.0 - t0[k]) * df) * keep;
         }
-    }
+    });
 }
 
 /// Premultiplied linear RGBA: the trail through a ramp from `low` (0) to `high` (`saturation`).
@@ -183,6 +192,27 @@ mod tests {
             decay: 0.05,
             diffuse: 0.5,
         }
+    }
+
+    /// FNV-1a over the bits of the trail and of every agent's position and heading.
+    fn digest(sl: &Slime) -> u64 {
+        let words = sl.trail.iter().chain(&sl.x).chain(&sl.y).chain(&sl.heading).map(|v| v.to_bits());
+        words
+            .flat_map(u32::to_le_bytes)
+            .fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    /// Pinned from the serial step: how the agents' moves and the diffusion are spread over threads must not change a
+    /// single bit of the trail or of any agent, deposits landing in agent order as before.
+    #[test]
+    fn steps_reproduce_the_serial_simulation_bit_for_bit() {
+        let mut s = spec();
+        s.size = [256.0, 192.0];
+        let mut sl = init(&s);
+        for k in 0..120 {
+            step(&s, &mut sl, k, 1.0 / 60.0);
+        }
+        assert_eq!(digest(&sl), 100_807_409_225_214_749);
     }
 
     /// Coefficient of variation of the trail: 0 for a uniform film, large for sharp veins.

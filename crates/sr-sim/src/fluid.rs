@@ -11,6 +11,8 @@
 //! equation), advected semi-Lagrangianly and made divergence-free again, and the premultiplied
 //! RGBA dye is advected with it, diffused and dissipated. Velocities are in box pixels per second.
 
+use rayon::prelude::*;
+
 use crate::timeline::State;
 
 /// What happens at the grid's edges.
@@ -164,8 +166,100 @@ fn edges(f: &mut Fluid, edge: Edge) {
 fn project(f: &mut Fluid, edge: Edge, iters: usize) {
     let (nx, ny) = (f.nx, f.ny);
     let div: Vec<f64> = (0..nx * ny).map(|k| f.divergence_at(k % nx, k / nx)).collect();
+    // a wrapped side of odd length makes a cell and its neighbour across the seam the same colour, so a sweep reads
+    // cells it has itself written and only the serial order gives its result
+    let p = if edge == Edge::Wrap && (nx % 2 == 1 || ny % 2 == 1) {
+        pressure_serial(nx, ny, &div, edge, iters)
+    } else {
+        pressure(nx, ny, &div, edge, iters)
+    };
+    let at = |i: i64, j: i64| -> f64 {
+        match edge {
+            Edge::Wrap => p[j.rem_euclid(ny as i64) as usize * nx + i.rem_euclid(nx as i64) as usize],
+            _ if i < 0 || j < 0 || i >= nx as i64 || j >= ny as i64 => 0.0,
+            _ => p[j as usize * nx + i as usize],
+        }
+    };
+    for j in 0..ny {
+        for i in 0..=nx {
+            if edge == Edge::Closed && (i == 0 || i == nx) {
+                continue;
+            }
+            let k = f.ui(i, j);
+            f.u[k] -= (at(i as i64, j as i64) - at(i as i64 - 1, j as i64)) as f32;
+        }
+    }
+    for j in 0..=ny {
+        for i in 0..nx {
+            if edge == Edge::Closed && (j == 0 || j == ny) {
+                continue;
+            }
+            let k = f.vi(i, j);
+            f.v[k] -= (at(i as i64, j as i64) - at(i as i64, j as i64 - 1)) as f32;
+        }
+    }
+    edges(f, edge);
+}
+
+const OMEGA: f64 = 1.9;
+
+/// The pressure of [`project`], each colour of the red-black order held apart: a sweep of one colour reads only the
+/// other, so its rows are relaxed in parallel, every cell taking the same steps in the same order as in the serial
+/// sweep. Cell (i, j) of colour (i + j) mod 2 is entry j h + i / 2 of its colour, h = ceil(nx / 2).
+fn pressure(nx: usize, ny: usize, div: &[f64], edge: Edge, iters: usize) -> Vec<f64> {
+    let half = nx.div_ceil(2);
+    let mut colours = [vec![0.0f64; half * ny], vec![0.0f64; half * ny]];
+    for _ in 0..iters {
+        for parity in 0..2 {
+            let [red, black] = &mut colours;
+            let (mine, other): (&mut Vec<f64>, &Vec<f64>) = if parity == 0 { (red, black) } else { (black, red) };
+            // a sweep is short: rows go to the threads in blocks, so that dispatch does not outweigh the work
+            mine.par_chunks_mut(half).enumerate().with_min_len(16).for_each(|(j, row)| {
+                let mut i = (parity + j) % 2;
+                while i < nx {
+                    let (mut sum, mut count) = (0.0, 0.0);
+                    for (di, dj) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)] {
+                        let (a, b) = (i as i64 + di, j as i64 + dj);
+                        let inside = a >= 0 && b >= 0 && a < nx as i64 && b < ny as i64;
+                        match (inside, edge) {
+                            (true, _) => {
+                                sum += other[b as usize * half + a as usize / 2];
+                                count += 1.0;
+                            }
+                            (false, Edge::Wrap) => {
+                                let (a, b) = (a.rem_euclid(nx as i64) as usize, b.rem_euclid(ny as i64) as usize);
+                                sum += other[b * half + a / 2];
+                                count += 1.0;
+                            }
+                            // open: p = 0 outside, still a neighbour
+                            (false, Edge::Open) => count += 1.0,
+                            // closed: no flux through the wall, so no neighbour
+                            (false, Edge::Closed) => {}
+                        }
+                    }
+                    if count > 0.0 {
+                        let gs = (sum - div[j * nx + i]) / count;
+                        let cell = &mut row[i / 2];
+                        *cell += OMEGA * (gs - *cell);
+                    }
+                    i += 2;
+                }
+            });
+        }
+    }
     let mut p = vec![0.0f64; nx * ny];
-    let omega = 1.9;
+    for j in 0..ny {
+        for i in 0..nx {
+            p[j * nx + i] = colours[(i + j) % 2][j * half + i / 2];
+        }
+    }
+    p
+}
+
+/// The pressure of [`project`] in one array, swept in the red-black order one cell after another.
+fn pressure_serial(nx: usize, ny: usize, div: &[f64], edge: Edge, iters: usize) -> Vec<f64> {
+    let mut p = vec![0.0f64; nx * ny];
+    let omega = OMEGA;
     for _ in 0..iters {
         for parity in 0..2 {
             for j in 0..ny {
@@ -201,32 +295,7 @@ fn project(f: &mut Fluid, edge: Edge, iters: usize) {
             }
         }
     }
-    let at = |i: i64, j: i64| -> f64 {
-        match edge {
-            Edge::Wrap => p[j.rem_euclid(ny as i64) as usize * nx + i.rem_euclid(nx as i64) as usize],
-            _ if i < 0 || j < 0 || i >= nx as i64 || j >= ny as i64 => 0.0,
-            _ => p[j as usize * nx + i as usize],
-        }
-    };
-    for j in 0..ny {
-        for i in 0..=nx {
-            if edge == Edge::Closed && (i == 0 || i == nx) {
-                continue;
-            }
-            let k = f.ui(i, j);
-            f.u[k] -= (at(i as i64, j as i64) - at(i as i64 - 1, j as i64)) as f32;
-        }
-    }
-    for j in 0..=ny {
-        for i in 0..nx {
-            if edge == Edge::Closed && (j == 0 || j == ny) {
-                continue;
-            }
-            let k = f.vi(i, j);
-            f.v[k] -= (at(i as i64, j as i64) - at(i as i64, j as i64 - 1)) as f32;
-        }
-    }
-    edges(f, edge);
+    p
 }
 
 /// Mean |divergence| over the cells, in 1/s.
@@ -313,27 +382,29 @@ pub fn step(s: &FluidSpec, f: &mut Fluid, t: f64, dt: f64, accel: &mut dyn FnMut
         }
     }
     // ---- vorticity confinement (cell centres)
+    // (each cell's curl and push read the velocity and the curl alone, so rows are worked in parallel)
     if s.vorticity > 0.0 {
         let c = |i: usize, j: usize| f.velocity(i as f64 + 0.5, j as f64 + 0.5, edge);
         let mut w = vec![0.0f64; nx * ny];
-        for j in 0..ny {
-            for i in 0..nx {
+        w.par_chunks_mut(nx).enumerate().for_each(|(j, row)| {
+            for (i, curl) in row.iter_mut().enumerate() {
                 let (l, r) = (c(i.saturating_sub(1), j), c((i + 1).min(nx - 1), j));
                 let (d, u) = (c(i, j.saturating_sub(1)), c(i, (j + 1).min(ny - 1)));
-                w[j * nx + i] = 0.5 * (r[1] - l[1]) - 0.5 * (u[0] - d[0]);
+                *curl = 0.5 * (r[1] - l[1]) - 0.5 * (u[0] - d[0]);
             }
-        }
+        });
         let wa =
             |i: i64, j: i64| w[(j.clamp(0, ny as i64 - 1) as usize) * nx + i.clamp(0, nx as i64 - 1) as usize].abs();
-        for j in 0..ny as i64 {
+        ax.par_chunks_mut(nx).zip(ay.par_chunks_mut(nx)).enumerate().for_each(|(j, (axr, ayr))| {
+            let j = j as i64;
             for i in 0..nx as i64 {
                 let (gx, gy) = (0.5 * (wa(i + 1, j) - wa(i - 1, j)), 0.5 * (wa(i, j + 1) - wa(i, j - 1)));
                 let l = (gx * gx + gy * gy).sqrt() + 1e-9;
                 let k = j as usize * nx + i as usize;
-                ax[k] += s.vorticity * gy / l * w[k];
-                ay[k] -= s.vorticity * gx / l * w[k];
+                axr[i as usize] += s.vorticity * gy / l * w[k];
+                ayr[i as usize] -= s.vorticity * gx / l * w[k];
             }
-        }
+        });
     }
     // cell-centre accelerations onto the faces
     let cell =
@@ -362,24 +433,23 @@ pub fn step(s: &FluidSpec, f: &mut Fluid, t: f64, dt: f64, accel: &mut dyn FnMut
     let old = f.clone();
     let clamp =
         |x: f64, y: f64| if edge == Edge::Wrap { (x, y) } else { (x.clamp(0.0, nx as f64), y.clamp(0.0, ny as f64)) };
-    for j in 0..ny {
-        for i in 0..=nx {
+    // each face is traced back through the old field alone, so rows are advected in parallel
+    f.u.par_chunks_mut(nx + 1).enumerate().for_each(|(j, row)| {
+        for (i, face) in row.iter_mut().enumerate() {
             let (x, y) = (i as f64, j as f64 + 0.5);
             let vel = old.velocity(x, y, edge);
             let (bx, by) = clamp(x - dt * vel[0], y - dt * vel[1]);
-            let k = f.ui(i, j);
-            f.u[k] = old.velocity(bx, by, edge)[0] as f32;
+            *face = old.velocity(bx, by, edge)[0] as f32;
         }
-    }
-    for j in 0..=ny {
-        for i in 0..nx {
+    });
+    f.v.par_chunks_mut(nx).enumerate().for_each(|(j, row)| {
+        for (i, face) in row.iter_mut().enumerate() {
             let (x, y) = (i as f64 + 0.5, j as f64);
             let vel = old.velocity(x, y, edge);
             let (bx, by) = clamp(x - dt * vel[0], y - dt * vel[1]);
-            let k = f.vi(i, j);
-            f.v[k] = old.velocity(bx, by, edge)[1] as f32;
+            *face = old.velocity(bx, by, edge)[1] as f32;
         }
-    }
+    });
     edges(f, edge);
     project(f, edge, s.iterations);
     // ---- dye
@@ -404,14 +474,18 @@ pub fn step(s: &FluidSpec, f: &mut Fluid, t: f64, dt: f64, accel: &mut dyn FnMut
             a * (1.0 - fy) + b * fy
         })
     };
-    for j in 0..ny {
-        for i in 0..nx {
+    let (u, v) = (&f.u, &f.v);
+    let velocity = |x: f64, y: f64| {
+        [bilinear(u, nx + 1, ny, x, y - 0.5, edge, true), bilinear(v, nx, ny + 1, x - 0.5, y, edge, false)]
+    };
+    f.dye.par_chunks_mut(nx).enumerate().for_each(|(j, row)| {
+        for (i, cell) in row.iter_mut().enumerate() {
             let (x, y) = (i as f64 + 0.5, j as f64 + 0.5);
-            let vel = f.velocity(x, y, edge);
+            let vel = velocity(x, y);
             let (bx, by) = clamp(x - dt * vel[0], y - dt * vel[1]);
-            f.dye[j * nx + i] = sample_dye(bx, by);
+            *cell = sample_dye(bx, by);
         }
-    }
+    });
     // semi-Lagrangian advection is not conservative: where no dye can leave (closed or wrapped
     // edges), each channel is rescaled to its total before advection
     if edge != Edge::Open {
@@ -549,6 +623,48 @@ mod tests {
         let m2 = mass(&f);
         assert!((m2 - m1).abs() / m1 < 1e-4, "dye {m1} -> {m2}");
         assert!(f.dye.iter().all(|d| d.iter().all(|x| x.is_finite())));
+    }
+
+    /// FNV-1a over the bits of the velocity faces and the dye.
+    fn digest(f: &Fluid) -> u64 {
+        let words = f.u.iter().chain(&f.v).chain(f.dye.iter().flatten()).map(|v| v.to_bits());
+        words
+            .flat_map(u32::to_le_bytes)
+            .fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    /// Pinned from the serial step: how the solver's sweeps are spread over threads must not change a single bit of
+    /// the velocity or the dye, with vorticity, buoyancy, viscosity and diffusion all in play, in a closed and a
+    /// wrapping box of unequal sides.
+    #[test]
+    fn steps_reproduce_the_serial_simulation_bit_for_bit() {
+        let mut digests = Vec::new();
+        for edge in [Edge::Closed, Edge::Wrap] {
+            let mut s = spec(edge);
+            s.size = [200.0, 260.0];
+            s.vorticity = 4.0;
+            s.buoyancy = 140.0;
+            s.viscosity = 0.5;
+            s.diffusion = 0.2;
+            s.dissipation = 0.12;
+            s.iterations = 40;
+            s.sources.push(Source {
+                pos: [70.0, 240.0],
+                radius: 14.0,
+                color: [1.0, 0.48, 0.18, 1.0],
+                density: 5.0,
+                velocity: [45.0, -210.0],
+                start: 0.0,
+                end: None,
+            });
+            let mut f = init(&s);
+            let dt = 1.0 / 60.0;
+            for k in 0..60 {
+                step(&s, &mut f, k as f64 * dt, dt, &mut |p| [0.0, -p[0] * 0.01]);
+            }
+            digests.push(digest(&f));
+        }
+        assert_eq!(digests, [9_774_539_244_254_680_415, 14_450_769_797_409_702_464]);
     }
 
     #[test]
