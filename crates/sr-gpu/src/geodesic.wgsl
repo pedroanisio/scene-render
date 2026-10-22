@@ -8,6 +8,13 @@
 // Three outcomes: the ray falls through the horizon (black), escapes (its asymptotic direction
 // indexes a star field), or crosses the disk's plane within [r_in, r_out], where the disk, thin
 // and opaque, emits as a blackbody of the local temperature times the redshift factor g.
+//
+// The picture does not integrate per sample: the orbit depends only on the impact parameter b and on
+// whether the ray starts toward the hole, so the host tabulates u(phi) and du/dphi for every b the frame
+// needs (`OrbitTable` in geodesic.rs) and each sample reads its crossings from the two rows around its b,
+// by cubic Hermite interpolation in phi and linear interpolation in x = asinh((b - b_c) / w), the
+// coordinate the rows are even in (crowded round the critical b_c). `trace` remains for the traced
+// picture (output 4) and the outputs that check the integration.
 
 struct Params {
     eye: vec4<f32>,   // xyz observer, w = mass
@@ -21,11 +28,14 @@ struct Params {
     size: vec4<f32>,  // width, height, pattern contrast, geometric time
     misc: vec4<u32>,  // pattern (0 none, 1 clumps, 2 spiral, 3 no disk), seed, flags, star seed
     extra: vec4<f32>, // exposure, 1 to encode the output with the sRGB curve
+    table: vec4<f32>, // the orbit table's rows: x of the first and of the last, w, the number of rows
 }
 
 @group(0) @binding(0) var<uniform> P: Params;
 // visible blackbody radiance (linear sRGB) at 50000 K * (i / 1024)^2
 @group(0) @binding(1) var<uniform> BB: array<vec4<f32>, 1025>;
+// per row: ORBIT_COLUMNS (u, du/dphi) of the ingoing orbit and its (end angle, escaped), then the outgoing one's
+@group(0) @binding(2) var ORBITS: texture_2d<f32>;
 
 const PI: f32 = 3.14159265358979;
 const TAU: f32 = 6.28318530717959;
@@ -33,6 +43,8 @@ const STEP: f32 = 0.02;
 const MAX_STEPS: u32 = 4096u;
 // flags: bit 0 keeps tracing past the first crossing inside the disk (all crossings are reported)
 const FLAG_ALL: u32 = 1u;
+const ORBIT_COLUMNS: u32 = 256u;
+const ORBIT_SPAN: f32 = 12.566370614359172;
 
 struct Trace {
     kind: u32,      // 0 captured, 1 escaped
@@ -269,31 +281,53 @@ struct Ray {
     dbg2: vec4<f32>,
 }
 
+// The plane of a ray from the observer: n toward the observer from the hole, e2 completing the plane,
+// the ray's angle alpha to the direction of the hole, its impact parameter and its first crossing angle.
+struct RayFrame {
+    r_o: f32,
+    n: vec3<f32>,
+    e2: vec3<f32>,
+    cosa: f32,
+    sina: f32,
+    b: f32,
+    phi0: f32,
+}
+
+fn ray_frame(d: vec3<f32>) -> RayFrame {
+    var f: RayFrame;
+    let m = P.eye.w;
+    let to_eye = P.eye.xyz - P.hole.xyz;
+    f.r_o = length(to_eye);
+    f.n = to_eye / f.r_o;
+    f.cosa = -dot(f.n, d);
+    let perp = d + f.n * f.cosa;
+    f.sina = length(perp);
+    if (f.sina > 1e-6) {
+        f.e2 = perp / f.sina;
+    } else {
+        var helper = vec3<f32>(1.0, 0.0, 0.0);
+        if (abs(f.n.x) > 0.9) { helper = vec3<f32>(0.0, 1.0, 0.0); }
+        f.e2 = normalize(cross(f.n, helper));
+    }
+    f.b = max(f.r_o * f.sina / sqrt(1.0 - 2.0 * m / f.r_o), 1e-5);
+    f.phi0 = first_crossing(f.n, f.e2, P.dz.xyz);
+    return f;
+}
+
 fn shade(d: vec3<f32>, pixel_angle: f32) -> Ray {
     var out: Ray;
     out.color = vec3<f32>(0.0);
     out.dbg = vec4<f32>(0.0);
     out.dbg2 = vec4<f32>(0.0);
     let m = P.eye.w;
-    let to_eye = P.eye.xyz - P.hole.xyz;
-    let r_o = length(to_eye);
-    let n = to_eye / r_o;
-    let cosa = -dot(n, d);
-    let perp = d + n * cosa;
-    let sina = length(perp);
-    var e2 = vec3<f32>(0.0);
-    if (sina > 1e-6) {
-        e2 = perp / sina;
-    } else {
-        var helper = vec3<f32>(1.0, 0.0, 0.0);
-        if (abs(n.x) > 0.9) { helper = vec3<f32>(0.0, 1.0, 0.0); }
-        e2 = normalize(cross(n, helper));
-    }
-    let b = max(r_o * sina / sqrt(1.0 - 2.0 * m / r_o), 1e-5);
+    let f = ray_frame(d);
+    let n = f.n;
+    let e2 = f.e2;
+    let b = f.b;
+    let phi0 = f.phi0;
     let has_disk = P.misc.x < 3u;
     let all = (P.misc.z & FLAG_ALL) != 0u;
-    let phi0 = first_crossing(n, e2, P.dz.xyz);
-    let t = trace(m, r_o, b, cosa > 0.0, phi0, P.hole.w, P.dx.w, all || !has_disk);
+    let t = trace(m, f.r_o, b, f.cosa > 0.0, phi0, P.hole.w, P.dx.w, all || !has_disk);
     let mode = u32(P.fwd.w);
     if (mode == 1u) {
         out.dbg = vec4<f32>(f32(t.kind), t.phi_inf, t.r.x, t.r.y);
@@ -324,6 +358,75 @@ fn shade(d: vec3<f32>, pixel_angle: f32) -> Ray {
     return out;
 }
 
+// ---------------------------------------------------------------- one ray, from the orbit table
+
+// (end angle, 1 escaped or 0 captured) of a row's orbit; `dir` 0 ingoing, 1 outgoing
+fn orbit_end(row: u32, dir: u32) -> vec2<f32> {
+    return textureLoad(ORBITS, vec2<i32>(i32(dir * (ORBIT_COLUMNS + 1u) + ORBIT_COLUMNS), i32(row)), 0).xy;
+}
+
+// u at `phi` (before the orbit's end) by cubic Hermite interpolation of u and du/dphi between columns
+fn orbit_u(row: u32, dir: u32, phi: f32) -> f32 {
+    let h = ORBIT_SPAN / f32(ORBIT_COLUMNS - 1u);
+    let x = phi / h;
+    let j = min(u32(x), ORBIT_COLUMNS - 2u);
+    let t = x - f32(j);
+    let column = i32(dir * (ORBIT_COLUMNS + 1u) + j);
+    let a = textureLoad(ORBITS, vec2<i32>(column, i32(row)), 0).xy;
+    let c = textureLoad(ORBITS, vec2<i32>(column + 1, i32(row)), 0).xy;
+    let t2 = t * t;
+    let t3 = t2 * t;
+    return (2.0 * t3 - 3.0 * t2 + 1.0) * a.x + (t3 - 2.0 * t2 + t) * h * a.y + (3.0 * t2 - 2.0 * t3) * c.x + (t3 - t2) * h * c.y;
+}
+
+// The colour of a picture sample, as `shade` gives it, from the two rows around the ray's b. Where only one
+// of them reaches an angle (an orbit near the critical impact parameter ends between them), or only one
+// escapes, the nearer row decides.
+fn shade_table(d: vec3<f32>, pixel_angle: f32) -> vec3<f32> {
+    let m = P.eye.w;
+    let f = ray_frame(d);
+    let dir = select(1u, 0u, f.cosa > 0.0);
+    let rows = u32(P.table.w);
+    let warped = asinh((f.b - sqrt(27.0) * m) / P.table.z);
+    let x = clamp((warped - P.table.x) / (P.table.y - P.table.x), 0.0, 1.0) * f32(rows - 1u);
+    let r0 = min(u32(x), rows - 2u);
+    let r1 = r0 + 1u;
+    let t = x - f32(r0);
+    let near1 = t >= 0.5;
+    let e0 = orbit_end(r0, dir);
+    let e1 = orbit_end(r1, dir);
+    if (P.misc.x < 3u) {
+        for (var k = 0u; k < 4u; k++) {
+            let at = f.phi0 + f32(k) * PI;
+            let reach0 = at < e0.x;
+            let reach1 = at < e1.x;
+            var u = 0.0;
+            if (reach0 && reach1) {
+                u = mix(orbit_u(r0, dir, at), orbit_u(r1, dir, at), t);
+            } else if (near1 && reach1) {
+                u = orbit_u(r1, dir, at);
+            } else if (!near1 && reach0) {
+                u = orbit_u(r0, dir, at);
+            } else {
+                break;
+            }
+            let r = 1.0 / u;
+            if (r >= P.hole.w && r <= P.dx.w) {
+                return disk_at(m, r, f.b, at, f.n, f.e2).color;
+            }
+        }
+    }
+    let e = select(e0, e1, near1);
+    if (e.y < 0.5) {
+        return vec3<f32>(0.0);
+    }
+    var phi_inf = e.x;
+    if (e0.y > 0.5 && e1.y > 0.5) {
+        phi_inf = mix(e0.x, e1.x, t);
+    }
+    return stars(cos(phi_inf) * f.n + sin(phi_inf) * f.e2, pixel_angle);
+}
+
 fn srgb_encode1(v: f32) -> f32 {
     let c = max(v, 0.0);
     if (c <= 0.0031308) { return 12.92 * c; }
@@ -350,7 +453,7 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let focal = P.right.w;
     let half = P.size.xy * 0.5;
     let mode = u32(P.fwd.w);
-    if (mode != 0u) {
+    if (mode != 0u && mode != 4u) {
         // one ray through the centre of the pixel
         let d = normalize(P.fwd.xyz * focal + P.right.xyz * (px.x + 0.5 - half.x) + P.down.xyz * (px.y + 0.5 - half.y));
         let r = shade(d, 1.0 / focal);
@@ -365,7 +468,11 @@ fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
             j = fract(jitter0 + f32(s) * vec2<f32>(0.7548776662, 0.5698402910));
         }
         let d = normalize(P.fwd.xyz * focal + P.right.xyz * (px.x + j.x - half.x) + P.down.xyz * (px.y + j.y - half.y));
-        sum += shade(d, 1.0 / focal).color;
+        if (mode == 4u) {
+            sum += shade(d, 1.0 / focal).color;
+        } else {
+            sum += shade_table(d, 1.0 / focal);
+        }
     }
     return vec4<f32>(encode(sum / f32(count) * P.extra.x), 1.0);
 }

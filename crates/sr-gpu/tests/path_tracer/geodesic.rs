@@ -624,3 +624,57 @@ fn the_shader_matches_the_single_precision_reference_integrator_far_from_the_cri
     assert!(worst <= 3e-5 && worst_phi <= 5e-6, "worst crossing radius {worst}, escape angle {worst_phi}");
     assert!(worst_far <= 2e-4, "worst far crossing radius {worst_far}");
 }
+
+/// Peak signal-to-noise ratio (dB) of two pictures after exposure, clamped to [0, 1] and encoded with the sRGB
+/// curve: the error as it shows in an 8-bit frame.
+fn psnr(a: &[[f32; 4]], b: &[[f32; 4]]) -> f64 {
+    let encode = |v: f32| {
+        let c = f64::from(v).clamp(0.0, 1.0);
+        if c <= 0.0031308 {
+            12.92 * c
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        }
+    };
+    let sum: f64 = a.iter().zip(b).flat_map(|(p, q)| (0..3).map(move |c| (encode(p[c]) - encode(q[c])).powi(2))).sum();
+    let mse = sum / (3 * a.len()) as f64;
+    if mse == 0.0 {
+        f64::INFINITY
+    } else {
+        -10.0 * mse.log10()
+    }
+}
+
+#[test]
+fn the_picture_from_tabulated_orbits_matches_the_picture_traced_per_sample() {
+    // a tilted spiral disk seen nearly edge-on from an off-axis camera (the 01-event-horizon framing), the 75
+    // degree view with its secondary images, and a bare hole lensing the star field from close by
+    let tilted = (9.0f32).to_radians();
+    let mut spiral = disk(6.0, 19.0, Vec3::new(0.0, -tilted.cos(), tilted.sin()));
+    spiral.pattern = Pattern::Spiral;
+    spiral.contrast = 0.85;
+    spiral.seed = 11;
+    spiral.time = 6.0;
+    spiral.peak_kelvin = 4300.0;
+    let mut wide = camera([320, 176], Vec3::new(0.0, -4.0, -100.0), Vec3::ZERO, 1.0, 294.0, Some(spiral));
+    wide.samples = 4;
+    wide.star_seed = 3;
+    let inclination = 75.0f32.to_radians();
+    let eye = Vec3::new(inclination.sin(), -inclination.cos(), 0.0) * 100.0;
+    let mut steep = camera([160, 160], eye, Vec3::ZERO, 1.0, 1000.0, Some(disk(6.0, 20.0, Vec3::NEG_Y)));
+    steep.samples = 4;
+    let mut bare = camera([160, 96], Vec3::new(3.0, -2.0, -30.0), Vec3::ZERO, 1.0, 120.0, None);
+    bare.samples = 4;
+    bare.star_seed = 7;
+    for (name, scene) in [("tilted spiral", wide), ("75 degrees", steep), ("bare hole", bare)] {
+        let (Some(table), Some(traced)) =
+            (render(&scene, Output::Picture, None), render(&scene, Output::TracedPicture, None))
+        else {
+            return;
+        };
+        assert!(traced.iter().any(|p| p[0] > 0.0), "{name}: the picture is not empty");
+        let db = psnr(&table, &traced);
+        println!("{name}: tabulated against traced, PSNR {db:.1} dB");
+        assert!(db >= 45.0, "{name}: PSNR {db:.1} dB");
+    }
+}
