@@ -547,3 +547,294 @@ mod tests {
         assert!(hits > 200, "the rays should hit often enough to mean something: {hits}");
     }
 }
+
+/// The shader's `address_index`.
+pub(crate) fn address_index(x: i32, size: i32, mode: u32) -> i32 {
+    if mode == 1 {
+        return x.clamp(0, size - 1);
+    }
+    if mode == 2 {
+        let v = ((x % (size * 2)) + size * 2) % (size * 2);
+        return if v < size { v } else { size * 2 - 1 - v };
+    }
+    if mode == 3 && (x < 0 || x >= size) {
+        return -1;
+    }
+    ((x % size) + size) % size
+}
+
+fn address_coord(v: f32, mode: u32) -> f32 {
+    match mode {
+        1 => v.clamp(0.0, 1.0),
+        2 => v - (v / 2.0).floor() * 2.0,
+        3 => v.clamp(-1.0, 2.0),
+        _ => v - v.floor(),
+    }
+}
+
+fn sample_position(uv: [f32; 2], size: [f32; 2], flags: u32) -> [f32; 2] {
+    [address_coord(uv[0], (flags >> 3) & 3) * size[0] - 0.5, address_coord(uv[1], (flags >> 5) & 3) * size[1] - 0.5]
+}
+
+fn cubic_weights(t: f32) -> [f32; 4] {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    [-0.5 * t + t2 - 0.5 * t3, 1.0 - 2.5 * t2 + 1.5 * t3, 0.5 * t + 2.0 * t2 - 1.5 * t3, -0.5 * t2 + 0.5 * t3]
+}
+
+fn srgb_channel(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// The shader's `texel`.
+fn texel(pixels: &[u32], info: [u32; 4], x: i32, y: i32, border: [f32; 4]) -> [f32; 4] {
+    let qx = address_index(x, info[1] as i32, (info[3] >> 3) & 3);
+    let qy = address_index(y, info[2] as i32, (info[3] >> 5) & 3);
+    if qx < 0 || qy < 0 {
+        return border;
+    }
+    let index = info[0] as usize + qy as usize * info[1] as usize + qx as usize;
+    let c = pixels[index].to_le_bytes().map(|b| b as f32 / 255.0);
+    if info[3] & 1 == 0 {
+        return c;
+    }
+    [srgb_channel(c[0]), srgb_channel(c[1]), srgb_channel(c[2]), c[3]]
+}
+
+fn mix4(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    [0, 1, 2, 3].map(|i| a[i] * (1.0 - t) + b[i] * t)
+}
+
+/// The shader's `map_sample`: `info` is (offset, width, height, flags) into `pixels`.
+pub(crate) fn map_sample(pixels: &[u32], info: [u32; 4], uv: [f32; 2], border: [f32; 4]) -> [f32; 4] {
+    if info[1] == 0 || info[2] == 0 {
+        return [1.0; 4];
+    }
+    let p = sample_position(uv, [info[1] as f32, info[2] as f32], info[3]);
+    let (qx, qy) = (p[0].floor() as i32, p[1].floor() as i32);
+    let f = [p[0] - p[0].floor(), p[1] - p[1].floor()];
+    let at = |x: i32, y: i32| texel(pixels, info, x, y, border);
+    match (info[3] >> 1) & 3 {
+        1 => at((p[0] + 0.5).floor() as i32, (p[1] + 0.5).floor() as i32),
+        2 => {
+            let (wx, wy) = (cubic_weights(f[0]), cubic_weights(f[1]));
+            let mut out = [0.0f32; 4];
+            for (y, wy) in wy.into_iter().enumerate() {
+                for (x, wx) in wx.into_iter().enumerate() {
+                    let t = at(qx + x as i32 - 1, qy + y as i32 - 1);
+                    for (o, c) in out.iter_mut().zip(t) {
+                        *o += c * wx * wy;
+                    }
+                }
+            }
+            out
+        }
+        _ => mix4(mix4(at(qx, qy), at(qx + 1, qy), f[0]), mix4(at(qx, qy + 1), at(qx + 1, qy + 1), f[0]), f[1]),
+    }
+}
+
+/// A hit's material and shading normals, as `radiance` assembles them.
+#[allow(dead_code)] // the plug-in pass reads every field; the tests read only some
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Shaded {
+    pub base: [f32; 4],
+    pub params: [f32; 4],
+    pub emissive: [f32; 4],
+    pub extra: [f32; 4],
+    pub n: [f32; 3],
+    pub ng: [f32; 3],
+    /// `1 + strength * (occlusion map red - 1)`, which the shader multiplies into the throughput.
+    pub occlusion: f32,
+}
+
+/// The shader's `radiance` material assembly for a hit (`hit_material`, `hit_position`, `hit_normal`), without the
+/// normal-map branch.
+pub(crate) fn shade_hit(scene: &PtScene, hit: &Hit) -> Shaded {
+    let k = hit.tri as usize;
+    let record = (hit.instance != NONE).then(|| &scene.instances[&(hit.instance as usize)]);
+    let mat = match record {
+        Some(r) => r[13][1].to_bits(),
+        None => scene.tri_mat[k],
+    } as usize;
+    let mut m = scene.mats[mat];
+    let bary = [1.0 - hit.u - hit.v, hit.u, hit.v];
+    let uv = |slot: usize| {
+        let c = |i: usize| scene.uv[k * 3 + i][slot];
+        [0, 1].map(|a| c(0)[a] * bary[0] + c(1)[a] * bary[1] + c(2)[a] * bary[2])
+    };
+    let base_texel = map_sample(&scene.pixels, m.maps[0], uv(0), m.borders[0]);
+    let color = [0, 1, 2, 3].map(|a| {
+        scene.colors[k * 3][a] * bary[0] + scene.colors[k * 3 + 1][a] * bary[1] + scene.colors[k * 3 + 2][a] * bary[2]
+    });
+    m.base = [0, 1, 2, 3].map(|a| m.base[a] * base_texel[a] * color[a]);
+    let mr = map_sample(&scene.pixels, m.maps[2], uv(2), m.borders[2]);
+    m.params[0] *= mr[2];
+    m.params[1] *= mr[1];
+    let e = map_sample(&scene.pixels, m.maps[4], uv(4), m.borders[4]);
+    m.emissive = [m.emissive[0] * e[0], m.emissive[1] * e[1], m.emissive[2] * e[2], m.emissive[3]];
+    if m.emissive[3] > 0.5 {
+        m.emissive = [m.base[0], m.base[1], m.base[2], m.emissive[3]];
+    }
+    if m.texture_params[1] == 0.0 {
+        m.base[3] = scene.mats[mat].base[3];
+    }
+    if m.texture_params[1] == 1.0 {
+        m.base[3] = if m.base[3] >= m.texture_params[0] { 1.0 } else { 0.0 };
+    }
+    let position = |c: usize| {
+        let p = xyz(&scene.pos[k * 3 + c]);
+        match record {
+            Some(r) => transform(&r[1..5], p, 1.0),
+            None => p,
+        }
+    };
+    let normal = |c: usize| {
+        let n = xyz(&scene.nrm[k * 3 + c]);
+        match record {
+            Some(r) => {
+                let t = transform(&r[9..13], n, 0.0);
+                if dot(t, t) > 0.0 {
+                    normalize(t)
+                } else {
+                    [0.0; 3]
+                }
+            }
+            None => n,
+        }
+    };
+    let p0 = position(0);
+    let ng = normalize(cross(sub(position(1), p0), sub(position(2), p0)));
+    let (n0, n1, n2) = (normal(0), normal(1), normal(2));
+    let bw = 1.0 - hit.u - hit.v;
+    let n = [0, 1, 2].map(|a| n0[a] * bw + n1[a] * hit.u + n2[a] * hit.v);
+    let n = if dot(n, n) < 1e-8 { ng } else { normalize(n) };
+    let ao = map_sample(&scene.pixels, m.maps[3], uv(3), m.borders[3]);
+    Shaded {
+        base: m.base,
+        params: m.params,
+        emissive: m.emissive,
+        extra: m.extra,
+        n,
+        ng,
+        occlusion: 1.0 + m.texture_params[3] * (ao[0] - 1.0),
+    }
+}
+
+#[cfg(test)]
+mod texture_tests {
+    use super::*;
+    use crate::pathtrace::PtMat;
+
+    fn pack(texels: &[[u8; 4]]) -> Vec<u32> {
+        texels.iter().map(|t| u32::from_le_bytes(*t)).collect()
+    }
+    fn gray(v: u8) -> [u8; 4] {
+        [v, v, v, 255]
+    }
+    /// 2x2 red channel: (0,0)=0, (1,0)=1, (0,1)=1, (1,1)=0.
+    fn checker() -> Vec<u32> {
+        pack(&[gray(0), gray(255), gray(255), gray(0)])
+    }
+    const BORDER: [f32; 4] = [0.0; 4];
+
+    #[test]
+    fn nearest_picks_the_rounded_texel_in_each_address_mode() {
+        let px = checker();
+        let nearest = 2;
+        // wrap: fract(1.75) = 0.75 -> p = 1.0 -> texel (1, 0)
+        assert_eq!(map_sample(&px, [0, 2, 2, nearest], [1.75, 0.25], BORDER)[0], 1.0);
+        // clamp: x past 1 -> p = 1.5 -> floor(2.0) = 2 -> clamped to texel 1
+        assert_eq!(map_sample(&px, [0, 2, 2, nearest | (1 << 3)], [1.75, 0.25], BORDER)[0], 1.0);
+        // clamp below 0 -> texel (0, 0)
+        assert_eq!(map_sample(&px, [0, 2, 2, nearest | (1 << 3)], [-0.5, 0.25], BORDER)[0], 0.0);
+        // mirror: 1.25 -> p = 2.0 -> floor(2.5) = 2 -> mirrored to texel 1
+        assert_eq!(map_sample(&px, [0, 2, 2, nearest | (2 << 3)], [1.25, 0.25], BORDER)[0], 1.0);
+        // border mode: texel -1 gives the border colour
+        let border = [0.25, 0.5, 0.75, 1.0];
+        assert_eq!(map_sample(&px, [0, 2, 2, nearest | (3 << 3)], [-0.1, 0.25], border), border);
+    }
+
+    #[test]
+    fn address_index_modes() {
+        assert_eq!(address_index(-1, 4, 0), 3);
+        assert_eq!(address_index(5, 4, 0), 1);
+        assert_eq!(address_index(-3, 4, 1), 0);
+        assert_eq!(address_index(9, 4, 1), 3);
+        assert_eq!(address_index(4, 4, 2), 3);
+        assert_eq!(address_index(-1, 4, 2), 0);
+        assert_eq!(address_index(8, 4, 2), 0);
+        assert_eq!(address_index(-1, 4, 3), -1);
+        assert_eq!(address_index(4, 4, 3), -1);
+        assert_eq!(address_index(2, 4, 3), 2);
+    }
+
+    #[test]
+    fn bilinear_mixes_the_four_texels() {
+        let px = checker();
+        let c = map_sample(&px, [0, 2, 2, 0], [0.5, 0.5], BORDER);
+        assert_eq!(c, [0.5, 0.5, 0.5, 1.0]);
+        // uv (0.25, 0.5) -> p = (0, 0.5): x weight 0 reads column 0 only, mix(0, 1, 0.5) = 0.5
+        assert_eq!(map_sample(&px, [0, 2, 2, 0], [0.25, 0.5], BORDER)[0], 0.5);
+    }
+
+    #[test]
+    fn bicubic_reproduces_a_linear_ramp_and_a_constant() {
+        let ramp: Vec<[u8; 4]> = (0..16).map(|i| gray(85 * (i % 4) as u8)).collect();
+        let c = map_sample(&pack(&ramp), [0, 4, 4, 4], [0.5, 0.5], BORDER);
+        assert!((c[0] - 0.5).abs() < 1e-6, "{c:?}");
+        let ones = pack(&[gray(255); 16]);
+        let c = map_sample(&ones, [0, 4, 4, 4], [0.37, 0.61], BORDER);
+        assert!((c[1] - 1.0).abs() < 1e-6, "{c:?}");
+    }
+
+    #[test]
+    fn srgb_is_decoded_before_the_bilinear_mix() {
+        let px = pack(&[gray(0), gray(255), gray(255), gray(0)]);
+        let c = map_sample(&px, [0, 2, 2, 1], [0.5, 0.5], BORDER);
+        // the mean of the linear values 0 and 1, not the linear value of the mean code (about 0.214)
+        assert_eq!(c[..3], [0.5; 3]);
+        assert_eq!(c[3], 1.0);
+        let mid = map_sample(&pack(&[gray(128); 4]), [0, 2, 2, 1], [0.5, 0.5], BORDER);
+        let expected = ((128.0f32 / 255.0 + 0.055) / 1.055).powf(2.4);
+        assert!((mid[0] - expected).abs() < 1e-6, "{mid:?}");
+    }
+
+    #[test]
+    fn base_colour_is_material_times_texel_times_vertex_colour() {
+        let mut s = PtScene {
+            pixels: pack(&[[51, 102, 153, 255], [204, 51, 102, 255], [255, 255, 0, 255], [0, 0, 0, 255]]),
+            ..Default::default()
+        };
+        let corners = [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75]];
+        for (c, p) in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]].iter().enumerate() {
+            s.pos.push([p[0], p[1], p[2], 0.0]);
+            s.nrm.push([0.0, 0.0, 1.0, 0.0]);
+            let mut uv = [[0.0; 2]; 6];
+            uv[0] = corners[c];
+            s.uv.push(uv);
+        }
+        s.colors = vec![[1.0, 0.5, 0.25, 1.0], [0.5, 1.0, 0.5, 1.0], [0.25, 0.5, 1.0, 1.0]];
+        s.tri_mat = vec![0];
+        let mut m: PtMat = bytemuck::Zeroable::zeroed();
+        m.base = [0.8, 0.6, 0.4, 0.5];
+        m.params = [1.0, 0.5, 0.0, 1.5];
+        m.maps[0] = [0, 2, 2, 2];
+        s.mats = vec![m];
+        let texel = |i: usize| s.pixels[i].to_le_bytes().map(|b| b as f32 / 255.0);
+        for (c, (u, v)) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)].into_iter().enumerate() {
+            let hit = Hit { t: 1.0, u, v, tri: 0, instance: u32::MAX };
+            let got = shade_hit(&s, &hit);
+            let (t, col) = (texel(c), s.colors[c]);
+            for k in 0..3 {
+                assert_eq!(got.base[k], m.base[k] * t[k] * col[k], "corner {c} channel {k}");
+            }
+            assert_eq!(got.base[3], 0.5, "opaque-mode alpha stays the material's");
+            assert_eq!(got.params[..2], [1.0, 0.5], "unmapped metallic/roughness are unchanged");
+            assert_eq!(got.n, [0.0, 0.0, 1.0]);
+        }
+    }
+}
