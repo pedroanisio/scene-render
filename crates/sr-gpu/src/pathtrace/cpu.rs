@@ -167,9 +167,46 @@ fn reciprocal(d: [f32; 3]) -> [f32; 3] {
     d.map(|c| 1.0 / if c.abs() < 1e-12 { 1e-12 } else { c })
 }
 
+/// A `PtScene` with its instance records in a dense array: `slot[k]` indexes `records` for a triangle `k` that is an
+/// instance, so the hot paths skip the hash lookup.
+pub(crate) struct Dense<'a> {
+    scene: &'a PtScene,
+    records: Vec<[[f32; 4]; 24]>,
+    slot: Vec<u32>,
+}
+
+impl<'a> Dense<'a> {
+    pub(crate) fn new(scene: &'a PtScene) -> Self {
+        let mut keys: Vec<usize> = scene.instances.keys().copied().collect();
+        keys.sort_unstable();
+        let len = keys.last().map_or(0, |k| k + 1);
+        let mut slot = vec![NONE; len];
+        let mut records = Vec::with_capacity(keys.len());
+        for k in keys {
+            slot[k] = records.len() as u32;
+            records.push(scene.instances[&k]);
+        }
+        Dense { scene, records, slot }
+    }
+
+    /// The record of instance `k`; panics like the map index when `k` is not an instance.
+    #[inline]
+    pub(crate) fn record(&self, k: usize) -> &[[f32; 4]; 24] {
+        &self.records[self.slot[k] as usize]
+    }
+}
+
+impl std::ops::Deref for Dense<'_> {
+    type Target = PtScene;
+    #[inline]
+    fn deref(&self) -> &PtScene {
+        self.scene
+    }
+}
+
 /// The shader's `prototype_hit`: the ray in the instance's local space, walking the shared prototype BVH.
-fn prototype_hit(scene: &PtScene, instance: usize, world_o: [f32; 3], world_d: [f32; 3], tmax: f32, h: &mut Hit) {
-    let record = &scene.instances[&instance];
+fn prototype_hit(scene: &Dense, instance: usize, world_o: [f32; 3], world_d: [f32; 3], tmax: f32, h: &mut Hit) {
+    let record = scene.record(instance);
     let inverse = &record[5..9];
     let o = transform(inverse, world_o, 1.0);
     // Not normalized: the ray parameter remains the world-space distance.
@@ -197,7 +234,7 @@ fn prototype_hit(scene: &PtScene, instance: usize, world_o: [f32; 3], world_d: [
 }
 
 /// The shader's `trace`: the nearest hit along the ray within `tmax` (`tri == 0xffffffff` when there is none).
-pub(crate) fn trace(scene: &PtScene, o: [f32; 3], d: [f32; 3], tmax: f32) -> Hit {
+pub(crate) fn trace(scene: &Dense, o: [f32; 3], d: [f32; 3], tmax: f32) -> Hit {
     let mut h = Hit { t: tmax, u: 0.0, v: 0.0, tri: NONE, instance: NONE };
     if scene.nodes.is_empty() {
         return h;
@@ -646,7 +683,7 @@ mod tests {
             for k in 0..s.tri_mat.len() {
                 tri_hit(&s, k, o, d, tmax, &mut expected, u32::MAX, 1.0);
             }
-            let got = trace(&s, o, d, tmax);
+            let got = trace(&Dense::new(&s), o, d, tmax);
             hits += (got.tri != u32::MAX) as u32;
             assert_eq!(got, expected);
         }
@@ -759,9 +796,9 @@ pub(crate) struct Shaded {
 
 /// The shader's `radiance` material assembly for a hit (`hit_material`, `hit_position`, `hit_normal`), without the
 /// normal-map branch.
-pub(crate) fn shade_hit(scene: &PtScene, hit: &Hit) -> Shaded {
+pub(crate) fn shade_hit(scene: &Dense, hit: &Hit) -> Shaded {
     let k = hit.tri as usize;
-    let record = (hit.instance != NONE).then(|| &scene.instances[&(hit.instance as usize)]);
+    let record = (hit.instance != NONE).then(|| scene.record(hit.instance as usize));
     let mat = match record {
         Some(r) => r[13][1].to_bits(),
         None => scene.tri_mat[k],
@@ -933,7 +970,7 @@ mod texture_tests {
         let texel = |i: usize| s.pixels[i].to_le_bytes().map(|b| b as f32 / 255.0);
         for (c, (u, v)) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)].into_iter().enumerate() {
             let hit = Hit { t: 1.0, u, v, tri: 0, instance: u32::MAX };
-            let got = shade_hit(&s, &hit);
+            let got = shade_hit(&Dense::new(&s), &hit);
             let (t, col) = (texel(c), s.colors[c]);
             for k in 0..3 {
                 assert_eq!(got.base[k], m.base[k] * t[k] * col[k], "corner {c} channel {k}");
@@ -988,7 +1025,7 @@ pub(crate) type GuideHit = ([f32; 4], [f32; 4]);
 /// the first-hit guide contribution (left `None` when the ray meets no surface). Media, water, backdrop, splats,
 /// subsurface, transmission, depth of field and ambient lights are not ported.
 pub(crate) fn radiance(
-    scene: &PtScene,
+    scene: &Dense,
     env: &EnvMap,
     p: &RadianceParams,
     px: [f32; 2],
@@ -1115,7 +1152,7 @@ fn env_term(env: &EnvMap, p: &RadianceParams, d: [f32; 3]) -> [f32; 3] {
 }
 
 /// The shader's `visibility`: transmittance of casters along `d` for `dist`.
-pub(crate) fn visibility(scene: &PtScene, o: [f32; 3], d: [f32; 3], dist: f32) -> f32 {
+pub(crate) fn visibility(scene: &Dense, o: [f32; 3], d: [f32; 3], dist: f32) -> f32 {
     let mut o = o;
     let mut remaining = dist;
     let mut result = 1.0f32;
@@ -1154,7 +1191,7 @@ pub(crate) struct PixelStats {
 
 /// `cs_trace`'s per-pixel loop: samples `start..start + count` of pixel `(x, y)`.
 pub(crate) fn pixel_stats(
-    scene: &PtScene,
+    scene: &Dense,
     env: &EnvMap,
     p: &RadianceParams,
     x: u32,
@@ -1189,7 +1226,7 @@ pub(crate) fn pixel_stats(
 
 /// `cs_trace`'s per-pixel part: samples `start..start + count` of pixel `(x, y)` summed (not divided).
 pub(crate) fn pixel_sum(
-    scene: &PtScene,
+    scene: &Dense,
     env: &EnvMap,
     p: &RadianceParams,
     x: u32,
@@ -1212,6 +1249,8 @@ pub(crate) fn trace_tile(
     count: u32,
 ) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
     use rayon::prelude::*;
+    let dense = Dense::new(scene);
+    let scene = &dense;
     let [tx, ty, tw, th] = tile;
     let n = (tw * th) as usize;
     let rows: Vec<Vec<PixelStats>> = (0..th)
@@ -1308,7 +1347,7 @@ mod radiance_tests {
     }
 
     fn centre(s: &PtScene, env: &EnvMap, p: &RadianceParams) -> [f32; 4] {
-        radiance(s, env, p, [32.0, 32.0], &mut Rng(12345), &mut None)
+        radiance(&Dense::new(s), env, p, [32.0, 32.0], &mut Rng(12345), &mut None)
     }
 
     fn assert_close(got: [f32; 4], want: [f32; 4]) {
@@ -1348,10 +1387,26 @@ mod radiance_tests {
     }
 
     #[test]
+    fn dense_records_match_the_hash_map_for_every_instance() {
+        let mut s = PtScene::default();
+        for (n, k) in [7usize, 0, 3, 42, 19].into_iter().enumerate() {
+            let mut r = [[0.0f32; 4]; 24];
+            r[13][0] = n as f32 + 0.5;
+            r[5][1] = k as f32;
+            s.instances.insert(k, r);
+        }
+        let d = Dense::new(&s);
+        for (k, r) in &s.instances {
+            assert_eq!(d.record(*k), r);
+        }
+        assert!(Dense::new(&PtScene::default()).slot.is_empty());
+    }
+
+    #[test]
     fn visibility_through_a_half_transparent_caster_is_one_half() {
         let s = quads(&[(5.0, material([1.0, 1.0, 1.0, 0.5], 1.0, 1.0))]);
-        assert_eq!(visibility(&s, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 100.0), 0.5);
-        assert_eq!(visibility(&PtScene::default(), [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 100.0), 1.0);
+        assert_eq!(visibility(&Dense::new(&s), [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 100.0), 0.5);
+        assert_eq!(visibility(&Dense::new(&PtScene::default()), [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 100.0), 1.0);
     }
 
     #[test]
@@ -1377,8 +1432,8 @@ mod radiance_tests {
         let (x, y, si) = (5u32, 7u32, 3u32);
         let mut rng = Rng(pcg((y * 64 + x) * 9781 + pcg(si * 6271 + 1)));
         let (jx, jy) = (rng.rnd(), rng.rnd());
-        let want = radiance(&s, &env, &p, [x as f32 + jx, y as f32 + jy], &mut rng, &mut None);
-        assert_eq!(pixel_sum(&s, &env, &p, x, y, si, 1), want);
+        let want = radiance(&Dense::new(&s), &env, &p, [x as f32 + jx, y as f32 + jy], &mut rng, &mut None);
+        assert_eq!(pixel_sum(&Dense::new(&s), &env, &p, x, y, si, 1), want);
         assert_eq!(want, [0.5, 0.25, 0.125, 1.0]);
     }
 
@@ -1388,14 +1443,14 @@ mod radiance_tests {
         let env = env_of([0.0; 3], 1.0);
         let p = params(0.0, 1, vec![sun()]);
         let mut g = None;
-        radiance(&s, &env, &p, [32.0, 32.0], &mut Rng(12345), &mut g);
+        radiance(&Dense::new(&s), &env, &p, [32.0, 32.0], &mut Rng(12345), &mut g);
         let (base, nt) = g.expect("the centre ray hits the quad");
         assert_eq!(base, [0.8, 0.6, 0.4, 1.0]);
         let t = nt[3];
-        let st = pixel_stats(&s, &env, &p, 32, 32, 0, 4);
+        let st = pixel_stats(&Dense::new(&s), &env, &p, 32, 32, 0, 4);
         assert_eq!(st.guide[0], [0.8 * 4.0, 0.6 * 4.0, 0.4 * 4.0, 4.0]);
         assert!((st.guide[1][3] - 4.0 * t).abs() <= 1e-3 * 4.0 * t, "{} vs {}", st.guide[1][3], 4.0 * t);
-        let sky = pixel_stats(&PtScene::default(), &env, &p, 32, 32, 0, 4);
+        let sky = pixel_stats(&Dense::new(&PtScene::default()), &env, &p, 32, 32, 0, 4);
         assert_eq!(sky.guide, [[0.0; 4]; 2]);
     }
 
@@ -1409,7 +1464,7 @@ mod radiance_tests {
         for gy in 0..3u32 {
             for gx in 0..4u32 {
                 let pix = (gy * 4 + gx) as usize;
-                assert_eq!(accum[pix], pixel_sum(&s, &env, &p, 2 + gx, 1 + gy, 1, 3));
+                assert_eq!(accum[pix], pixel_sum(&Dense::new(&s), &env, &p, 2 + gx, 1 + gy, 1, 3));
                 assert_eq!(accum[12 + pix][2], 3.0);
                 assert_eq!(accum[12 + pix][3], 0.0);
             }
