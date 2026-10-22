@@ -1490,7 +1490,7 @@ pub(crate) fn trace_tile(
 
 /// Whether the CPU loop reproduces the shader for this scene: false for any light that is not a plain directional one
 /// (other kinds, IES profiles), subsurface or transmissive materials, normal maps, splats and depth of field. Media,
-/// water, procedural skies and glass backdrops are not part of `RadianceParams`; the caller rejects them.
+/// water, foam and procedural skies are not part of `RadianceParams`; the caller rejects them.
 pub(crate) fn supported(scene: &PtScene, p: &RadianceParams) -> bool {
     p.cam[1] <= 0.0
         && scene.splats.is_empty()

@@ -729,6 +729,11 @@ mod tests {
         assert_eq!(variant_of([&plain, &mixed].into_iter()), (false, true), "foam does not bring in the water variant");
         assert_eq!(variant_of([&glass, &mixed].into_iter()), (true, true));
         assert_eq!(variant_of([&mixed_glass].into_iter()), (true, true));
+        // only scenes the plain shader traces can go to the CPU tracer, which ports neither media nor water nor foam
+        assert!(plain_trace([&plain].into_iter(), false));
+        assert!(!plain_trace([&plain].into_iter(), true), "media");
+        assert!(!plain_trace([&plain, &glass].into_iter(), false), "water");
+        assert!(!plain_trace([&plain, &mixed].into_iter(), false), "foam");
         // 5 shapes of scene (media, grid, lighting) times 3 variants: 15 distinct slots in 0..15
         let mut slots = std::collections::BTreeSet::new();
         for (media, grid, lighting) in
@@ -1511,6 +1516,12 @@ fn variant_of<'a>(materials: impl Iterator<Item = &'a sr_3d::MaterialParams>) ->
     materials.fold((false, false), |(water, foam), m| (water || m.transmission > 0.0, foam || m.foam_mix.is_some()))
 }
 
+/// Whether a scene traces with the plain shader: no transmissive material, no foam mixed into a surface and no media.
+/// The CPU tracer reproduces that shader only.
+fn plain_trace<'a>(materials: impl Iterator<Item = &'a sr_3d::MaterialParams>, media: bool) -> bool {
+    !media && variant_of(materials) == (false, false)
+}
+
 /// The slot of the variant pipeline for a scene: five by media and grid lighting, times water, water with foam, or foam alone.
 fn variant_slot(media: bool, grid: bool, lighting: bool, water: bool, foam: bool, scatter: bool) -> usize {
     (match (media, grid) {
@@ -1955,13 +1966,13 @@ impl PtGpu {
     }
 
     fn trace_pipeline(&self, d: &wgpu::Device, scene: &Scene3, grid: bool) -> &wgpu::ComputePipeline {
+        if plain_trace(scene.draws.iter().map(|dr| &dr.material), !scene.volumes.is_empty()) {
+            return &self.trace;
+        }
         let (water, foam) = variant_of(scene.draws.iter().map(|dr| &dr.material));
         let scatter = needs_scatter(scene.volumes.iter().map(|v| v.medium().optical().scatter_bounces));
         if water || foam || scatter {
             return self.variant_pipeline(d, scene, grid, water, foam, scatter);
-        }
-        if scene.volumes.is_empty() {
-            return &self.trace;
         }
         let lighting = scene.volumes.iter().any(|v| v.medium().optical().albedo.iter().any(|v| *v > 0.0));
         if grid {
@@ -2111,14 +2122,16 @@ fn radiance_params(base: &Params, lights: &[PtLight]) -> cpu::RadianceParams {
     }
 }
 
-/// Whether a pass runs on the CPU tracer: a software adapter, `SR_PT_CPU` not "0", and none of the features the
-/// CPU loop leaves out (adaptive sampling, light grids, counters, hardware rays, procedural sky). A backdrop does not
+/// Whether a pass runs on the CPU tracer: a software adapter, `SR_PT_CPU` not "0", a scene the plain shader traces
+/// (`plain`: no media, water or foam), and none of the features the CPU loop leaves out (adaptive sampling, light
+/// grids, counters, hardware rays, procedural sky). A backdrop does not
 /// count: only paths that have met nothing but glass read it, and the CPU loop has no transmission.
 #[allow(clippy::too_many_arguments)]
 fn cpu_trace_selected(
     cpu_adapter: bool,
     enabled: bool,
     supported: bool,
+    plain: bool,
     base: &Params,
     grid: bool,
     counter: bool,
@@ -2128,6 +2141,7 @@ fn cpu_trace_selected(
     cpu_adapter
         && enabled
         && supported
+        && plain
         && base.out[3] <= 0.0
         && !grid
         && !counter
@@ -2433,6 +2447,7 @@ pub(crate) fn render_cached(
             pt.cpu_adapter,
             std::env::var("SR_PT_CPU").map_or(true, |v| v != "0"),
             cpu::supported(data, &rp),
+            plain_trace(scene.draws.iter().map(|dr| &dr.material), !scene.volumes.is_empty()),
             &base,
             grid_plan.is_some(),
             counter.is_some(),
@@ -2730,12 +2745,14 @@ mod wgsl_layout_tests {
 
     #[test]
     fn cpu_trace_is_selected_only_when_nothing_disables_it() {
-        let sel =
-            |p: &super::Params, f: [bool; 7]| super::cpu_trace_selected(f[0], f[1], f[2], p, f[3], f[4], f[5], f[6]);
-        let on = [true, true, true, false, false, false, true];
+        let sel = |p: &super::Params, f: [bool; 8]| {
+            super::cpu_trace_selected(f[0], f[1], f[2], f[7], p, f[3], f[4], f[5], f[6])
+        };
+        let on = [true, true, true, false, false, false, true, true];
         let base = zero_params();
         assert!(sel(&base, on));
-        for k in 0..7 {
+        // flag 7: the scene traces with the plain shader (no media, water or foam)
+        for k in 0..8 {
             let mut f = on;
             f[k] = !f[k];
             // the env is only required when the pass shows or lights with a dome
