@@ -1472,3 +1472,86 @@ pub fn persistent_effects(p: &sr_eval::Program, base: &Path) -> std::collections
     }
     out
 }
+
+/// Whether any shader effect of the scene declares an ISF `audio` or `audioFFT` input, the one way a frame reads the
+/// mixed audio besides the analysis table ([`AudioSignals`]). `base` is the main document's directory; an included
+/// document's effects read the files next to it. A source that cannot be loaded or compiled renders as a pass-through
+/// and reads nothing.
+pub fn reads_audio(p: &sr_eval::Program, base: &Path) -> bool {
+    (0..=p.includes.len() as u16).any(|doc| {
+        let Some(fx) = p.doc_scene(doc).and_then(|s| s.effects.as_ref()) else { return false };
+        let base = if doc == 0 { base.to_path_buf() } else { p.doc_base(doc) };
+        fx.effects.iter().filter(|e| e.r#type.as_str() == "shader").any(|e| {
+            let a = Attrs { e: e as &dyn Element, props: None };
+            let Some(src) = a.str("src") else { return false };
+            let Ok((code, _)) = glsl::load_source(&src, &base) else { return false };
+            glsl::build_effect(&code)
+                .ok()
+                .and_then(|p| p.isf)
+                .and_then(|h| h.get("INPUTS").and_then(|v| v.as_array()).cloned())
+                .is_some_and(|inputs| {
+                    inputs.iter().any(|i| matches!(i.get("TYPE").and_then(|t| t.as_str()), Some("audio" | "audioFFT")))
+                })
+        })
+    })
+}
+
+#[cfg(test)]
+mod audio_input_tests {
+    use super::*;
+
+    const ISF_AUDIO: &str = "/*{ \"ISFVSN\": \"2\", \"INPUTS\": [{ \"NAME\": \"snd\", \"TYPE\": \"audio\" }] }*/\nvoid main() { gl_FragColor = vec4(1.0); }\n";
+    const ISF_FFT: &str = "/*{ \"ISFVSN\": \"2\", \"INPUTS\": [{ \"NAME\": \"fft\", \"TYPE\": \"audioFFT\" }] }*/\nvoid main() { gl_FragColor = vec4(1.0); }\n";
+    const ISF_PLAIN: &str = "/*{ \"ISFVSN\": \"2\", \"INPUTS\": [{ \"NAME\": \"k\", \"TYPE\": \"float\" }] }*/\nvoid main() { gl_FragColor = vec4(1.0); }\n";
+
+    /// A scene with one shader effect on `src`; the main document's directory has `fx.fs` holding `shader`.
+    fn reads(src: &str, shader: &str) -> bool {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let d = std::env::temp_dir().join(format!("sr-gpu-reads-audio-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("fx.fs"), shader).unwrap();
+        let xml = format!(
+            r##"<scene version="1.1"><project width="10" height="10" fps="10" duration="1"/><composition><shape id="r" shape="rect" width="10" height="10" fill="#FFFFFF" effects="s"/></composition><effects><effect id="s" type="shader" src="{src}"/></effects></scene>"##
+        );
+        let opts = sr_model::LoadOptions { verify_assets: false, base_dir: Some(d.clone()) };
+        let doc = sr_model::load_str(&xml, &opts).unwrap();
+        let ev = sr_eval::Evaluator::new(&doc, &Default::default()).unwrap();
+        let answer = reads_audio(ev.program(), &d);
+        let _ = std::fs::remove_dir_all(&d);
+        answer
+    }
+
+    #[test]
+    fn a_shader_with_an_audio_input_reads_the_mix() {
+        assert!(reads("fx.fs", ISF_AUDIO));
+        assert!(reads("fx.fs", ISF_FFT));
+    }
+
+    #[test]
+    fn a_shader_without_one_does_not() {
+        assert!(!reads("fx.fs", ISF_PLAIN));
+        assert!(!reads("fx.fs", "void main() { fragColor = vec4(1.0); }\n"));
+        assert!(!reads("missing.fs", ISF_AUDIO), "a file that is not there renders as a pass-through");
+    }
+
+    #[test]
+    fn a_data_uri_shader_is_read_like_a_file() {
+        let uri = format!(
+            "data:,{}",
+            ISF_AUDIO.replace('%', "%25").replace(' ', "%20").replace('"', "%22").replace('\n', "%0A")
+        );
+        assert!(reads(&uri, ""));
+    }
+
+    #[test]
+    fn a_scene_without_shaders_reads_nothing() {
+        let doc = sr_model::load_str(
+            r##"<scene version="1.1"><project width="10" height="10" fps="10" duration="1"/><composition/></scene>"##,
+            &sr_model::LoadOptions { verify_assets: false, base_dir: None },
+        )
+        .unwrap();
+        let ev = sr_eval::Evaluator::new(&doc, &Default::default()).unwrap();
+        assert!(!reads_audio(ev.program(), Path::new(".")));
+    }
+}
