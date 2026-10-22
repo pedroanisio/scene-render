@@ -973,10 +973,21 @@ fn mul3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] * b[0], a[1] * b[1], a[2] * b[2]]
 }
 
+/// The first-surface-hit contribution to the guide buffers: `(base.rgb, 1)` and `(n, hit.t)`.
+pub(crate) type GuideHit = ([f32; 4], [f32; 4]);
+
 /// The shader's `radiance` for the camera ray through `px` (pixel coordinates with the jitter added); alpha in `[3]`.
-/// Ports the supported subset (see `supported`): every `rnd()` is drawn where the shader draws it. The guide buffers,
-/// media, water, backdrop, splats, subsurface, transmission, depth of field and ambient lights are not ported.
-pub(crate) fn radiance(scene: &PtScene, env: &EnvMap, p: &RadianceParams, px: [f32; 2], rng: &mut Rng) -> [f32; 4] {
+/// Ports the supported subset (see `supported`): every `rnd()` is drawn where the shader draws it. `guide` is set to
+/// the first-hit guide contribution (left `None` when the ray meets no surface). Media, water, backdrop, splats,
+/// subsurface, transmission, depth of field and ambient lights are not ported.
+pub(crate) fn radiance(
+    scene: &PtScene,
+    env: &EnvMap,
+    p: &RadianceParams,
+    px: [f32; 2],
+    rng: &mut Rng,
+    guide: &mut Option<GuideHit>,
+) -> [f32; 4] {
     let (w, h) = (p.size[0] as f32, p.size[1] as f32);
     let mut ndc = [px[0] / w * 2.0 - 1.0, 1.0 - px[1] / h * 2.0];
     let k = 1.0 + p.cam[0] * (ndc[0] * ndc[0] + ndc[1] * ndc[1]);
@@ -1022,6 +1033,9 @@ pub(crate) fn radiance(scene: &PtScene, env: &EnvMap, p: &RadianceParams, px: [f
         let mut n = m.n;
         if dot(n, ng) < 0.0 {
             n = scale(n, -1.0);
+        }
+        if met == 1 {
+            *guide = Some(([m.base[0], m.base[1], m.base[2], 1.0], [n[0], n[1], n[2], hit.t]));
         }
         col = add(col, mul3(thr, xyz(&m.emissive)));
         if m.emissive[3] > 0.5 {
@@ -1122,6 +1136,50 @@ pub(crate) fn visibility(scene: &PtScene, o: [f32; 3], d: [f32; 3], dist: f32) -
     0.0
 }
 
+/// What `cs_trace` accumulates for one pixel over its samples.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct PixelStats {
+    pub sum: [f32; 4],
+    pub luma_sq: f32,
+    pub alpha_sq: f32,
+    pub guide: [[f32; 4]; 2],
+}
+
+/// `cs_trace`'s per-pixel loop: samples `start..start + count` of pixel `(x, y)`.
+pub(crate) fn pixel_stats(
+    scene: &PtScene,
+    env: &EnvMap,
+    p: &RadianceParams,
+    x: u32,
+    y: u32,
+    start: u32,
+    count: u32,
+) -> PixelStats {
+    let global_pix = y.wrapping_mul(p.size[0]).wrapping_add(x);
+    let mut st = PixelStats::default();
+    for s in 0..count {
+        let si = start + s;
+        let mut rng = Rng(pcg(global_pix.wrapping_mul(9781).wrapping_add(pcg(si.wrapping_mul(6271).wrapping_add(1)))));
+        let jx = rng.rnd();
+        let jy = rng.rnd();
+        let mut g = None;
+        let r = radiance(scene, env, p, [x as f32 + jx, y as f32 + jy], &mut rng, &mut g);
+        for (acc, c) in st.sum.iter_mut().zip(r) {
+            *acc += c;
+        }
+        let luma = dot([r[0], r[1], r[2]], [0.2126, 0.7152, 0.0722]);
+        st.luma_sq += luma * luma;
+        st.alpha_sq += r[3] * r[3];
+        if let Some((a, b)) = g {
+            for k in 0..4 {
+                st.guide[0][k] += a[k];
+                st.guide[1][k] += b[k];
+            }
+        }
+    }
+    st
+}
+
 /// `cs_trace`'s per-pixel part: samples `start..start + count` of pixel `(x, y)` summed (not divided).
 pub(crate) fn pixel_sum(
     scene: &PtScene,
@@ -1132,19 +1190,36 @@ pub(crate) fn pixel_sum(
     start: u32,
     count: u32,
 ) -> [f32; 4] {
-    let global_pix = y.wrapping_mul(p.size[0]).wrapping_add(x);
-    let mut sum = [0.0f32; 4];
-    for s in 0..count {
-        let si = start + s;
-        let mut rng = Rng(pcg(global_pix.wrapping_mul(9781).wrapping_add(pcg(si.wrapping_mul(6271).wrapping_add(1)))));
-        let jx = rng.rnd();
-        let jy = rng.rnd();
-        let r = radiance(scene, env, p, [x as f32 + jx, y as f32 + jy], &mut rng);
-        for (acc, c) in sum.iter_mut().zip(r) {
-            *acc += c;
-        }
+    pixel_stats(scene, env, p, x, y, start, count).sum
+}
+
+/// One `cs_trace` dispatch over `tile` (`x, y, w, h` in global pixels): the accumulation buffer (`w * h` radiance
+/// sums, then `w * h` of `(sum luma², sum alpha², count, 0)`) and the guide buffer (`pix * 2`, `pix * 2 + 1`), with
+/// `pix = y * w + x` tile-local, both starting from zero. Rows run in parallel; each pixel is independent.
+pub(crate) fn trace_tile(
+    scene: &PtScene,
+    env: &EnvMap,
+    p: &RadianceParams,
+    tile: [u32; 4],
+    start: u32,
+    count: u32,
+) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
+    use rayon::prelude::*;
+    let [tx, ty, tw, th] = tile;
+    let n = (tw * th) as usize;
+    let rows: Vec<Vec<PixelStats>> = (0..th)
+        .into_par_iter()
+        .map(|gy| (0..tw).map(|gx| pixel_stats(scene, env, p, tx + gx, ty + gy, start, count)).collect())
+        .collect();
+    let mut accum = vec![[0.0f32; 4]; 2 * n];
+    let mut guide = vec![[0.0f32; 4]; 2 * n];
+    for (i, st) in rows.iter().flatten().enumerate() {
+        accum[i] = st.sum;
+        accum[n + i] = [st.luma_sq, st.alpha_sq, count as f32, 0.0];
+        guide[2 * i] = st.guide[0];
+        guide[2 * i + 1] = st.guide[1];
     }
-    sum
+    (accum, guide)
 }
 
 /// Whether the CPU loop reproduces the shader for this scene: false for any light that is not a plain directional one
@@ -1226,7 +1301,7 @@ mod radiance_tests {
     }
 
     fn centre(s: &PtScene, env: &EnvMap, p: &RadianceParams) -> [f32; 4] {
-        radiance(s, env, p, [32.0, 32.0], &mut Rng(12345))
+        radiance(s, env, p, [32.0, 32.0], &mut Rng(12345), &mut None)
     }
 
     fn assert_close(got: [f32; 4], want: [f32; 4]) {
@@ -1295,8 +1370,43 @@ mod radiance_tests {
         let (x, y, si) = (5u32, 7u32, 3u32);
         let mut rng = Rng(pcg((y * 64 + x) * 9781 + pcg(si * 6271 + 1)));
         let (jx, jy) = (rng.rnd(), rng.rnd());
-        let want = radiance(&s, &env, &p, [x as f32 + jx, y as f32 + jy], &mut rng);
+        let want = radiance(&s, &env, &p, [x as f32 + jx, y as f32 + jy], &mut rng, &mut None);
         assert_eq!(pixel_sum(&s, &env, &p, x, y, si, 1), want);
         assert_eq!(want, [0.5, 0.25, 0.125, 1.0]);
+    }
+
+    #[test]
+    fn guide_holds_base_colour_normal_and_distance_of_the_first_hit() {
+        let s = quads(&[(0.0, material([0.8, 0.6, 0.4, 1.0], 1.0, 1.0))]);
+        let env = env_of([0.0; 3], 1.0);
+        let p = params(0.0, 1, vec![sun()]);
+        let mut g = None;
+        radiance(&s, &env, &p, [32.0, 32.0], &mut Rng(12345), &mut g);
+        let (base, nt) = g.expect("the centre ray hits the quad");
+        assert_eq!(base, [0.8, 0.6, 0.4, 1.0]);
+        let t = nt[3];
+        let st = pixel_stats(&s, &env, &p, 32, 32, 0, 4);
+        assert_eq!(st.guide[0], [0.8 * 4.0, 0.6 * 4.0, 0.4 * 4.0, 4.0]);
+        assert!((st.guide[1][3] - 4.0 * t).abs() <= 1e-3 * 4.0 * t, "{} vs {}", st.guide[1][3], 4.0 * t);
+        let sky = pixel_stats(&PtScene::default(), &env, &p, 32, 32, 0, 4);
+        assert_eq!(sky.guide, [[0.0; 4]; 2]);
+    }
+
+    #[test]
+    fn trace_tile_matches_per_pixel_sums_and_is_deterministic() {
+        let s = quads(&[(0.0, material([0.8, 0.6, 0.4, 1.0], 1.0, 1.0))]);
+        let env = env_of([0.1, 0.2, 0.3], 1.0);
+        let p = params(2.0, 3, vec![sun()]);
+        let (accum, guide) = trace_tile(&s, &env, &p, [2, 1, 4, 3], 1, 3);
+        assert_eq!((accum.len(), guide.len()), (24, 24));
+        for gy in 0..3u32 {
+            for gx in 0..4u32 {
+                let pix = (gy * 4 + gx) as usize;
+                assert_eq!(accum[pix], pixel_sum(&s, &env, &p, 2 + gx, 1 + gy, 1, 3));
+                assert_eq!(accum[12 + pix][2], 3.0);
+                assert_eq!(accum[12 + pix][3], 0.0);
+            }
+        }
+        assert_eq!(trace_tile(&s, &env, &p, [2, 1, 4, 3], 1, 3), (accum, guide));
     }
 }
