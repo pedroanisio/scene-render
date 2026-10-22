@@ -318,7 +318,7 @@ pub fn time_stretch(src: &Planar, factor: f64) -> Planar {
     let hop = window / 2;
     let win = crate::dsp::hann(window);
     let mono: Vec<f32> = (0..n).map(|i| src.iter().map(|c| c[i]).sum::<f32>()).collect();
-    let mut out = vec![vec![0f64; out_len + window]; src.len()];
+    let mut out: Vec<Vec<f64>> = (0..src.len()).map(|_| vec![0f64; out_len + window]).collect();
     let mut norm = vec![0f64; out_len + window];
     let ha = hop as f64 / factor;
     let mut prev: i64 = 0;
@@ -401,7 +401,7 @@ impl Mix {
         let rate = self.rate as f64;
         let total = self.frames();
         let chans = source.planar.len().max(1);
-        let mut out = vec![vec![0f32; total]; chans];
+        let mut out = zeros(chans, total);
         let mut ext = Extent::EMPTY;
         match placement {
             Placement::Timeline { start, clip_in, clip_out, loops, speed, reverse, preserve_pitch, fit } => {
@@ -557,7 +557,7 @@ impl Mix {
         let rate = self.rate as f64;
         let total = self.frames();
         let chans = self.layout.channels();
-        let silent = || vec![vec![0f32; total]; chans];
+        let silent = || zeros(chans, total);
         let bound = |e: Extent| if full { Extent::full(total) } else { e };
         // tracks depend on no other node: place and route them in parallel
         let mut placed: Vec<Option<(Planar, Extent)>> = self
@@ -763,7 +763,7 @@ impl Mix {
     fn route_block(&self, src: &Planar, layout: Layout, pan: &Curve, ext: Extent) -> Planar {
         let total = src.first().map(Vec::len).unwrap_or(0);
         let chans = self.layout.channels();
-        let mut out = vec![vec![0f32; total]; chans];
+        let mut out = zeros(chans, total);
         let rate = self.rate as f64;
         let ext = ext.clip(total);
         let mut s = ext.start / 256 * 256;
@@ -785,6 +785,12 @@ impl Mix {
         }
         out
     }
+}
+
+/// `chans` silent channels of `total` samples, each allocated zeroed: `vec![row; n]` would write the zeros once and
+/// copy them into every other channel.
+fn zeros(chans: usize, total: usize) -> Planar {
+    (0..chans).map(|_| vec![0f32; total]).collect()
 }
 
 #[cfg(test)]
