@@ -158,6 +158,25 @@ impl Sources {
         self.cache.insert((path, stream), s.clone());
         Ok(s)
     }
+
+    /// Decodes `wanted` all at once, each source with an FFmpeg of its own, into the sources [`Sources::load`] returns.
+    /// A source that cannot be decoded is left out, so that its load decodes it again and reports why where it is used.
+    pub(crate) fn prefetch(&mut self, mut wanted: Vec<(PathBuf, u64)>) {
+        use rayon::prelude::*;
+        wanted.sort();
+        wanted.dedup();
+        wanted.retain(|key| !self.cache.contains_key(key));
+        let rate = self.rate;
+        let decoded: Vec<_> = wanted
+            .into_par_iter()
+            .filter_map(|(path, stream)| {
+                let a = sr_media::decode_audio(&path, stream as usize, rate).ok()?;
+                let layout = Layout::for_channels(a.channels as u32, &a.layout);
+                Some(((path, stream), Arc::new(Source::from_interleaved(&a.samples, a.channels as usize, layout))))
+            })
+            .collect();
+        self.cache.extend(decoded);
+    }
 }
 
 /// Automation of a node's property: its key, the property and the static value.
@@ -441,6 +460,27 @@ pub fn mix_scene(ev: &Evaluator, fps: f64, representation: Option<&str>) -> Resu
         }
     }
     let mut sources = Sources::new(rate);
+    // every source the nodes below load, decoded together first (each decode is an FFmpeg process of its own)
+    let mut wanted = Vec::new();
+    for c in am.iter().flat_map(|am| &am.children) {
+        if let m::AudioMixChild::AudioTrack(t) = c {
+            if let Some((asset, doc)) = find_asset(p, &t.asset) {
+                if let Some(path) = source_path(p, asset, doc, representation) {
+                    let stream = match asset {
+                        AssetsChild::Video(v) => v.audio_stream,
+                        _ => 0,
+                    };
+                    wanted.push((path, stream));
+                }
+            }
+        }
+    }
+    for (_, _, asset, doc, stream) in &audio_layers {
+        if let Some(path) = source_path(p, asset, *doc, representation) {
+            wanted.push((path, *stream));
+        }
+    }
+    sources.prefetch(wanted);
     let curve = |key: &str, prop: &'static str, fallback: f64| auto.curve(key, prop, fallback);
     let mut nodes = Vec::new();
     let mut master = Master::default();
@@ -559,4 +599,45 @@ pub fn slice(buf: &sr_audio::Planar, rate: u32, start: f64, end: f64) -> sr_audi
     let a = (start * rate as f64).round().max(0.0) as usize;
     let b = (end * rate as f64).round().max(0.0) as usize;
     buf.iter().map(|c| (a..b).map(|i| c.get(i).copied().unwrap_or(0.0)).collect()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A mix decodes its sources ahead of building its nodes, all at once: the nodes then find each one decoded, with
+    /// the samples a load of its own gives, and a source that cannot be decoded still fails where it is loaded.
+    #[test]
+    fn prefetched_sources_are_the_ones_a_load_decodes() {
+        if !sr_testkit::ffmpeg("audio prefetch", &[sr_media::ffmpeg(), sr_media::ffprobe()]) {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("sr-deliver-prefetch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tone = |name: &str, hz: u32, channels: u32| {
+            let path = dir.join(name);
+            let ok = std::process::Command::new(sr_media::ffmpeg())
+                .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i"])
+                .arg(format!("sine=frequency={hz}:sample_rate=44100:duration=0.4"))
+                .args(["-ac", &channels.to_string()])
+                .arg(&path)
+                .status()
+                .is_ok_and(|s| s.success());
+            assert!(ok, "ffmpeg writes {name}");
+            path
+        };
+        let (a, b, missing) = (tone("a.wav", 440, 1), tone("b.wav", 660, 2), dir.join("missing.wav"));
+        let mut ahead = Sources::new(48000);
+        ahead.prefetch(vec![(a.clone(), 0), (b.clone(), 0), (missing.clone(), 0), (a.clone(), 0)]);
+        let first = ahead.load(a.clone(), 0).unwrap();
+        assert!(Arc::ptr_eq(&first, &ahead.load(a.clone(), 0).unwrap()), "a prefetched source is not decoded again");
+        let mut one_by_one = Sources::new(48000);
+        for path in [&a, &b] {
+            let (x, y) = (ahead.load(path.clone(), 0).unwrap(), one_by_one.load(path.clone(), 0).unwrap());
+            assert_eq!((&x.layout, &x.planar), (&y.layout, &y.planar), "{}", path.display());
+        }
+        assert!(ahead.load(missing.clone(), 0).is_err());
+        assert!(one_by_one.load(missing, 0).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
