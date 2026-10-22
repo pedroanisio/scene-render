@@ -1174,6 +1174,18 @@ fn join_audio(
     Ok(())
 }
 
+/// Waits until every worker holding a sender of `finished` has returned, reporting progress every `tick` meanwhile.
+/// A worker's sender drops as its thread returns or unwinds, so the wait ends as the last one does, not at a tick.
+fn wait_for_workers(finished: &std::sync::mpsc::Receiver<()>, tick: std::time::Duration, mut progress: impl FnMut()) {
+    loop {
+        match finished.recv_timeout(tick) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => progress(),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
 /// Starts the encoder of a single stream. The audio chain, when it runs beside the picture, is joined first: the
 /// encoder opens the audio file as it starts. A delivery that carries no audio does not wait for it.
 fn start_encoder(
@@ -1833,6 +1845,8 @@ fn run_delivery(
             // grids (about 11.4 MiB) per worker, independent of output duration.
             let mut judge = Judge::new(checks.flash_on());
             let (senders, receivers): (Vec<_>, Vec<_>) = (0..workers).map(|_| sync_channel::<Seen>(2)).unzip();
+            // each worker holds a sender until its thread returns or unwinds: the channel closes as the last one ends
+            let (finished_tx, finished) = std::sync::mpsc::channel::<()>();
             let mut lend = (workers == 1).then_some(&mut video);
             let results: Vec<Result<(Report, String), DeliverError>> = std::thread::scope(|sc| {
                 let handles: Vec<_> = worker_gpus
@@ -1841,6 +1855,7 @@ fn run_delivery(
                     .enumerate()
                     .map(|(worker_index, (gpu, tx))| {
                         let lent = lend.take();
+                        let finishing = finished_tx.clone();
                         let (
                             cancelled,
                             done,
@@ -1869,6 +1884,7 @@ fn run_delivery(
                             &overlay_audio,
                         );
                         sc.spawn(move || -> Result<(Report, String), DeliverError> {
+                            let _finishing = finishing;
                             // a single worker renders on the caller's own renderer, stage and overlay
                             let mut built;
                             let worker: &mut Video = match lent {
@@ -1995,10 +2011,8 @@ fn run_delivery(
                 }
                 // On an error or panic, unblock every producer before joining the scoped threads.
                 drop(receivers);
-                while !handles.iter().all(|h| h.is_finished()) {
-                    progress(done.load(Relaxed), n);
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                }
+                drop(finished_tx);
+                wait_for_workers(&finished, std::time::Duration::from_millis(200), || progress(done.load(Relaxed), n));
                 handles
                     .into_iter()
                     .map(|h| {
@@ -2886,6 +2900,46 @@ fn thinned_contrasts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_wait_for_workers_ends_as_the_last_one_returns() {
+        // a tick far longer than any test: the wait must end on the workers, not on the clock
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let workers: Vec<_> = (0..3).map(|_| tx.clone()).map(|t| std::thread::spawn(move || drop(t))).collect();
+        drop(tx);
+        let mut ticks = 0;
+        wait_for_workers(&rx, std::time::Duration::from_secs(3600), || ticks += 1);
+        assert_eq!(ticks, 0);
+        workers.into_iter().for_each(|w| w.join().unwrap());
+    }
+
+    #[test]
+    fn the_wait_for_workers_reports_progress_while_one_still_runs() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            gone.recv().unwrap();
+            drop(tx);
+        });
+        let mut ticks = 0;
+        wait_for_workers(&rx, std::time::Duration::from_millis(1), || {
+            ticks += 1;
+            let _ = go.send(());
+        });
+        assert!(ticks >= 1, "progress is reported while a worker runs");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn a_worker_that_panics_still_ends_the_wait() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            let _held = tx;
+            panic!("a segment render panicked");
+        });
+        wait_for_workers(&rx, std::time::Duration::from_secs(3600), || {});
+        assert!(worker.join().is_err());
+    }
 
     fn a1_document(extra: &str) -> sr_model::Document {
         let (before, after) = extra.find("<captions>").map_or((extra, ""), |i| extra.split_at(i));
