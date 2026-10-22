@@ -169,14 +169,17 @@ pub struct OutputStage {
     pack_pipes: std::collections::VecDeque<(PackKey, wgpu::ComputePipeline)>,
     bgl: wgpu::BindGroupLayout,
     /// Placement into a working-space texture, without conversion (transitions between outputs' frames).
-    place_pipe: wgpu::ComputePipeline,
+    place_pipe: std::sync::OnceLock<wgpu::ComputePipeline>,
+    place_layout: wgpu::PipelineLayout,
     place_bgl: wgpu::BindGroupLayout,
     samp: wgpu::Sampler,
     /// Parameters, rewritten before every submission (queue writes land after earlier work).
     params: wgpu::Buffer,
     /// The fit-blur background: downsample and Gaussian passes, their direction uniforms (down,
     /// across, along), the two reduced textures they ping-pong between, and a 1×1 stand-in.
-    blur_pipe: wgpu::ComputePipeline,
+    blur_pipe: std::sync::OnceLock<wgpu::ComputePipeline>,
+    blur_module: wgpu::ShaderModule,
+    blur_layout: wgpu::PipelineLayout,
     blur_bgl: wgpu::BindGroupLayout,
     blur_dirs: [wgpu::Buffer; 3],
     blur_tex: Option<([u32; 2], [wgpu::TextureView; 2])>,
@@ -194,7 +197,7 @@ pub struct OutputStage {
 }
 
 impl OutputStage {
-    /// Builds the pipeline.
+    /// Builds the stage; its pipelines are compiled as frames first need them.
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> OutputStage {
         let d = &*device;
         let limits = d.limits();
@@ -326,17 +329,6 @@ impl OutputStage {
             bind_group_layouts: &[Some(&blur_bgl)],
             immediate_size: 0,
         });
-        let blur_pipe = {
-            let _creation = crate::gpu::creation_lock();
-            d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("output blur"),
-                layout: Some(&blur_layout),
-                module: &blur_module,
-                entry_point: Some("cs_blur"),
-                compilation_options: Default::default(),
-                cache: None,
-            })
-        };
         let blur_dirs = [[0i32, 0, 0, 0], [1, 0, 0, 0], [0, 1, 0, 0]].map(|v| {
             let b = d.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("output blur direction"),
@@ -369,17 +361,6 @@ impl OutputStage {
             bind_group_layouts: &[Some(&place_bgl)],
             immediate_size: 0,
         });
-        let place_pipe = {
-            let _creation = crate::gpu::creation_lock();
-            d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("place"),
-                layout: Some(&place_layout),
-                module: &module,
-                entry_point: Some("cs_place"),
-                compilation_options: Default::default(),
-                cache: None,
-            })
-        };
         let samp = d.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -398,11 +379,14 @@ impl OutputStage {
             pack_layout: layout,
             pack_pipes: Default::default(),
             bgl,
-            place_pipe,
+            place_pipe: Default::default(),
+            place_layout,
             place_bgl,
             samp,
             params,
-            blur_pipe,
+            blur_pipe: Default::default(),
+            blur_module,
+            blur_layout,
             blur_bgl,
             blur_dirs,
             blur_tex: None,
@@ -413,6 +397,36 @@ impl OutputStage {
             head: 0,
             frame_index: 0,
         }
+    }
+
+    /// Placement without conversion, compiled when a transition first needs it.
+    fn place_pipeline(&self) -> &wgpu::ComputePipeline {
+        self.place_pipe.get_or_init(|| {
+            let _creation = crate::gpu::creation_lock();
+            self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("place"),
+                layout: Some(&self.place_layout),
+                module: &self.pack_module,
+                entry_point: Some("cs_place"),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        })
+    }
+
+    /// The fit-blur pass, compiled when a frame first needs a blurred background.
+    fn blur_pipeline(&self) -> &wgpu::ComputePipeline {
+        self.blur_pipe.get_or_init(|| {
+            let _creation = crate::gpu::creation_lock();
+            self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("output blur"),
+                layout: Some(&self.blur_layout),
+                module: &self.blur_module,
+                entry_point: Some("cs_blur"),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        })
     }
 
     fn compile_pack(&self, blocks: bool, constants: &[(&str, f64)]) -> wgpu::ComputePipeline {
@@ -671,7 +685,7 @@ impl OutputStage {
                 ],
             });
             let mut pass = enc.begin_compute_pass(&Default::default());
-            pass.set_pipeline(&self.blur_pipe);
+            pass.set_pipeline(self.blur_pipeline());
             pass.set_bind_group(0, &g, &[]);
             pass.dispatch_workgroups(small[0].div_ceil(8), small[1].div_ceil(8), 1);
         }
@@ -727,7 +741,7 @@ impl OutputStage {
         });
         {
             let mut pass = enc.begin_compute_pass(&Default::default());
-            pass.set_pipeline(&self.place_pipe);
+            pass.set_pipeline(self.place_pipeline());
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(into.size[0].div_ceil(8), into.size[1].div_ceil(8), 1);
         }

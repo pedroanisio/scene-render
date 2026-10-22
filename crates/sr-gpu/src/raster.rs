@@ -176,9 +176,12 @@ impl RasterJob {
     }
 }
 
-/// The fine-stage pipeline.
+/// The fine-stage pipelines, each compiled the first time a job needs it.
 pub struct Raster {
-    pipelines: [wgpu::ComputePipeline; 4],
+    device: wgpu::Device,
+    module: wgpu::ShaderModule,
+    layout: wgpu::PipelineLayout,
+    pipelines: [std::sync::OnceLock<wgpu::ComputePipeline>; 4],
     bgl: wgpu::BindGroupLayout,
 }
 
@@ -198,12 +201,12 @@ fn storage<T: Pod>(d: &wgpu::Device, data: &[T], label: &str) -> wgpu::Buffer {
 }
 
 impl Raster {
-    /// Builds the pipeline for [`crate::resources::FORMAT`] targets.
+    /// Builds the raster stage for [`crate::resources::FORMAT`] targets.
     pub fn new(d: &wgpu::Device) -> Raster {
         Self::new_as(d, crate::resources::FORMAT)
     }
 
-    /// Builds the pipeline for targets of `format` (a working format of SREP 72).
+    /// Builds the raster stage for targets of `format` (a working format of SREP 72).
     pub fn new_as(d: &wgpu::Device, format: wgpu::TextureFormat) -> Raster {
         let st = |b: u32| wgpu::BindGroupLayoutEntry {
             binding: b,
@@ -266,12 +269,17 @@ impl Raster {
             bind_group_layouts: &[Some(&bgl)],
             immediate_size: 0,
         });
-        let pipelines = std::array::from_fn(|i| {
+        Raster { device: d.clone(), module, layout, pipelines: Default::default(), bgl }
+    }
+
+    /// The pipeline for variant `i` (bit 0 `SOLID_FILLS`, bit 1 `SPARSE_TILES`).
+    fn pipeline(&self, i: usize) -> &wgpu::ComputePipeline {
+        self.pipelines[i].get_or_init(|| {
             let _creation = crate::gpu::creation_lock();
-            d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("raster"),
-                layout: Some(&layout),
-                module: &module,
+                layout: Some(&self.layout),
+                module: &self.module,
                 entry_point: Some("raster_main"),
                 compilation_options: wgpu::PipelineCompilationOptions {
                     constants: &[("SOLID_FILLS", (i & 1) as f64), ("SPARSE_TILES", (i >> 1) as f64)],
@@ -279,8 +287,7 @@ impl Raster {
                 },
                 cache: None,
             })
-        });
-        Raster { pipelines, bgl }
+        })
     }
 
     /// Records a job into `enc`, reading the frame's paint buffers.
@@ -357,7 +364,7 @@ impl Raster {
         });
         let mut pass =
             enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("raster"), timestamp_writes: None });
-        pass.set_pipeline(&self.pipelines[job.solid_fills as usize + 2 * job.active_tiles.is_some() as usize]);
+        pass.set_pipeline(self.pipeline(job.solid_fills as usize + 2 * job.active_tiles.is_some() as usize));
         pass.set_bind_group(0, &bind, &[]);
         if job.active_tiles.is_some() {
             let n = params.active_count;

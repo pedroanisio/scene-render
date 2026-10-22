@@ -368,18 +368,10 @@ pub struct Renderer {
     gpu: Gpu,
     raster_samples: u32,
     raster_warning: Option<String>,
-    // General shading, plain/antialiased texture, and solid colour variants. The simple
-    // variants avoid the mask/gradient machinery for common full-frame draws.
-    over: [wgpu::RenderPipeline; 5],
-    /// Premultiplied destination-over: the project background, drawn last beneath everything.
-    under: [wgpu::RenderPipeline; 5],
-    blend: [wgpu::RenderPipeline; 2],
-    /// Add and linear-dodge through the blender (see `fixed_function_blend`).
-    additive: [wgpu::RenderPipeline; 5],
-    generator: wgpu::RenderPipeline,
+    /// The compositor's pipelines, each compiled the first time a draw uses it.
+    pipelines: Pipelines,
     mask_coverage: HashMap<Vec<u8>, MaskCoverage>,
     mask_coverage_budget: u64,
-    mask_coverage_pipelines: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
     bgl0: wgpu::BindGroupLayout,
     bgl1: wgpu::BindGroupLayout,
     bgl2: wgpu::BindGroupLayout,
@@ -900,6 +892,155 @@ fn compositor_pipeline(
     }
 }
 
+/// The compositor's render pipelines. A pipeline is compiled by the driver (hundreds of milliseconds each on llvmpipe)
+/// and a chapter draws with a few of them, so each is created on first use and kept.
+struct Pipelines {
+    device: wgpu::Device,
+    module: wgpu::ShaderModule,
+    layout: wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    /// General shading, plain/antialiased texture, and solid colour variants. The simple variants avoid the
+    /// mask/gradient machinery for common full-frame draws.
+    over: [std::sync::OnceLock<wgpu::RenderPipeline>; 5],
+    /// Premultiplied destination-over: the project background, drawn last beneath everything.
+    under: [std::sync::OnceLock<wgpu::RenderPipeline>; 5],
+    /// Add and linear-dodge through the blender (see `fixed_function_blend`).
+    additive: [std::sync::OnceLock<wgpu::RenderPipeline>; 5],
+    blend: [std::sync::OnceLock<wgpu::RenderPipeline>; 2],
+    generator: std::sync::OnceLock<wgpu::RenderPipeline>,
+    /// `fs_mask_coverage`, then `fs_cached_mask`.
+    mask_coverage: [std::sync::OnceLock<wgpu::RenderPipeline>; 2],
+    created: std::sync::atomic::AtomicUsize,
+}
+
+/// The fragment entry point and ellipse constant of each `over`/`under`/`additive` variant.
+const VARIANTS: [(&str, bool); 5] =
+    [("fs_over", false), ("fs_texture", false), ("fs_solid", false), ("fs_texture_edge", false), ("fs_over", true)];
+
+impl Pipelines {
+    fn new(device: &wgpu::Device, layouts: [&wgpu::BindGroupLayout; 4], format: wgpu::TextureFormat) -> Pipelines {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("compositor"),
+            source: wgpu::ShaderSource::Wgsl(
+                concat!(include_str!("common.wgsl"), include_str!("d24.wgsl"), include_str!("shaders.wgsl")).into(),
+            ),
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("composite"),
+            bind_group_layouts: &layouts.map(Some),
+            immediate_size: 0,
+        });
+        Pipelines {
+            device: device.clone(),
+            module,
+            layout,
+            format,
+            over: Default::default(),
+            under: Default::default(),
+            additive: Default::default(),
+            blend: Default::default(),
+            generator: Default::default(),
+            mask_coverage: Default::default(),
+            created: Default::default(),
+        }
+    }
+
+    fn get<'a>(
+        &self,
+        slot: &'a std::sync::OnceLock<wgpu::RenderPipeline>,
+        fragment: &str,
+        blend: Option<wgpu::BlendState>,
+        full_screen: bool,
+        ellipse: bool,
+    ) -> &'a wgpu::RenderPipeline {
+        slot.get_or_init(|| {
+            self.created.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            compositor_pipeline(
+                &self.device,
+                &self.module,
+                &self.layout,
+                self.format,
+                fragment,
+                blend,
+                full_screen,
+                ellipse,
+            )
+        })
+    }
+
+    fn over(&self, variant: usize) -> &wgpu::RenderPipeline {
+        let (fs, ellipse) = VARIANTS[variant];
+        self.get(&self.over[variant], fs, Some(PREMUL), false, ellipse)
+    }
+
+    fn under(&self, variant: usize) -> &wgpu::RenderPipeline {
+        let (fs, ellipse) = VARIANTS[variant];
+        let dst_over = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        };
+        self.get(&self.under[variant], fs, Some(wgpu::BlendState { color: dst_over, alpha: dst_over }), false, ellipse)
+    }
+
+    fn additive(&self, variant: usize) -> &wgpu::RenderPipeline {
+        let (fs, ellipse) = VARIANTS[variant];
+        let add = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        };
+        self.get(
+            &self.additive[variant],
+            fs,
+            Some(wgpu::BlendState { color: add, alpha: PREMUL.alpha }),
+            false,
+            ellipse,
+        )
+    }
+
+    fn blend(&self, ellipse: bool) -> &wgpu::RenderPipeline {
+        self.get(&self.blend[ellipse as usize], "fs_blend", None, false, ellipse)
+    }
+
+    fn generator(&self) -> &wgpu::RenderPipeline {
+        self.get(&self.generator, "fs_generator", None, true, false)
+    }
+
+    fn mask_coverage(&self) -> &wgpu::RenderPipeline {
+        self.get(&self.mask_coverage[0], "fs_mask_coverage", None, false, true)
+    }
+
+    fn cached_mask(&self) -> &wgpu::RenderPipeline {
+        self.get(
+            &self.mask_coverage[1],
+            "fs_cached_mask",
+            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+            false,
+            false,
+        )
+    }
+
+    /// How many pipelines have been compiled.
+    fn created(&self) -> usize {
+        self.created.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Premultiplied source-over.
+const PREMUL: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
 /// `project/@precision="f32"` asked of a device that cannot blend into or filter 32-bit float textures: SREP 72's
 /// error PREC10, which its message starts with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -952,7 +1093,13 @@ impl Renderer {
         self.format
     }
 
-    /// Builds pipelines and resources for `program`.
+    /// How many compositor pipelines this renderer has compiled so far: one per variant drawn, not one per variant
+    /// there is.
+    pub fn pipelines_created(&self) -> usize {
+        self.pipelines.created()
+    }
+
+    /// Builds the resources for `program`; the compositor's pipelines are compiled as draws first need them.
     pub fn new(gpu: Gpu, program: &Program) -> Renderer {
         let (raster_samples, raster_warning) = gpu.raster_samples(program.scene.project.antialias3d);
         let d = &gpu.device;
@@ -1037,56 +1184,7 @@ impl Renderer {
                 count: None,
             }],
         });
-        let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("compositor"),
-            source: wgpu::ShaderSource::Wgsl(
-                concat!(include_str!("common.wgsl"), include_str!("d24.wgsl"), include_str!("shaders.wgsl")).into(),
-            ),
-        });
-        let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("composite"),
-            bind_group_layouts: &[Some(&bgl0), Some(&bgl1), Some(&bgl2), Some(&bgl3)],
-            immediate_size: 0,
-        });
-        let premul = wgpu::BlendState {
-            color: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                operation: wgpu::BlendOperation::Add,
-            },
-            alpha: wgpu::BlendComponent {
-                src_factor: wgpu::BlendFactor::One,
-                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                operation: wgpu::BlendOperation::Add,
-            },
-        };
-        let pipe = |fs: &str, blend: Option<wgpu::BlendState>, full_screen: bool, ellipse: bool| {
-            compositor_pipeline(d, &module, &layout, format, fs, blend, full_screen, ellipse)
-        };
-        let blend = [pipe("fs_blend", None, false, false), pipe("fs_blend", None, false, true)];
-        let variants = [
-            ("fs_over", false),
-            ("fs_texture", false),
-            ("fs_solid", false),
-            ("fs_texture_edge", false),
-            ("fs_over", true),
-        ];
-        let over = variants.map(|(fs, ellipse)| pipe(fs, Some(premul), false, ellipse));
-        let dst_over = wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
-            dst_factor: wgpu::BlendFactor::One,
-            operation: wgpu::BlendOperation::Add,
-        };
-        let under = variants
-            .map(|(fs, ellipse)| pipe(fs, Some(wgpu::BlendState { color: dst_over, alpha: dst_over }), false, ellipse));
-        let add = wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::One,
-            dst_factor: wgpu::BlendFactor::One,
-            operation: wgpu::BlendOperation::Add,
-        };
-        let additive = variants
-            .map(|(fs, ellipse)| pipe(fs, Some(wgpu::BlendState { color: add, alpha: premul.alpha }), false, ellipse));
-        let generator = pipe("fs_generator", None, true, false);
+        let pipelines = Pipelines::new(d, [&bgl0, &bgl1, &bgl2, &bgl3], format);
         let sampler = |mode: wgpu::AddressMode| {
             d.create_sampler(&wgpu::SamplerDescriptor {
                 address_mode_u: mode,
@@ -1142,14 +1240,9 @@ impl Renderer {
             seed: program.seed,
             tokens: token_table(&program.scene),
             gpu,
-            over,
-            under,
-            additive,
-            blend,
-            generator,
+            pipelines,
             mask_coverage: HashMap::new(),
             mask_coverage_budget: 32 * 1024 * 1024,
-            mask_coverage_pipelines: None,
             bgl0,
             bgl1,
             bgl2,
@@ -1934,7 +2027,7 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.generator);
+            pass.set_pipeline(self.pipelines.generator());
             pass.set_bind_group(0, &bg0, &[0]);
             pass.set_bind_group(1, &self.dummy.bind, &[]);
             pass.set_bind_group(2, &pair, &[]);
@@ -4795,33 +4888,6 @@ impl Renderer {
                 out.insert(c.draw, (view, true));
             }
         }
-        if !out.is_empty() && self.mask_coverage_pipelines.is_none() {
-            let d = &self.gpu.device;
-            let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("mask coverage"),
-                source: wgpu::ShaderSource::Wgsl(
-                    concat!(include_str!("common.wgsl"), include_str!("d24.wgsl"), include_str!("shaders.wgsl")).into(),
-                ),
-            });
-            let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[Some(&self.bgl0), Some(&self.bgl1), Some(&self.bgl2), Some(&self.bgl3)],
-                immediate_size: 0,
-            });
-            self.mask_coverage_pipelines = Some((
-                compositor_pipeline(d, &module, &layout, self.format, "fs_mask_coverage", None, false, true),
-                compositor_pipeline(
-                    d,
-                    &module,
-                    &layout,
-                    self.format,
-                    "fs_cached_mask",
-                    Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    false,
-                    false,
-                ),
-            ));
-        }
         out
     }
 
@@ -4969,7 +5035,7 @@ impl Renderer {
         }
         for gj in &plan.gens {
             let mut pass = clear_pass(&mut enc, &gj.target, true);
-            pass.set_pipeline(&self.generator);
+            pass.set_pipeline(self.pipelines.generator());
             pass.set_bind_group(0, &bg0, &[0]);
             pass.set_bind_group(1, &self.dummy.bind, &[]);
             pass.set_bind_group(2, &dummy_pair, &[]);
@@ -5010,7 +5076,7 @@ impl Renderer {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                pass.set_pipeline(&self.mask_coverage_pipelines.as_ref().expect("coverage pipelines").0);
+                pass.set_pipeline(self.pipelines.mask_coverage());
                 pass.set_vertex_buffer(0, verts.slice(..));
                 pass.set_bind_group(0, &bg0, &[c.draw * draw_stride]);
                 pass.set_bind_group(1, &self.dummy.bind, &[]);
@@ -5209,15 +5275,15 @@ impl Renderer {
                             0
                         };
                         pass.set_pipeline(if coverage.contains_key(&c.draw) {
-                            &self.mask_coverage_pipelines.as_ref().expect("coverage pipelines").1
+                            self.pipelines.cached_mask()
                         } else if c.backdrop.is_some() {
-                            &self.blend[ellipse as usize]
+                            self.pipelines.blend(ellipse)
                         } else if draw.blend == BLEND_UNDER {
-                            &self.under[variant]
+                            self.pipelines.under(variant)
                         } else if fixed_function_blend(draw.blend) {
-                            &self.additive[variant]
+                            self.pipelines.additive(variant)
                         } else {
-                            &self.over[variant]
+                            self.pipelines.over(variant)
                         });
                         pass.set_bind_group(0, &bg0, &[c.draw * draw_stride]);
                         pass.set_bind_group(1, &c.src.bind, &[]);
