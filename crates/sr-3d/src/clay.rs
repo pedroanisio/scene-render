@@ -173,6 +173,19 @@ pub fn mesh_with_budget(
     t: f64,
     max_bytes: usize,
 ) -> Result<Primitive, String> {
+    extract(blobs, finish, resolution, t, max_bytes, true).map(|(prim, _)| prim)
+}
+
+/// [`mesh_with_budget`], with the roughness evaluated near the surface only (`banded`) or at every grid point, and the
+/// number of grid points it was evaluated at.
+fn extract(
+    blobs: &[Blob],
+    finish: &Finish,
+    resolution: u32,
+    t: f64,
+    max_bytes: usize,
+    banded: bool,
+) -> Result<(Primitive, usize), String> {
     if resolution > 256
         || !t.is_finite()
         || !finish.amount.is_finite()
@@ -197,7 +210,7 @@ pub fn mesh_with_budget(
     }
     let mut prim = Primitive::default();
     if blobs.iter().all(|b| b.subtract) {
-        return Ok(prim);
+        return Ok((prim, 0));
     }
     let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
     for b in blobs.iter().filter(|b| !b.subtract) {
@@ -236,13 +249,33 @@ pub fn mesh_with_budget(
     // Every pass below works on independent z slabs in parallel and joins them in slab order, so
     // the mesh is the same, vertex for vertex and index for index, as a serial sweep.
     let mut d = vec![0.0f32; nx * ny * nz];
-    d.par_chunks_mut(nx * ny).enumerate().for_each(|(k, slab)| {
-        for j in 0..ny {
-            for i in 0..nx {
-                slab[j * nx + i] = sample(at(i, j, k));
+    // The roughness moves the surface by at most 1.85 `amount` (|2.5 broad + 0.6 ridges| with broad in [-0.5, 0.5] and
+    // ridges in [0, 1]), and the joined field is 1-Lipschitz (exact distances joined by smooth minima, whose gradients
+    // are convex mixtures). A corner of a cell the surface crosses is therefore within that reach and a cell diagonal of
+    // it; beyond twice the diagonal the smooth field alone has the sign of the rough one, and only signs are read there,
+    // so the costly roughness is evaluated near the surface only.
+    let reach = if banded { 1.85 * finish.amount.max(0.0) * 1.01 + 2.0 * 3f32.sqrt() * cell } else { f32::INFINITY };
+    let rough = finish.amount > 0.0;
+    let roughened: usize = d
+        .par_chunks_mut(nx * ny)
+        .enumerate()
+        .map(|(k, slab)| {
+            let mut roughened = 0;
+            for j in 0..ny {
+                for i in 0..nx {
+                    let p = at(i, j, k);
+                    let smooth = field(blobs, p);
+                    slab[j * nx + i] = if smooth.abs() <= reach {
+                        roughened += usize::from(rough);
+                        smooth - roughness(finish, seed, p)
+                    } else {
+                        smooth
+                    };
+                }
             }
-        }
-    });
+            roughened
+        })
+        .sum();
     let idx = |i: usize, j: usize, k: usize| (k * ny + j) * nx + i;
     // one vertex per cell crossed by the surface
     let (cx, cy, cz) = (nx - 1, ny - 1, nz - 1);
@@ -370,7 +403,7 @@ pub fn mesh_with_budget(
         })
         .collect();
     prim.indices = quads.concat();
-    Ok(prim)
+    Ok((prim, roughened))
 }
 
 #[cfg(test)]
@@ -440,6 +473,86 @@ mod tests {
         let m = mesh(&blobs, &finish, 72, 0.25);
         assert_eq!((m.vertices.len(), m.indices.len()), (8127, 48756));
         assert_eq!(digest(&m), 5_028_264_707_182_578_705);
+    }
+
+    /// The roughness evaluated near the surface only gives the mesh it gives evaluated everywhere, over every shape (turned
+    /// boxes, tori and capsules), carving, wide and zero blends, several roughness amounts and grid resolutions.
+    #[test]
+    fn roughness_near_the_surface_only_gives_the_same_mesh() {
+        let turned = |shape: BlobShape, x: f32, y: f32, r: f32, blend: f32, subtract: bool, angle: f32| Blob {
+            shape,
+            center: Vec3::new(x, y, 0.3 * x),
+            rotation: Quat::from_euler(glam::EulerRot::YXZ, angle, 0.7 * angle, -0.4 * angle),
+            radius: r,
+            size: Vec3::new(1.6 * r, 0.9 * r, 1.2 * r),
+            length: 1.5 * r,
+            blend,
+            subtract,
+        };
+        let shapes = [
+            turned(BlobShape::Sphere, 0., 0., 30., 0., false, 0.),
+            turned(BlobShape::Box, 26., 10., 18., 14., false, 0.6),
+            turned(BlobShape::Torus, -24., -6., 20., 22., false, 1.1),
+            turned(BlobShape::Capsule, 4., -30., 9., 30., false, -0.8),
+            turned(BlobShape::Sphere, -8., 6., 12., 4., true, 0.),
+            turned(BlobShape::Box, 12., -12., 8., 0., true, 0.3),
+        ];
+        let mut checked = 0;
+        for amount in [0.0, 0.25, 0.55, 1.0] {
+            for resolution in [24, 61, 96] {
+                for (seed, t) in [(9, 0.0), (31, 0.4)] {
+                    let finish = Finish { amount, seed, boil: 12.0 };
+                    let (banded, _) = extract(&shapes, &finish, resolution, t, usize::MAX, true).unwrap();
+                    let (everywhere, _) = extract(&shapes, &finish, resolution, t, usize::MAX, false).unwrap();
+                    assert!(!everywhere.indices.is_empty());
+                    assert!(
+                        digest(&banded) == digest(&everywhere),
+                        "amount {amount}, resolution {resolution}, seed {seed}: the meshes differ"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 24);
+    }
+
+    /// A performance contract: the roughness is evaluated near the surface only, at under a quarter of the grid's points,
+    /// for the seven-blob fingerprinted body of the clay showcase.
+    #[test]
+    fn roughness_is_evaluated_near_the_surface_only() {
+        let at = |x: f32, y: f32, z: f32, r: f32, blend: f32, subtract: bool| Blob {
+            center: Vec3::new(x, y, z),
+            radius: r,
+            blend,
+            subtract,
+            ..sphere(0., r, blend)
+        };
+        let blobs = [
+            at(0., 0., 0., 95., 10., false),
+            at(0., -118., 0., 64., 34., false),
+            at(-38., -188., 0., 15., 14., false),
+            at(38., -188., 0., 15., 14., false),
+            at(-24., -128., -56., 17., 6., true),
+            at(24., -128., -56., 17., 6., true),
+            at(180., 64., 0., 38., 42., false),
+        ];
+        let finish = Finish { amount: 0.55, seed: 9, boil: 12.0 };
+        // the grid's points: the extent of the solids with their blends and the roughness pad, over the cell
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for b in blobs.iter().filter(|b| !b.subtract) {
+            let (l, h) = b.bounds();
+            (lo, hi) = (lo.min(l), hi.max(h));
+        }
+        let (lo, hi) = (lo - Vec3::splat(4.0 * 0.55 + 2.0), hi + Vec3::splat(4.0 * 0.55 + 2.0));
+        let cell = (hi - lo).max_element() / 160.0;
+        let points = ((hi - lo) / cell).ceil().as_uvec3() + glam::UVec3::ONE;
+        let points = (points.x * points.y * points.z) as usize;
+        let (m, calls) = extract(&blobs, &finish, 160, 0.0, usize::MAX, true).unwrap();
+        assert!(!m.indices.is_empty());
+        let (_, everywhere) = extract(&blobs, &finish, 160, 0.0, usize::MAX, false).unwrap();
+        assert_eq!(everywhere, points, "evaluated everywhere, it is evaluated at every grid point");
+        println!("roughness at {calls} of {points} grid points");
+        assert!(calls < points / 4, "roughness at {calls} of {points} grid points");
     }
 
     /// Signed volume by the divergence theorem (positive for outward winding).
