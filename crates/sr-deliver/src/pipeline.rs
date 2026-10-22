@@ -441,14 +441,12 @@ impl Video<'_> {
             sr_gpu::ContrastTarget::Captions => 1.0,
         };
         let ev = self.ev;
-        // Without a simulation, evaluation is a pure function of time, so a helper thread
-        // evaluates the next frame while this one renders: the channel holds one graph and
-        // the helper works on the one after it, two frames ahead at most. Simulated state
-        // is stepped in time order under a lock, so those documents evaluate here, serially.
-        let ahead = !ev.has_simulation();
+        // A helper thread evaluates the next frame while this one renders: the channel holds one graph and the
+        // helper works on the one after it, two frames ahead at most. A simulated document gives each frame the
+        // same graph whether or not the frame after it, or a sub-frame sample around it, was evaluated first
+        // (sr-eval's tests/sim_order.rs), so simulated documents evaluate ahead as well.
         evaluated(
             times,
-            ahead,
             |t| ev.evaluate(t),
             |next| {
                 for (k, &t) in times.iter().enumerate() {
@@ -638,18 +636,14 @@ impl Checks {
     }
 }
 
-/// Runs `body` with a source of the graphs of `times`, which `body` asks for in order. With `ahead`, a helper
-/// thread evaluates them through `eval` one frame ahead of `body`; otherwise each is evaluated when asked for.
-/// A panic of the helper comes back as an error that carries its message, rather than unwinding the delivery.
+/// Runs `body` with a source of the graphs of `times`, which `body` asks for in order: a helper thread evaluates
+/// them through `eval` one frame ahead of `body`. A panic of the helper comes back as an error that carries its
+/// message, rather than unwinding the delivery.
 fn evaluated<G: Send, R>(
     times: &[f64],
-    ahead: bool,
     eval: impl Fn(f64) -> G + Sync,
     body: impl FnOnce(&mut dyn FnMut(f64) -> Result<G, DeliverError>) -> Result<R, DeliverError>,
 ) -> Result<R, DeliverError> {
-    if !ahead {
-        return body(&mut |t| Ok(eval(t)));
-    }
     let eval = &eval;
     std::thread::scope(|s| {
         let (tx, rx) = sync_channel::<G>(1);
@@ -2638,17 +2632,10 @@ mod tests {
     #[test]
     fn graphs_evaluated_ahead_arrive_in_order() {
         let times = [0.0, 0.5, 1.0, 1.5];
-        for ahead in [false, true] {
-            let got = evaluated(
-                &times,
-                ahead,
-                |t| t * 2.0,
-                |next| times.iter().map(|&t| next(t)).collect::<Result<Vec<_>, _>>(),
-            );
-            assert_eq!(got.unwrap(), vec![0.0, 1.0, 2.0, 3.0]);
-            let first = evaluated(&times, ahead, |t| t, |next| next(0.0));
-            assert_eq!(first.unwrap(), 0.0);
-        }
+        let got = evaluated(&times, |t| t * 2.0, |next| times.iter().map(|&t| next(t)).collect::<Result<Vec<_>, _>>());
+        assert_eq!(got.unwrap(), vec![0.0, 1.0, 2.0, 3.0]);
+        let first = evaluated(&times, |t| t, |next| next(0.0));
+        assert_eq!(first.unwrap(), 0.0);
     }
 
     /// A panic while evaluating ahead (a bug in sr-eval) is an error of the delivery that names it, not a panic
@@ -2658,7 +2645,6 @@ mod tests {
         let times = [0.0, 0.5, 1.0];
         let result = evaluated(
             &times,
-            true,
             |t| if t > 0.25 { panic!("cannot evaluate {t}") } else { t },
             |next| times.iter().map(|&t| next(t)).collect::<Result<Vec<_>, _>>(),
         );

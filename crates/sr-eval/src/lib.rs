@@ -153,10 +153,12 @@ impl Evaluator {
         eval::evaluate(&self.program, t)
     }
 
-    /// Whether frames depend on a simulation (physics, particles, agents). Simulated state
-    /// is stepped in time order under a lock, so such a document must be evaluated
-    /// serially; without one, [`Evaluator::evaluate`] is a pure function of `t` and frames
-    /// may be evaluated in any order or on any thread.
+    /// Whether frames depend on a simulation (physics, particles, agents). Simulated state is
+    /// stepped in time order under a lock, so one evaluator evaluates one frame at a time; a
+    /// frame's graph does not depend on which frames were evaluated before it (tests/sim_order.rs),
+    /// but stepping a long way back or across chunks costs the whole history up to it. Without
+    /// a simulation, [`Evaluator::evaluate`] is a pure function of `t` and frames may be evaluated
+    /// in any order or on any thread.
     pub fn has_simulation(&self) -> bool {
         self.sim.is_some()
     }
