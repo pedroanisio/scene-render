@@ -742,13 +742,22 @@ impl OutputStage {
     /// Only this conversion's submission is waited for, so work submitted after it (the
     /// next frame's render and pack) keeps running on the GPU meanwhile.
     pub fn wait(&mut self, p: Pending) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.wait_into(p, &mut out);
+        out
+    }
+
+    /// [`wait`](Self::wait), into `out`: its contents are replaced and its allocation is kept when it is large enough,
+    /// so a caller that gets its buffers back reads every frame into memory it already owns.
+    pub fn wait_into(&mut self, p: Pending, out: &mut Vec<u8>) {
         use std::sync::atomic::Ordering;
         let Pending { slot, buffers, bytes, submitted, ready } = p;
         let _ = self.device.poll(wgpu::PollType::Wait { submission_index: Some(submitted), timeout: None });
         while ready.load(Ordering::Acquire) < buffers.len() {
             let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
         }
-        let mut out = Vec::with_capacity(bytes);
+        out.clear();
+        out.reserve(bytes);
         for b in &buffers {
             let view = b.slice(..).get_mapped_range().expect("mapped");
             out.extend_from_slice(&view[..view.len().min(bytes - out.len())]);
@@ -756,7 +765,6 @@ impl OutputStage {
             b.unmap();
         }
         self.ring[slot] = Some(buffers);
-        out
     }
 }
 
@@ -898,6 +906,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_readback_fills_the_buffer_it_is_given_and_keeps_its_allocation() {
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "a_readback_fills_the_buffer_it_is_given_and_keeps_its_allocation"
+        );
+        let layout = crate::resources::source_layout(&gpu.device);
+        let frame = crate::resources::create(&gpu.device, &layout, [8, 6], 1, "readback oracle");
+        let working = Working { space: ColorSpace::Srgb, linear: false };
+        let out = OutputColor::new(ColorSpace::Rec709, Transfer::Auto, false);
+        let mut stage = OutputStage::new(gpu.device.clone(), gpu.queue.clone());
+        stage.seek(5);
+        let a = stage.submit(&frame, &working, &out, InputFormat::Rgba8, [8, 6], false);
+        let expected = stage.wait(a);
+        // a buffer that already holds a frame's worth of capacity (and stale contents) is refilled in place
+        let mut reused = vec![0xAB; expected.len() + 64];
+        let at = reused.as_ptr();
+        stage.seek(5);
+        let b = stage.submit(&frame, &working, &out, InputFormat::Rgba8, [8, 6], false);
+        stage.wait_into(b, &mut reused);
+        assert_eq!(reused, expected);
+        assert_eq!(reused.as_ptr(), at, "the allocation is reused");
     }
 }
 

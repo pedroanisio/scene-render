@@ -429,11 +429,13 @@ impl Video<'_> {
         times: &[f64],
         report: &mut Report,
         seen: &mut dyn Observe,
-        mut sink: impl FnMut(Vec<u8>) -> Result<f64, DeliverError>,
+        mut sink: impl FnMut(&mut Vec<u8>) -> Result<f64, DeliverError>,
     ) -> Result<(), DeliverError> {
         let p = self.ev.program();
         let working = self.renderer.working();
-        let mut pending: Option<(f64, sr_gpu::output::Pending)> = None;
+        let mut pending = InFlight::new(READBACK_DEPTH);
+        // the buffer a frame is read back into; the sink takes it and leaves another
+        let mut bytes = Vec::new();
         // A worker reuses its report for several chunks; retain earlier findings.
         let mut unsupported = report.unsupported.iter().cloned().collect::<std::collections::BTreeSet<_>>();
         let checks = Checks::of(p);
@@ -507,19 +509,13 @@ impl Video<'_> {
                     let t2 = Instant::now();
                     meter::add(&mut report.stage_seconds, 0, (t1 - t0).as_secs_f64());
                     meter::add(&mut report.stage_seconds, 1, (t2 - t1).as_secs_f64());
-                    if let Some((_, prev)) = pending.replace((t, next)) {
+                    let ready = pending.push(next).into_iter();
+                    let ready = ready.chain(if k + 1 == times.len() { pending.drain().collect() } else { Vec::new() });
+                    for prev in ready {
                         let w = Instant::now();
-                        let bytes = self.stage.wait(prev);
+                        self.stage.wait_into(prev, &mut bytes);
                         meter::add(&mut report.stage_seconds, 2, w.elapsed().as_secs_f64());
-                        meter::add(&mut report.stage_seconds, 3, sink(bytes)?);
-                    }
-                    if k + 1 == times.len() {
-                        if let Some((_, last)) = pending.take() {
-                            let w = Instant::now();
-                            let bytes = self.stage.wait(last);
-                            meter::add(&mut report.stage_seconds, 2, w.elapsed().as_secs_f64());
-                            meter::add(&mut report.stage_seconds, 3, sink(bytes)?);
-                        }
+                        meter::add(&mut report.stage_seconds, 3, sink(&mut bytes)?);
                     }
                     // the output stage and the overlay draw on the same device after the frame's own check
                     self.renderer.gpu().take_error()?;
@@ -685,7 +681,52 @@ struct Feeder {
     handle: Option<std::thread::JoinHandle<Result<String, sr_media::MediaError>>>,
     /// Set once every frame was sent: an encode whose frames stop short is abandoned, not finished.
     complete: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Frames the encoder has written, returned for reuse.
+    spare: Spare,
 }
+
+/// Buffers an encoder gives back after it has written their frames.
+struct Spare(Option<std::sync::mpsc::Receiver<Vec<u8>>>);
+
+impl Spare {
+    /// An emptied buffer that came back, or a new one.
+    fn take(&mut self) -> Vec<u8> {
+        match self.0.as_ref().and_then(|r| r.try_recv().ok()) {
+            Some(mut v) => {
+                v.clear();
+                v
+            }
+            None => Vec::new(),
+        }
+    }
+}
+
+/// Frames submitted for readback and not yet waited for: at most `depth` stay in flight behind the one just submitted.
+struct InFlight<T> {
+    depth: usize,
+    queue: std::collections::VecDeque<T>,
+}
+
+impl<T> InFlight<T> {
+    fn new(depth: usize) -> Self {
+        Self { depth, queue: std::collections::VecDeque::new() }
+    }
+
+    /// Adds the newest frame; the oldest, when more than `depth` are now in flight.
+    fn push(&mut self, item: T) -> Option<T> {
+        self.queue.push_back(item);
+        (self.queue.len() > self.depth).then(|| self.queue.pop_front()).flatten()
+    }
+
+    /// The frames still in flight, oldest first.
+    fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
+        self.queue.drain(..)
+    }
+}
+
+/// Frames whose readback is under way behind the one being submitted. The output stage's ring holds one more buffer
+/// than this, so a submission never finds its buffer still out.
+const READBACK_DEPTH: usize = 2;
 
 /// Bytes of frames the queue in front of an encoder may hold.
 const FRAME_QUEUE_BYTES: usize = 96_000_000;
@@ -707,9 +748,12 @@ impl Feeder {
         let (tx, rx) = sync_channel::<Vec<u8>>(frame_queue(spec.input.frame_bytes(spec.width, spec.height)));
         let complete = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let all_sent = complete.clone();
+        let (give, take) = std::sync::mpsc::channel::<Vec<u8>>();
         let handle = std::thread::Builder::new().name("sr-encode".into()).spawn(move || {
             for f in rx {
                 enc.write(&f)?;
+                // the render reads its next frame into this memory; once it has stopped, nobody wants it
+                let _ = give.send(f);
             }
             if !all_sent.load(Relaxed) {
                 // the render failed: dropping the encoder stops FFmpeg and removes the partial file
@@ -719,7 +763,14 @@ impl Feeder {
             enc.finish()?;
             Ok(name)
         })?;
-        Ok(Feeder { tx: Some(tx), handle: Some(handle), complete })
+        Ok(Feeder { tx: Some(tx), handle: Some(handle), complete, spare: Spare(Some(take)) })
+    }
+
+    /// Sends `frame` and leaves a buffer for the next frame in its place: one the encoder has written out, when there
+    /// is one.
+    fn send_reusing(&mut self, frame: &mut Vec<u8>) -> Result<f64, DeliverError> {
+        let next = self.spare.take();
+        self.send(std::mem::replace(frame, next))
     }
 
     fn send(&mut self, frame: Vec<u8>) -> Result<f64, DeliverError> {
@@ -1753,7 +1804,7 @@ fn run_delivery(
             video.run(&times, report, &mut judge, |b| {
                 done += 1;
                 progress(done, n);
-                feeder.send(b)
+                feeder.send_reusing(b)
             })?;
             feeder.finish()?;
             report.frames = n;
@@ -1946,7 +1997,7 @@ fn run_delivery(
                                         .map(|(tm, f)| (tm, f[bounds[i]..bounds[i + 1]].to_vec()));
                                     worker.run(&times[bounds[i]..bounds[i + 1]], &mut part, &mut seen, |b| {
                                         done.fetch_add(1, Relaxed);
-                                        feeder.send(b)
+                                        feeder.send_reusing(b)
                                     })?;
                                     seen.flush().map_err(DeliverError::Invalid)?;
                                     closing.start(feeder)
@@ -2056,7 +2107,7 @@ fn run_delivery(
                 if feeder.is_none() {
                     feeder = Some(start_encoder(&mut spec, output, &mut pending, &mut late, carries_audio)?);
                 }
-                feeder.as_mut().expect("the encoder is started").send(b)
+                feeder.as_mut().expect("the encoder is started").send_reusing(b)
             })?;
             let mut feeder = match feeder {
                 Some(f) => f,
@@ -3100,9 +3151,37 @@ mod tests {
         assert_eq!(frame_queue(0), FRAME_QUEUE_MAX);
     }
 
+    #[test]
+    fn readbacks_wait_in_order_once_the_depth_is_in_flight() {
+        let mut flight = InFlight::new(2);
+        assert_eq!(flight.push(1), None);
+        assert_eq!(flight.push(2), None);
+        assert_eq!(flight.push(3), Some(1));
+        assert_eq!(flight.push(4), Some(2));
+        assert_eq!(flight.drain().collect::<Vec<_>>(), vec![3, 4]);
+        assert_eq!(flight.drain().next(), None);
+        // a depth of zero waits for each frame as it is submitted
+        let mut none = InFlight::new(0);
+        assert_eq!(none.push(7), Some(7));
+    }
+
+    #[test]
+    fn a_frame_buffer_comes_back_from_the_encoder_for_the_next_frame() {
+        let (give, take) = std::sync::mpsc::channel::<Vec<u8>>();
+        let mut spare = Spare(Some(take));
+        assert!(spare.take().capacity() == 0, "nothing has come back yet");
+        give.send(vec![1, 2, 3]).unwrap();
+        let again = spare.take();
+        assert!(again.is_empty() && again.capacity() >= 3, "a returned buffer is emptied and kept");
+        // an encoder that has gone leaves the render with fresh buffers
+        drop(give);
+        assert_eq!(Spare(None).take().capacity(), 0);
+        assert_eq!(spare.take().capacity(), 0);
+    }
+
     fn feeder_finishing(result: Result<String, sr_media::MediaError>) -> Feeder {
         let complete = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        Feeder { tx: None, handle: Some(std::thread::spawn(move || result)), complete }
+        Feeder { tx: None, handle: Some(std::thread::spawn(move || result)), complete, spare: Spare(None) }
     }
 
     #[test]
@@ -3135,6 +3214,7 @@ mod tests {
             tx: None,
             handle: Some(std::thread::spawn(|| -> Result<String, sr_media::MediaError> { panic!("boom") })),
             complete,
+            spare: Spare(None),
         };
         assert!(closing.start(feeder).unwrap().is_none());
         let error = closing.wait().unwrap_err().to_string();
@@ -3144,7 +3224,12 @@ mod tests {
     #[test]
     fn a_frame_sent_to_a_finished_encode_is_an_error() {
         let mut feeder =
-            Feeder { tx: None, handle: None, complete: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
+            Feeder {
+                tx: None,
+                handle: None,
+                complete: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                spare: Spare(None),
+            };
         let error = feeder.send(vec![0; 4]).unwrap_err().to_string();
         assert!(error.contains("after the encode was finished"), "{error}");
     }
