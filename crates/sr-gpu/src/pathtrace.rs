@@ -2112,7 +2112,8 @@ fn radiance_params(base: &Params, lights: &[PtLight]) -> cpu::RadianceParams {
 }
 
 /// Whether a pass runs on the CPU tracer: a software adapter, `SR_PT_CPU` not "0", and none of the features the
-/// CPU loop leaves out (adaptive sampling, light grids, counters, hardware rays, procedural sky, backdrop).
+/// CPU loop leaves out (adaptive sampling, light grids, counters, hardware rays, procedural sky). A backdrop does not
+/// count: only paths that have met nothing but glass read it, and the CPU loop has no transmission.
 #[allow(clippy::too_many_arguments)]
 fn cpu_trace_selected(
     cpu_adapter: bool,
@@ -2122,7 +2123,6 @@ fn cpu_trace_selected(
     grid: bool,
     counter: bool,
     rays: bool,
-    backdrop: bool,
     env_available: bool,
 ) -> bool {
     cpu_adapter
@@ -2133,8 +2133,6 @@ fn cpu_trace_selected(
         && !counter
         && !rays
         && base.sky[1][3] <= 0.5
-        && base.misc[0] <= 0.5
-        && !backdrop
         && (base.env[0] <= 0.5 || env_available)
 }
 
@@ -2439,7 +2437,6 @@ pub(crate) fn render_cached(
             grid_plan.is_some(),
             counter.is_some(),
             rays.is_some(),
-            inputs.backdrop.is_some(),
             inputs.env_texels.is_some(),
         );
         if on_cpu {
@@ -2733,23 +2730,22 @@ mod wgsl_layout_tests {
 
     #[test]
     fn cpu_trace_is_selected_only_when_nothing_disables_it() {
-        let sel = |p: &super::Params, f: [bool; 8]| {
-            super::cpu_trace_selected(f[0], f[1], f[2], p, f[3], f[4], f[5], f[6], f[7])
-        };
-        let on = [true, true, true, false, false, false, false, true];
+        let sel =
+            |p: &super::Params, f: [bool; 7]| super::cpu_trace_selected(f[0], f[1], f[2], p, f[3], f[4], f[5], f[6]);
+        let on = [true, true, true, false, false, false, true];
         let base = zero_params();
         assert!(sel(&base, on));
-        for k in 0..8 {
+        for k in 0..7 {
             let mut f = on;
             f[k] = !f[k];
             // the env is only required when the pass shows or lights with a dome
-            assert!(!sel(&base, f) || k == 7, "flag {k}");
+            assert!(!sel(&base, f) || k == 6, "flag {k}");
         }
         let mut dome = zero_params();
         dome.env[0] = 1.0;
         assert!(sel(&dome, on));
         let mut off = on;
-        off[7] = false;
+        off[6] = false;
         assert!(!sel(&dome, off));
         let mut p = zero_params();
         p.out[3] = 0.05;
@@ -2757,9 +2753,10 @@ mod wgsl_layout_tests {
         let mut p = zero_params();
         p.sky[1][3] = 1.0;
         assert!(!sel(&p, on));
+        // a backdrop is read only by paths that have met nothing but glass, and the CPU loop has no transmission
         let mut p = zero_params();
         p.misc[0] = 1.0;
-        assert!(!sel(&p, on));
+        assert!(sel(&p, on));
     }
 
     #[test]
