@@ -837,10 +837,13 @@ mod map_read_tests {
     #[test]
     fn a_mapping_that_does_not_complete_in_time_is_a_timeout_error() {
         let gpu = sr_testkit::require_gpu!(test_gpu(), "a_mapping_that_does_not_complete_in_time_is_a_timeout_error");
-        let buf = buffer(&gpu, wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ);
-        let none = std::time::Duration::ZERO;
-        let err = map_read_within(&gpu.device, buf.slice(..), none).expect_err("a zero bound is never met");
-        assert!(matches!(err, MapReadError::TimedOut(t) if t == none), "{err:?}");
+        // A mapping whose result never arrives: the sender stays alive and sends nothing. (A real buffer with no work
+        // pending can be mapped by another test's poll of the shared device before the first check, so it cannot
+        // stand for a mapping that does not complete.)
+        let (_never, rx) = std::sync::mpsc::channel();
+        let bound = std::time::Duration::from_millis(20);
+        let err = MapWait(rx).wait(&gpu.device, bound).expect_err("a result that never arrives times out");
+        assert!(matches!(err, MapReadError::TimedOut(t) if t == bound), "{err:?}");
     }
 
     #[test]
