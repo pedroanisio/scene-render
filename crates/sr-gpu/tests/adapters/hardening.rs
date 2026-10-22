@@ -5,7 +5,7 @@ use super::common;
 use common::*;
 
 use glam::Vec3;
-use sr_gpu::gpu::{adapter_features, device_limits, ray_query_features, GpuOptions};
+use sr_gpu::gpu::{adapter_features, device_limits, is_software, ray_query_features, GpuOptions};
 use sr_gpu::output::{OutputColor, OutputStage};
 use sr_gpu::three::{self, Light3, LightKind, ThreeEngine};
 use sr_media::encode::InputFormat;
@@ -62,7 +62,7 @@ fn the_device_asks_for_ray_queries_where_the_adapter_has_them() {
 }
 
 #[test]
-fn the_shared_device_has_ray_queries_when_its_adapter_does() {
+fn the_shared_device_has_ray_queries_when_its_adapter_and_kind_give_them() {
     let Some(g) = gpu() else { return };
     if std::env::var("SR_GPU_RAY_QUERY").is_ok() {
         println!("SKIPPED: SR_GPU_RAY_QUERY is set, which this test leaves to the unit above");
@@ -73,7 +73,9 @@ fn the_shared_device_has_ray_queries_when_its_adapter_does() {
         .into_iter()
         .find(|(info, _)| *info == g.info)
         .expect("the device's adapter is enumerated");
-    let wanted = features.contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY);
+    // software adapters leave them off by default
+    let wanted =
+        ray_query_features(features, None, is_software(&g.info)).contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY);
     assert_eq!(g.device.features().contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY), wanted, "{}", g.info.name);
     if wanted {
         let l = g.device.limits();
