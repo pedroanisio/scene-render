@@ -52,13 +52,13 @@ fn the_device_asks_for_the_adapters_buffer_binding_and_layer_limits() {
 fn the_device_asks_for_ray_queries_where_the_adapter_has_them() {
     let rq = wgpu::Features::EXPERIMENTAL_RAY_QUERY;
     let other = wgpu::Features::TIMESTAMP_QUERY;
-    assert_eq!(ray_query_features(rq | other, None), rq);
-    assert_eq!(ray_query_features(rq, Some("")), rq, "an empty setting is no setting");
-    assert_eq!(ray_query_features(rq, Some("1")), rq);
+    assert_eq!(ray_query_features(rq | other, None, false), rq);
+    assert_eq!(ray_query_features(rq, Some(""), false), rq, "an empty setting is no setting");
+    assert_eq!(ray_query_features(rq, Some("1"), false), rq);
     for off in ["0", "off", "false", " OFF "] {
-        assert_eq!(ray_query_features(rq, Some(off)), wgpu::Features::empty(), "SR_GPU_RAY_QUERY={off:?}");
+        assert_eq!(ray_query_features(rq, Some(off), false), wgpu::Features::empty(), "SR_GPU_RAY_QUERY={off:?}");
     }
-    assert_eq!(ray_query_features(other, None), wgpu::Features::empty(), "the adapter has none");
+    assert_eq!(ray_query_features(other, None, false), wgpu::Features::empty(), "the adapter has none");
 }
 
 #[test]

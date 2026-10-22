@@ -6,7 +6,7 @@
 //! backend (Vulkan, Metal, DirectX 12) beats OpenGL, whose submission costs more.
 //! `SR_GPU_ADAPTER` names an adapter explicitly and `SR_GPU_BACKEND` restricts the backends.
 //! Where the adapter has ray queries the device asks for them, and the path tracer traverses the driver's
-//! acceleration structures (the GPU's ray-tracing units where it has them); `SR_GPU_RAY_QUERY=0` leaves them off.
+//! acceleration structures (the GPU's ray-tracing units where it has them); `SR_GPU_RAY_QUERY=0` leaves them off, and a software adapter leaves them off unless `SR_GPU_RAY_QUERY=1`.
 
 use std::sync::Arc;
 
@@ -375,12 +375,13 @@ pub fn device_limits(adapter: &wgpu::Limits) -> wgpu::Limits {
     }
 }
 
-/// The ray-query feature when `adapter` has it and `setting` (`SR_GPU_RAY_QUERY`) does not switch it off with `0`,
-/// `off` or `false`.
-pub fn ray_query_features(adapter: wgpu::Features, setting: Option<&str>) -> wgpu::Features {
-    let off =
-        setting.map(|v| v.trim().to_ascii_lowercase()).is_some_and(|v| ["0", "off", "false"].contains(&v.as_str()));
-    if off {
+/// The ray-query feature when `adapter` has it and `setting` (`SR_GPU_RAY_QUERY`) allows it: `0`, `off` or `false`
+/// switch it off, `1`, `on` or `true` ask for it, and unset (or anything else) leaves it on for a hardware adapter and
+/// off for a `software` one, where the tracer's own BVH walk is faster than the rasteriser's emulated ray queries.
+pub fn ray_query_features(adapter: wgpu::Features, setting: Option<&str>, software: bool) -> wgpu::Features {
+    let setting = setting.map(|v| v.trim().to_ascii_lowercase());
+    let is = |names: &[&str]| setting.as_deref().is_some_and(|v| names.contains(&v));
+    if is(&["0", "off", "false"]) || (software && !is(&["1", "on", "true"])) {
         return wgpu::Features::empty();
     }
     adapter & wgpu::Features::EXPERIMENTAL_RAY_QUERY
@@ -668,7 +669,11 @@ impl Gpu {
         let info = adapter.get_info();
         check_gl_version(&info)?;
         check_3d_formats(|f| adapter.get_texture_format_features(f))?;
-        let rays = ray_query_features(adapter.features(), std::env::var("SR_GPU_RAY_QUERY").ok().as_deref());
+        let rays = ray_query_features(
+            adapter.features(),
+            std::env::var("SR_GPU_RAY_QUERY").ok().as_deref(),
+            is_software(&info),
+        );
         let limits = if rays.is_empty() {
             device_limits(&adapter.limits())
         } else {
@@ -809,6 +814,32 @@ fn select_raster_samples(requested: u64, flags: wgpu::TextureFormatFeatureFlags)
     let wanted = if requested == 3 { 4 } else { requested };
     let selected = [4, 2, 1].into_iter().find(|&n| n <= wanted && flags.sample_count_supported(n)).unwrap_or(1);
     (wanted, selected)
+}
+
+#[cfg(test)]
+mod ray_query_tests {
+    use super::ray_query_features;
+
+    #[test]
+    fn ray_query_setting_by_adapter_kind() {
+        let rq = wgpu::Features::EXPERIMENTAL_RAY_QUERY;
+        let none = wgpu::Features::empty();
+        let other = wgpu::Features::TIMESTAMP_QUERY;
+        for software in [false, true] {
+            for off in ["0", "off", "FALSE", " off "] {
+                assert_eq!(ray_query_features(rq, Some(off), software), none, "{off:?} software={software}");
+            }
+            for on in ["1", "on", "True", " 1 "] {
+                assert_eq!(ray_query_features(rq | other, Some(on), software), rq, "{on:?} software={software}");
+                assert_eq!(ray_query_features(other, Some(on), software), none, "{on:?} lacks, software={software}");
+            }
+            assert_eq!(ray_query_features(other, None, software), none, "unset, lacks, software={software}");
+        }
+        assert_eq!(ray_query_features(rq | other, None, false), rq, "unset, hardware");
+        assert_eq!(ray_query_features(rq, Some(""), false), rq, "empty is unset, hardware");
+        assert_eq!(ray_query_features(rq, None, true), none, "unset, software");
+        assert_eq!(ray_query_features(rq, Some(""), true), none, "empty is unset, software");
+    }
 }
 
 #[cfg(test)]
