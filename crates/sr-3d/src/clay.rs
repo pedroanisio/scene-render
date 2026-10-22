@@ -176,8 +176,15 @@ pub fn mesh_with_budget(
     extract(blobs, finish, resolution, t, max_bytes, true).map(|(prim, _)| prim)
 }
 
-/// [`mesh_with_budget`], with the roughness evaluated near the surface only (`banded`) or at every grid point, and the
-/// number of grid points it was evaluated at.
+/// What an extraction evaluated on its grid.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Work {
+    roughness: usize,
+    field: usize,
+}
+
+/// [`mesh_with_budget`], with the field and its roughness evaluated near the surface only (`banded`) or at every grid
+/// point, and the work done: the grid points the roughness was evaluated at, and the evaluations of the field.
 fn extract(
     blobs: &[Blob],
     finish: &Finish,
@@ -185,7 +192,7 @@ fn extract(
     t: f64,
     max_bytes: usize,
     banded: bool,
-) -> Result<(Primitive, usize), String> {
+) -> Result<(Primitive, Work), String> {
     if resolution > 256
         || !t.is_finite()
         || !finish.amount.is_finite()
@@ -210,7 +217,7 @@ fn extract(
     }
     let mut prim = Primitive::default();
     if blobs.iter().all(|b| b.subtract) {
-        return Ok((prim, 0));
+        return Ok((prim, Work::default()));
     }
     let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
     for b in blobs.iter().filter(|b| !b.subtract) {
@@ -255,27 +262,49 @@ fn extract(
     // it; beyond twice the diagonal the smooth field alone has the sign of the rough one, and only signs are read there,
     // so the costly roughness is evaluated near the surface only.
     let reach = if banded { 1.85 * finish.amount.max(0.0) * 1.01 + 2.0 * 3f32.sqrt() * cell } else { f32::INFINITY };
+    // The same bound one level up: the field at the centre of a block of BLOCK^3 grid points is within the block's
+    // half-diagonal of the field at every point of it, so a block whose centre is further than that from the band lies
+    // wholly on the centre's side, and its points keep the centre's value for their sign.
+    const BLOCK: usize = 4;
+    let half_diagonal = (BLOCK as f32 - 1.0) * 0.5 * 3f32.sqrt() * cell * 1.001;
     let rough = finish.amount > 0.0;
-    let roughened: usize = d
-        .par_chunks_mut(nx * ny)
+    let (roughened, sampled) = d
+        .par_chunks_mut(nx * ny * BLOCK)
         .enumerate()
-        .map(|(k, slab)| {
-            let mut roughened = 0;
-            for j in 0..ny {
-                for i in 0..nx {
-                    let p = at(i, j, k);
-                    let smooth = field(blobs, p);
-                    slab[j * nx + i] = if smooth.abs() <= reach {
-                        roughened += usize::from(rough);
-                        smooth - roughness(finish, seed, p)
-                    } else {
-                        smooth
-                    };
+        .map(|(kb, slabs)| {
+            let (k0, depth) = (kb * BLOCK, slabs.len() / (nx * ny));
+            let (mut roughened, mut sampled) = (0usize, 0usize);
+            for j0 in (0..ny).step_by(BLOCK) {
+                for i0 in (0..nx).step_by(BLOCK) {
+                    let middle = lo + (Vec3::new(i0 as f32, j0 as f32, k0 as f32) + (BLOCK as f32 - 1.0) * 0.5) * cell;
+                    let centre = if banded { field(blobs, middle) } else { 0.0 };
+                    let away = banded && centre.abs() > reach + half_diagonal;
+                    sampled += usize::from(banded);
+                    for dk in 0..depth {
+                        for j in j0..(j0 + BLOCK).min(ny) {
+                            for i in i0..(i0 + BLOCK).min(nx) {
+                                let out = &mut slabs[(dk * ny + j) * nx + i];
+                                if away {
+                                    *out = centre;
+                                    continue;
+                                }
+                                let p = at(i, j, k0 + dk);
+                                let smooth = field(blobs, p);
+                                sampled += 1;
+                                *out = if smooth.abs() <= reach {
+                                    roughened += usize::from(rough);
+                                    smooth - roughness(finish, seed, p)
+                                } else {
+                                    smooth
+                                };
+                            }
+                        }
+                    }
                 }
             }
-            roughened
+            (roughened, sampled)
         })
-        .sum();
+        .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
     let idx = |i: usize, j: usize, k: usize| (k * ny + j) * nx + i;
     // one vertex per cell crossed by the surface
     let (cx, cy, cz) = (nx - 1, ny - 1, nz - 1);
@@ -403,7 +432,7 @@ fn extract(
         })
         .collect();
     prim.indices = quads.concat();
-    Ok((prim, roughened))
+    Ok((prim, Work { roughness: roughened, field: sampled }))
 }
 
 #[cfg(test)]
@@ -517,7 +546,8 @@ mod tests {
     }
 
     /// A performance contract: the roughness is evaluated near the surface only, at under a quarter of the grid's points,
-    /// for the seven-blob fingerprinted body of the clay showcase.
+    /// and the field under a third as many times as there are points, for the seven-blob fingerprinted body of the clay
+    /// showcase.
     #[test]
     fn roughness_is_evaluated_near_the_surface_only() {
         let at = |x: f32, y: f32, z: f32, r: f32, blend: f32, subtract: bool| Blob {
@@ -547,12 +577,16 @@ mod tests {
         let cell = (hi - lo).max_element() / 160.0;
         let points = ((hi - lo) / cell).ceil().as_uvec3() + glam::UVec3::ONE;
         let points = (points.x * points.y * points.z) as usize;
-        let (m, calls) = extract(&blobs, &finish, 160, 0.0, usize::MAX, true).unwrap();
+        let (m, work) = extract(&blobs, &finish, 160, 0.0, usize::MAX, true).unwrap();
         assert!(!m.indices.is_empty());
         let (_, everywhere) = extract(&blobs, &finish, 160, 0.0, usize::MAX, false).unwrap();
-        assert_eq!(everywhere, points, "evaluated everywhere, it is evaluated at every grid point");
-        println!("roughness at {calls} of {points} grid points");
-        assert!(calls < points / 4, "roughness at {calls} of {points} grid points");
+        assert_eq!(
+            everywhere.roughness, points,
+            "evaluated everywhere, the roughness is evaluated at every grid point"
+        );
+        println!("roughness at {} and the field {} times, for {points} grid points", work.roughness, work.field);
+        assert!(work.roughness < points / 4, "roughness at {} of {points} grid points", work.roughness);
+        assert!(work.field < points / 3, "the field evaluated {} times for {points} grid points", work.field);
     }
 
     /// Signed volume by the divergence theorem (positive for outward winding).
