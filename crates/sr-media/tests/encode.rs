@@ -552,6 +552,47 @@ fn ffmpegs_aac_encoder_runs_without_the_tools_that_click() {
     assert!(!after_codec(&video).iter().any(|a| a.starts_with("-aac_")));
 }
 
+/// The md5 FFmpeg gives the audio packets of `path`, however they are muxed.
+fn audio_packets_md5(path: &Path) -> String {
+    let out = std::process::Command::new(sr_media::ffmpeg())
+        .args(["-v", "error", "-nostdin", "-i"])
+        .arg(path)
+        .args(["-map", "0:a", "-c", "copy", "-f", "md5", "-"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// An audio input already coded in the delivery's codec is named `copy`: it is muxed as it is, with the packets the
+/// encode that made it produced, rather than decoded and coded a second time.
+#[test]
+fn an_audio_input_named_copy_is_muxed_without_a_second_encode() {
+    if !common::ffmpeg_available("an_audio_input_named_copy_is_muxed_without_a_second_encode") {
+        return;
+    }
+    let d = dir();
+    let wav = tone(&d);
+    let coded = d.join("copy-source.m4a");
+    let mut cmd = std::process::Command::new(sr_media::ffmpeg());
+    cmd.args(["-v", "error", "-nostdin", "-y", "-i"]).arg(&wav).args(["-c:a", "aac"]);
+    cmd.args(compressed_audio_args("aac", 160_000)).arg(&coded);
+    assert!(cmd.status().unwrap().success());
+    let mut s = spec(&d.join("copy.mp4"), Codec::H264, InputFormat::Nv12);
+    s.audio = Some((coded.clone(), "copy".into(), 160_000));
+    let (args, _) = s.args().unwrap();
+    let at = args.iter().position(|a| a == "-c:a").unwrap();
+    assert_eq!(args[at + 1], "copy", "{args:?}");
+    assert!(
+        !args[at + 2..].iter().any(|a| a == "-b:a" || a.starts_with("-aac_")),
+        "a copied stream takes no encoder settings: {args:?}"
+    );
+    encode(&s, 25);
+    let info = probe(&s.path).unwrap();
+    assert_eq!((info.audio.len(), info.audio[0].codec.as_str()), (1, "aac"));
+    assert_eq!(audio_packets_md5(&s.path), audio_packets_md5(&coded));
+}
+
 /// libx264 and libx265 choose their thread counts from the host's cores, and their output depends on those counts: the
 /// same binary gave different MP4 bytes on an 8-core Intel VM (style3) and 6-core AMD VMs (Lula 3.0.0 rebuild, 6 of 32
 /// segments; reproduced 2026-10-09 with `ffmpeg -c:v libx264` at `-threads` auto, 6, 8, 9 and 12, where each fixed count

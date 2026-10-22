@@ -1153,6 +1153,8 @@ fn run_delivery(
         report.audio_languages.extend(description_language.iter().cloned());
     }
     let mut audio_file = None;
+    // the file is already coded for the output, by the ceiling's probe
+    let mut audio_coded = false;
     if let (true, Some(sa)) = (wants_audio, &scene_audio) {
         // Plain programmes start at their mapped composition time; the scene and
         // explicitly segmented programmes start at zero on their respective clocks.
@@ -1169,8 +1171,11 @@ fn run_delivery(
         // a lossy encode can leave the master's ceiling: hold it for the stream that is delivered
         let master_settings = &sa.mix.master;
         let limited = master_settings.limiter || master_settings.normalize != sr_audio::mix::Normalize::None;
+        // the ceiling's last probe is the AAC encode of the mix as it is delivered: a picture's container muxes it
+        // as it is
+        let mut probed = None;
         if limited && crate::ceiling::applies(&output.audio_codec, container) {
-            let held = crate::ceiling::hold(
+            let (held, coded) = crate::ceiling::hold_encoded(
                 &mut part,
                 sa.mix.rate,
                 sa.mix.layout,
@@ -1182,8 +1187,14 @@ fn run_delivery(
                 record_loudness(report, &sr_audio::loudness::measure(&part, sa.mix.rate as f64, &weights));
             }
             report.audio_ceiling = Some(held);
+            probed = Some(coded);
         }
-        if codec.is_audio_only() && container.is_none_or(|c| c == Container::Wav) {
+        let stream_copy =
+            !codec.is_audio_only() && matches!(container, Some(Container::Mp4 | Container::Mov | Container::Mkv));
+        if let Some(coded) = probed.filter(|_| stream_copy) {
+            audio_file = Some(coded);
+            audio_coded = true;
+        } else if codec.is_audio_only() && container.is_none_or(|c| c == Container::Wav) {
             // final PCM with TPDF dither at the mix bit depth
             sr_audio::wav::write(&report.path, &part, sa.mix.rate, sa.bits, sa.mix.layout, sa.dither)?;
             report.files.push(report.path.clone());
@@ -1423,7 +1434,10 @@ fn run_delivery(
                 }
             }
         }
-        let audio_in = audio_file.clone().map(|f| (f, output.audio_codec.clone(), output.audio_bitrate));
+        let audio_in = audio_file.clone().map(|f| {
+            let codec = if audio_coded { "copy".to_string() } else { output.audio_codec.clone() };
+            (f, codec, output.audio_bitrate)
+        });
         let mut spec = base_spec(output, &report.path, codec, size, fps, format, &color, audio_in, p, opts);
         let pixel_aspect = p.scene.project.pixel_aspect.get();
         if spec.tags.sar.is_none() && (pixel_aspect - 1.0).abs() > pixel_aspect * 1e-6 {

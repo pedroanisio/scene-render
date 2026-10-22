@@ -286,7 +286,8 @@ pub struct EncodeSpec {
     pub b_frames: Option<u32>,
     pub faststart: bool,
     pub alpha: bool,
-    /// Audio file to mux, with codec and bitrate.
+    /// Audio file to mux, with codec and bitrate. The codec `copy` muxes a file already coded for this output
+    /// (same codec, same settings) as it is, without encoding it again; the bitrate is then only the size budget's.
     pub audio: Option<(PathBuf, String, u64)>,
     pub loop_count: u32,
     pub start_number: u64,
@@ -473,7 +474,7 @@ fn preset_rank(p: &str) -> usize {
         .unwrap_or(5)
 }
 
-/// The arguments that follow `-c:a CODEC`: the bitrate of a compressed stream and, for FFmpeg's own AAC
+/// The arguments that follow `-c:a CODEC`: none for PCM and for `copy`; otherwise the bitrate of a compressed stream and, for FFmpeg's own AAC
 /// encoder, neither perceptual noise substitution nor temporal noise shaping. With them the encoder
 /// codes single frames far from the signal, heard as clicks: a mix mastered to a true peak of −2 dB came
 /// out 5 dB over it in one channel for a frame. Measured with FFmpeg 8.1 at 192 kb/s on the mixes of
@@ -482,7 +483,7 @@ fn preset_rank(p: &str) -> usize {
 /// substitution off (up to 0.22), none with both off (up to 0.14). The overall error is no higher
 /// without them. Noise substitution does the same damage at 256 and 320 kb/s.
 pub fn compressed_audio_args(codec: &str, bitrate: u64) -> Vec<String> {
-    if codec.starts_with("pcm") {
+    if codec.starts_with("pcm") || codec == "copy" {
         return Vec::new();
     }
     let mut a = vec!["-b:a".to_string(), bitrate.to_string()];

@@ -8,7 +8,7 @@
 //! The encoder is the one the real encode uses, with the same flags (`sr_media::encode::compressed_audio_args`), so
 //! what is measured is what is delivered. Noise substitution and noise shaping stay off for the reason given there.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use sr_audio::loudness::{self, Planar};
@@ -70,10 +70,16 @@ fn planar(a: &sr_media::decode::AudioData) -> Planar {
     (0..n).map(|c| a.samples.iter().skip(c).step_by(n).copied().collect()).collect()
 }
 
-/// The decoded true peak of `mix` after one AAC encode at `bitrate`, dBTP.
+/// The AAC stream the probe encode of a mix leaves in the scratch directory, until the next probe replaces it.
+fn probe_stream(tmp: &Path) -> PathBuf {
+    tmp.join("ceiling-probe.m4a")
+}
+
+/// The decoded true peak of `mix` after one AAC encode at `bitrate`, dBTP. The stream it measured stays at
+/// [`probe_stream`].
 fn decoded_true_peak(mix: &Planar, rate: u32, layout: Layout, bitrate: u64, tmp: &Path) -> Result<f64, DeliverError> {
     let wav = tmp.join("ceiling-probe.wav");
-    let coded = tmp.join("ceiling-probe.m4a");
+    let coded = probe_stream(tmp);
     sr_audio::wav::write(&wav, mix, rate, 32, layout, false).map_err(|e| DeliverError::AudioCeiling(e.to_string()))?;
     let mut cmd = Command::new(sr_media::ffmpeg());
     cmd.args(["-nostdin", "-v", "error", "-y", "-i"]).arg(&wav).args(["-c:a", "aac"]);
@@ -91,7 +97,6 @@ fn decoded_true_peak(mix: &Planar, rate: u32, layout: Layout, bitrate: u64, tmp:
     }
     let decoded = sr_media::decode_audio(&coded, 0, rate)?;
     let _ = std::fs::remove_file(&wav);
-    let _ = std::fs::remove_file(&coded);
     Ok(loudness::true_peak(&planar(&decoded), rate as f64))
 }
 
@@ -109,7 +114,24 @@ pub fn hold(
     bitrate: u64,
     tmp: &Path,
 ) -> Result<Held, DeliverError> {
-    hold_with(mix, ceiling, &mut |m| decoded_true_peak(m, rate, layout, bitrate, tmp))
+    let (held, coded) = hold_encoded(mix, rate, layout, ceiling, bitrate, tmp)?;
+    let _ = std::fs::remove_file(coded);
+    Ok(held)
+}
+
+/// [`hold`], keeping the stream of the last measurement: the AAC encode of `mix` as it leaves, since the first
+/// measurement and every correction's are of the mix they leave. Muxing that file stands in for encoding the mix
+/// again with the same encoder and settings. It is in `tmp`, and the caller removes it.
+pub fn hold_encoded(
+    mix: &mut Planar,
+    rate: u32,
+    layout: Layout,
+    ceiling: f64,
+    bitrate: u64,
+    tmp: &Path,
+) -> Result<(Held, PathBuf), DeliverError> {
+    let held = hold_with(mix, ceiling, &mut |m| decoded_true_peak(m, rate, layout, bitrate, tmp))?;
+    Ok((held, probe_stream(tmp)))
 }
 
 /// [`hold`] with the measurement of the decoded true peak given as a function of the mix.
