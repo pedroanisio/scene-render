@@ -2234,6 +2234,14 @@ pub(crate) fn render_cached(
 ) -> RenderTiming {
     let started = std::time::Instant::now();
     let size = [scene.size[0].max(1), scene.size[1].max(1)];
+    if std::env::var_os("SR_PT_CPU_PROBE").is_some() {
+        cpu::probe(
+            data,
+            (scene.clip_fix * scene.cam.view_proj()).inverse().to_cols_array_2d(),
+            size[0] as usize,
+            size[1] as usize,
+        );
+    }
     let limits = d.limits();
     let budget = pt.tile_bytes.min(limits.max_storage_buffer_binding_size).min(limits.max_buffer_size);
     let tiles = tiles(size, budget, opts.denoise);

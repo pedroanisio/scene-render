@@ -165,6 +165,106 @@ pub(crate) fn trace(scene: &PtScene, o: [f32; 3], d: [f32; 3], tmax: f32) -> Hit
     h
 }
 
+/// TEMPORARY N2 timing probe.
+pub(crate) fn probe(scene: &PtScene, ivp: [[f32; 4]; 4], w: usize, h: usize) {
+    use rayon::prelude::*;
+    use std::time::Instant;
+    let un = |x: f32, y: f32, z: f32| {
+        let mut r = [0.0f32; 4];
+        for (i, o) in r.iter_mut().enumerate() {
+            *o = ivp[0][i] * x + ivp[1][i] * y + ivp[2][i] * z + ivp[3][i];
+        }
+        [r[0] / r[3], r[1] / r[3], r[2] / r[3]]
+    };
+    let n = w * h;
+    let t0 = Instant::now();
+    let prim: Vec<([f32; 3], [f32; 3], u32)> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let mut rng = Rng(pcg(i as u32 + 1));
+            let nx = ((i % w) as f32 + rng.rnd()) / w as f32 * 2.0 - 1.0;
+            let ny = 1.0 - ((i / w) as f32 + rng.rnd()) / h as f32 * 2.0;
+            let a = un(nx, ny, 1.0);
+            let b = un(nx, ny, 0.0);
+            let d = sub(a, b);
+            let l = dot(d, d).sqrt();
+            (b, [d[0] / l, d[1] / l, d[2] / l], rng.0)
+        })
+        .collect();
+    let t_gen = t0.elapsed().as_secs_f64();
+    let t1 = Instant::now();
+    let hits: Vec<Hit> = prim.par_iter().map(|(o, d, _)| trace(scene, *o, *d, 1e30)).collect();
+    let t_prim = t1.elapsed().as_secs_f64();
+    let nh = hits.iter().filter(|h| h.tri != NONE).count();
+    let t2 = Instant::now();
+    let res: Vec<(u8, u8)> = prim
+        .par_iter()
+        .zip(hits.par_iter())
+        .map(|((o, d, s), hit)| {
+            if hit.tri == NONE {
+                return (0, 0);
+            }
+            let p = [o[0] + d[0] * hit.t, o[1] + d[1] * hit.t, o[2] + d[2] * hit.t];
+            let k = hit.tri as usize;
+            let mut nrm = if hit.instance == NONE {
+                let p0 = xyz(&scene.pos[k * 3]);
+                cross(sub(xyz(&scene.pos[k * 3 + 1]), p0), sub(xyz(&scene.pos[k * 3 + 2]), p0))
+            } else {
+                [0.0, 1.0, 0.0]
+            };
+            let l = dot(nrm, nrm).sqrt().max(1e-20);
+            nrm = [nrm[0] / l, nrm[1] / l, nrm[2] / l];
+            if dot(nrm, *d) > 0.0 {
+                nrm = [-nrm[0], -nrm[1], -nrm[2]];
+            }
+            let o2 = [p[0] + nrm[0] * 1e-3, p[1] + nrm[1] * 1e-3, p[2] + nrm[2] * 1e-3];
+            let mut rng = Rng(*s);
+            let (r1, r2) = (rng.rnd(), rng.rnd());
+            let (r, phi) = (r1.sqrt(), 6.2831853 * r2);
+            let tan = if nrm[0].abs() > 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+            let mut t = cross(nrm, tan);
+            let tl = dot(t, t).sqrt();
+            t = [t[0] / tl, t[1] / tl, t[2] / tl];
+            let bt = cross(nrm, t);
+            let z = (1.0 - r1).max(0.0).sqrt();
+            let dir = [0, 1, 2].map(|i| t[i] * r * phi.cos() + bt[i] * r * phi.sin() + nrm[i] * z);
+            let h2 = trace(scene, o2, dir, 1e30);
+            (1, (h2.tri != NONE) as u8)
+        })
+        .collect();
+    let t_sec = t2.elapsed().as_secs_f64();
+    let n_sec = res.iter().filter(|r| r.0 == 1).count();
+    let h_sec = res.iter().filter(|r| r.1 == 1).count();
+    let t3 = Instant::now();
+    let sun = {
+        let v = [0.3f32, 0.8, 0.5];
+        let l = dot(v, v).sqrt();
+        [v[0] / l, v[1] / l, v[2] / l]
+    };
+    let sh: Vec<u8> = prim
+        .par_iter()
+        .zip(hits.par_iter())
+        .map(|((o, d, _), hit)| {
+            if hit.tri == NONE {
+                return 0;
+            }
+            let p = [o[0] + d[0] * hit.t, o[1] + d[1] * hit.t, o[2] + d[2] * hit.t];
+            let o2 = [p[0] + sun[0] * 1e-3, p[1] + sun[1] * 1e-3, p[2] + sun[2] * 1e-3];
+            (trace(scene, o2, sun, 1e30).tri != NONE) as u8
+        })
+        .collect();
+    let t_sh = t3.elapsed().as_secs_f64();
+    let h_sh = sh.iter().filter(|&&x| x == 1).count();
+    let total = t_prim + t_sec + t_sh;
+    let rays = n + n_sec + nh;
+    eprintln!("N2 probe: threads={} tris={} nodes={} instances={}", rayon::current_num_threads(), scene.tri_mat.len(), scene.nodes.len(), scene.instances.len());
+    eprintln!("N2 probe: gen {t_gen:.4}s");
+    eprintln!("N2 probe: primary rays={n} hits={nh} {t_prim:.4}s ({:.2} Mrays/s)", n as f64 / t_prim / 1e6);
+    eprintln!("N2 probe: secondary rays={n_sec} hits={h_sec} {t_sec:.4}s ({:.2} Mrays/s)", n_sec as f64 / t_sec / 1e6);
+    eprintln!("N2 probe: shadow rays={nh} hits={h_sh} {t_sh:.4}s ({:.2} Mrays/s)", nh as f64 / t_sh / 1e6);
+    eprintln!("N2 probe: total rays={rays} {total:.4}s ({:.2} Mrays/s)", rays as f64 / total / 1e6);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
