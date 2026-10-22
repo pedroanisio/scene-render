@@ -41,3 +41,7 @@ This release renders, encodes and mixes faster without changing what it delivers
 The Linux archive contains the executable, source commit identifier, capability manifest, README, changelog, disclaimer, licence, notice, commercial-licence page and third-party notices. Its executable comes from the successful CI run for the release commit and is checksum-verified and smoke-tested before packaging.
 
 Verify the download with `sha256sum -c scene-render-v0.7.2-linux-x86_64.tar.gz.sha256`, extract it, then run `./scene-render --help`.
+
+## Unreleased
+
+- The first draw into a cleared target is recorded as a texture copy when it would write each texel unchanged: a frame-sized vector target that lands texel for pixel, at full opacity with the normal blend and no mask. Over a transparent target that draw adds nothing to its source, so the copy gives the same frame without running the compositor's fragment shader on every pixel. On lavapipe a 10 s slice of a 1080p explainer chapter encoded in 3.21 s instead of 3.46 s (render 1.67 s instead of 1.94 s), with the same frames and audio on every slice compared.

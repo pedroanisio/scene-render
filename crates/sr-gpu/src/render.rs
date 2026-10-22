@@ -103,6 +103,9 @@ pub struct RenderStats {
     pub prefix_restored: usize,
     /// Backdrop copies for non-normal blend modes.
     pub backdrop_copies: usize,
+    /// Draws recorded as a texture copy: an aligned texture at full opacity with the normal blend, first into a
+    /// cleared target (also counted in `draws`).
+    pub texel_copies: usize,
     /// Nodes whose content belongs to later batches (asset or node kind).
     pub unsupported: Vec<String>,
     /// Media that could not be read (missing files, decode failures,
@@ -525,6 +528,9 @@ pub struct Renderer {
     /// Transient GPU memory (raster buffers, released raster targets) recorded since the last submission above which the
     /// frame submits and waits mid-way, so that memory is freed before the rest of the frame is recorded.
     pub transient_submit_bytes: u64,
+    /// Record the first draw into a cleared target as a texture copy when it would write each texel unchanged
+    /// (see `RenderStats::texel_copies`); `false` always draws it.
+    pub texel_copy: bool,
 }
 
 /// A grow-only GPU buffer reused across frames.
@@ -839,6 +845,63 @@ fn aligned_texels(xf: &Affine, local: [f64; 4], uv: [f64; 4], tex: [u32; 2]) -> 
     let (x0, y0, x1, y1) = (whole(p0[0])?, whole(p0[1])?, whole(p1[0])?, whole(p1[1])?);
     let (u0, v0, u1, v1) = (whole(uv[0] * tw)?, whole(uv[1] * th)?, whole(uv[2] * tw)?, whole(uv[3] * th)?);
     (x1 > x0 && y1 > y0 && x1 - x0 == u1 - u0 && y1 - y0 == v1 - v0).then_some(([x0, y0, x1, y1], [u0, v0]))
+}
+
+/// The target pixels (x0, y0, x1, y1) and source texel at their top left of an `ALIGNED` draw that writes each texel
+/// unchanged: full opacity, the normal blend, no mask, a quad on whole target pixels and a source region inside the
+/// texture (where the shader would clamp, a copy would not). Into a cleared target such a draw is a texture copy: the
+/// premultiplied over adds `0 · (1 − a)`, and the pixels of the quad outside `uv_rect` receive zero, as cleared.
+fn texel_copy_region(draw: &Draw, quad: &[Vertex], tex: [u32; 2], target: [u32; 2]) -> Option<([u32; 4], [u32; 2])> {
+    if draw.flags != flag::ALIGNED
+        || draw.opacity != 1.0
+        || draw.blend != 0
+        || draw.mask_count != 0
+        || draw.src_kind != src::TEXTURE
+        || quad.len() != 6
+    {
+        return None;
+    }
+    // vertex positions within a hundredth of a pixel cover the same pixel centres
+    let whole = |v: f64| {
+        let r = v.round();
+        ((v - r).abs() <= 1e-2).then_some(r)
+    };
+    let (w, h) = (target[0] as f64, target[1] as f64);
+    let mut xs = Vec::with_capacity(6);
+    let mut ys = Vec::with_capacity(6);
+    for v in quad {
+        if v.clip[3] != 1.0 {
+            return None;
+        }
+        xs.push(whole((v.clip[0] as f64 + 1.0) * w / 2.0)?);
+        ys.push(whole((1.0 - v.clip[1] as f64) * h / 2.0)?);
+    }
+    let lo_hi = |s: &[f64]| {
+        (s.iter().copied().fold(f64::INFINITY, f64::min), s.iter().copied().fold(f64::NEG_INFINITY, f64::max))
+    };
+    let ((qx0, qx1), (qy0, qy1)) = (lo_hi(&xs), lo_hi(&ys));
+    // two triangles over one axis-aligned rectangle: every corner on its edges, and both diagonals' halves present
+    if xs.iter().zip(&ys).any(|(&x, &y)| (x != qx0 && x != qx1) || (y != qy0 && y != qy1)) {
+        return None;
+    }
+    let corners = [(qx0, qy0), (qx1, qy0), (qx0, qy1), (qx1, qy1)];
+    if !corners.iter().all(|&(cx, cy)| xs.iter().zip(&ys).any(|(&x, &y)| x == cx && y == cy)) {
+        return None;
+    }
+    let exact = |v: f32| (v.fract() == 0.0 && v.abs() < 16_777_216.0).then_some(v as f64);
+    let (u0, v0, u1, v1) =
+        (exact(draw.uv_rect[0])?, exact(draw.uv_rect[1])?, exact(draw.uv_rect[2])?, exact(draw.uv_rect[3])?);
+    let (bx, by) = (exact(draw.box_rect[0])?, exact(draw.box_rect[1])?);
+    let (x0, y0) = (qx0.max(u0).max(0.0), qy0.max(v0).max(0.0));
+    let (x1, y1) = (qx1.min(u1).min(w), qy1.min(v1).min(h));
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    let (sx, sy) = (x0 - u0 + bx, y0 - v0 + by);
+    if sx < 0.0 || sy < 0.0 || sx + (x1 - x0) > tex[0] as f64 || sy + (y1 - y0) > tex[1] as f64 {
+        return None;
+    }
+    Some(([x0 as u32, y0 as u32, x1 as u32, y1 as u32], [sx as u32, sy as u32]))
 }
 
 fn to_clip(p: [f64; 2], size: [u32; 2]) -> [f32; 4] {
@@ -1339,6 +1402,7 @@ impl Renderer {
             frame_bytes: 0,
             vector_cache_budget: None,
             transient_submit_bytes: TRANSIENT_SUBMIT_BYTES,
+            texel_copy: true,
         }
     }
 
@@ -4776,6 +4840,11 @@ impl Renderer {
     }
 
     fn copy(enc: &mut wgpu::CommandEncoder, from: &Tex, to: &Tex, rect: [u32; 4]) {
+        Self::copy_from(enc, from, [rect[0], rect[1]], to, rect);
+    }
+
+    /// Copies the texels of `from` at `at` onward into `rect` of `to`.
+    fn copy_from(enc: &mut wgpu::CommandEncoder, from: &Tex, at: [u32; 2], to: &Tex, rect: [u32; 4]) {
         let (w, hh) = (rect[2].saturating_sub(rect[0]), rect[3].saturating_sub(rect[1]));
         if w == 0 || hh == 0 {
             return;
@@ -4785,7 +4854,7 @@ impl Renderer {
             wgpu::TexelCopyTextureInfo {
                 texture: &from.tex,
                 mip_level: 0,
-                origin: o,
+                origin: wgpu::Origin3d { x: at[0], y: at[1], z: 0 },
                 aspect: wgpu::TextureAspect::All,
             },
             wgpu::TexelCopyTextureInfo { texture: &to.tex, mip_level: 0, origin: o, aspect: wgpu::TextureAspect::All },
@@ -5251,12 +5320,40 @@ impl Renderer {
                         }
                     })
                     .collect();
-                {
+                // the first draw into the cleared target may write each texel unchanged: copy it instead
+                let first = &job.cmds[i];
+                let copied = (clear
+                    && self.texel_copy
+                    && first.backdrop.is_none()
+                    && first.matte.is_none()
+                    && first.pre.is_none()
+                    && !coverage.contains_key(&first.draw)
+                    && !Arc::ptr_eq(&first.src, &job.target)
+                    && first.src.tex.format() == job.target.tex.format()
+                    && first.src.tex.usage().contains(wgpu::TextureUsages::COPY_SRC)
+                    && job.target.tex.usage().contains(wgpu::TextureUsages::COPY_DST))
+                .then(|| {
+                    let quad =
+                        plan.verts.get(first.first_vertex as usize..(first.first_vertex + first.count) as usize)?;
+                    texel_copy_region(&plan.draws[first.draw as usize], quad, first.src.size, tsize)
+                })
+                .flatten()
+                // a copy that leaves pixels out would need the clear as well: only one that writes them all
+                .filter(|(rect, _)| *rect == [0, 0, tsize[0], tsize[1]]);
+                let mut skip = 0;
+                if let Some((rect, at)) = copied {
+                    Self::copy_from(&mut enc, &first.src, at, &job.target, rect);
+                    plan.stats.draws += 1;
+                    plan.stats.texel_copies += 1;
+                    clear = false;
+                    skip = 1;
+                }
+                if i + skip < j {
                     let mut pass = clear_pass(&mut enc, &job.target, clear);
                     pass.set_vertex_buffer(0, verts.slice(..));
                     pass.set_bind_group(0, &bg0, &[0]);
                     pass.set_bind_group(3, &dummy_gen, &[]);
-                    for (k, c) in job.cmds[i..j].iter().enumerate() {
+                    for (k, c) in job.cmds[i..j].iter().enumerate().skip(skip) {
                         let draw = &plan.draws[c.draw as usize];
                         let ellipse = draw.mask_count == 1
                             && plan.masks.get(draw.mask_off as usize).is_some_and(|m| m.kind == 1 && m.feather > 0.0);
@@ -5832,5 +5929,79 @@ mod draw_uniform_tests {
             assert_eq!(empty.len(), stride as usize);
             assert!(empty.iter().all(|b| *b == 0));
         }
+    }
+}
+
+#[cfg(test)]
+mod texel_copy_region_tests {
+    use super::*;
+
+    const TARGET: [u32; 2] = [64, 32];
+
+    fn quad(r: [f64; 4]) -> Vec<Vertex> {
+        let at = |x, y| Vertex { clip: to_clip([x, y], TARGET), ..Default::default() };
+        let (a, b, c, d) = (at(r[0], r[1]), at(r[2], r[1]), at(r[0], r[3]), at(r[2], r[3]));
+        vec![a, b, c, c, b, d]
+    }
+
+    fn aligned(uv: [f32; 4], texel: [f32; 2]) -> Draw {
+        Draw {
+            uv_rect: uv,
+            box_rect: [texel[0], texel[1], 0.0, 0.0],
+            opacity: 1.0,
+            flags: flag::ALIGNED,
+            src_kind: src::TEXTURE,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_frame_sized_quad_copies_the_content_rectangle() {
+        let d = aligned([4.0, 2.0, 40.0, 30.0], [0.0, 0.0]);
+        assert_eq!(
+            texel_copy_region(&d, &quad([0.0, 0.0, 64.0, 32.0]), [36, 28], TARGET),
+            Some(([4, 2, 40, 30], [0, 0]))
+        );
+    }
+
+    #[test]
+    fn the_region_is_clipped_to_the_quad_and_the_target_and_offsets_the_source() {
+        let d = aligned([-6.0, 2.0, 70.0, 30.0], [3.0, 1.0]);
+        let r = texel_copy_region(&d, &quad([10.0, 0.0, 64.0, 20.0]), [80, 40], TARGET);
+        assert_eq!(r, Some(([10, 2, 64, 20], [19, 1])));
+    }
+
+    #[test]
+    fn a_source_region_the_shader_would_clamp_is_drawn() {
+        let d = aligned([0.0, 0.0, 64.0, 32.0], [0.0, 0.0]);
+        assert_eq!(texel_copy_region(&d, &quad([0.0, 0.0, 64.0, 32.0]), [63, 32], TARGET), None);
+    }
+
+    #[test]
+    fn a_draw_that_changes_texels_is_drawn() {
+        let q = quad([0.0, 0.0, 64.0, 32.0]);
+        let base = aligned([0.0, 0.0, 64.0, 32.0], [0.0, 0.0]);
+        let changed = [
+            Draw { opacity: 0.999, ..base },
+            Draw { blend: 2, ..base },
+            Draw { mask_count: 1, ..base },
+            Draw { flags: flag::ALIGNED | flag::EDGE, ..base },
+            Draw { src_kind: src::SOLID, ..base },
+            Draw { uv_rect: [0.5, 0.0, 64.0, 32.0], ..base },
+        ];
+        for d in changed {
+            assert_eq!(texel_copy_region(&d, &q, [64, 32], TARGET), None, "{d:?}");
+        }
+        assert!(texel_copy_region(&base, &q, [64, 32], TARGET).is_some());
+    }
+
+    #[test]
+    fn a_quad_off_whole_pixels_or_not_a_rectangle_is_drawn() {
+        let d = aligned([0.0, 0.0, 64.0, 32.0], [0.0, 0.0]);
+        assert_eq!(texel_copy_region(&d, &quad([0.0, 0.0, 63.5, 32.0]), [64, 32], TARGET), None);
+        let mut skew = quad([0.0, 0.0, 64.0, 32.0]);
+        skew[5].clip = to_clip([60.0, 32.0], TARGET);
+        assert_eq!(texel_copy_region(&d, &skew, [64, 32], TARGET), None);
+        assert_eq!(texel_copy_region(&d, &quad([0.0, 0.0, 64.0, 32.0])[..3], [64, 32], TARGET), None);
     }
 }
