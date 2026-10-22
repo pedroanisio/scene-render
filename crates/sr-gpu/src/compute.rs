@@ -242,8 +242,7 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue, program: &Program, job: &
     }
     enc.copy_buffer_to_buffer(&hist, 0, &read, 0, bytes.max(8));
     queue.submit([enc.finish()]);
-    read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    crate::gpu::map_read(device, read.slice(..)).map_err(|e| format!("compute histogram: {e}"))?;
     let data = read.slice(..).get_mapped_range().map_err(|e| format!("compute histogram: {e:?}"))?;
     Ok(data
         .as_chunks::<8>()

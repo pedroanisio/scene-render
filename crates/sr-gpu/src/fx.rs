@@ -351,8 +351,7 @@ impl Timer {
         let mut ticks = vec![0u64; self.used as usize];
         if self.used > 0 {
             let slice = self.read.slice(..self.used as u64 * 8);
-            slice.map_async(wgpu::MapMode::Read, |_| {});
-            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+            crate::gpu::map_read(device, slice).unwrap_or_else(|e| panic!("reading back the pass timestamps: {e}"));
             let bytes = slice.get_mapped_range().expect("mapped");
             for (k, c) in bytes.as_chunks::<8>().0.iter().enumerate() {
                 ticks[k] = u64::from_le_bytes(*c);
@@ -732,8 +731,8 @@ impl FxEngine {
             wgpu::Extent3d { width: w, height: hh, depth_or_array_layers: 1 },
         );
         self.queue.submit([enc.finish()]);
-        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        crate::gpu::map_read(&self.device, buf.slice(..))
+            .unwrap_or_else(|e| panic!("reading back a {w}x{hh} texture: {e}"));
         let data = buf.slice(..).get_mapped_range().expect("mapped");
         let mut out = Vec::with_capacity((w * hh) as usize);
         for y in 0..hh {

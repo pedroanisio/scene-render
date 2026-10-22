@@ -181,8 +181,7 @@ impl SampleCount {
     pub fn traced(&self, device: &wgpu::Device) -> u64 {
         let Some(read) = &self.counter else { return self.budget };
         let slice = read.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        crate::gpu::map_read(device, slice).unwrap_or_else(|e| panic!("reading back the path-trace sample count: {e}"));
         let words: [u32; 2] = {
             let bytes = slice.get_mapped_range().expect("mapped");
             bytemuck::pod_read_unaligned(&bytes[..8])

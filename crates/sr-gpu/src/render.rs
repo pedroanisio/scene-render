@@ -5322,8 +5322,7 @@ impl Renderer {
             wgpu::Extent3d { width: w, height: hh, depth_or_array_layers: 1 },
         );
         self.gpu.queue.submit([enc.finish()]);
-        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        self.gpu.wait();
+        self.gpu.map_read(buf.slice(..)).unwrap_or_else(|e| panic!("reading back a {w}x{hh} {format:?} texture: {e}"));
         let data = buf.slice(..).get_mapped_range().expect("mapped");
         let mut out = Vec::with_capacity((w * hh) as usize);
         for y in 0..hh {

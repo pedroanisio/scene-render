@@ -183,6 +183,19 @@ fn compare_corpus_batch(index: usize) {
     let _ = compare_corpus(corpus_batch(index, 32), false);
 }
 
+/// A frame whose GL submission outlasts the driver's fence wait: `Device::poll` returns `Timeout` before the readback
+/// map has completed, and the readback must keep polling instead of reading an unmapped buffer.
+#[test]
+fn gl_reads_back_a_frame_whose_submission_outlasts_one_fence_wait() {
+    let (Some(g), Some(n)) = (gl(), native()) else { return };
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus/valid/w15-path-cost.scene.xml");
+    let doc = sr_model::load_file(&path, &sr_model::LoadOptions::default()).unwrap();
+    let (a, b) = (render_doc_on(&g, &doc, 0.0).unwrap(), render_doc_on(&n, &doc, 0.0).unwrap());
+    let db = common::psnr(&a.px, &b.px);
+    assert!(db >= 40.0, "w15-path-cost, GL vs Vulkan: {db:.1} dB");
+}
+
 #[test]
 fn conformance_corpus_contains_comparable_frames() {
     let mut paths = valid_corpus();

@@ -64,6 +64,85 @@ pub enum GpuError {
     Uncaptured(String),
 }
 
+/// Why a buffer could not be mapped for reading.
+#[derive(Debug, thiserror::Error)]
+pub enum MapReadError {
+    /// The device refused the mapping (an invalid or destroyed buffer, a range out of bounds, a lost device).
+    #[error("the GPU buffer could not be mapped for reading: {0}")]
+    Map(String),
+    /// The device refused the mapping after it had reported an error outside an error scope, which invalidated the buffer.
+    #[error("the GPU buffer could not be mapped for reading ({map}); the device had reported: {device}")]
+    MapAfterDeviceError {
+        /// The mapping's error.
+        map: String,
+        /// The first error the device reported before it.
+        device: String,
+    },
+    /// Polling the device failed (it is lost, or the wait gave up).
+    #[error("polling the GPU device for the buffer mapping failed: {0}")]
+    Poll(String),
+    /// The map callback never ran within the bound.
+    #[error("the GPU buffer mapping did not complete within {0:?}")]
+    TimedOut(std::time::Duration),
+}
+
+/// How long [`map_read`] waits for a mapping to complete.
+pub const MAP_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Maps `slice` for reading, polls `device` until the map callback delivers its result (at most
+/// [`MAP_READ_TIMEOUT`]), and returns the cause when it did not complete.
+pub fn map_read(device: &wgpu::Device, slice: wgpu::BufferSlice<'_>) -> Result<(), MapReadError> {
+    map_read_within(device, slice, MAP_READ_TIMEOUT)
+}
+
+/// [`map_read`] with an explicit bound.
+pub fn map_read_within(
+    device: &wgpu::Device,
+    slice: wgpu::BufferSlice<'_>,
+    timeout: std::time::Duration,
+) -> Result<(), MapReadError> {
+    begin_map_read(slice).wait(device, timeout)
+}
+
+/// A read mapping that was requested and whose result the device has yet to deliver.
+pub struct MapWait(std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>);
+
+/// Requests a read mapping of `slice` without waiting for it.
+pub fn begin_map_read(slice: wgpu::BufferSlice<'_>) -> MapWait {
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    MapWait(rx)
+}
+
+impl MapWait {
+    /// Polls `device` until the mapping's result arrives, for at most `timeout`. A poll that gives up before the work
+    /// is done (the driver's own fence wait is bounded, and a long submission outlasts it) is polled again.
+    pub fn wait(self, device: &wgpu::Device, timeout: std::time::Duration) -> Result<(), MapReadError> {
+        let start = std::time::Instant::now();
+        loop {
+            match self.0.try_recv() {
+                Ok(r) => return r.map_err(|e| MapReadError::Map(e.to_string())),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return Err(MapReadError::Map("the map callback was dropped without a result".into()));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            let left = timeout.saturating_sub(start.elapsed());
+            if left.is_zero() {
+                return Err(MapReadError::TimedOut(timeout));
+            }
+            let step = left.min(std::time::Duration::from_millis(50));
+            if let Err(e) = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(step) }) {
+                if !matches!(e, wgpu::PollError::Timeout) {
+                    return Err(MapReadError::Poll(e.to_string()));
+                }
+            }
+        }
+    }
+}
+
 /// Which adapters to consider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuOptions {
@@ -708,6 +787,17 @@ impl Gpu {
         let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
     }
 
+    /// Maps `slice` for reading and waits for it (see [`map_read`]); when the map fails, the error the device
+    /// reported outside an error scope is the cause, so it is named too.
+    pub fn map_read(&self, slice: wgpu::BufferSlice<'_>) -> Result<(), MapReadError> {
+        map_read(&self.device, slice).map_err(|e| match (e, self.take_error()) {
+            (MapReadError::Map(m), Err(GpuError::Uncaptured(device))) => {
+                MapReadError::MapAfterDeviceError { map: m, device }
+            }
+            (e, _) => e,
+        })
+    }
+
     /// Waits for one submission (and everything before it), leaving later submissions in flight.
     pub fn wait_for(&self, idx: wgpu::SubmissionIndex) {
         let _ = self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None });
@@ -719,6 +809,47 @@ fn select_raster_samples(requested: u64, flags: wgpu::TextureFormatFeatureFlags)
     let wanted = if requested == 3 { 4 } else { requested };
     let selected = [4, 2, 1].into_iter().find(|&n| n <= wanted && flags.sample_count_supported(n)).unwrap_or(1);
     (wanted, selected)
+}
+
+#[cfg(test)]
+mod map_read_tests {
+    use super::*;
+
+    fn buffer(gpu: &Gpu, usage: wgpu::BufferUsages) -> wgpu::Buffer {
+        gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("map test"),
+            size: 256,
+            usage,
+            mapped_at_creation: false,
+        })
+    }
+
+    #[test]
+    fn a_buffer_that_cannot_be_mapped_for_reading_is_a_typed_error() {
+        let gpu = sr_testkit::require_gpu!(test_gpu(), "a_buffer_that_cannot_be_mapped_for_reading_is_a_typed_error");
+        let buf = buffer(&gpu, wgpu::BufferUsages::COPY_DST);
+        let err = gpu.map_read(buf.slice(..)).expect_err("a buffer without MAP_READ cannot be mapped");
+        assert!(matches!(err, MapReadError::Map(_) | MapReadError::MapAfterDeviceError { .. }), "{err:?}");
+        assert!(err.to_string().contains("could not be mapped for reading"), "{err}");
+        let _ = gpu.take_error();
+    }
+
+    #[test]
+    fn a_mapping_that_does_not_complete_in_time_is_a_timeout_error() {
+        let gpu = sr_testkit::require_gpu!(test_gpu(), "a_mapping_that_does_not_complete_in_time_is_a_timeout_error");
+        let buf = buffer(&gpu, wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ);
+        let none = std::time::Duration::ZERO;
+        let err = map_read_within(&gpu.device, buf.slice(..), none).expect_err("a zero bound is never met");
+        assert!(matches!(err, MapReadError::TimedOut(t) if t == none), "{err:?}");
+    }
+
+    #[test]
+    fn a_mappable_buffer_maps() {
+        let gpu = sr_testkit::require_gpu!(test_gpu(), "a_mappable_buffer_maps");
+        let buf = buffer(&gpu, wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ);
+        gpu.map_read(buf.slice(..)).expect("maps");
+        assert_eq!(buf.slice(..).get_mapped_range().expect("mapped").len(), 256);
+    }
 }
 
 #[cfg(test)]

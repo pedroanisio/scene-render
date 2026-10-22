@@ -126,13 +126,13 @@ impl Placement {
 
 /// A conversion in flight: its staging buffers (out of the ring until [`OutputStage::wait`]
 /// returns them; one unless the frame is larger than a buffer), the last submission that fills
-/// them, and the count their map callbacks raise.
+/// them, and their pending mappings.
 pub struct Pending {
     slot: usize,
     buffers: Vec<wgpu::Buffer>,
     bytes: usize,
     submitted: wgpu::SubmissionIndex,
-    ready: Arc<std::sync::atomic::AtomicUsize>,
+    ready: Vec<crate::gpu::MapWait>,
 }
 
 /// Staging buffers in the ring: one mapping, one converting, one spare.
@@ -572,7 +572,7 @@ impl OutputStage {
                 },
             ],
         });
-        let ready = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut ready = Vec::with_capacity(pieces.len());
         let mut enc = Some(enc);
         let mut submitted = None;
         for ((base, n), staging) in pieces.iter().zip(&staging) {
@@ -595,10 +595,7 @@ impl OutputStage {
             }
             enc.copy_buffer_to_buffer(storage, 0, staging, 0, *n as u64 * 4);
             submitted = Some(self.queue.submit([enc.finish()]));
-            let r = ready.clone();
-            staging.slice(..).map_async(wgpu::MapMode::Read, move |_| {
-                r.fetch_add(1, std::sync::atomic::Ordering::Release);
-            });
+            ready.push(crate::gpu::begin_map_read(staging.slice(..)));
         }
         Pending { slot, buffers: staging, bytes, submitted: submitted.expect("a frame has a piece"), ready }
     }
@@ -742,11 +739,11 @@ impl OutputStage {
     /// Only this conversion's submission is waited for, so work submitted after it (the
     /// next frame's render and pack) keeps running on the GPU meanwhile.
     pub fn wait(&mut self, p: Pending) -> Vec<u8> {
-        use std::sync::atomic::Ordering;
         let Pending { slot, buffers, bytes, submitted, ready } = p;
         let _ = self.device.poll(wgpu::PollType::Wait { submission_index: Some(submitted), timeout: None });
-        while ready.load(Ordering::Acquire) < buffers.len() {
-            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        for map in ready {
+            map.wait(&self.device, crate::gpu::MAP_READ_TIMEOUT)
+                .unwrap_or_else(|e| panic!("reading back a converted frame: {e}"));
         }
         let mut out = Vec::with_capacity(bytes);
         for b in &buffers {

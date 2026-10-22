@@ -560,8 +560,8 @@ impl VideoEngine {
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
         self.queue.submit([enc.finish()]);
-        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        crate::gpu::map_read(&self.device, buf.slice(..))
+            .unwrap_or_else(|e| panic!("reading back a {w}x{h} texture: {e}"));
         let data = buf.slice(..).get_mapped_range().expect("mapped");
         let mut out = Vec::with_capacity((w * h) as usize);
         for y in 0..h {
