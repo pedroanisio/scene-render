@@ -145,6 +145,8 @@ struct PackKey {
     linear_light: u32,
     store_transfer: u32,
     blocks: bool,
+    /// The frame sits unmoved and unscaled over the whole output, so a pixel samples itself.
+    whole: bool,
 }
 
 impl PackKey {
@@ -155,6 +157,7 @@ impl PackKey {
             linear_light: p.linear_light,
             store_transfer: p.store_transfer,
             blocks,
+            whole: p.offset == [0.0; 2] && p.scale == 1.0 && p.osize[0] <= p.fsize[0] && p.osize[1] <= p.fsize[1],
         }
     }
 }
@@ -457,6 +460,7 @@ impl OutputStage {
                 ("OUTPUT_TRANSFER", key.transfer as f64),
                 ("WORKING_LINEAR", key.linear_light as f64),
                 ("WORKING_TRANSFER", key.store_transfer as f64),
+                ("PLACED_WHOLE", key.whole as u32 as f64),
             ],
         );
         if self.pack_pipes.len() == 8 {
@@ -783,6 +787,30 @@ mod tests {
             let (scale, offset) = Placement::place(frame, [36, 64], false, focus);
             assert!((scale - 0.5625).abs() < 1e-6 && offset[0].abs() < 1e-4, "{focus:?}: {scale} {offset:?}");
             assert!((offset[1] - top).abs() < 1e-4, "{focus:?}: {offset:?}");
+        }
+    }
+
+    #[test]
+    fn only_an_unmoved_unscaled_frame_takes_the_whole_frame_path() {
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "only_an_unmoved_unscaled_frame_takes_the_whole_frame_path"
+        );
+        let layout = crate::resources::source_layout(&gpu.device);
+        let frame = crate::resources::create(&gpu.device, &layout, [8, 6], 1, "whole-frame key");
+        let working = Working { space: ColorSpace::Srgb, linear: false };
+        let out = OutputColor::new(ColorSpace::Rec709, Transfer::Auto, false);
+        for (size, placement, whole) in [
+            ([8, 6], Placement::default(), true),
+            ([8, 6], Placement::Crop { focus: [0.75, 0.25] }, true),
+            ([8, 6], Placement::FitBlur { focus: [0.5, 0.5] }, true),
+            ([12, 6], Placement::FitBlur { focus: [0.25, 0.75] }, false),
+            ([4, 6], Placement::Crop { focus: [0.5, 0.5] }, false),
+            ([4, 2], Placement::Crop { focus: [0.75, 0.25] }, false),
+            ([5, 3], Placement::default(), false),
+        ] {
+            let params = OutputStage::params(&frame, &working, &out, size, placement);
+            assert_eq!(PackKey::of(&params, true).whole, whole, "size={size:?} placement={placement:?}");
         }
     }
 

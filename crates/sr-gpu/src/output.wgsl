@@ -70,8 +70,14 @@ fn blurred_cover(p: vec2<f32>) -> vec4<f32> {
   return textureSampleLevel(blurred, samp, q / fs, 0.0);
 }
 
+// 1: the frame is unmoved and unscaled and covers the output, so q == p and is always inside it
+override PLACED_WHOLE: u32 = 0u;
+
 // the frame placed in the output at output pixel centre p, in the working representation
 fn placed(p: vec2<f32>) -> vec4<f32> {
+  if (PLACED_WHOLE == 1u) {
+    return textureSampleLevel(frame, samp, p / vec2<f32>(o.fsize), 0.0);
+  }
   let q = (p - o.offset) / o.scale;
   if (all(q >= vec2(0.0)) && all(q <= vec2<f32>(o.fsize))) {
     return textureSampleLevel(frame, samp, q / vec2<f32>(o.fsize), 0.0);
