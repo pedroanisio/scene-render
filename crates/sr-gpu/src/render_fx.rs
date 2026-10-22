@@ -1112,13 +1112,13 @@ impl Renderer {
         let key = format!("fx:{}:{}x{}", n.id, size[0], size[1]);
         self.used.insert(key.clone());
         let out = match self.subtree.get(&key) {
-            Some((hh, t)) if *hh == hash && self.fx_cache => {
+            Some((hh, t, _)) if *hh == hash && self.fx_cache => {
                 plan.stats.cache_hits += 1;
                 t.clone()
             }
             _ => {
                 let target = match self.subtree.get(&key) {
-                    Some((_, t)) if t.size == size && Arc::strong_count(t) <= 2 => t.clone(),
+                    Some((_, t, _)) if t.size == size && Arc::strong_count(t) <= 2 => t.clone(),
                     _ => {
                         self.pool.created += 1;
                         Arc::new(resources::create_as(&self.gpu.device, &self.bgl1, self.format, size, 1, "effects"))
@@ -1129,7 +1129,7 @@ impl Renderer {
                 self.planes.extend(plane);
                 self.run_chain(plan, ctx, i, space, rect, &inner, &effs, &attrs, &target);
                 self.planes.truncate(depth);
-                self.subtree.insert(key, (hash, target.clone()));
+                self.subtree.insert(key, (hash, target.clone(), None));
                 target
             }
         };

@@ -398,7 +398,9 @@ pub struct Renderer {
     generators: HashMap<u64, Arc<Tex>>,
     /// Computed fractal pictures (SREP 75), by the hash of everything they show.
     fractals: HashMap<u64, Arc<Tex>>,
-    subtree: HashMap<String, (u64, Arc<Tex>)>,
+    /// Cached targets by key: the hash of their content, the texture and, for a vector target, the state of the
+    /// raster that last drew into it.
+    subtree: HashMap<String, (u64, Arc<Tex>, Option<crate::raster::TileState>)>,
     used: std::collections::HashSet<String>,
     /// The frame each cache key was last used in (frames counted by `cache_frame`).
     last_used: HashMap<String, u64>,
@@ -2942,21 +2944,21 @@ impl Renderer {
         ]);
         let key = format!("matte:{}:{}x{}", ctx.g.nodes[mt].id, space.size[0], space.size[1]);
         self.used.insert(key.clone());
-        if let Some((hh, t)) = self.subtree.get(&key) {
+        if let Some((hh, t, _)) = self.subtree.get(&key) {
             if *hh == hash {
                 plan.stats.cache_hits += 1;
                 return t.clone();
             }
         }
         let target = match self.subtree.get(&key) {
-            Some((_, t)) if t.size == space.size && Arc::strong_count(t) <= 2 => t.clone(),
+            Some((_, t, _)) if t.size == space.size && Arc::strong_count(t) <= 2 => t.clone(),
             _ => Arc::new(resources::create_as(&self.gpu.device, &self.bgl1, self.format, space.size, 1, "matte")),
         };
         let mut cmds = Vec::new();
         self.emit(plan, ctx, mt, space, 1.0, &mut cmds, true, 0);
         self.flush_vec(plan, &mut cmds);
         plan.jobs.push(Job::draws(target.clone(), true, cmds, false));
-        self.subtree.insert(key, (hash, target.clone()));
+        self.subtree.insert(key, (hash, target.clone(), None));
         target
     }
 
@@ -3033,13 +3035,13 @@ impl Renderer {
             let key = format!("iso:{}:{}x{}", n.id, inner.size[0], inner.size[1]);
             self.used.insert(key.clone());
             let tex = match self.subtree.get(&key) {
-                Some((hh, t)) if *hh == hash => {
+                Some((hh, t, _)) if *hh == hash => {
                     plan.stats.cache_hits += 1;
                     t.clone()
                 }
                 _ => {
                     let target = match self.subtree.get(&key) {
-                        Some((_, t)) if Arc::strong_count(t) <= 2 => t.clone(),
+                        Some((_, t, _)) if Arc::strong_count(t) <= 2 => t.clone(),
                         _ => Arc::new(resources::create_as(
                             &self.gpu.device,
                             &self.bgl1,
@@ -3103,7 +3105,7 @@ impl Renderer {
                         _ => target,
                     };
                     self.planes.truncate(depth);
-                    self.subtree.insert(key, (hash, target.clone()));
+                    self.subtree.insert(key, (hash, target.clone(), None));
                     target
                 }
             };
@@ -3737,7 +3739,7 @@ impl Renderer {
     ) -> (Arc<Tex>, Option<u32>) {
         self.used.insert(key.clone());
         let kept = match self.subtree.get(&key) {
-            Some((hh, t)) if *hh == hash => {
+            Some((hh, t, _)) if *hh == hash => {
                 plan.stats.cache_hits += 1;
                 return (t.clone(), None);
             }
@@ -3756,15 +3758,19 @@ impl Renderer {
             ));
         }
         let out = if cache {
-            let target = match self.subtree.get(&key) {
-                Some((_, t)) if Arc::strong_count(t) <= 2 => t.clone(),
-                _ => Arc::new(resources::create_as(&self.gpu.device, &self.bgl1, self.format, size, 1, label)),
+            // The pixels of a target still hold the last raster's tiles only while that target is reused; a fresh
+            // one is rasterised whole.
+            let (target, prev) = match self.subtree.get_mut(&key) {
+                Some((_, t, tiles)) if Arc::strong_count(t) <= 2 => (t.clone(), tiles.take()),
+                _ => (Arc::new(resources::create_as(&self.gpu.device, &self.bgl1, self.format, size, 1, label)), None),
             };
             if !kept {
                 self.vector_cached_bytes += bytes;
             }
-            plan.rasters.push(RasterJob::new(enc, target.clone(), &mut plan.paints, &self.working));
-            self.subtree.insert(key, (hash, target.clone()));
+            let job = RasterJob::new_cached(enc, target.clone(), &mut plan.paints, &self.working, prev.as_ref());
+            let state = job.tile_state().clone();
+            plan.rasters.push(job);
+            self.subtree.insert(key, (hash, target.clone(), Some(state)));
             (target, None)
         } else {
             plan.lazy.push(RasterJob::new(enc, self.dummy.clone(), &mut plan.paints, &self.working));
@@ -4157,7 +4163,7 @@ impl Renderer {
     /// The offscreens kept between frames for isolated nodes (`iso:` and the node's id), effect chains (`fx:`) and
     /// mattes (`matte:`), with their sizes, in key order.
     pub fn cached_offscreens(&self) -> Vec<(String, [u32; 2])> {
-        let mut out: Vec<(String, [u32; 2])> = self.subtree.iter().map(|(k, (_, t))| (k.clone(), t.size)).collect();
+        let mut out: Vec<(String, [u32; 2])> = self.subtree.iter().map(|(k, (_, t, _))| (k.clone(), t.size)).collect();
         out.sort();
         out
     }
@@ -4397,7 +4403,7 @@ impl Renderer {
             .subtree
             .iter()
             .filter(|(k, _)| vector_key(k))
-            .map(|(_, (_, t))| target_bytes(t.size, t.tex.format()))
+            .map(|(_, (_, t, _))| target_bytes(t.size, t.tex.format()))
             .sum();
         // FrameGraph is public: callers may supply links that did not pass compilation.
         // Reject cycles before any recursive matte hashing or drawing, and clear old pixels.
@@ -4579,7 +4585,7 @@ impl Renderer {
                 false
             }
         });
-        self.subtree.retain(|k, (_, t)| {
+        self.subtree.retain(|k, (_, t, _)| {
             let keep = live.contains_key(k);
             if !keep {
                 evicted.push(t.clone());
