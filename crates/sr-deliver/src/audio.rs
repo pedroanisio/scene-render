@@ -394,14 +394,38 @@ impl Automation {
     }
 }
 
-/// Builds and renders the scene mix, or `None` when the scene has no audio.
-pub fn mix_scene(ev: &Evaluator, fps: f64, representation: Option<&str>) -> Result<Option<SceneAudio>, DeliverError> {
+/// Whether the scene has audio to mix: an `audioMix`, or a layer whose video asset carries sound. [`mix_scene`] gives
+/// `Some` exactly then.
+pub fn has_audio(ev: &Evaluator) -> bool {
     let p = ev.program();
-    let scene = &p.scene;
-    let am = scene.audio_mix.as_ref();
-    // layers whose video asset carries audio
-    let audio_layers: Vec<(u32, &m::Layer, &AssetsChild, usize, u64)> = p
-        .nodes
+    p.scene.audio_mix.is_some() || !audio_layers(p).is_empty()
+}
+
+/// Whether nothing the picture draws is read from the mix's analysis: no expression names a track (or a computed
+/// one), no link takes an `audio:` source, no audiogram draws one, and no beat grid takes its beats from a track. The
+/// frames are then the same with or without [`Analysis`], so a delivery need not wait for the mix to evaluate them.
+pub fn analysis_unread(p: &Program) -> bool {
+    let no_beats_from_a_track = p
+        .scene
+        .markers
+        .iter()
+        .flat_map(|mk| &mk.children)
+        .all(|c| !matches!(c, m::MarkersChild::BeatGrid(b) if b.source.is_some()));
+    no_beats_from_a_track && analysed_tracks(p).is_some_and(|tracks| tracks.is_empty())
+}
+
+/// Whether the picture reads nothing of the mix at all: no analysis ([`analysis_unread`]) and no shader effect with an
+/// audio input ([`sr_gpu::shader::reads_audio`]; transition shaders have none). Its frames then do not depend on the
+/// mix, and an output without an overlay (which may read it) can render them while the mix is made.
+pub fn picture_ignores_mix(p: &Program) -> bool {
+    let base = p.base_dirs.first().cloned().unwrap_or_default();
+    analysis_unread(p) && !sr_gpu::shader::reads_audio(p, &base)
+}
+
+/// Layers whose video asset carries audio: the node's index, the layer, its asset, the asset's document and its audio
+/// stream.
+fn audio_layers(p: &Program) -> Vec<(u32, &m::Layer, &AssetsChild, usize, u64)> {
+    p.nodes
         .iter()
         .enumerate()
         .filter_map(|(i, n)| {
@@ -416,7 +440,15 @@ pub fn mix_scene(ev: &Evaluator, fps: f64, representation: Option<&str>) -> Resu
                 _ => None,
             }
         })
-        .collect();
+        .collect()
+}
+
+/// Builds and renders the scene mix, or `None` when the scene has no audio.
+pub fn mix_scene(ev: &Evaluator, fps: f64, representation: Option<&str>) -> Result<Option<SceneAudio>, DeliverError> {
+    let p = ev.program();
+    let scene = &p.scene;
+    let am = scene.audio_mix.as_ref();
+    let audio_layers = audio_layers(p);
     if am.is_none() && audio_layers.is_empty() {
         return Ok(None);
     }
@@ -639,5 +671,68 @@ mod tests {
         assert!(ahead.load(missing.clone(), 0).is_err());
         assert!(one_by_one.load(missing, 0).is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn program(extra_assets: &str, composition: &str, markers: &str) -> Evaluator {
+        let xml = format!(
+            r##"<scene version="1.1"><project width="64" height="36" fps="25" duration="2" background="#000000"/>
+            <assets><audio id="musicA" src="music.wav"/>{extra_assets}</assets>
+            {markers}<composition>{composition}</composition>
+            <audioMix sampleRate="48000"><audioTrack id="music" asset="musicA"/></audioMix></scene>"##
+        );
+        let opts = sr_model::LoadOptions { verify_assets: false, base_dir: None };
+        let doc = sr_model::load_str(&xml, &opts).unwrap_or_else(|e| panic!("{e:?}"));
+        Evaluator::new(&doc, &Default::default()).unwrap()
+    }
+
+    const SHAPE: &str = r##"<shape id="s" shape="rect" width="10" height="10" fill="#FFFFFF">"##;
+
+    /// The picture reads nothing of the mix when no expression, link, audiogram or beat grid does: its frames are the
+    /// same with or without the analysis table, so a delivery need not wait for the mix to render them.
+    #[test]
+    fn a_scene_that_reads_no_analysis_does_not_wait_for_the_mix() {
+        let plain = program("", &format!("{SHAPE}</shape>"), "");
+        assert!(analysis_unread(plain.program()));
+        // a beat grid with no source of its own is a tempo, not a read of the mix
+        let tempo = program("", &format!("{SHAPE}</shape>"), r#"<markers><beatGrid bpm="120"/></markers>"#);
+        assert!(analysis_unread(tempo.program()));
+    }
+
+    #[test]
+    fn every_reader_of_the_analysis_is_found() {
+        let reads = |extra_assets: &str, body: &str, markers: &str| {
+            let ev = program(extra_assets, &format!("{SHAPE}{body}</shape>"), markers);
+            !analysis_unread(ev.program())
+        };
+        assert!(reads("", r#"<expression property="opacity">audioAmplitude("music")</expression>"#, ""));
+        assert!(
+            reads("", r#"<expression property="opacity">audioAmplitude(time)</expression>"#, ""),
+            "a track named by a computed value could be any"
+        );
+        assert!(reads("", r#"<link property="rotation" source="audio:music" scale="0"/>"#, ""));
+        assert!(reads(r#"<audiogram id="wave" source="music" width="80" height="12"/>"#, "", ""));
+        assert!(reads("", "", r#"<markers><beatGrid bpm="120" source="music"/></markers>"#), "beats come from the mix");
+    }
+
+    #[test]
+    fn a_scene_has_audio_when_it_mixes_a_track_or_a_layer_carries_sound() {
+        assert!(has_audio(&program("", "", "")));
+        let no_mix = |assets: &str, composition: &str| {
+            let xml = format!(
+                r##"<scene version="1.1"><project width="64" height="36" fps="25" duration="2" background="#000000"/>
+                <assets>{assets}</assets><composition>{composition}</composition></scene>"##
+            );
+            let opts = sr_model::LoadOptions { verify_assets: false, base_dir: None };
+            let doc = sr_model::load_str(&xml, &opts).unwrap_or_else(|e| panic!("{e:?}"));
+            Evaluator::new(&doc, &Default::default()).unwrap()
+        };
+        assert!(!has_audio(&no_mix("", &format!("{SHAPE}</shape>"))));
+        let clip = |has_audio: bool| {
+            format!(
+                r#"<video id="clip" src="clip.mp4" width="64" height="36" fps="25" duration="2" hasAudio="{has_audio}"/>"#
+            )
+        };
+        assert!(has_audio(&no_mix(&clip(true), r#"<layer id="v" asset="clip"/>"#)));
+        assert!(!has_audio(&no_mix(&clip(false), r#"<layer id="v" asset="clip"/>"#)));
     }
 }

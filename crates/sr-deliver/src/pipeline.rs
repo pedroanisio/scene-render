@@ -5,7 +5,9 @@
 //! evaluates frame N+2 when the document has no simulation; decoders run in
 //! their own FFmpeg processes ahead of the render position. Audio mixes
 //! first, because loudness normalisation needs the whole programme and the
-//! evaluator reads the analysis table built from it.
+//! evaluator reads the analysis table built from it; when nothing the picture
+//! draws reads the mix, the audio chain runs on a thread of its own beside the
+//! render and is joined where the mux needs its files.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::sync_channel;
@@ -136,6 +138,9 @@ pub struct Report {
     pub vector_seconds: f64,
     /// Seconds spent mixing audio.
     pub audio_seconds: f64,
+    /// Whether the audio chain (mix, loudness, ceiling) ran on a thread of its own while the picture rendered, because
+    /// nothing the picture draws reads the mix; otherwise the mix came first.
+    pub audio_beside_picture: bool,
     /// ISO 639-2 languages of delivered audio streams, in stream order.
     pub audio_languages: Vec<String>,
     /// Caption identities, including labels and kind, in delivery order.
@@ -897,6 +902,294 @@ fn record_loudness(report: &mut Report, m: &sr_audio::loudness::Measurement) {
     report.loudness_range = (m.short_term_max >= -70.0).then_some(m.range);
 }
 
+/// The audio chain of one delivery, from the mix to the files the mux reads, with everything it needs owned so that it
+/// can run on a thread of its own ([`PendingAudio`]) beside the picture's render, or in line before it.
+struct AudioJob {
+    /// The evaluator the delivery renders with.
+    ev: std::sync::Arc<Evaluator>,
+    /// The scene's mix when it was made already, for the evaluator's analysis table; `None` mixes it here.
+    mixed: Option<Option<SceneAudio>>,
+    output: m::Output,
+    codec: Codec,
+    segments: Option<crate::segments::TimeMap>,
+    fps: f64,
+    representation: Option<String>,
+    takes_audio: bool,
+    overlay_audio_needed: bool,
+    own_tracks: bool,
+    separate_description: bool,
+    description_id: Option<String>,
+    container: Option<Container>,
+    start: f64,
+    end: f64,
+    /// The delivery's scratch directory, which outlives the job.
+    tmp: PathBuf,
+    /// The main output's path.
+    path: PathBuf,
+    /// Hand the mix and the output's programme back, for the renderer's shaders and the overlay; otherwise they are
+    /// dropped as soon as the files are written.
+    keep: bool,
+}
+
+/// What an [`AudioJob`] made, for the report and the mux.
+#[derive(Default)]
+struct AudioDone {
+    /// Seconds spent mixing (when the job mixed) and rendering the output's programme.
+    seconds: f64,
+    /// What the meter read of the delivered mix, when the output carries audio.
+    loudness: Option<sr_audio::loudness::Measurement>,
+    ceiling: Option<crate::ceiling::Held>,
+    /// The bit depth of the final PCM written to the output's path (an audio-only WAV).
+    pcm_bits: Option<u16>,
+    /// The audio file the mux reads, and whether it is already coded for the output.
+    file: Option<(PathBuf, bool)>,
+    /// The audio description stream the mux carries.
+    description: Option<PathBuf>,
+    scene_audio: Option<SceneAudio>,
+    programme: Option<crate::segment_audio::OutputAudio>,
+}
+
+impl AudioDone {
+    /// Records the job's measurements in the report.
+    fn record(&self, report: &mut Report) {
+        report.audio_seconds += self.seconds;
+        if let Some(m) = &self.loudness {
+            record_loudness(report, m);
+        }
+        if let Some(held) = &self.ceiling {
+            report.audio_ceiling = Some(held.clone());
+        }
+        if let Some(bits) = self.pcm_bits {
+            report.files.push(report.path.clone());
+            report.passes = 1;
+            report.encoder = format!("pcm_s{bits}le");
+        }
+    }
+
+    /// Gives the encode its audio: the file the ceiling's probe coded is muxed as it is, any other is encoded with the
+    /// output's codec and bitrate.
+    fn mux_into(&self, spec: &mut EncodeSpec, output: &m::Output) {
+        spec.audio = self.file.clone().map(|(file, coded)| {
+            (file, if coded { "copy".to_string() } else { output.audio_codec.clone() }, output.audio_bitrate)
+        });
+        spec.tags.description = self.description.clone().map(|path| sr_media::encode::DescriptionTrack { path });
+    }
+}
+
+impl AudioJob {
+    fn run(self) -> Result<AudioDone, DeliverError> {
+        let AudioJob {
+            ev,
+            mixed,
+            output,
+            codec,
+            segments,
+            fps,
+            representation,
+            takes_audio,
+            overlay_audio_needed,
+            own_tracks,
+            separate_description,
+            description_id,
+            container,
+            start,
+            end,
+            tmp,
+            path,
+            keep,
+        } = self;
+        let p = ev.program();
+        let output = &output;
+        let description_id = description_id.as_deref();
+        let mut done = AudioDone::default();
+        let mut scene_audio = match mixed {
+            Some(mixed) => mixed,
+            None => {
+                let t = Instant::now();
+                let mixed = audio::mix_scene(&ev, fps, representation.as_deref())?;
+                done.seconds += t.elapsed().as_secs_f64();
+                mixed
+            }
+        };
+        if (takes_audio || overlay_audio_needed) && scene_audio.is_none() && own_tracks {
+            scene_audio = Some(audio::silent(p, fps));
+        }
+        // Without segments, selection attributes have no effect. Only output-owned
+        // tracks need a programme of their own, starting at output/@start.
+        let plain = match (&segments, own_tracks || separate_description) {
+            (None, true) => Some(crate::segment_audio::output_map(p, output)?),
+            _ => None,
+        };
+        let mut programme = match (segments.as_ref().or(plain.as_ref()), &scene_audio) {
+            (Some(tm), Some(sa)) if takes_audio || overlay_audio_needed => {
+                let t = Instant::now();
+                let mut a = crate::segment_audio::render_version(
+                    p,
+                    sa,
+                    output,
+                    tm,
+                    fps,
+                    representation.as_deref(),
+                    segments.is_some(),
+                    description_id.filter(|_| takes_audio).map(|id| (id, !separate_description)),
+                )?;
+                if !overlay_audio_needed {
+                    a.nodes.clear();
+                }
+                done.seconds += t.elapsed().as_secs_f64();
+                Some(a)
+            }
+            _ => None,
+        };
+        let wants_audio = takes_audio && scene_audio.is_some() && (segments.is_none() || programme.is_some());
+        if separate_description {
+            if let (Some(sa), Some(tm)) = (&scene_audio, segments.as_ref().or(plain.as_ref())) {
+                let described = crate::segment_audio::render_version(
+                    p,
+                    sa,
+                    output,
+                    tm,
+                    fps,
+                    representation.as_deref(),
+                    segments.is_some(),
+                    description_id.map(|id| (id, true)),
+                )?;
+                let origin = plain.as_ref().map_or(0.0, |tm| tm.composition(0, 0.0));
+                let mut part = audio::slice(&described.master, sa.mix.rate, start - origin, end - origin);
+                let master = &sa.mix.master;
+                if (master.limiter || master.normalize != sr_audio::mix::Normalize::None)
+                    && crate::ceiling::applies(&output.audio_codec, container)
+                {
+                    crate::ceiling::hold(
+                        &mut part,
+                        sa.mix.rate,
+                        sa.mix.layout,
+                        master.true_peak,
+                        output.audio_bitrate,
+                        &tmp,
+                    )?;
+                }
+                let file = tmp.join("description.wav");
+                sr_audio::wav::write(&file, &part, sa.mix.rate, 32, sa.mix.layout, false)?;
+                done.description = Some(file);
+            }
+        }
+        if let (true, Some(sa)) = (wants_audio, &scene_audio) {
+            // Plain programmes start at their mapped composition time; the scene and
+            // explicitly segmented programmes start at zero on their respective clocks.
+            let origin = plain.as_ref().map_or(0.0, |tm| tm.composition(0, 0.0));
+            let master = programme.as_ref().map(|a| &a.master).unwrap_or(&sa.mixed.master);
+            let mut part = audio::slice(master, sa.mix.rate, start - origin, end - origin);
+            let weights = sa.mix.layout.loudness_weights();
+            done.loudness = Some(sr_audio::loudness::measure(&part, sa.mix.rate as f64, &weights));
+            let container = output
+                .container
+                .map(|c| c.as_str().to_string())
+                .and_then(|c| Container::parse(&c))
+                .or_else(|| Container::from_path(&path));
+            // a lossy encode can leave the master's ceiling: hold it for the stream that is delivered
+            let master_settings = &sa.mix.master;
+            let limited = master_settings.limiter || master_settings.normalize != sr_audio::mix::Normalize::None;
+            // the ceiling's last probe is the AAC encode of the mix as it is delivered: a picture's container muxes it
+            // as it is
+            let mut probed = None;
+            if limited && crate::ceiling::applies(&output.audio_codec, container) {
+                let (held, coded) = crate::ceiling::hold_encoded(
+                    &mut part,
+                    sa.mix.rate,
+                    sa.mix.layout,
+                    master_settings.true_peak,
+                    output.audio_bitrate,
+                    &tmp,
+                )?;
+                if !held.passes.is_empty() {
+                    done.loudness = Some(sr_audio::loudness::measure(&part, sa.mix.rate as f64, &weights));
+                }
+                done.ceiling = Some(held);
+                probed = Some(coded);
+            }
+            let stream_copy =
+                !codec.is_audio_only() && matches!(container, Some(Container::Mp4 | Container::Mov | Container::Mkv));
+            if let Some(coded) = probed.filter(|_| stream_copy) {
+                done.file = Some((coded, true));
+            } else if codec.is_audio_only() && container.is_none_or(|c| c == Container::Wav) {
+                // final PCM with TPDF dither at the mix bit depth
+                sr_audio::wav::write(&path, &part, sa.mix.rate, sa.bits, sa.mix.layout, sa.dither)?;
+                done.pcm_bits = Some(sa.bits);
+            } else {
+                let file = tmp.join("mix.wav");
+                sr_audio::wav::write(&file, &part, sa.mix.rate, 32, sa.mix.layout, false)?;
+                done.file = Some((file, false));
+            }
+        }
+        if keep {
+            done.scene_audio = scene_audio;
+            done.programme = programme.take();
+        }
+        Ok(done)
+    }
+}
+
+/// An [`AudioJob`] running on a thread of its own, joined before the mux needs its files; dropping it joins it, so
+/// the scratch directory is never removed under it.
+struct PendingAudio(Option<std::thread::JoinHandle<Result<AudioDone, DeliverError>>>);
+
+impl PendingAudio {
+    fn spawn(job: AudioJob) -> PendingAudio {
+        PendingAudio(Some(std::thread::spawn(move || job.run())))
+    }
+
+    fn join(mut self) -> Result<AudioDone, DeliverError> {
+        let handle = self.0.take().expect("a pending audio job is joined once");
+        handle
+            .join()
+            .unwrap_or_else(|p| Err(DeliverError::Invalid(format!("the audio chain panicked: {}", panic_message(&*p)))))
+    }
+}
+
+impl Drop for PendingAudio {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Joins the audio chain, when it runs beside the picture and has not been joined yet: records what it measured and
+/// gives the encode its audio.
+fn join_audio(
+    pending: &mut Option<PendingAudio>,
+    report: &mut Report,
+    spec: &mut EncodeSpec,
+    output: &m::Output,
+) -> Result<(), DeliverError> {
+    if let Some(job) = pending.take() {
+        let done = job.join()?;
+        done.record(report);
+        done.mux_into(spec, output);
+    }
+    Ok(())
+}
+
+/// Starts the encoder of a single stream. The audio chain, when it runs beside the picture, is joined first: the
+/// encoder opens the audio file as it starts. A delivery that carries no audio does not wait for it.
+fn start_encoder(
+    spec: &mut EncodeSpec,
+    output: &m::Output,
+    pending: &mut Option<PendingAudio>,
+    late: &mut Option<AudioDone>,
+    carries_audio: bool,
+) -> Result<Feeder, DeliverError> {
+    if carries_audio {
+        if let Some(job) = pending.take() {
+            let done = job.join()?;
+            done.mux_into(spec, output);
+            *late = Some(done);
+        }
+    }
+    Feeder::start(spec)
+}
+
 fn run_delivery(
     doc: &sr_model::Document,
     output: &m::Output,
@@ -917,7 +1210,7 @@ fn run_delivery(
         opts.out_dir.clone().or_else(|| Some(doc.base_dir().to_path_buf())).unwrap_or_else(|| PathBuf::from("."));
     let representation = opts.representation.clone().or_else(|| output.representation.clone());
     let mut eo = eval_options(output, opts);
-    let ev0 = Evaluator::new(doc, &eo).map_err(DeliverError::Document)?;
+    let ev0 = std::sync::Arc::new(Evaluator::new(doc, &eo).map_err(DeliverError::Document)?);
     let p0 = ev0.program();
     let frame_rate = output.fps.unwrap_or(p0.fps);
     let fps = frame_rate.as_f64();
@@ -955,16 +1248,32 @@ fn run_delivery(
     report
         .warnings
         .extend(doc.warnings().iter().filter(|d| !d.is_info()).map(|d| format!("{}: {}", d.code, d.message)));
-    // audio first: the mix feeds the analysis table
-    let t_audio = Instant::now();
-    let mut scene_audio: Option<SceneAudio> = audio::mix_scene(&ev0, fps, representation.as_deref())?;
-    report.audio_seconds = t_audio.elapsed().as_secs_f64();
-    let ev = match &scene_audio {
-        Some(sa) => {
-            eo.analysis = sa.analysis.clone();
-            Evaluator::new(doc, &eo).map_err(DeliverError::Document)?
-        }
-        None => ev0,
+    // with segments the programme is the output's own mix in output time (its own tracks may be its
+    // only audio)
+    let takes_audio = output.audio && (codec.takes_audio() || codec.is_audio_only());
+    // Shader inputs are still needed for silent video and image-sequence exports.
+    let overlay_audio_needed = output.overlay.is_some();
+    // The mix feeds the analysis table the evaluator reads, and the shaders' and the overlay's audio, so it comes first.
+    // When the picture reads none of that (and the output is a picture, which can wait for the audio files where the
+    // mux needs them), the audio chain runs on a thread of its own beside the render instead.
+    let beside = !codec.is_audio_only() && !overlay_audio_needed && audio::picture_ignores_mix(p0);
+    report.audio_beside_picture = beside;
+    let mut mixed: Option<Option<SceneAudio>> = None;
+    let ev = if beside {
+        ev0.clone()
+    } else {
+        let t_audio = Instant::now();
+        let scene_audio = audio::mix_scene(&ev0, fps, representation.as_deref())?;
+        report.audio_seconds = t_audio.elapsed().as_secs_f64();
+        let ev = match &scene_audio {
+            Some(sa) => {
+                eo.analysis = sa.analysis.clone();
+                std::sync::Arc::new(Evaluator::new(doc, &eo).map_err(DeliverError::Document)?)
+            }
+            None => ev0.clone(),
+        };
+        mixed = Some(scene_audio);
+        ev
     };
     let p = ev.program();
     report.evaluation_warnings.extend_from_slice(ev.warnings());
@@ -1034,11 +1343,6 @@ fn run_delivery(
         let tm = crate::segments::TimeMap::span_of(p, 0.0, p.duration).map_err(DeliverError::Invalid)?;
         chapters = write_chapters(p, &tm, start, end, &tmp)?;
     }
-    // with segments the programme is the output's own mix in output time (its own tracks may be its
-    // only audio)
-    let takes_audio = output.audio && (codec.takes_audio() || codec.is_audio_only());
-    // Shader inputs are still needed for silent video and image-sequence exports.
-    let overlay_audio_needed = output.overlay.is_some();
     let own_tracks = output.children.iter().any(|c| matches!(c, m::OutputChild::AudioTrack(_)));
     let container = output
         .container
@@ -1068,70 +1372,46 @@ fn run_delivery(
         );
     }
 
-    if (takes_audio || overlay_audio_needed) && scene_audio.is_none() && own_tracks {
-        scene_audio = Some(audio::silent(p, fps));
-    }
-    // Without segments, selection attributes have no effect. Only output-owned
-    // tracks need a programme of their own, starting at output/@start.
-    let plain = match (&segments, own_tracks || separate_description) {
-        (None, true) => Some(crate::segment_audio::output_map(p, output)?),
-        _ => None,
+    // What the audio chain will deliver, known before it runs: the scene mixes something (or the output's own tracks
+    // are all its audio), an output with segments or tracks of its own has a programme, and the programme is what
+    // the audio streams are made of.
+    let mix_exists = audio::has_audio(&ev) || ((takes_audio || overlay_audio_needed) && own_tracks);
+    let programme_exists = (segments.is_some() || own_tracks || separate_description)
+        && mix_exists
+        && (takes_audio || overlay_audio_needed);
+    let wants_audio = takes_audio && mix_exists && (segments.is_none() || programme_exists);
+    let job = AudioJob {
+        ev: ev.clone(),
+        mixed,
+        output: output.clone(),
+        codec,
+        segments: segments.clone(),
+        fps,
+        representation: representation.clone(),
+        takes_audio,
+        overlay_audio_needed,
+        own_tracks,
+        separate_description,
+        description_id: description_id.map(str::to_string),
+        container,
+        start,
+        end,
+        tmp: tmp.0.clone(),
+        path: report.path.clone(),
+        keep: !beside,
     };
-    let mut programme = match (segments.as_ref().or(plain.as_ref()), &scene_audio) {
-        (Some(tm), Some(sa)) if takes_audio || overlay_audio_needed => {
-            let t = Instant::now();
-            let mut a = crate::segment_audio::render_version(
-                p,
-                sa,
-                output,
-                tm,
-                fps,
-                representation.as_deref(),
-                segments.is_some(),
-                description_id.filter(|_| takes_audio).map(|id| (id, !separate_description)),
-            )?;
-            if !overlay_audio_needed {
-                a.nodes.clear();
-            }
-            report.audio_seconds += t.elapsed().as_secs_f64();
-            Some(a)
-        }
-        _ => None,
-    };
-    let wants_audio = takes_audio && scene_audio.is_some() && (segments.is_none() || programme.is_some());
-    let mut description_file = None;
-    if separate_description {
-        if let (Some(sa), Some(tm)) = (&scene_audio, segments.as_ref().or(plain.as_ref())) {
-            let described = crate::segment_audio::render_version(
-                p,
-                sa,
-                output,
-                tm,
-                fps,
-                representation.as_deref(),
-                segments.is_some(),
-                description_id.map(|id| (id, true)),
-            )?;
-            let origin = plain.as_ref().map_or(0.0, |tm| tm.composition(0, 0.0));
-            let mut part = audio::slice(&described.master, sa.mix.rate, start - origin, end - origin);
-            let master = &sa.mix.master;
-            if (master.limiter || master.normalize != sr_audio::mix::Normalize::None)
-                && crate::ceiling::applies(&output.audio_codec, container)
-            {
-                crate::ceiling::hold(
-                    &mut part,
-                    sa.mix.rate,
-                    sa.mix.layout,
-                    master.true_peak,
-                    output.audio_bitrate,
-                    &tmp,
-                )?;
-            }
-            let path = tmp.join("description.wav");
-            sr_audio::wav::write(&path, &part, sa.mix.rate, 32, sa.mix.layout, false)?;
-            description_file = Some(sr_media::encode::DescriptionTrack { path });
-        }
+    // Beside the picture, the chain's files are needed where the mux starts; run in line, it is done now.
+    let mut pending: Option<PendingAudio> = None;
+    let mut audio_done = AudioDone::default();
+    if beside {
+        pending = Some(PendingAudio::spawn(job));
+    } else {
+        audio_done = job.run()?;
+        audio_done.record(report);
+        debug_assert_eq!(audio_done.file.is_some() || audio_done.pcm_bits.is_some(), wants_audio);
     }
+    // the audio streams, when the output carries any: joined before the encoder opens their files
+    let carries_audio = takes_audio && mix_exists;
     let main_language = crate::metadata::audio_language(
         p,
         output,
@@ -1152,63 +1432,9 @@ fn run_delivery(
         report.audio_languages.push(main_language.clone());
         report.audio_languages.extend(description_language.iter().cloned());
     }
-    let mut audio_file = None;
-    // the file is already coded for the output, by the ceiling's probe
-    let mut audio_coded = false;
-    if let (true, Some(sa)) = (wants_audio, &scene_audio) {
-        // Plain programmes start at their mapped composition time; the scene and
-        // explicitly segmented programmes start at zero on their respective clocks.
-        let origin = plain.as_ref().map_or(0.0, |tm| tm.composition(0, 0.0));
-        let master = programme.as_ref().map(|a| &a.master).unwrap_or(&sa.mixed.master);
-        let mut part = audio::slice(master, sa.mix.rate, start - origin, end - origin);
-        let weights = sa.mix.layout.loudness_weights();
-        record_loudness(report, &sr_audio::loudness::measure(&part, sa.mix.rate as f64, &weights));
-        let container = output
-            .container
-            .map(|c| c.as_str().to_string())
-            .and_then(|c| Container::parse(&c))
-            .or_else(|| Container::from_path(&report.path));
-        // a lossy encode can leave the master's ceiling: hold it for the stream that is delivered
-        let master_settings = &sa.mix.master;
-        let limited = master_settings.limiter || master_settings.normalize != sr_audio::mix::Normalize::None;
-        // the ceiling's last probe is the AAC encode of the mix as it is delivered: a picture's container muxes it
-        // as it is
-        let mut probed = None;
-        if limited && crate::ceiling::applies(&output.audio_codec, container) {
-            let (held, coded) = crate::ceiling::hold_encoded(
-                &mut part,
-                sa.mix.rate,
-                sa.mix.layout,
-                master_settings.true_peak,
-                output.audio_bitrate,
-                &tmp,
-            )?;
-            if !held.passes.is_empty() {
-                record_loudness(report, &sr_audio::loudness::measure(&part, sa.mix.rate as f64, &weights));
-            }
-            report.audio_ceiling = Some(held);
-            probed = Some(coded);
-        }
-        let stream_copy =
-            !codec.is_audio_only() && matches!(container, Some(Container::Mp4 | Container::Mov | Container::Mkv));
-        if let Some(coded) = probed.filter(|_| stream_copy) {
-            audio_file = Some(coded);
-            audio_coded = true;
-        } else if codec.is_audio_only() && container.is_none_or(|c| c == Container::Wav) {
-            // final PCM with TPDF dither at the mix bit depth
-            sr_audio::wav::write(&report.path, &part, sa.mix.rate, sa.bits, sa.mix.layout, sa.dither)?;
-            report.files.push(report.path.clone());
-            report.passes = 1;
-            report.encoder = format!("pcm_s{}le", sa.bits);
-        } else {
-            let f = tmp.join("mix.wav");
-            sr_audio::wav::write(&f, &part, sa.mix.rate, 32, sa.mix.layout, false)?;
-            audio_file = Some(f);
-        }
-    }
     if codec.is_audio_only() {
         if report.files.is_empty() {
-            let Some(f) = audio_file.clone() else {
+            let Some((f, _)) = audio_done.file.clone() else {
                 return Err(DeliverError::Invalid("audio-only output, but the scene has no audio".into()));
             };
             let mut spec = base_spec(
@@ -1271,7 +1497,7 @@ fn run_delivery(
         renderer.burn_captions = output.burn_captions.clone();
         // with segments, captions burn in output time over the placed picture
         renderer.captions_off = segments.is_some();
-        if let Some(sa) = scene_audio.as_mut() {
+        if let Some(sa) = audio_done.scene_audio.as_mut() {
             // the mix is done with these buffers (the master was sliced to disk above), so
             // the shaders take them over rather than doubling a programme's worth of audio
             let mut channels: std::collections::HashMap<String, std::sync::Arc<Vec<Vec<f32>>>> =
@@ -1281,7 +1507,7 @@ fn run_delivery(
                 Some(std::sync::Arc::new(sr_gpu::shader::AudioSignals { rate: sa.mix.rate as f64, channels }));
         }
         let overlay_audio = renderer.audio.as_ref().filter(|_| overlay_audio_needed).map(|audio| {
-            if let Some(mixed) = programme.take() {
+            if let Some(mixed) = audio_done.programme.take() {
                 let mut channels: std::collections::HashMap<_, _> =
                     mixed.nodes.into_iter().map(|(id, samples)| (id, std::sync::Arc::new(samples))).collect();
                 channels.insert("master".into(), std::sync::Arc::new(mixed.master));
@@ -1434,11 +1660,9 @@ fn run_delivery(
                 }
             }
         }
-        let audio_in = audio_file.clone().map(|f| {
-            let codec = if audio_coded { "copy".to_string() } else { output.audio_codec.clone() };
-            (f, codec, output.audio_bitrate)
-        });
-        let mut spec = base_spec(output, &report.path, codec, size, fps, format, &color, audio_in, p, opts);
+        let mut spec = base_spec(output, &report.path, codec, size, fps, format, &color, None, p, opts);
+        // run in line, the chain's files are known now; beside the picture they are joined where the mux needs them
+        audio_done.mux_into(&mut spec, output);
         let pixel_aspect = p.scene.project.pixel_aspect.get();
         if spec.tags.sar.is_none() && (pixel_aspect - 1.0).abs() > pixel_aspect * 1e-6 {
             return Err(DeliverError::Invalid(format!(
@@ -1446,7 +1670,6 @@ fn run_delivery(
             )));
         }
         spec.tags.audio_language = Some(main_language.clone());
-        spec.tags.description = description_file;
         spec.tags.description_language = description_language;
         if spec.container() == Some(Container::Webm) {
             if let Some((n, d)) = spec.tags.sar {
@@ -1534,6 +1757,8 @@ fn run_delivery(
             })?;
             feeder.finish()?;
             report.frames = n;
+            // the intermediate has no audio: the passes that mux it need the chain's files
+            join_audio(&mut pending, report, &mut spec, output)?;
             let duration = end - start;
             let audio_bps = if spec.audio.is_some() {
                 output.audio_bitrate * (1 + u64::from(spec.tags.description.is_some()))
@@ -1809,13 +2034,18 @@ fn run_delivery(
             // every chunk was rendered, so every chunk has been judged; text the workers could not
             // measure in place is measured by this thread's renderer
             progress(n, n);
+            // the chunks carry no audio: the join muxes the chain's files
+            join_audio(&mut pending, report, &mut spec, output)?;
             spec.join(&parts, &tmp.join("segments.txt"))?;
             video.judge(judge, &times, report)?;
             report.frames = n;
             report.passes = 1;
             report.segments = workers as u32;
         } else {
-            let mut feeder = Feeder::start(&spec)?;
+            // The encoder opens the audio files as it starts. Run beside the picture, the chain has until the first
+            // frame is rendered to finish them, so the encoder starts then.
+            let mut feeder: Option<Feeder> = None;
+            let mut late: Option<AudioDone> = None;
             let mut done = 0;
             let mut judge = Judge::new(checks.flash_on());
             video.stage.seek(spec.start_number as u32);
@@ -1823,14 +2053,26 @@ fn run_delivery(
             video.run(&times, report, &mut judge, |b| {
                 done += 1;
                 progress(done, n);
-                feeder.send(b)
+                if feeder.is_none() {
+                    feeder = Some(start_encoder(&mut spec, output, &mut pending, &mut late, carries_audio)?);
+                }
+                feeder.as_mut().expect("the encoder is started").send(b)
             })?;
+            let mut feeder = match feeder {
+                Some(f) => f,
+                None => start_encoder(&mut spec, output, &mut pending, &mut late, carries_audio)?,
+            };
             // the file is closed before the checks' post pass: a check that fails, or takes long, leaves it whole
             report.encoder = feeder.finish()?;
+            if let Some(chain) = late.take() {
+                chain.record(report);
+            }
             video.judge(judge, &times, report)?;
             report.frames = n;
             report.passes = 1;
         }
+        // an output without audio never waited for the chain; its errors and measurements come in here
+        join_audio(&mut pending, report, &mut spec, output)?;
         report.render_fps = n as f64 / t_video.elapsed().as_secs_f64();
         if let Some(msg) = report.accessibility_error.clone() {
             return Err(DeliverError::Accessibility(msg));
