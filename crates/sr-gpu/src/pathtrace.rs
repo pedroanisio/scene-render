@@ -2092,6 +2092,50 @@ pub struct PtInputs<'a> {
     pub backdrop: Option<&'a wgpu::TextureView>,
     pub black: &'a wgpu::TextureView,
     pub sampler: &'a wgpu::Sampler,
+    /// Mip 0 of the dome as the shader samples it (f16-rounded), for the CPU tracer.
+    pub env_texels: Option<&'a (u32, u32, Vec<[f32; 4]>)>,
+}
+
+/// The CPU tracer's view of a pass's uniform block.
+fn radiance_params(base: &Params, lights: &[PtLight]) -> cpu::RadianceParams {
+    cpu::RadianceParams {
+        size: [base.size[0] as u32, base.size[1] as u32],
+        inv_view_proj: base.inv_view_proj,
+        cam_to_world: base.cam_to_world,
+        cam: base.cam,
+        env: base.env,
+        lights: lights
+            .iter()
+            .map(|l| cpu::PLight { pos: l.pos, dir: l.dir, color: l.color, size: l.size, right: l.right })
+            .collect(),
+    }
+}
+
+/// Whether a pass runs on the CPU tracer: a software adapter, `SR_PT_CPU` not "0", and none of the features the
+/// CPU loop leaves out (adaptive sampling, light grids, counters, hardware rays, procedural sky, backdrop).
+#[allow(clippy::too_many_arguments)]
+fn cpu_trace_selected(
+    cpu_adapter: bool,
+    enabled: bool,
+    supported: bool,
+    base: &Params,
+    grid: bool,
+    counter: bool,
+    rays: bool,
+    backdrop: bool,
+    env_available: bool,
+) -> bool {
+    cpu_adapter
+        && enabled
+        && supported
+        && base.out[3] <= 0.0
+        && !grid
+        && !counter
+        && !rays
+        && base.sky[1][3] <= 0.5
+        && base.misc[0] <= 0.5
+        && !backdrop
+        && (base.env[0] <= 0.5 || env_available)
 }
 
 /// Traces `scene` into `out` (premultiplied, the rasteriser's output representation).
@@ -2386,6 +2430,44 @@ pub(crate) fn render_cached(
         enc.clear_buffer(&accum, 0, None);
         enc.clear_buffer(&guide, 0, None);
         let base = make_base(tile);
+        let rp = radiance_params(&base, &data.lights);
+        let on_cpu = cpu_trace_selected(
+            pt.cpu_adapter,
+            std::env::var("SR_PT_CPU").map_or(true, |v| v != "0"),
+            cpu::supported(data, &rp),
+            &base,
+            grid_plan.is_some(),
+            counter.is_some(),
+            rays.is_some(),
+            inputs.backdrop.is_some(),
+            inputs.env_texels.is_some(),
+        );
+        if on_cpu {
+            let cpu_env = cpu::EnvMap {
+                w: inputs.env_texels.map_or(1, |e| e.0),
+                h: inputs.env_texels.map_or(1, |e| e.1),
+                rgba: inputs.env_texels.map_or_else(|| vec![[0.0; 4]], |e| e.2.clone()),
+                rot: base.env_rot,
+                intensity: base.env[1],
+            };
+            let (acc, gd) = cpu::trace_tile(
+                data,
+                &cpu_env,
+                &rp,
+                [tile.origin[0], tile.origin[1], tile.size[0], tile.size[1]],
+                0,
+                samples,
+            );
+            for (dst, src) in [(&accum, &acc), (&guide, &gd)] {
+                let bytes: &[u8] = bytemuck::cast_slice(src);
+                let staged = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("pt-cpu-trace"),
+                    contents: bytes,
+                    usage: wgpu::BufferUsages::COPY_SRC,
+                });
+                enc.copy_buffer_to_buffer(&staged, 0, dst, 0, bytes.len() as u64);
+            }
+        }
         let mut slots: Vec<Params> = Vec::new();
         for c in 0..chunks {
             let start = c * PER_DISPATCH;
@@ -2444,7 +2526,7 @@ pub(crate) fn render_cached(
         // passes that read the accumulation bind a stand-in in its read-write slot
         let g_read = group0(&stand_in);
         let groups = [tile.size[0].div_ceil(8), tile.size[1].div_ceil(8)];
-        {
+        if !on_cpu {
             let stamp = timer.as_mut().and_then(|t| t.labelled_pair("pathtrace trace"));
             let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("pathtrace"),
@@ -2613,6 +2695,71 @@ mod wgsl_layout_tests {
         assert_eq!(super::trace_stride_for(false, 14400), 1);
         assert_eq!(super::trace_stride_for(true, 14400), super::trace_stride(14400));
         assert_ne!(super::trace_stride_for(true, 14400), 1);
+    }
+
+    fn zero_params() -> super::Params {
+        bytemuck::Zeroable::zeroed()
+    }
+
+    #[test]
+    fn params_map_field_by_field_to_radiance_params() {
+        let mut p = zero_params();
+        p.size = [1280.0, 720.0, 0.0, 0.0];
+        p.cam = [0.1, 0.0, 3.0, 4.0];
+        p.env = [2.0, 1.5, 0.0, 0.0];
+        p.inv_view_proj[1][2] = 7.0;
+        p.cam_to_world[3][0] = -2.0;
+        let light = super::PtLight {
+            pos: [0.0, 0.0, 0.0, 1.0],
+            dir: [0.0, -1.0, 0.0, 0.0],
+            color: [1.0, 2.0, 3.0, 1.0],
+            spot: [9.0; 4],
+            size: [0.5, 1.0, 0.0, 0.0],
+            right: [1.0, 0.0, 0.0, 3.0],
+        };
+        let r = super::radiance_params(&p, &[light]);
+        assert_eq!(r.size, [1280, 720]);
+        assert_eq!(r.inv_view_proj, p.inv_view_proj);
+        assert_eq!(r.cam_to_world, p.cam_to_world);
+        assert_eq!(r.cam, p.cam);
+        assert_eq!(r.env, p.env);
+        assert_eq!(r.lights.len(), 1);
+        let l = &r.lights[0];
+        assert_eq!(
+            (l.pos, l.dir, l.color, l.size, l.right),
+            (light.pos, light.dir, light.color, light.size, light.right)
+        );
+    }
+
+    #[test]
+    fn cpu_trace_is_selected_only_when_nothing_disables_it() {
+        let sel = |p: &super::Params, f: [bool; 8]| {
+            super::cpu_trace_selected(f[0], f[1], f[2], p, f[3], f[4], f[5], f[6], f[7])
+        };
+        let on = [true, true, true, false, false, false, false, true];
+        let base = zero_params();
+        assert!(sel(&base, on));
+        for k in 0..8 {
+            let mut f = on;
+            f[k] = !f[k];
+            // the env is only required when the pass shows or lights with a dome
+            assert!(!sel(&base, f) || k == 7, "flag {k}");
+        }
+        let mut dome = zero_params();
+        dome.env[0] = 1.0;
+        assert!(sel(&dome, on));
+        let mut off = on;
+        off[7] = false;
+        assert!(!sel(&dome, off));
+        let mut p = zero_params();
+        p.out[3] = 0.05;
+        assert!(!sel(&p, on));
+        let mut p = zero_params();
+        p.sky[1][3] = 1.0;
+        assert!(!sel(&p, on));
+        let mut p = zero_params();
+        p.misc[0] = 1.0;
+        assert!(!sel(&p, on));
     }
 
     #[test]

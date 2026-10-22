@@ -1813,6 +1813,7 @@ impl ThreeEngine {
                 backdrop,
                 black: &self.black_env,
                 sampler: &self.repeat_smp,
+                env_texels: scene.env.as_ref().map(|e| &*e.env.mip0),
             };
             let timing = crate::pathtrace::render_cached(
                 self.pt.as_ref().expect("built"),

@@ -336,7 +336,7 @@ fn tiled_frames_equal_whole_frames_in_grid_mode() {
     let eng = ThreeEngine::new(g.device.clone(), g.queue.clone());
     let black = eng.upload_f16([1, 1], &[[0.0; 4]]).create_view(&Default::default());
     let smp = g.device.create_sampler(&Default::default());
-    let input = PtInputs { env: &black, backdrop: None, black: &black, sampler: &smp };
+    let input = PtInputs { env: &black, backdrop: None, black: &black, sampler: &smp, env_texels: None };
     let size = [200, 120];
     let cache = Arc::new({
         let scale = Transform::identity();

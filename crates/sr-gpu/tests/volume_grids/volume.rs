@@ -50,7 +50,7 @@ fn gpu_volume_transport_matches_analytic_slabs_and_overlapping_media() {
     };
     let black = eng.upload_f16([1, 1], &[[0.0; 4]]).create_view(&Default::default());
     let smp = g.device.create_sampler(&Default::default());
-    let input = PtInputs { env: &black, backdrop: None, black: &black, sampler: &smp };
+    let input = PtInputs { env: &black, backdrop: None, black: &black, sampler: &smp, env_texels: None };
     let pt = PtGpu::new(&g.device, wgpu::TextureFormat::Rgba16Float);
     let mut sparse = SparseGrid::new(Transform::identity(), 0.0, 16).unwrap();
     for y in -4..=4 {
@@ -953,7 +953,7 @@ fn shadow_march_dims_by_the_optical_depth_of_thin_dense_media_and_ignores_neglig
     let mut eng = ThreeEngine::new(g.device.clone(), g.queue.clone());
     let black = eng.upload_f16([1, 1], &[[0.0; 4]]).create_view(&Default::default());
     let smp = g.device.create_sampler(&Default::default());
-    let input = PtInputs { env: &black, backdrop: None, black: &black, sampler: &smp };
+    let input = PtInputs { env: &black, backdrop: None, black: &black, sampler: &smp, env_texels: None };
     let pt = PtGpu::new(&g.device, wgpu::TextureFormat::Rgba16Float);
     let plane = sr_3d::prim::plane(20.0, 20.0, 1);
     let light = sr_gpu::three::Light3 {
