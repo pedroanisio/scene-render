@@ -682,11 +682,24 @@ struct Feeder {
     complete: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Bytes of frames the queue in front of an encoder may hold.
+const FRAME_QUEUE_BYTES: usize = 96_000_000;
+/// The fewest and the most frames that queue holds, whatever their size.
+const FRAME_QUEUE_MIN: usize = 3;
+const FRAME_QUEUE_MAX: usize = 48;
+
+/// How many frames of `frame_bytes` wait in front of an encoder. A hardware encoder opens its session on the first
+/// frame (FFmpeg takes about twenty frames and then stops reading for the 0.2 s that takes): the queue lets the render
+/// go on meanwhile, in a bounded amount of memory.
+fn frame_queue(frame_bytes: usize) -> usize {
+    (FRAME_QUEUE_BYTES / frame_bytes.max(1)).clamp(FRAME_QUEUE_MIN, FRAME_QUEUE_MAX)
+}
+
 impl Feeder {
     fn start(spec: &EncodeSpec) -> Result<Feeder, DeliverError> {
         use std::sync::atomic::Ordering::Relaxed;
         let mut enc = Encoder::start(spec)?;
-        let (tx, rx) = sync_channel::<Vec<u8>>(3);
+        let (tx, rx) = sync_channel::<Vec<u8>>(frame_queue(spec.input.frame_bytes(spec.width, spec.height)));
         let complete = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let all_sent = complete.clone();
         let handle = std::thread::Builder::new().name("sr-encode".into()).spawn(move || {
@@ -735,6 +748,56 @@ impl Drop for Feeder {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
+    }
+}
+
+/// Finishes encoders, one at a time, on a thread of its own: a chunk's last frames drain and its file closes while the
+/// next chunk renders. At most one drain runs, so a hardware encoder never holds more sessions than the one finishing
+/// and the one starting.
+#[derive(Default)]
+struct Closing(std::collections::VecDeque<std::thread::JoinHandle<Result<String, DeliverError>>>);
+
+impl Closing {
+    /// The encoder name of the oldest drain, once it is done.
+    fn wait_one(&mut self) -> Result<Option<String>, DeliverError> {
+        match self.0.pop_front() {
+            Some(h) => h
+                .join()
+                .map_err(|p| DeliverError::Invalid(format!("encoder thread panicked: {}", panic_message(&*p))))?
+                .map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Waits for every drain; the name of the last one's encoder.
+    fn wait(&mut self) -> Result<Option<String>, DeliverError> {
+        let mut name = None;
+        let mut first_error = None;
+        while !self.0.is_empty() {
+            match self.wait_one() {
+                Ok(n) => name = n.or(name),
+                Err(e) => first_error = first_error.or(Some(e)),
+            }
+        }
+        first_error.map_or(Ok(name), Err)
+    }
+
+    /// Finishes `feeder` in the background. With [`DRAINS`] already running, waits for the oldest first and returns
+    /// its encoder name.
+    fn start(&mut self, mut feeder: Feeder) -> Result<Option<String>, DeliverError> {
+        let previous = if self.0.len() >= DRAINS { self.wait_one()? } else { None };
+        self.0.push_back(std::thread::Builder::new().name("sr-finish".into()).spawn(move || feeder.finish())?);
+        Ok(previous)
+    }
+}
+
+/// Encoders that drain at once behind the chunk that renders.
+const DRAINS: usize = 1;
+
+impl Drop for Closing {
+    fn drop(&mut self) {
+        // the delivery must not end with an encoder still running
+        let _ = self.wait();
     }
 }
 
@@ -1528,12 +1591,14 @@ fn run_delivery(
             // grids (about 11.4 MiB) per worker, independent of output duration.
             let mut judge = Judge::new(checks.flash_on());
             let (senders, receivers): (Vec<_>, Vec<_>) = (0..workers).map(|_| sync_channel::<Seen>(2)).unzip();
+            let mut lend = (workers == 1).then_some(&mut video);
             let results: Vec<Result<(Report, String), DeliverError>> = std::thread::scope(|sc| {
                 let handles: Vec<_> = worker_gpus
                     .iter()
                     .zip(senders)
                     .enumerate()
                     .map(|(worker_index, (gpu, tx))| {
+                        let lent = lend.take();
                         let (
                             cancelled,
                             done,
@@ -1562,53 +1627,80 @@ fn run_delivery(
                             &overlay_audio,
                         );
                         sc.spawn(move || -> Result<(Report, String), DeliverError> {
-                            let gpu = gpu.clone();
-                            let mut renderer = Renderer::new(gpu.clone(), p);
-                            renderer.quality = opts.quality;
-                            renderer.path_noise = opts.path_noise;
-                            renderer.representation = representation.clone();
-                            renderer.burn_captions = output.burn_captions.clone();
-                            renderer.audio = audio.clone();
-                            renderer.captions_off = map.is_some();
-                            let stage = OutputStage::new(gpu.device.clone(), gpu.queue.clone());
-                            let mut overlay = crate::overlay::Overlay::new(
-                                doc,
-                                output,
-                                timeline,
-                                size,
-                                captions,
-                                &gpu,
-                                eo,
-                                opts.quality,
-                                representation.as_deref(),
-                            )?;
-                            if let Some(layer) = &mut overlay {
-                                layer.set_audio(overlay_audio.clone());
-                            }
-                            let mut worker = Video {
-                                ev,
-                                renderer,
-                                stage,
-                                color,
-                                format,
-                                size,
-                                keep_alpha,
-                                fps,
-                                reframe: p.reframe,
-                                segments: None,
-                                overlay,
-                                origin: if map.is_some() { 0.0 } else { output.start },
-                                join_tex: None,
-                                contrasts: ContrastPrefetch::default(),
+                            // a single worker renders on the caller's own renderer, stage and overlay
+                            let mut built;
+                            let worker: &mut Video = match lent {
+                                Some(video) => video,
+                                None => {
+                                    let gpu = gpu.clone();
+                                    let mut renderer = Renderer::new(gpu.clone(), p);
+                                    renderer.quality = opts.quality;
+                                    renderer.path_noise = opts.path_noise;
+                                    renderer.representation = representation.clone();
+                                    renderer.burn_captions = output.burn_captions.clone();
+                                    renderer.audio = audio.clone();
+                                    renderer.captions_off = map.is_some();
+                                    let stage = OutputStage::new(gpu.device.clone(), gpu.queue.clone());
+                                    let mut overlay = crate::overlay::Overlay::new(
+                                        doc,
+                                        output,
+                                        timeline,
+                                        size,
+                                        captions,
+                                        &gpu,
+                                        eo,
+                                        opts.quality,
+                                        representation.as_deref(),
+                                    )?;
+                                    if let Some(layer) = &mut overlay {
+                                        layer.set_audio(overlay_audio.clone());
+                                    }
+                                    built = Video {
+                                        ev,
+                                        renderer,
+                                        stage,
+                                        color,
+                                        format,
+                                        size,
+                                        keep_alpha,
+                                        fps,
+                                        reframe: p.reframe,
+                                        segments: None,
+                                        overlay,
+                                        origin: if map.is_some() { 0.0 } else { output.start },
+                                        join_tex: None,
+                                        contrasts: ContrastPrefetch::default(),
+                                    };
+                                    &mut built
+                                }
                             };
                             let (mut part, mut encoder) = (Report::default(), String::new());
                             let mut seen = Streaming::new(tx, observe);
-                            for i in (worker_index..chunks).step_by(workers) {
+                            let mine: Vec<usize> = (worker_index..chunks).step_by(workers).collect();
+                            // The next chunk's encoder session starts while this chunk renders, and a finished
+                            // chunk's encoder drains on a thread of its own: frames never wait for a session to open
+                            // or to flush.
+                            let mut closing = Closing::default();
+                            let mut next = None;
+                            let started = |i: usize| Feeder::start(&part_spec(i));
+                            if let Some(&first) = mine.first() {
+                                match started(first) {
+                                    Ok(f) => next = Some(f),
+                                    Err(e) => {
+                                        cancelled.store(true, Relaxed);
+                                        return Err(e);
+                                    }
+                                }
+                            }
+                            for (at, &i) in mine.iter().enumerate() {
                                 if cancelled.load(Relaxed) {
                                     return Ok((part, encoder));
                                 }
                                 let chunk = (|| {
-                                    let mut feeder = Feeder::start(&part_spec(i))?;
+                                    let mut feeder = next.take().ok_or_else(|| {
+                                        DeliverError::Invalid("a chunk's encoder was not started".into())
+                                    })?;
+                                    next = mine.get(at + 1).map(|&j| started(j)).transpose()?;
                                     worker.stage.seek((spec.start_number + bounds[i] as u64) as u32);
                                     worker.segments = map
                                         .zip(all_frames.as_ref())
@@ -1618,15 +1710,24 @@ fn run_delivery(
                                         feeder.send(b)
                                     })?;
                                     seen.flush().map_err(DeliverError::Invalid)?;
-                                    feeder.finish()
+                                    closing.start(feeder)
                                 })();
                                 match chunk {
-                                    Ok(e) => encoder = e,
+                                    Ok(Some(e)) => encoder = e,
+                                    Ok(None) => {}
                                     Err(e) => {
                                         // stop the other workers at their next chunk
                                         cancelled.store(true, Relaxed);
                                         return Err(e);
                                     }
+                                }
+                            }
+                            match closing.wait() {
+                                Ok(Some(e)) => encoder = e,
+                                Ok(None) => {}
+                                Err(e) => {
+                                    cancelled.store(true, Relaxed);
+                                    return Err(e);
                                 }
                             }
                             Ok((part, encoder))
@@ -2728,6 +2829,60 @@ mod tests {
         assert_eq!(requested, vec![b], "only an absent exact sample needs a fallback");
         assert_eq!(ratios, vec![Some(5.0), None, Some(3.0)]);
         assert!(cache.resolve(time, &[], |_| panic!("no selected targets")).unwrap().is_empty());
+    }
+
+    /// A hardware encoder opens its session when the first frame arrives, and takes no frame meanwhile: the queue in
+    /// front of it keeps the render going for that long, within a fixed amount of memory.
+    #[test]
+    fn the_encoder_queue_holds_a_fixed_amount_of_frames_in_bytes() {
+        let frame = |w, h| InputFormat::Nv12.frame_bytes(w, h);
+        assert_eq!(frame_queue(frame(1920, 1080)), 30);
+        // never more than the cap, never fewer than three
+        assert_eq!(frame_queue(frame(64, 36)), FRAME_QUEUE_MAX);
+        assert_eq!(frame_queue(frame(3840, 2160)), 7);
+        assert_eq!(frame_queue(InputFormat::Gbrapf32.frame_bytes(7680, 4320)), 3);
+        assert_eq!(frame_queue(0), FRAME_QUEUE_MAX);
+    }
+
+    fn feeder_finishing(result: Result<String, sr_media::MediaError>) -> Feeder {
+        let complete = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        Feeder { tx: None, handle: Some(std::thread::spawn(move || result)), complete }
+    }
+
+    #[test]
+    fn encoders_finish_one_behind_the_chunk_that_renders() {
+        let mut closing = Closing::default();
+        assert_eq!(closing.wait().unwrap(), None);
+        assert_eq!(closing.start(feeder_finishing(Ok("first".into()))).unwrap(), None);
+        // starting the next drain waits for the one before, and names its encoder
+        assert_eq!(closing.start(feeder_finishing(Ok("second".into()))).unwrap().as_deref(), Some("first"));
+        assert_eq!(closing.wait().unwrap().as_deref(), Some("second"));
+        assert_eq!(closing.wait().unwrap(), None);
+    }
+
+    #[test]
+    fn an_encoder_that_failed_while_finishing_is_reported_by_the_next_drain() {
+        let mut closing = Closing::default();
+        let failed = sr_media::MediaError::Invalid("ffmpeg stopped".into());
+        assert!(closing.start(feeder_finishing(Err(failed))).unwrap().is_none());
+        let error = closing.start(feeder_finishing(Ok("next".into()))).unwrap_err().to_string();
+        assert!(error.contains("ffmpeg stopped"), "{error}");
+        // the drain that was refused did not start, and nothing is left running
+        assert_eq!(closing.wait().unwrap(), None);
+    }
+
+    #[test]
+    fn a_panicking_encoder_thread_is_an_error_not_an_unwind() {
+        let mut closing = Closing::default();
+        let complete = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let feeder = Feeder {
+            tx: None,
+            handle: Some(std::thread::spawn(|| -> Result<String, sr_media::MediaError> { panic!("boom") })),
+            complete,
+        };
+        assert!(closing.start(feeder).unwrap().is_none());
+        let error = closing.wait().unwrap_err().to_string();
+        assert!(error.contains("boom"), "{error}");
     }
 
     #[test]
