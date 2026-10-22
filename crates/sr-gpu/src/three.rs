@@ -486,6 +486,8 @@ pub struct Stats3 {
     pub pt_assemble_seconds: f64,
     pub pt_bvh_seconds: f64,
     pub pt_pack_seconds: f64,
+    /// Size of the ambient-occlusion targets, when that pass ran.
+    pub ao_size: Option<[u32; 2]>,
 }
 
 #[repr(C)]
@@ -2454,24 +2456,34 @@ impl ThreeEngine {
             rp.draw(0..3, 0..1);
         };
         // ------------------------------------------------ screen-space targets
-        let prepass = scene.ao.is_some() || scene.ssr || scene.lights.iter().any(|l| l.contact > 0.0);
+        let contact = scene.lights.iter().any(|l| l.contact > 0.0);
+        let prepass = scene.ao.is_some() || scene.ssr || contact;
+        // A software rasteriser shades every prepass and occlusion pixel on the CPU: when only the
+        // occlusion reads the prepass, both run at half size, and the opaque pass reads the result
+        // at its own pixel's position.
+        let gsize = if self.software_adapter && scene.ao.is_some() && !scene.ssr && !contact {
+            [size[0].div_ceil(2), size[1].div_ceil(2)]
+        } else {
+            size
+        };
         let no_gbuffer = pool([1, 1], self.gbuffer, 1, 1, 1, "three-no-gbuffer").create_view(&Default::default());
         let (gb_n, gb_z, gb_d) = if prepass {
             (
-                Some(pool(size, FORMAT, 1, 1, 1, "three-gb-normal").create_view(&Default::default())),
-                Some(pool(size, self.gbuffer, 1, 1, 1, "three-gb-depth").create_view(&Default::default())),
+                Some(pool(gsize, FORMAT, 1, 1, 1, "three-gb-normal").create_view(&Default::default())),
+                Some(pool(gsize, self.gbuffer, 1, 1, 1, "three-gb-depth").create_view(&Default::default())),
                 Some(
-                    pool(size, wgpu::TextureFormat::Depth32Float, 1, 1, 1, "three-gb-zbuffer")
+                    pool(gsize, wgpu::TextureFormat::Depth32Float, 1, 1, 1, "three-gb-zbuffer")
                         .create_view(&Default::default()),
                 ),
             )
         } else {
             (None, None, None)
         };
+        stats.ao_size = scene.ao.map(|_| gsize);
         let ao_views = scene.ao.map(|_| {
             (
-                pool(size, FORMAT, 1, 1, 1, "three-ao-raw").create_view(&Default::default()),
-                pool(size, FORMAT, 1, 1, 1, "three-ao").create_view(&Default::default()),
+                pool(gsize, FORMAT, 1, 1, 1, "three-ao-raw").create_view(&Default::default()),
+                pool(gsize, FORMAT, 1, 1, 1, "three-ao").create_view(&Default::default()),
             )
         });
         let ao_view = ao_views.as_ref().map(|a| &a.1).unwrap_or(&self.white.view);

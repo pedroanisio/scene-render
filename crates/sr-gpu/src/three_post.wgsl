@@ -190,7 +190,9 @@ fn fs_ssao(i: PostOut) -> @location(0) vec4<f32> {
     let px = vec2<i32>(i.pos.xy);
     let z = textureLoad(post_depth, px, 0).r;
     if (z <= 0.0) { return vec4(1.0); }
-    let p = view_pos(i.pos.xy, z);
+    // the occlusion may run below the frame's size: to_frame turns its pixels into the frame's
+    let to_frame = pfr.screen.xy / vec2<f32>(textureDimensions(post_depth));
+    let p = view_pos(i.pos.xy * to_frame, z);
     let n = normalize(textureLoad(post_src, px, 0).xyz);
     let radius = pfr.fx.x;
     // a tangent frame turned per pixel by a 4 × 4 interleaved pattern
@@ -212,7 +214,7 @@ fn fs_ssao(i: PostOut) -> @location(0) vec4<f32> {
         let scale = mix(0.1, 1.0, f * f);
         let s = p + dir * radius * scale;
         if (s.z <= 0.0) { continue; }
-        let q = vec2<i32>(to_px(s));
+        let q = vec2<i32>(to_px(s) / to_frame);
         if (any(q < vec2(0)) || any(q >= dims)) { continue; }
         let sz = textureLoad(post_depth, q, 0).r;
         if (sz <= 0.0) { continue; }

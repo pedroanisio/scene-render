@@ -478,3 +478,76 @@ fn splat_cache_ignores_unsubmitted_encoders_and_replaced_clouds() {
     assert_eq!(e.render_now(&s, None), fresh.render_now(&s, None));
     assert_eq!(e.stats.splat_sorts, 1);
 }
+
+#[test]
+fn software_occlusion_runs_at_half_size_within_45_db_of_the_full_size_pass() {
+    use sr_gpu::three::{Light3, LightKind};
+    let Some(gpu) = common::gpu() else { return };
+    let mut engine = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+    // at a video-like scale: an occlusion a few pixels wide is all edge at any size
+    let mut floor = draw(&engine, Vec3::new(128., 128., 160.));
+    let wall = prim::plane(800., 800., 1);
+    floor.mesh = MeshSrc::Cached(engine.upload_mesh(&wall.vertices, &wall.indices));
+    floor.material.unlit = false;
+    let ball = prim::sphere(48., 96);
+    let mut sphere = draw(&engine, Vec3::new(128., 128., 120.));
+    sphere.mesh = MeshSrc::Cached(engine.upload_mesh(&ball.vertices, &ball.indices));
+    sphere.material.unlit = false;
+    let mut s = scene(vec![floor, sphere]);
+    s.cam = resolve(&CameraParams::default(), 256., 256.);
+    s.size = [256, 256];
+    s.lights.push(Light3 {
+        kind: LightKind::Ambient,
+        pos: Vec3::ZERO,
+        dir: Vec3::Z,
+        right: Vec3::X,
+        color: Vec3::splat(1.),
+        range: 0.,
+        falloff: 0.,
+        cos_outer: 0.,
+        cos_inner: 0.,
+        cast_shadow: false,
+        softness: 0.,
+        bias: 0.,
+        map_size: 0,
+        size: [0.; 3],
+        ies: None,
+        affects_diffuse: true,
+        affects_specular: true,
+        contact: 0.,
+    });
+    let open = engine.render_now(&s, None);
+    s.ao = Some([48., 1.]);
+    let reference = engine.render_now(&s, None);
+    assert_eq!(engine.stats.ao_size, Some([256, 256]));
+    let mut software = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+    software.software_adapter = true;
+    let half = software.render_now(&s, None);
+    assert_eq!(software.stats.ao_size, Some([128, 128]));
+    let psnr = |a: &[[f32; 4]], b: &[[f32; 4]]| {
+        let se: f64 = a.iter().zip(b).flat_map(|(p, q)| (0..3).map(move |c| (p[c] - q[c]) as f64)).map(|d| d * d).sum();
+        10. * (1. / (se / (a.len() * 3) as f64)).log10()
+    };
+    assert_ne!(reference, open, "the occlusion must darken something");
+    assert!(psnr(&half, &open) < psnr(&half, &reference), "the half-size pass still occludes");
+    // lit only by the ambient light, which the occlusion darkens, the picture is all occlusion: the worst case
+    assert!(psnr(&half, &reference) >= 40., "ambient only: {:.1} dB", psnr(&half, &reference));
+    // with a key light as well, as a lit scene has, it stays within 45 dB
+    let mut key = s.lights[0].clone();
+    key.kind = LightKind::Directional;
+    key.dir = Vec3::new(0.3, 0.4, 1.).normalize();
+    key.color = Vec3::splat(2.);
+    s.lights[0].color = Vec3::splat(0.6);
+    s.lights.push(key);
+    let reference = engine.render_now(&s, None);
+    let half = software.render_now(&s, None);
+    assert!(psnr(&half, &reference) >= 45., "with a key light: {:.1} dB", psnr(&half, &reference));
+    // screen-space reflections and contact shadows read the prepass at the frame's own size
+    s.ssr = true;
+    software.render_now(&s, None);
+    assert_eq!(software.stats.ao_size, Some([256, 256]));
+    s.ssr = false;
+    s.lights[0].contact = 32.;
+    software.render_now(&s, None);
+    assert_eq!(software.stats.ao_size, Some([256, 256]));
+}

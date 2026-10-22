@@ -604,7 +604,14 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
     var lit_sh = 0.0;
     // screen-space ambient occlusion darkens the ambient and environment light only
     var ao = 1.0;
-    if (fr.lens.z > 0.5) { ao = textureLoad(ao_tex, vec2<i32>(i.clip.xy), 0).r; }
+    if (fr.lens.z > 0.5) {
+        // a software adapter computes the occlusion at a reduced size, read here filtered
+        if (all(vec2<f32>(textureDimensions(ao_tex)) == fr.screen.xy)) {
+            ao = textureLoad(ao_tex, vec2<i32>(i.clip.xy), 0).r;
+        } else {
+            ao = textureSampleLevel(ao_tex, clamp_smp, i.clip.xy / fr.screen.xy, 0.0).r;
+        }
+    }
     var base = 0u;
     var count = min(u32(fr.params.y), MAX_PER_TILE);
     if (!ALL_GLOBAL_LIGHTS) {
