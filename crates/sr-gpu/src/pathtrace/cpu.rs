@@ -111,7 +111,18 @@ fn transform(rows: &[[f32; 4]], v: [f32; 3], w: f32) -> [f32; 3] {
 
 /// The shader's `tri_hit`. A splat (material `0xffffffff`) is not supported here: it leaves the hit unchanged, and the
 /// plug-in pass refuses scenes that have splats.
-fn tri_hit(scene: &PtScene, k: usize, o: [f32; 3], d: [f32; 3], tmax: f32, h: &mut Hit, instance: u32) {
+/// `determinant_scale` is the instance record's `[13][2]` (1 outside instances), read once per instance by the caller.
+#[allow(clippy::too_many_arguments)]
+fn tri_hit(
+    scene: &PtScene,
+    k: usize,
+    o: [f32; 3],
+    d: [f32; 3],
+    tmax: f32,
+    h: &mut Hit,
+    instance: u32,
+    determinant_scale: f32,
+) {
     if scene.tri_mat[k] == NONE {
         return;
     }
@@ -120,10 +131,6 @@ fn tri_hit(scene: &PtScene, k: usize, o: [f32; 3], d: [f32; 3], tmax: f32, h: &m
     let e2 = sub(xyz(&scene.pos[k * 3 + 2]), p0);
     let pv = cross(d, e2);
     let det = dot(e1, pv);
-    let mut determinant_scale = 1.0;
-    if instance != NONE {
-        determinant_scale = scene.instances[&(instance as usize)][13][2];
-    }
     if (det * determinant_scale).abs() < 1e-12 {
         return;
     }
@@ -179,7 +186,7 @@ fn prototype_hit(scene: &PtScene, instance: usize, world_o: [f32; 3], world_d: [
         }
         if n.b > 0 {
             for k in n.a..n.a + n.b {
-                tri_hit(scene, k as usize, o, d, tmax, h, instance as u32);
+                tri_hit(scene, k as usize, o, d, tmax, h, instance as u32, record[13][2]);
             }
         } else if sp < 62 {
             stack[sp] = n.a;
@@ -209,7 +216,7 @@ pub(crate) fn trace(scene: &PtScene, o: [f32; 3], d: [f32; 3], tmax: f32) -> Hit
                 if scene.tri_mat[k as usize] == PROTOTYPE {
                     prototype_hit(scene, k as usize, o, d, tmax, &mut h);
                 } else {
-                    tri_hit(scene, k as usize, o, d, tmax, &mut h, NONE);
+                    tri_hit(scene, k as usize, o, d, tmax, &mut h, NONE, 1.0);
                 }
             }
         } else if sp < 62 {
@@ -584,31 +591,31 @@ mod tests {
         let fresh = |tmax| Hit { t: tmax, u: 0.0, v: 0.0, tri: u32::MAX, instance: u32::MAX };
         let d = [0.0, 0.0, 1.0];
         let mut h = fresh(100.0);
-        tri_hit(&s, 0, [1.0, 1.0, 0.0], d, 100.0, &mut h, u32::MAX);
+        tri_hit(&s, 0, [1.0, 1.0, 0.0], d, 100.0, &mut h, u32::MAX, 1.0);
         assert_eq!((h.t, h.u, h.v, h.tri), (5.0, 0.25, 0.25, 0));
         // beyond the triangle's edge, behind the origin (no culling: a ray from the other side hits)
         let mut h = fresh(100.0);
-        tri_hit(&s, 0, [3.0, 3.0, 0.0], d, 100.0, &mut h, u32::MAX);
+        tri_hit(&s, 0, [3.0, 3.0, 0.0], d, 100.0, &mut h, u32::MAX, 1.0);
         assert_eq!(h.tri, u32::MAX);
         let mut h = fresh(100.0);
-        tri_hit(&s, 0, [1.0, 1.0, 10.0], [0.0, 0.0, -1.0], 100.0, &mut h, u32::MAX);
+        tri_hit(&s, 0, [1.0, 1.0, 10.0], [0.0, 0.0, -1.0], 100.0, &mut h, u32::MAX, 1.0);
         assert_eq!((h.t, h.tri), (5.0, 0));
         let mut h = fresh(100.0);
-        tri_hit(&s, 0, [1.0, 1.0, 10.0], d, 100.0, &mut h, u32::MAX);
+        tri_hit(&s, 0, [1.0, 1.0, 10.0], d, 100.0, &mut h, u32::MAX, 1.0);
         assert_eq!(h.tri, u32::MAX);
         // t bounds: tmax, the current hit, and the 1e-4 near limit
         let mut h = fresh(100.0);
-        tri_hit(&s, 0, [1.0, 1.0, 0.0], d, 4.0, &mut h, u32::MAX);
+        tri_hit(&s, 0, [1.0, 1.0, 0.0], d, 4.0, &mut h, u32::MAX, 1.0);
         assert_eq!(h.tri, u32::MAX);
         let mut h = fresh(3.0);
-        tri_hit(&s, 0, [1.0, 1.0, 0.0], d, 100.0, &mut h, u32::MAX);
+        tri_hit(&s, 0, [1.0, 1.0, 0.0], d, 100.0, &mut h, u32::MAX, 1.0);
         assert_eq!(h.tri, u32::MAX);
         let mut h = fresh(100.0);
-        tri_hit(&s, 0, [1.0, 1.0, 4.99999], d, 100.0, &mut h, u32::MAX);
+        tri_hit(&s, 0, [1.0, 1.0, 4.99999], d, 100.0, &mut h, u32::MAX, 1.0);
         assert_eq!(h.tri, u32::MAX);
         // parallel ray: determinant below 1e-12
         let mut h = fresh(100.0);
-        tri_hit(&s, 0, [1.0, 1.0, 0.0], [1.0, 0.0, 0.0], 100.0, &mut h, u32::MAX);
+        tri_hit(&s, 0, [1.0, 1.0, 0.0], [1.0, 0.0, 0.0], 100.0, &mut h, u32::MAX, 1.0);
         assert_eq!(h.tri, u32::MAX);
     }
 
@@ -637,7 +644,7 @@ mod tests {
             let tmax = 1000.0;
             let mut expected = Hit { t: tmax, u: 0.0, v: 0.0, tri: u32::MAX, instance: u32::MAX };
             for k in 0..s.tri_mat.len() {
-                tri_hit(&s, k, o, d, tmax, &mut expected, u32::MAX);
+                tri_hit(&s, k, o, d, tmax, &mut expected, u32::MAX, 1.0);
             }
             let got = trace(&s, o, d, tmax);
             hits += (got.tri != u32::MAX) as u32;
