@@ -360,11 +360,23 @@ impl StreamTags {
 
 /// Encoders the local FFmpeg can actually open, probed once per process.
 pub fn working_encoder(name: &str) -> bool {
-    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(Default::default);
-    if let Some(v) = cache.lock().unwrap_or_else(PoisonError::into_inner).get(name) {
-        return *v;
-    }
+    static CACHE: OnceLock<Mutex<HashMap<String, std::sync::Arc<OnceLock<bool>>>>> = OnceLock::new();
+    probed(CACHE.get_or_init(Default::default), name, || probe_encoder(name))
+}
+
+/// The answer `cache` holds for `name`, from `probe` the first time it is asked: a caller that asks while the probe runs
+/// waits for its answer (the lock on the map is held only to find the entry, not while probing).
+fn probed(
+    cache: &Mutex<HashMap<String, std::sync::Arc<OnceLock<bool>>>>,
+    name: &str,
+    probe: impl FnOnce() -> bool,
+) -> bool {
+    let entry = cache.lock().unwrap_or_else(PoisonError::into_inner).entry(name.to_string()).or_default().clone();
+    *entry.get_or_init(probe)
+}
+
+/// Opens `name` on two frames of a test pattern.
+fn probe_encoder(name: &str) -> bool {
     let mut cmd = Command::new(crate::ffmpeg());
     cmd.args(["-v", "error", "-nostdin"]);
     if name.ends_with("_vaapi") {
@@ -375,9 +387,7 @@ pub fn working_encoder(name: &str) -> bool {
         cmd.args(["-vf", "format=nv12,hwupload"]);
     }
     cmd.args(["-frames:v", "2", "-c:v", name, "-f", "null", "-"]);
-    let ok = cmd.stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
-    cache.lock().unwrap_or_else(PoisonError::into_inner).insert(name.to_string(), ok);
-    ok
+    cmd.stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
 }
 
 // Older FFmpeg SVT wrappers accept generic pass flags without forwarding them.
@@ -1367,4 +1377,37 @@ pub fn write_still(
 pub fn fit_bitrate(max_bytes: u64, duration: f64, audio_bps: u64) -> u64 {
     let total = max_bytes as f64 * 8.0 * 0.97 / duration.max(0.001);
     (total - audio_bps as f64).max(10_000.0) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Delivery starts choosing its encoder on a thread of its own while it mixes the audio, and asks again when it
+    /// needs it: callers that come while a probe is running wait for its answer instead of running another.
+    #[test]
+    fn a_name_is_probed_once_however_many_ask_at_once() {
+        let cache = Mutex::new(HashMap::new());
+        let probes = AtomicUsize::new(0);
+        let answers: Vec<bool> = std::thread::scope(|s| {
+            let asks: Vec<_> = (0..8)
+                .map(|_| {
+                    s.spawn(|| {
+                        probed(&cache, "h264_test", || {
+                            probes.fetch_add(1, Ordering::SeqCst);
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            true
+                        })
+                    })
+                })
+                .collect();
+            asks.into_iter().map(|a| a.join().unwrap()).collect()
+        });
+        assert_eq!(answers, vec![true; 8]);
+        assert_eq!(probes.load(Ordering::SeqCst), 1);
+        // another name is probed on its own
+        assert!(!probed(&cache, "h265_test", || false));
+        assert_eq!(probes.load(Ordering::SeqCst), 1);
+    }
 }

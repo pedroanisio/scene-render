@@ -845,6 +845,11 @@ fn run_delivery(
     let started = Instant::now();
     let codec = Codec::parse(output.codec.as_str())
         .ok_or_else(|| DeliverError::Invalid(format!("unknown codec {}", output.codec.as_str())))?;
+    // Choosing the encoder probes FFmpeg with a test encode for each hardware encoder in turn, which takes a good part of
+    // a second; it starts now, beside the audio mix and the renderer's setup, and the encode later finds the answer
+    // waiting (sr_media keeps it, and a caller that asks while the probe runs waits for it rather than probing again).
+    let hardware = opts.hardware;
+    std::thread::spawn(move || sr_media::encode::choose_encoder(codec, hardware));
     let base =
         opts.out_dir.clone().or_else(|| Some(doc.base_dir().to_path_buf())).unwrap_or_else(|| PathBuf::from("."));
     let representation = opts.representation.clone().or_else(|| output.representation.clone());
