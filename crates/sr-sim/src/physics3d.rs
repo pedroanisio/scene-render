@@ -708,7 +708,24 @@ impl World3 {
             stress_broken: Vec::new(),
             stress_pending: vec![Vec::new(); spec.bodies.len()],
         };
-        for b in &spec.bodies {
+        // shapes live in the body's frame: scene axes to physics axes, pixels to metres
+        let pts = |ps: &[[f64; 3]]| -> Vec<Vector> { ps.iter().map(|p| vec3(flip(*p).map(|c| c / ppm))).collect() };
+        // a closed mesh is decomposed into convex parts, the costly part of a build (the pieces of a fracture are
+        // all built at once); each decomposition depends on its mesh alone, so they are made together and the
+        // bodies take theirs in order below, the world being the same as when each was made in turn
+        let decompositions: Vec<Option<SharedShape>> = {
+            use rayon::prelude::*;
+            spec.bodies
+                .par_iter()
+                .map(|b| match &b.shape {
+                    Shape3::Decomposition(ps, idx) => {
+                        Some(SharedShape::convex_decomposition(&pts(ps), &flip_winding(idx)))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        for (k, b) in spec.bodies.iter().enumerate() {
             let follows = b.kind == BodyKind::Kinematic || (b.kind == BodyKind::Dynamic && b.activate_at > spec.start);
             let builder = match (b.kind, follows) {
                 (BodyKind::Static, _) => RigidBodyBuilder::fixed(),
@@ -729,8 +746,6 @@ impl World3 {
                 rb.set_angvel(vec3(flip(b.angular_velocity.map(f64::to_radians))), true);
             }
             let h = st.bodies.insert(rb);
-            // shapes live in the body's frame: scene axes to physics axes, pixels to metres
-            let pts = |ps: &[[f64; 3]]| -> Vec<Vector> { ps.iter().map(|p| vec3(flip(*p).map(|c| c / ppm))).collect() };
             let small = 1e-4;
             let collider = match &b.shape {
                 Shape3::Box(h3) => Some(ColliderBuilder::cuboid(
@@ -751,9 +766,7 @@ impl World3 {
                 )
                 .ok(),
                 Shape3::TriMesh(ps, idx) => ColliderBuilder::trimesh(pts(ps), flip_winding(idx)).ok(),
-                Shape3::Decomposition(ps, idx) => {
-                    Some(ColliderBuilder::convex_decomposition(&pts(ps), &flip_winding(idx)))
-                }
+                Shape3::Decomposition(..) => decompositions[k].clone().map(ColliderBuilder::new),
                 // the half turn about x that turns scene axes into physics axes maps the lattice onto itself: a cell
                 // [i, j, k] is the cell [i, -j - 1, -k - 1] there, so no cell moves by half a cell
                 Shape3::Voxels { size, cells } if !cells.is_empty() && size.iter().all(|s| *s > 0.0) => {

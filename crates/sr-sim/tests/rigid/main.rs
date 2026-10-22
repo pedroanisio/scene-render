@@ -3,6 +3,7 @@
 mod capture3;
 mod contacts3;
 mod cratering;
+mod decomposition_build;
 mod deforming_colliders;
 mod exchange3;
 mod fracture;
