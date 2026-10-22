@@ -721,7 +721,7 @@ impl EncodeSpec {
         s(&mut a, &["-c:v", &encoder]);
         // VA-API frames are uploaded by the filter chain in their own format
         if !vaapi {
-            s(&mut a, &["-pix_fmt", &pix]);
+            s(&mut a, &["-pix_fmt", &encoder_pix_fmt(&encoder, self.input, &pix)]);
         }
         let crf = self.crf.to_string();
         let gop = ((self.keyframe_interval * self.fps).round() as u64).max(1).to_string();
@@ -1372,6 +1372,16 @@ pub fn write_still(
     Ok(())
 }
 
+/// The `-pix_fmt` to give `encoder`. NVENC reads nv12 directly and writes the same 8-bit 4:2:0 stream for it as for
+/// yuv420p, so nv12 frames go in as they are instead of through a software conversion to planar.
+fn encoder_pix_fmt(encoder: &str, input: InputFormat, pix: &str) -> String {
+    if encoder.ends_with("_nvenc") && input == InputFormat::Nv12 && pix == "yuv420p" {
+        "nv12".into()
+    } else {
+        pix.into()
+    }
+}
+
 /// Video bitrate that fits `max_bytes` over `duration` seconds after audio
 /// and a 3 % container allowance.
 pub fn fit_bitrate(max_bytes: u64, duration: f64, audio_bps: u64) -> u64 {
@@ -1409,5 +1419,18 @@ mod tests {
         // another name is probed on its own
         assert!(!probed(&cache, "h265_test", || false));
         assert_eq!(probes.load(Ordering::SeqCst), 1);
+    }
+
+    /// NVENC takes nv12 as it comes; asking it for yuv420p from nv12 frames put a software pixel conversion of every
+    /// frame in front of it.
+    #[test]
+    fn nvenc_takes_nv12_frames_without_a_conversion() {
+        assert_eq!(encoder_pix_fmt("h264_nvenc", InputFormat::Nv12, "yuv420p"), "nv12");
+        assert_eq!(encoder_pix_fmt("hevc_nvenc", InputFormat::Nv12, "nv12"), "nv12");
+        // other encoders, other inputs and other formats keep what was asked
+        assert_eq!(encoder_pix_fmt("libx264", InputFormat::Nv12, "yuv420p"), "yuv420p");
+        assert_eq!(encoder_pix_fmt("h264_nvenc", InputFormat::Rgba8, "yuv420p"), "yuv420p");
+        assert_eq!(encoder_pix_fmt("h264_nvenc", InputFormat::Nv12, "yuv444p"), "yuv444p");
+        assert_eq!(encoder_pix_fmt("hevc_nvenc", InputFormat::P010, "yuv420p10le"), "yuv420p10le");
     }
 }
