@@ -18,6 +18,7 @@ use glam::{Mat4, Vec3};
 
 use crate::three::{Draw3, LightKind, MeshSrc, Scene3};
 mod cache;
+mod cpu;
 mod instances;
 mod packed;
 mod rays;
