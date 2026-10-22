@@ -173,6 +173,10 @@ pub(crate) struct Dense<'a> {
     scene: &'a PtScene,
     records: Vec<[[f32; 4]; 24]>,
     slot: Vec<u32>,
+    /// The CPU's own top-level BVH (binned SAH): leaves `top[i].a .. + b` index `order`, inner nodes have their
+    /// children at `a` and `a + 1`. It is empty when the scene has no top-level primitive.
+    top: Vec<PtNode>,
+    order: Vec<u32>,
 }
 
 impl<'a> Dense<'a> {
@@ -186,7 +190,8 @@ impl<'a> Dense<'a> {
             slot[k] = records.len() as u32;
             records.push(scene.instances[&k]);
         }
-        Dense { scene, records, slot }
+        let (top, order) = sah_bvh(top_level_prims(scene));
+        Dense { scene, records, slot, top, order }
     }
 
     /// The record of instance `k`; panics like the map index when `k` is not an instance.
@@ -236,7 +241,7 @@ fn prototype_hit(scene: &Dense, instance: usize, world_o: [f32; 3], world_d: [f3
 /// The shader's `trace`: the nearest hit along the ray within `tmax` (`tri == 0xffffffff` when there is none).
 pub(crate) fn trace(scene: &Dense, o: [f32; 3], d: [f32; 3], tmax: f32) -> Hit {
     let mut h = Hit { t: tmax, u: 0.0, v: 0.0, tri: NONE, instance: NONE };
-    if scene.nodes.is_empty() {
+    if scene.top.is_empty() {
         return h;
     }
     let inv = reciprocal(d);
@@ -244,12 +249,12 @@ pub(crate) fn trace(scene: &Dense, o: [f32; 3], d: [f32; 3], tmax: f32) -> Hit {
     let mut sp = 1usize;
     while sp > 0 {
         sp -= 1;
-        let n = &scene.nodes[stack[sp] as usize];
+        let n = &scene.top[stack[sp] as usize];
         if !box_hit(n, o, inv, h.t) {
             continue;
         }
         if n.b > 0 {
-            for k in n.a..n.a + n.b {
+            for &k in &scene.order[n.a as usize..(n.a + n.b) as usize] {
                 if scene.tri_mat[k as usize] == PROTOTYPE {
                     prototype_hit(scene, k as usize, o, d, tmax, &mut h);
                 } else {
@@ -258,11 +263,168 @@ pub(crate) fn trace(scene: &Dense, o: [f32; 3], d: [f32; 3], tmax: f32) -> Hit {
             }
         } else if sp < 62 {
             stack[sp] = n.a;
-            stack[sp + 1] = n.a - 1;
+            stack[sp + 1] = n.a + 1;
             sp += 2;
         }
     }
     h
+}
+
+/// A top-level primitive for the CPU BVH: a loose triangle or a prototype proxy, with its world box.
+struct Prim {
+    lo: [f32; 3],
+    hi: [f32; 3],
+    c: [f32; 3],
+    cost: f32,
+    k: u32,
+}
+
+const EMPTY_BOX: ([f32; 3], [f32; 3]) = ([f32::MAX; 3], [f32::MIN; 3]);
+const SAH_BINS: usize = 16;
+const SAH_LEAF: usize = 4;
+
+/// The loose triangles and prototype proxies the shared top-level tree reaches (not the prototypes' own triangles).
+fn top_level_prims(scene: &PtScene) -> Vec<Prim> {
+    let mut prims = Vec::new();
+    if scene.nodes.is_empty() {
+        return prims;
+    }
+    let mut stack = vec![0usize];
+    while let Some(i) = stack.pop() {
+        let n = &scene.nodes[i];
+        if n.lo[0] > n.hi[0] || n.lo[1] > n.hi[1] || n.lo[2] > n.hi[2] {
+            continue;
+        }
+        if n.b == 0 {
+            stack.push(n.a as usize);
+            stack.push(n.a as usize - 1);
+            continue;
+        }
+        for k in n.a..n.a + n.b {
+            let (mut lo, mut hi) = EMPTY_BOX;
+            let cost = match scene.tri_mat[k as usize] {
+                NONE => continue,
+                PROTOTYPE => {
+                    // the proxy keeps its world box in its first two corners
+                    grow(&mut lo, &mut hi, xyz(&scene.pos[k as usize * 3]), xyz(&scene.pos[k as usize * 3 + 1]));
+                    4.0
+                }
+                _ => {
+                    for c in 0..3 {
+                        let p = xyz(&scene.pos[k as usize * 3 + c]);
+                        grow(&mut lo, &mut hi, p, p);
+                    }
+                    1.0
+                }
+            };
+            prims.push(Prim { lo, hi, c: [0, 1, 2].map(|i| (lo[i] + hi[i]) * 0.5), cost, k });
+        }
+    }
+    prims
+}
+
+fn grow(lo: &mut [f32; 3], hi: &mut [f32; 3], l: [f32; 3], h: [f32; 3]) {
+    for i in 0..3 {
+        lo[i] = lo[i].min(l[i]);
+        hi[i] = hi[i].max(h[i]);
+    }
+}
+
+fn box_area(lo: [f32; 3], hi: [f32; 3]) -> f32 {
+    let d = [0, 1, 2].map(|i| (hi[i] - lo[i]).max(0.0));
+    2.0 * (d[0] * d[1] + d[1] * d[2] + d[2] * d[0])
+}
+
+/// A binned-SAH BVH (16 bins, leaves of at most 4 primitives, traversal cost 1) over `prims`: the nodes and the
+/// primitive order that the leaves index.
+fn sah_bvh(mut prims: Vec<Prim>) -> (Vec<PtNode>, Vec<u32>) {
+    let mut nodes = Vec::new();
+    if !prims.is_empty() {
+        nodes.push(PtNode::default());
+        sah_split(&mut prims, 0, 0, 0, &mut nodes);
+    }
+    (nodes, prims.iter().map(|p| p.k).collect())
+}
+
+fn sah_split(prims: &mut [Prim], base: usize, ni: usize, depth: u32, nodes: &mut Vec<PtNode>) {
+    let n = prims.len();
+    let (mut lo, mut hi) = EMPTY_BOX;
+    let (mut clo, mut chi) = EMPTY_BOX;
+    for p in prims.iter() {
+        grow(&mut lo, &mut hi, p.lo, p.hi);
+        grow(&mut clo, &mut chi, p.c, p.c);
+    }
+    let area = box_area(lo, hi);
+    let leaf_cost: f32 = prims.iter().map(|p| p.cost).sum();
+    let bin_of = |p: &Prim, axis: usize| {
+        let scale = SAH_BINS as f32 / (chi[axis] - clo[axis]);
+        (((p.c[axis] - clo[axis]) * scale) as usize).min(SAH_BINS - 1)
+    };
+    // (cost scaled by the node's area, axis, last bin of the left side)
+    let mut best: Option<(f32, usize, usize)> = None;
+    if depth < 48 {
+        for axis in 0..3 {
+            if chi[axis] - clo[axis] <= 0.0 {
+                continue;
+            }
+            let mut count = [0usize; SAH_BINS];
+            let mut cost = [0f32; SAH_BINS];
+            let mut bl = [EMPTY_BOX.0; SAH_BINS];
+            let mut bh = [EMPTY_BOX.1; SAH_BINS];
+            for p in prims.iter() {
+                let b = bin_of(p, axis);
+                count[b] += 1;
+                cost[b] += p.cost;
+                grow(&mut bl[b], &mut bh[b], p.lo, p.hi);
+            }
+            let mut right = [0f32; SAH_BINS];
+            let (mut l, mut h) = EMPTY_BOX;
+            let mut c = 0.0;
+            for i in (1..SAH_BINS).rev() {
+                grow(&mut l, &mut h, bl[i], bh[i]);
+                c += cost[i];
+                right[i] = box_area(l, h) * c;
+            }
+            let (mut l, mut h) = EMPTY_BOX;
+            let (mut c, mut m) = (0.0, 0usize);
+            for i in 0..SAH_BINS - 1 {
+                grow(&mut l, &mut h, bl[i], bh[i]);
+                c += cost[i];
+                m += count[i];
+                if m == 0 || m == n {
+                    continue;
+                }
+                let total = area + box_area(l, h) * c + right[i + 1];
+                if best.is_none_or(|b| total < b.0) {
+                    best = Some((total, axis, i));
+                }
+            }
+        }
+    }
+    if n <= SAH_LEAF && best.is_none_or(|b| b.0 >= area * leaf_cost) {
+        nodes[ni] = PtNode { lo, a: base as u32, hi, b: n as u32 };
+        return;
+    }
+    let mid = match best {
+        Some((_, axis, split)) => {
+            let mut i = 0;
+            for j in 0..n {
+                if bin_of(&prims[j], axis) <= split {
+                    prims.swap(i, j);
+                    i += 1;
+                }
+            }
+            i
+        }
+        None => n / 2,
+    };
+    let child = nodes.len();
+    nodes.push(PtNode::default());
+    nodes.push(PtNode::default());
+    nodes[ni] = PtNode { lo, a: child as u32, hi, b: 0 };
+    let (left, right) = prims.split_at_mut(mid);
+    sah_split(left, base, child, depth + 1, nodes);
+    sah_split(right, base + mid, child + 1, depth + 1, nodes);
 }
 
 use std::f32::consts::PI; // the shader's 3.14159265358979 rounds to this f32
@@ -688,6 +850,64 @@ mod tests {
             assert_eq!(got, expected);
         }
         assert!(hits > 200, "the rays should hit often enough to mean something: {hits}");
+    }
+
+    fn random_scene(count: usize) -> PtScene {
+        let mut rng = Rng(11);
+        let mut r = move |lo: f32, hi: f32| lo + (hi - lo) * rng.rnd();
+        let mut tris = Vec::new();
+        for _ in 0..count {
+            let c = glam::Vec3::new(r(-50.0, 50.0), r(-50.0, 50.0), r(-50.0, 50.0));
+            tris.push([0, 1, 2].map(|_| c + glam::Vec3::new(r(-1.0, 1.0), r(-1.0, 1.0), r(-1.0, 1.0))));
+        }
+        let mut s = PtScene::default();
+        let order = super::super::bvh(&tris, &mut s.nodes);
+        for &t in &order {
+            for p in tris[t] {
+                s.pos.push([p.x, p.y, p.z, 0.0]);
+                s.nrm.push([0.0; 4]);
+            }
+            s.tri_mat.push(0);
+        }
+        s
+    }
+
+    #[test]
+    fn sah_leaves_cover_every_primitive_once_inside_their_parents() {
+        let s = random_scene(1000);
+        let d = Dense::new(&s);
+        let mut seen = vec![0u32; 1000];
+        let mut stack = vec![0usize];
+        while let Some(i) = stack.pop() {
+            let n = d.top[i];
+            if n.b > 0 {
+                assert!(n.b as usize <= SAH_LEAF);
+                for &k in &d.order[n.a as usize..(n.a + n.b) as usize] {
+                    seen[k as usize] += 1;
+                    for c in 0..3 {
+                        let p = xyz(&s.pos[k as usize * 3 + c]);
+                        assert!((0..3).all(|a| n.lo[a] <= p[a] && p[a] <= n.hi[a]));
+                    }
+                }
+            } else {
+                for child in [n.a as usize, n.a as usize + 1] {
+                    let c = d.top[child];
+                    assert!((0..3).all(|a| n.lo[a] <= c.lo[a] && c.hi[a] <= n.hi[a]));
+                    stack.push(child);
+                }
+            }
+        }
+        assert!(seen.iter().all(|&c| c == 1));
+        assert_eq!(d.order.len(), 1000);
+    }
+
+    #[test]
+    fn sah_build_time_on_twenty_thousand_triangles() {
+        let s = random_scene(20_000);
+        let clock = std::time::Instant::now();
+        let d = Dense::new(&s);
+        eprintln!("SAH build of 20000 triangles: {:?}, {} nodes", clock.elapsed(), d.top.len());
+        assert_eq!(d.order.len(), 20_000);
     }
 }
 
