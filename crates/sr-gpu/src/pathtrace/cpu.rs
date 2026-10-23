@@ -1469,7 +1469,7 @@ pub(crate) fn pixel_sum(
 /// sums, then `w * h` of `(sum luma², sum alpha², count, 0)`) and the guide buffer (`pix * 2`, `pix * 2 + 1`), with
 /// `pix = y * w + x` tile-local, both starting from zero. Rows run in parallel; each pixel is independent.
 pub(crate) fn trace_tile(
-    scene: &PtScene,
+    scene: &Dense,
     env: &EnvMap,
     p: &RadianceParams,
     tile: [u32; 4],
@@ -1477,8 +1477,6 @@ pub(crate) fn trace_tile(
     count: u32,
 ) -> (Vec<[f32; 4]>, Vec<[f32; 4]>) {
     use rayon::prelude::*;
-    let dense = Dense::new(scene);
-    let scene = &dense;
     let [tx, ty, tw, th] = tile;
     let n = (tw * th) as usize;
     let rows: Vec<Vec<PixelStats>> = (0..th)
@@ -1687,7 +1685,7 @@ mod radiance_tests {
         let s = quads(&[(0.0, material([0.8, 0.6, 0.4, 1.0], 1.0, 1.0))]);
         let env = env_of([0.1, 0.2, 0.3], 1.0);
         let p = params(2.0, 3, vec![sun()]);
-        let (accum, guide) = trace_tile(&s, &env, &p, [2, 1, 4, 3], 1, 3);
+        let (accum, guide) = trace_tile(&Dense::new(&s), &env, &p, [2, 1, 4, 3], 1, 3);
         assert_eq!((accum.len(), guide.len()), (24, 24));
         for gy in 0..3u32 {
             for gx in 0..4u32 {
@@ -1697,6 +1695,6 @@ mod radiance_tests {
                 assert_eq!(accum[12 + pix][3], 0.0);
             }
         }
-        assert_eq!(trace_tile(&s, &env, &p, [2, 1, 4, 3], 1, 3), (accum, guide));
+        assert_eq!(trace_tile(&Dense::new(&s), &env, &p, [2, 1, 4, 3], 1, 3), (accum, guide));
     }
 }

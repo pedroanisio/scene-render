@@ -218,6 +218,8 @@ pub struct RenderTiming {
     pub geometry_uploads: usize,
     /// Texture atlas words packed this pass: none when the cache holds the pass's textures.
     pub atlas_texels: usize,
+    /// Scenes the CPU tracer built for its tiles this pass: none when the GPU traced it.
+    pub cpu_scenes: usize,
     /// CPU seconds packing and uploading the scene buffers before the first tile.
     pub pack_seconds: f64,
     /// Timestamps of the trace and denoise passes, when requested and supported.
@@ -2534,22 +2536,28 @@ pub(crate) fn render_cached(
     } else {
         pt.rays_layout().and_then(|layout| Some((layout, rays::build(d, enc, data, layout)?)))
     };
+    // Records, BVH, atlas and environment texels depend on the scene, not the tile: built once for every tile.
+    let cpu = on_cpu.then(|| {
+        let base = make_base(&tiles[0]);
+        let env = cpu::EnvMap {
+            w: inputs.env_texels.map_or(1, |e| e.0),
+            h: inputs.env_texels.map_or(1, |e| e.1),
+            rgba: inputs.env_texels.map_or_else(|| vec![[0.0; 4]], |e| e.2.clone()),
+            rot: base.env_rot,
+            intensity: base.env[1],
+        };
+        (cpu::Dense::new(data), env)
+    });
+    let cpu_scenes = usize::from(cpu.is_some());
     for (tile_index, tile) in tiles.iter().enumerate() {
         enc.clear_buffer(&accum, 0, None);
         enc.clear_buffer(&guide, 0, None);
         let base = make_base(tile);
         let rp = radiance_params(&base, &data.lights);
-        if on_cpu {
-            let cpu_env = cpu::EnvMap {
-                w: inputs.env_texels.map_or(1, |e| e.0),
-                h: inputs.env_texels.map_or(1, |e| e.1),
-                rgba: inputs.env_texels.map_or_else(|| vec![[0.0; 4]], |e| e.2.clone()),
-                rot: base.env_rot,
-                intensity: base.env[1],
-            };
+        if let Some((dense, cpu_env)) = &cpu {
             let (acc, gd) = cpu::trace_tile(
-                data,
-                &cpu_env,
+                dense,
+                cpu_env,
                 &rp,
                 [tile.origin[0], tile.origin[1], tile.size[0], tile.size[1]],
                 0,
@@ -2730,6 +2738,7 @@ pub(crate) fn render_cached(
         gpu: timer,
         geometry_uploads,
         atlas_texels,
+        cpu_scenes,
         samples: SampleCount { budget, counter, hardware_rays: rays.is_some() },
     }
 }

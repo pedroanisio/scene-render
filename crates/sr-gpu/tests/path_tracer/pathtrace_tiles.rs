@@ -118,3 +118,86 @@ fn tiled_paths_match_whole_frame_at_edges_and_denoise_seams() {
         }
     }
 }
+
+#[test]
+fn cpu_traced_tiles_share_one_scene_build_per_pass() {
+    let Some(g) = common::gpu() else { return };
+    let eng = ThreeEngine::new(g.device.clone(), g.queue.clone());
+    let size = [257, 193];
+    let mesh = prim::sphere(75.0, 24);
+    let sc = Scene3 {
+        size,
+        cam: resolve(&CameraParams::default(), size[0] as f32, size[1] as f32),
+        clip_fix: Mat4::IDENTITY,
+        exposure: 1.0,
+        dof: None,
+        lens_k1: 0.0,
+        draws: vec![Draw3 {
+            mesh: MeshSrc::Cached(eng.upload_mesh(&mesh.vertices, &mesh.indices)),
+            model: Mat4::from_translation(Vec3::new(128.0, 96.0, 10.0)),
+            material: MaterialParams { base_color: [0.7, 0.3, 0.1, 1.0], roughness: 0.6, ..Default::default() },
+            maps: Default::default(),
+            opacity: 1.0,
+            cast_shadow: true,
+            receive_shadow: true,
+            shadow_catcher: false,
+        }],
+        lights: vec![Light3 {
+            kind: LightKind::Directional,
+            pos: Vec3::ZERO,
+            dir: Vec3::new(0.3, 0.2, 1.0).normalize(),
+            right: Vec3::X,
+            color: Vec3::splat(2.0),
+            range: 0.0,
+            falloff: 2.0,
+            cos_outer: 0.0,
+            cos_inner: 0.0,
+            cast_shadow: true,
+            softness: 0.0,
+            bias: 0.0005,
+            map_size: 128,
+            size: [0.0; 3],
+            ies: None,
+            affects_diffuse: true,
+            affects_specular: true,
+            contact: 0.0,
+        }],
+        env: None,
+        splats: Vec::new(),
+        volumes: Vec::new(),
+        encode_srgb: false,
+        ao: None,
+        ssr: false,
+        path: None,
+        geodesic: None,
+    };
+    let black = eng.upload_f16([1, 1], &[[0.0; 4]]).create_view(&Default::default());
+    let sampler = g.device.create_sampler(&Default::default());
+    let inputs = PtInputs { env: &black, backdrop: None, black: &black, sampler: &sampler, env_texels: None };
+    let mut pt = PtGpu::new(&g.device, wgpu::TextureFormat::Rgba16Float);
+    pt.cpu_adapter = true;
+    let data = pathtrace::build(&sc);
+    let opts = PathOpts { samples: 2, bounces: 2, denoise: false, noise: None };
+    let mut images = Vec::new();
+    for budget in [32 << 20, 192 * 192 * 32] {
+        pt.limit_buffers(budget).unwrap();
+        let target = eng.target(size);
+        let mut enc = g.device.create_command_encoder(&Default::default());
+        let timing = pathtrace::render_timed(
+            &pt,
+            &g.device,
+            &mut enc,
+            &sc,
+            &data,
+            opts,
+            &inputs,
+            &target.create_view(&Default::default()),
+            false,
+        );
+        g.queue.submit([enc.finish()]);
+        assert_eq!(timing.cpu_scenes, 1, "budget {budget}: one CPU scene per pass, whatever the tiling");
+        images.push(eng.read(&target));
+    }
+    assert!(images[0].iter().any(|p| p[0] > 0.01 && p[3] > 0.9), "must render lit geometry");
+    assert_eq!(images[0], images[1], "tiling must not change CPU-traced pixels");
+}
