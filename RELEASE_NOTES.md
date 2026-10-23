@@ -73,6 +73,8 @@ Verify the download with `sha256sum -c scene-render-v0.7.4-linux-x86_64.tar.gz.s
 - Audio sources are decoded straight into one buffer per channel as FFmpeg writes them. Before, a source was held twice at its peak: the encoded bytes beside the samples, then the interleaved samples beside the per-channel buffers. A 20-second stereo source held 16.1 MB at once for 7.7 MB of audio; it now holds the audio once, plus at most a sixty-fourth and a second of room, which is given back.
 - The process-wide geo caches (features, fitted cameras, tile archives and style files) keep one reading per file and replace it when the file changes on disk. Before, every revision of a file a preview session saw stayed cached. Each cache is also capped at 256 entries. The tile and elevation caches hold their archive weakly, so a replaced archive's address cannot be taken for the new one's.
 - The grids of a cut body of cells are dropped with the revisions the 3D world drops from its budgeted history.
+- The 3D engine drops the meshes and textures no pass of a frame used, least recently used first, once the idle ones of each kind exceed 256 MB (shared between delivery workers like the other budgets). Before, every mesh and texture a session uploaded was kept until the renderer closed. What a frame draws is never dropped, whatever the budget. `--stats` reports the count as `assets_evicted`.
+- The volume cache drops the least recently used decoded volumes and baked frames until a new one fits its 256 MB budget or its 64 entries of a kind, instead of clearing every entry. A volume that does not fit the budget alone is used for the frame but not kept, and pushes nothing out.
 
 ### 3D
 
