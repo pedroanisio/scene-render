@@ -371,6 +371,15 @@ pub struct Scene3 {
 }
 
 impl Scene3 {
+    /// Whether rendering reads what lies behind the pass: glass refracts it, and the path tracer shows it where a
+    /// path meets nothing but glass. The geodesic tracer draws the black hole's sky alone.
+    pub fn reads_backdrop(&self) -> bool {
+        self.geodesic.is_none()
+            && (self.path.is_some()
+                || !self.volumes.is_empty()
+                || self.draws.iter().any(|d| d.material.transmission > 0.0 && !d.material.unlit))
+    }
+
     /// Identity of a self-contained raster pass for contrast counterfactuals.
     /// Hash resolved geometry and shader inputs, not frame time or node ids:
     /// shutter samples and simulated geometry can differ at the same time.
@@ -470,6 +479,9 @@ impl Scene3 {
     }
 }
 
+/// Bytes of the depth of field's aperture taps: 128 vec4s.
+const APERTURE_BYTES: u64 = 128 * 16;
+
 /// Counters for statistics and tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Stats3 {
@@ -491,6 +503,9 @@ pub struct Stats3 {
     pub pt_pack_seconds: f64,
     /// Size of the ambient-occlusion targets, when that pass ran.
     pub ao_size: Option<[u32; 2]>,
+    /// Whether depth was resolved for the depth of field, and whether the transparent pass ran.
+    pub depth_resolved: bool,
+    pub transparent_pass: bool,
 }
 
 #[repr(C)]
@@ -693,6 +708,14 @@ pub struct ThreeEngine {
     specialize_plain: bool,
     #[cfg(test)]
     specialize_alpha_mask: bool,
+    /// Off, every pass runs whether or not anything reads it (tests compare the frames).
+    #[cfg(test)]
+    skip_unused_passes: bool,
+    /// The IES table of a scene without IES lights: it never changes.
+    ies_empty: Option<wgpu::TextureView>,
+    /// IES tables uploaded so far.
+    #[cfg(test)]
+    ies_uploads: usize,
     specialize_global_lights: bool,
     bgl_frame: wgpu::BindGroupLayout,
     bgl_mat: wgpu::BindGroupLayout,
@@ -736,6 +759,8 @@ pub struct ThreeEngine {
     white: Arc<TexGpu>,
     brdf: wgpu::TextureView,
     black_env: wgpu::TextureView,
+    /// The aperture of a camera without depth of field: zeroed, never written.
+    no_aperture: wgpu::Buffer,
     mat_binds: HashMap<[u64; 6], wgpu::BindGroup>,
     /// Meshes keyed by the caller.
     pub meshes: HashMap<String, Arc<MeshGpu>>,
@@ -1283,6 +1308,12 @@ impl ThreeEngine {
             }),
             brdf: texture(d, [1, 1], FORMAT, 1, 1, 1, "brdf").create_view(&Default::default()),
             black_env: texture(d, [1, 1], FORMAT, 1, 1, 1, "black-env").create_view(&Default::default()),
+            no_aperture: d.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("three-no-aperture"),
+                size: APERTURE_BYTES,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::UNIFORM,
+                mapped_at_creation: false,
+            }),
             device: device.clone(),
             queue,
             main_mod,
@@ -1335,6 +1366,11 @@ impl ThreeEngine {
             splat_cache: HashMap::new(),
             next_key: 1,
             ies_rows: HashMap::new(),
+            ies_empty: None,
+            #[cfg(test)]
+            ies_uploads: 0,
+            #[cfg(test)]
+            skip_unused_passes: true,
             stats: Stats3::default(),
             time_gpu: false,
             pt_timers: Vec::new(),
@@ -1768,7 +1804,8 @@ fn light_tiles(l: &Light3, vp: &Mat4, size: [u32; 2], tiles: [u32; 2]) -> Option
 }
 
 impl ThreeEngine {
-    fn ies_atlas(&mut self, lights: &[Light3]) -> (wgpu::TextureView, Vec<f32>) {
+    /// The IES table of `lights` and each light's row in it (-1 without a profile).
+    fn ies_atlas(&mut self, lights: &[Light3], skip_unused: bool) -> (wgpu::TextureView, Vec<f32>) {
         let mut rows: Vec<Arc<Vec<f32>>> = Vec::new();
         let mut index = Vec::new();
         self.ies_rows.clear();
@@ -1785,6 +1822,9 @@ impl ThreeEngine {
                 None => index.push(-1.0),
             }
         }
+        if let (true, true, Some(view)) = (skip_unused, rows.is_empty(), &self.ies_empty) {
+            return (view.clone(), index);
+        }
         let h = (rows.len().max(1) * IES_ROWS) as u32;
         let tex = texture(&self.device, [IES_W as u32, h], FORMAT, 1, 1, 1, "ies");
         let mut data = vec![0u16; IES_W * h as usize * 4];
@@ -1795,7 +1835,15 @@ impl ThreeEngine {
             }
         }
         self.write_tex(&tex, 0, [IES_W as u32, h], bytemuck::cast_slice(&data), 8);
-        (tex.create_view(&Default::default()), index)
+        let view = tex.create_view(&Default::default());
+        if rows.is_empty() {
+            self.ies_empty = Some(view.clone());
+        }
+        #[cfg(test)]
+        {
+            self.ies_uploads += 1;
+        }
+        (view, index)
     }
 
     /// Bakes an IES profile into the table this engine samples.
@@ -1885,8 +1933,13 @@ impl ThreeEngine {
 
         let mut stats = Stats3::default();
         let vp = scene.clip_fix * scene.cam.view_proj();
+        // passes whose output nothing reads are left out
+        #[cfg(not(test))]
+        let skip_unused = true;
+        #[cfg(test)]
+        let skip_unused = self.skip_unused_passes;
         // ------------------------------------------------ lights, IES, shadow views
-        let (ies_view, ies_rows) = self.ies_atlas(&scene.lights);
+        let (ies_view, ies_rows) = self.ies_atlas(&scene.lights, skip_unused);
         // Skinning, morphs and terrain deformation can move vertices outside the
         // uploaded mesh. Compute current bounds once for lighting and depth sorting.
         let draw_bounds: Vec<_> = scene.draws.iter().map(|dr| dr.mesh.bounds()).collect();
@@ -2413,12 +2466,17 @@ impl ThreeEngine {
         // the visible sky at the source's resolution, apart from the prefiltered chain
         let sky_view = env.map(|e| &e.env.sky).unwrap_or(&self.black_env);
         let no_tiles = pool([1, 1], self.scalar, 1, 1, 1, "three-no-tiles").create_view(&Default::default());
-        let aperture = d.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("three-dof-aperture"),
-            size: 128 * 16,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::UNIFORM,
-            mapped_at_creation: false,
-        });
+        // a camera with depth of field fills its blade-shaped aperture each render
+        let aperture = if scene.dof.is_some() {
+            d.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("three-dof-aperture"),
+                size: APERTURE_BYTES,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::UNIFORM,
+                mapped_at_creation: false,
+            })
+        } else {
+            self.no_aperture.clone()
+        };
         if scene.dof.is_some() {
             let pipe = self.dof_kernel_pipe.get_or_insert_with(|| {
                 let shader = d.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -2845,9 +2903,13 @@ impl ThreeEngine {
             splat_binds.push((sb, sp.gpu.n));
         }
         // ------------------------------------------------ transmissive, splats, blended
-        let depth_t = pool(size, if precompute_coc { self.gbuffer } else { self.scalar }, 1, 1, 1, "three-depth");
-        let depth_view = depth_t.create_view(&Default::default());
-        {
+        // the pass draws the transparent objects and resolves a multisampled target: without either it changes nothing
+        let transparent = (fb_trans.is_some() && !trans_runs.is_empty())
+            || !splat_binds.is_empty()
+            || !blended_runs.is_empty()
+            || self.samples > 1;
+        stats.transparent_pass = transparent || !skip_unused;
+        if stats.transparent_pass {
             let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("three-transparent"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2878,7 +2940,12 @@ impl ThreeEngine {
             draw_list(&mut rp, &blended_runs, self);
         }
         // ------------------------------------------------ depth resolve, post
-        {
+        // only the depth of field reads the resolved depth: without it the post pass is given a stand-in
+        let depth_format = if precompute_coc { self.gbuffer } else { self.scalar };
+        stats.depth_resolved = scene.dof.is_some() || !skip_unused;
+        let depth_t = pool(if stats.depth_resolved { size } else { [1, 1] }, depth_format, 1, 1, 1, "three-depth");
+        let depth_view = depth_t.create_view(&Default::default());
+        if stats.depth_resolved {
             let db = d.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("three-depth"),
                 layout: &self.bgl_depth,
@@ -3185,6 +3252,93 @@ mod tests {
         let before = bytes.clone();
         assert!(push_object(&mut bytes, &object, 512).is_err());
         assert_eq!(bytes, before, "reject before growing resident object storage");
+    }
+
+    #[test]
+    fn passes_nothing_reads_are_skipped_without_changing_the_frame() {
+        use super::*;
+        let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "passes_nothing_reads_are_skipped");
+        for samples in [1, 4] {
+            let mut engine = ThreeEngine::new_with_samples(
+                gpu.device.clone(),
+                gpu.queue.clone(),
+                gpu.gbuffer_depth,
+                gpu.scalar_target,
+                samples,
+            );
+            let sphere = sr_3d::prim::sphere(22.0, 24);
+            let mesh = engine.upload_mesh(&sphere.vertices, &sphere.indices);
+            let draw = |at: Vec3| Draw3 {
+                mesh: MeshSrc::Cached(mesh.clone()),
+                model: Mat4::from_translation(at),
+                material: MaterialParams { base_color: [0.7, 0.3, 0.2, 1.0], roughness: 0.4, ..Default::default() },
+                maps: Default::default(),
+                opacity: 1.0,
+                cast_shadow: true,
+                receive_shadow: true,
+                shadow_catcher: false,
+            };
+            let light = Light3 {
+                kind: LightKind::Directional,
+                pos: Vec3::new(20.0, 5.0, -80.0),
+                dir: Vec3::new(0.3, 0.4, 1.0).normalize(),
+                right: Vec3::X,
+                color: Vec3::new(0.8, 0.6, 0.4),
+                range: 0.0,
+                falloff: 2.0,
+                cos_outer: 0.0,
+                cos_inner: 1.0,
+                cast_shadow: true,
+                softness: 0.0,
+                bias: 0.001,
+                map_size: 64,
+                size: [0.0; 3],
+                ies: None,
+                affects_diffuse: true,
+                affects_specular: true,
+                contact: 0.0,
+            };
+            let mut scene = Scene3 {
+                cam: sr_3d::camera::resolve(&sr_3d::camera::CameraParams::default(), 96.0, 64.0),
+                clip_fix: Mat4::IDENTITY,
+                size: [96, 64],
+                exposure: 0.83,
+                dof: None,
+                lens_k1: 0.0,
+                draws: vec![draw(Vec3::new(48.0, 32.0, 0.0)), draw(Vec3::new(30.0, 40.0, 30.0))],
+                lights: vec![light],
+                env: None,
+                splats: Vec::new(),
+                volumes: Vec::new(),
+                encode_srgb: false,
+                ao: None,
+                ssr: false,
+                path: None,
+                geodesic: None,
+            };
+            for case in 0..8 {
+                let (dof, blended, ao) = (case & 1 != 0, case & 2 != 0, case & 4 != 0);
+                scene.dof = dof.then_some(Dof { coc_scale: 24000.0, focus: 100.0, max_coc: 9.1, blades: 7 });
+                scene.draws[1].opacity = if blended { 0.5 } else { 1.0 };
+                scene.ao = ao.then_some([16.0, 1.0]);
+                engine.skip_unused_passes = true;
+                let uploads = engine.ies_uploads;
+                let actual = engine.render_now(&scene, None);
+                let stats = engine.stats;
+                let uploaded = engine.ies_uploads - uploads;
+                engine.skip_unused_passes = false;
+                let expected = engine.render_now(&scene, None);
+                assert!(actual.iter().any(|p| p[3] > 0.01));
+                assert_eq!(actual, expected, "samples {samples}, case {case}");
+                // depth is resolved only for the depth of field; the transparent pass runs when something is
+                // transparent or a multisampled target needs its resolve
+                assert_eq!(stats.depth_resolved, dof, "samples {samples}, case {case}");
+                assert_eq!(stats.transparent_pass, blended || samples > 1, "samples {samples}, case {case}");
+                assert!(engine.stats.depth_resolved && engine.stats.transparent_pass);
+                // without an IES light the empty profile table is uploaded once, not every render
+                assert_eq!(uploaded, usize::from(case == 0), "samples {samples}, case {case}");
+            }
+        }
     }
 
     #[test]

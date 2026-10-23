@@ -85,6 +85,8 @@ fn fs_dof(i: PostOut) -> @location(0) vec4<f32> {
     }
     let exposure = pfr.params.x;
     let encode = pfr.lens.y > 0.5;
+    // without depth of field nothing below changes the pixel, and the depth bound is a stand-in
+    if (pfr.post.y < 0.5) { return finish(textureSampleLevel(post_src, post_smp, uv, 0.0), exposure, encode); }
     let dq = clamped_texel(uv * dims, dims);
     let depth0 = textureLoad(post_depth, dq, 0);
     let d0 = depth0.r;

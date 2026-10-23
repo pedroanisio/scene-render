@@ -103,6 +103,8 @@ pub struct RenderStats {
     pub prefix_restored: usize,
     /// Backdrop copies for non-normal blend modes.
     pub backdrop_copies: usize,
+    /// Layers behind a 3D pass copied for it to read (glass, the path tracer).
+    pub three_backdrops: usize,
     /// Draws recorded as a texture copy: an aligned texture at full opacity with the normal blend, first into a
     /// cleared target (also counted in `draws`).
     pub texel_copies: usize,
@@ -203,7 +205,8 @@ struct Cmd {
 }
 
 struct AdjPre {
-    snapshot: Arc<Tex>,
+    /// The target as it is before the command; a 3D pass that reads nothing behind it has none.
+    snapshot: Option<Arc<Tex>>,
     passes: Vec<fx::Pass>,
     /// A 3D pass rendered into its texture (the snapshot is its backdrop).
     three: Option<Box<(crate::three::Scene3, Arc<Tex>)>>,
@@ -379,6 +382,8 @@ pub struct Renderer {
     bgl1: wgpu::BindGroupLayout,
     bgl2: wgpu::BindGroupLayout,
     bgl3: wgpu::BindGroupLayout,
+    /// The generator binding of draws that have no generator: a zeroed uniform nothing writes.
+    dummy_gen: wgpu::BindGroup,
     samp: wgpu::Sampler,
     samp_repeat: wgpu::Sampler,
     globals: wgpu::Buffer,
@@ -1250,6 +1255,21 @@ impl Renderer {
             }],
         });
         let pipelines = Pipelines::new(d, [&bgl0, &bgl1, &bgl2, &bgl3], format);
+        let dummy_gen = d.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("no-generator"),
+            layout: &bgl3,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: d
+                    .create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("no-generator"),
+                        size: std::mem::size_of::<Gen>() as u64,
+                        usage: wgpu::BufferUsages::UNIFORM,
+                        mapped_at_creation: false,
+                    })
+                    .as_entire_binding(),
+            }],
+        });
         let sampler = |mode: wgpu::AddressMode| {
             d.create_sampler(&wgpu::SamplerDescriptor {
                 address_mode_u: mode,
@@ -1312,6 +1332,7 @@ impl Renderer {
             bgl1,
             bgl2,
             bgl3,
+            dummy_gen,
             samp,
             samp_repeat,
             globals,
@@ -5045,19 +5066,7 @@ impl Renderer {
         let dummy_pair = pair(&self.dummy.view, &self.dummy.view);
         // one bind group per (backdrop, matte) texture pair per frame, not one per draw
         let mut pairs: HashMap<(usize, usize), wgpu::BindGroup> = HashMap::new();
-        let dummy_gen = {
-            let ub = d.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: std::mem::size_of::<Gen>() as u64,
-                usage: wgpu::BufferUsages::UNIFORM,
-                mapped_at_creation: false,
-            });
-            d.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &self.bgl3,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: ub.as_entire_binding() }],
-            })
-        };
+        let dummy_gen = self.dummy_gen.clone();
         let mut enc = d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         // GPU time: a begin/end pair per effect pass, and for the frame when the device can
         // write timestamps between passes
@@ -5210,7 +5219,10 @@ impl Renderer {
                         drop(clear_pass(&mut enc, &job.target, true));
                         clear = false;
                     }
-                    Self::copy(&mut enc, &job.target, &pre.snapshot, [0, 0, job.target.size[0], job.target.size[1]]);
+                    if let Some(snapshot) = &pre.snapshot {
+                        Self::copy(&mut enc, &job.target, snapshot, [0, 0, job.target.size[0], job.target.size[1]]);
+                        plan.stats.three_backdrops += usize::from(pre.three.is_some());
+                    }
                     plan.stats.fx_passes += self.fx.record(&mut enc, &pre.passes);
                     if let (Some(three), Some(eng)) = (&pre.three, self.three.as_mut()) {
                         eng.stats = Default::default();
@@ -5220,7 +5232,8 @@ impl Renderer {
                             Self::copy(&mut enc, &cached, &three.1, [0, 0, three.1.size[0], three.1.size[1]]);
                             plan.stats.cache_hits += 1;
                         } else {
-                            match eng.render(&mut enc, &three.0, Some(&pre.snapshot.view), &three.1.view) {
+                            match eng.render(&mut enc, &three.0, pre.snapshot.as_ref().map(|s| &s.view), &three.1.view)
+                            {
                                 Err(error) => plan.stats.errors.push(error),
                                 Ok(()) => {
                                     if let (Some(key), Some(cache)) = (key, self.contrast_three_cache.as_mut()) {
@@ -5273,7 +5286,7 @@ impl Renderer {
                     if c.matte.is_some() {
                         return None;
                     }
-                    c.pre.as_ref().map(|p| &p.snapshot).filter(|t| f(t) == size)
+                    c.pre.as_ref().and_then(|p| p.snapshot.as_ref()).filter(|t| f(t) == size)
                 }
                 let pre_back = |c: &Cmd| pre_back_of(c, tsize, |t| t.size).is_some();
                 for b in job.cmds[i..j].iter().filter(|c| !pre_back(c)).filter_map(|c| c.backdrop) {

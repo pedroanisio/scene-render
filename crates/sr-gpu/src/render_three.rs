@@ -3479,7 +3479,7 @@ impl Renderer {
         // Mesh upload normally creates this lazily, but a volume-only pass has no mesh.
         self.three_engine();
         self.flush_vec(plan, cmds);
-        let snapshot = self.temp(plan, space.size);
+        let snapshot = scene.reads_backdrop().then(|| self.temp(plan, space.size));
         // the 3D renderer draws at f16 whatever the working precision (SREP 72): its target is f16 then, and is
         // composited, not copied, into the working textures
         let out = if self.format == resources::FORMAT {

@@ -90,6 +90,29 @@ fn glass_refracts_the_layers_behind_it() {
     assert!(c[0] > 0.5 && c[1] < 0.2 && c[3] > 0.99, "{c:?}");
 }
 
+/// A 3D pass copies the layers behind it only when something reads them: glass, or the path tracer.
+#[test]
+fn only_a_3d_pass_that_reads_the_layers_behind_copies_them() {
+    let mats = r##"<material id="glass" transmission="1" roughness="0.05" ior="1.5" thickness="5"/>
+        <material id="w" baseColor="#D0D0D0" roughness="0.9"/>"##;
+    let lights = r#"<light id="sun" type="directional" intensity="1" yaw="45"/>"#;
+    for (camera, material, copies) in [
+        ("", "w", 0),
+        ("", "glass", 1),
+        (r#"<camera id="cam" z="-500" renderer="pathtrace" pathSamples="1" maxBounces="1" denoise="false"/>"#, "w", 1),
+    ] {
+        let body = format!(
+            r#"{camera}<layer id="bg" asset="red" scaleX="32" scaleY="32"/>
+            <object3D id="b" primitive="box" width="60" height="60" depth="5" x="64" y="64" material="{material}"/>"#
+        );
+        let Some(r) = render(&scene("", mats, &body, lights)) else { return };
+        assert!(problems(&r).is_empty(), "{:?}", problems(&r));
+        assert_eq!(r.stats.three_backdrops, copies, "{camera} {material}");
+        let corner = r.at(4, 4);
+        assert!(corner[0] > 0.5 && corner[1] < 0.2 && corner[3] > 0.99, "the layer behind shows: {corner:?}");
+    }
+}
+
 const TRI_GLTF: &str = r#"{"asset":{"version":"2.0"},"extensionsUsed":["KHR_materials_variants"],
  "extensions":{"KHR_materials_variants":{"variants":[{"name":"blue"}]}},
  "scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],

@@ -280,7 +280,7 @@ impl Renderer {
             return;
         }
         let snapshot = self.pool.get(&self.gpu.device, &self.bgl1, space.size);
-        c.pre = Some(Box::new(AdjPre { snapshot: snapshot.clone(), passes: Vec::new(), three: None }));
+        c.pre = Some(Box::new(AdjPre { snapshot: Some(snapshot.clone()), passes: Vec::new(), three: None }));
         plan.probes.push((id, [r[0] as u32, r[1] as u32, (r[2] - r[0]) as u32, (r[3] - r[1]) as u32], snapshot));
     }
 

@@ -1426,7 +1426,11 @@ impl Renderer {
         let hash = h(&[root_hash, ctx.elements, sr_eval::rng::hash_str(&ids.join(" ")), hf(op), hf(g.time), 0x6164]);
         self.composite(plan, ctx, i, space, op, cur, [0.0, 0.0, w, hgt], cmds, hash);
         if let Some(c) = cmds.last_mut() {
-            c.pre = Some(Box::new(AdjPre { snapshot, passes: labelled(fx::fuse_colour(passes), &n.id), three: None }));
+            c.pre = Some(Box::new(AdjPre {
+                snapshot: Some(snapshot),
+                passes: labelled(fx::fuse_colour(passes), &n.id),
+                three: None,
+            }));
         }
     }
 
