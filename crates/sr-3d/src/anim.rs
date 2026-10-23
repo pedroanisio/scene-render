@@ -1,8 +1,9 @@
 //! Animation sampling, morph targets and skinning (on the CPU, per frame).
 
 use glam::{Mat3, Mat4, Quat, Vec3};
+use rayon::prelude::*;
 
-use crate::{Animation, Interp, Model, Path, Trs, Vertex};
+use crate::{Animation, Interp, Model, MorphTarget, Path, Trs, Vertex};
 
 fn key_span(times: &[f32], t: f32) -> (usize, usize, f32, f32) {
     let n = times.len();
@@ -205,12 +206,16 @@ pub fn draw_list(model: &Model, locals: &[Trs], weights: &[Vec<f32>], morph_over
             }
             let mut vs = prim.vertices.clone();
             if morphed {
-                for (k, target) in prim.morphs.iter().enumerate() {
-                    let wk = w.get(k).copied().unwrap_or(0.0);
-                    if wk == 0.0 {
-                        continue;
-                    }
-                    for (i, v) in vs.iter_mut().enumerate() {
+                // every vertex sums its targets in order, so the threads change nothing in the result
+                let targets: Vec<(&MorphTarget, f32)> = prim
+                    .morphs
+                    .iter()
+                    .enumerate()
+                    .map(|(k, target)| (target, w.get(k).copied().unwrap_or(0.0)))
+                    .filter(|(_, wk)| *wk != 0.0)
+                    .collect();
+                vs.par_iter_mut().enumerate().for_each(|(i, v)| {
+                    for (target, wk) in &targets {
                         if let Some(d) = target.dpos.get(i) {
                             v.pos.iter_mut().zip(d).for_each(|(p, dp)| *p += dp * wk);
                         }
@@ -218,7 +223,7 @@ pub fn draw_list(model: &Model, locals: &[Trs], weights: &[Vec<f32>], morph_over
                             v.normal.iter_mut().zip(d).for_each(|(n, dn)| *n += dn * wk);
                         }
                     }
-                }
+                });
             }
             let mut matrix = world[ni];
             if skinned {
@@ -232,7 +237,7 @@ pub fn draw_list(model: &Model, locals: &[Trs], weights: &[Vec<f32>], morph_over
                             * skin.inverse_bind.get(k).copied().unwrap_or(Mat4::IDENTITY)
                     })
                     .collect();
-                for (i, v) in vs.iter_mut().enumerate() {
+                vs.par_iter_mut().enumerate().for_each(|(i, v)| {
                     let (js, ws) = (prim.joints[i], prim.weights[i]);
                     let sum: f32 = ws.iter().sum();
                     let mut m = Mat4::ZERO;
@@ -259,12 +264,12 @@ pub fn draw_list(model: &Model, locals: &[Trs], weights: &[Vec<f32>], morph_over
                     let t =
                         m.transform_vector3(Vec3::new(v.tangent[0], v.tangent[1], v.tangent[2])).normalize_or_zero();
                     v.tangent = [t.x, t.y, t.z, v.tangent[3]];
-                }
+                });
                 matrix = Mat4::IDENTITY;
             } else {
-                for v in vs.iter_mut() {
+                vs.par_iter_mut().for_each(|v| {
                     v.normal = Vec3::from(v.normal).normalize_or_zero().into();
-                }
+                });
             }
             out.push(DrawItem { node: ni, prim: pi, matrix, vertices: Some(vs) });
         }
