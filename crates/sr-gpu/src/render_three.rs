@@ -3501,7 +3501,7 @@ impl Renderer {
         let out = if self.format == resources::FORMAT {
             self.temp(plan, space.size)
         } else {
-            let t = Arc::new(resources::create(&self.gpu.device, &self.bgl1, space.size, 1, "three f16"));
+            let t = self.pool.get_as(&self.gpu.device, &self.bgl1, resources::FORMAT, space.size);
             plan.fx_temps.push(t.clone());
             t
         };

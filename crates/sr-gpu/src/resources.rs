@@ -113,14 +113,18 @@ pub fn create_as(
 /// Frames a size may go unrequested, or a free texture untaken, before it is released.
 const KEEP_FRAMES: u64 = 8;
 
-/// Reuses offscreen textures by size between frames, all of one working format.
+/// What a pooled texture is reused by: its size and format.
+type PoolKey = ([u32; 2], wgpu::TextureFormat);
+
+/// Reuses offscreen textures by size and format between frames: the working format, and the f16 targets 3D passes
+/// draw into under f32 precision.
 pub struct Pool {
-    /// The format of every texture the pool hands out.
+    /// The format of the textures [`Pool::get`] hands out.
     pub format: wgpu::TextureFormat,
-    /// Free textures by size, each with the frame it was returned in, oldest first.
-    free: HashMap<[u32; 2], Vec<(Arc<Tex>, u64)>>,
-    /// The frame (count of `trim` calls) each size was last requested in.
-    wanted: HashMap<[u32; 2], u64>,
+    /// Free textures by size and format, each with the frame it was returned in, oldest first.
+    free: HashMap<PoolKey, Vec<(Arc<Tex>, u64)>>,
+    /// The frame (count of `trim` calls) each size and format was last requested in.
+    wanted: HashMap<PoolKey, u64>,
     /// `trim` calls so far.
     frame: u64,
     /// Textures created since the renderer started.
@@ -141,14 +145,25 @@ impl Pool {
         Pool { format, free: HashMap::new(), wanted: HashMap::new(), frame: 0, created: 0, released: 0 }
     }
 
-    /// A texture of `size`, reused when one is free.
+    /// A texture of `size` in the pool's format, reused when one is free.
     pub fn get(&mut self, device: &wgpu::Device, layout: &wgpu::BindGroupLayout, size: [u32; 2]) -> Arc<Tex> {
-        self.wanted.insert(size, self.frame);
-        if let Some((t, _)) = self.free.get_mut(&size).and_then(Vec::pop) {
+        self.get_as(device, layout, self.format, size)
+    }
+
+    /// A texture of `size` and `format`, reused when one is free.
+    pub fn get_as(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        format: wgpu::TextureFormat,
+        size: [u32; 2],
+    ) -> Arc<Tex> {
+        self.wanted.insert((size, format), self.frame);
+        if let Some((t, _)) = self.free.get_mut(&(size, format)).and_then(Vec::pop) {
             return t;
         }
         self.created += 1;
-        Arc::new(create_as(device, layout, self.format, size, 1, "offscreen"))
+        Arc::new(create_as(device, layout, format, size, 1, "offscreen"))
     }
 
     /// Ends a frame: frees the textures of every size not requested in the last `KEEP_FRAMES`
@@ -186,14 +201,13 @@ impl Pool {
 
     /// Texels of the textures held for reuse.
     pub fn held_texels(&self) -> u64 {
-        self.free.iter().map(|(s, v)| s[0] as u64 * s[1] as u64 * v.len() as u64).sum()
+        self.free.iter().map(|((s, _), v)| s[0] as u64 * s[1] as u64 * v.len() as u64).sum()
     }
 
     /// Returns a texture to the pool.
     pub fn put(&mut self, t: Arc<Tex>) {
-        // a texture of another format (a 3D target kept at f16 under f32 precision) is not one the pool hands out
-        if Arc::strong_count(&t) == 1 && t.tex.format() == self.format {
-            self.free.entry(t.size).or_default().push((t, self.frame));
+        if Arc::strong_count(&t) == 1 {
+            self.free.entry((t.size, t.tex.format())).or_default().push((t, self.frame));
         }
     }
 }
