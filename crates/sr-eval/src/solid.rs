@@ -2,6 +2,8 @@
 use crate::FrameNode;
 use glam::{Quat, Vec3};
 use sr_model::element::children;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 pub struct Clay {
     pub blobs: Vec<sr_3d::clay::Blob>,
@@ -73,6 +75,69 @@ fn clay_inputs(
         finish: sr_3d::clay::Finish { amount: value("fingerprints", 0.) as f32, seed, boil: value("boil", 0.) as f32 },
         resolution: value("resolution", 64.).clamp(8., 256.) as u32,
     }
+}
+
+/// A clay object's extracted surface, and the [`sr_3d::clay::key`] of the inputs it was extracted from.
+#[derive(Debug)]
+pub struct ClayMesh {
+    pub key: u64,
+    pub mesh: Arc<(Vec<sr_3d::Vertex>, Vec<u32>)>,
+}
+
+/// The clay surfaces of the last frame given to [`attach_clay`], by node id.
+#[derive(Default)]
+pub struct ClayCache(HashMap<Arc<str>, Arc<ClayMesh>>);
+
+/// Whether `n` draws a clay solid.
+pub fn is_clay(n: &FrameNode) -> bool {
+    n.kind == "object3D"
+        && match n.props.get("primitive") {
+            Some(crate::Value::Str(s)) => &**s == "clay",
+            _ => crate::sim::text(&*n.elem, "primitive").as_deref() == Some("clay"),
+        }
+}
+
+/// The key of a clay object's surface at this time.
+pub fn clay_key(spec: &Clay, n: &FrameNode) -> u64 {
+    sr_3d::clay::key(&spec.blobs, &spec.finish, spec.resolution, n.local_time)
+}
+
+/// Extracts the surface of `spec` at `n`'s time.
+pub fn extract_clay(spec: &Clay, n: &FrameNode) -> Arc<(Vec<sr_3d::Vertex>, Vec<u32>)> {
+    let prim = sr_3d::clay::mesh(&spec.blobs, &spec.finish, spec.resolution, n.local_time);
+    Arc::new((prim.vertices, prim.indices))
+}
+
+/// Gives every drawn clay object of `g` its surface ([`FrameNode::clay_mesh`]): the cached one while its inputs are
+/// unchanged, otherwise extracted, the objects in parallel. The cache then holds this frame's surfaces only.
+pub fn attach_clay(g: &mut crate::FrameGraph, cache: &mut ClayCache) {
+    use rayon::prelude::*;
+    let mut todo = Vec::new();
+    let mut kept = HashMap::new();
+    for (i, n) in g.nodes.iter().enumerate().filter(|(_, n)| n.draw && is_clay(n)) {
+        let spec = clay(n);
+        let key = clay_key(&spec, n);
+        match cache.0.get(&n.id).filter(|m| m.key == key) {
+            Some(m) => {
+                kept.insert(n.id.clone(), m.clone());
+            }
+            None => todo.push((i, spec, key)),
+        }
+    }
+    let nodes = &g.nodes;
+    let made: Vec<(usize, Arc<ClayMesh>)> = todo
+        .par_iter()
+        .map(|(i, spec, key)| (*i, Arc::new(ClayMesh { key: *key, mesh: extract_clay(spec, &nodes[*i]) })))
+        .collect();
+    for (i, m) in made {
+        kept.insert(g.nodes[i].id.clone(), m);
+    }
+    for n in g.nodes.iter_mut() {
+        if let Some(m) = kept.get(&n.id) {
+            n.clay_mesh = Some(m.clone());
+        }
+    }
+    cache.0 = kept;
 }
 
 pub fn clay_mesh(n: &FrameNode, budget: usize) -> Result<sr_3d::Primitive, String> {
@@ -224,6 +289,58 @@ mod tests {
             let frame = ev.evaluate(0.);
             assert_eq!(super::clay(&frame.nodes[0]).finish.seed, seed);
         }
+    }
+
+    #[test]
+    fn clay_is_extracted_ahead_and_reused_while_its_inputs_hold() {
+        // two boiling objects (a new surface every half second) and one that never boils
+        let xml = r#"<scene version="1.3"><project width="8" height="8" fps="4" duration="2"/>
+            <composition>
+              <object3D id="a" primitive="clay" resolution="16" fingerprints="0.4" boil="2"><blob radius="20"/></object3D>
+              <object3D id="b" primitive="clay" resolution="20" fingerprints="0.4" boil="2"><blob radius="15"/></object3D>
+              <object3D id="still" primitive="clay" resolution="16"><blob radius="10"/></object3D>
+              <object3D id="box" primitive="box"/>
+            </composition></scene>"#;
+        let doc = sr_model::load_str(xml, &sr_model::LoadOptions::without_assets()).unwrap();
+        let ev = crate::Evaluator::new(&doc, &Default::default()).unwrap();
+        let mut cache = super::ClayCache::default();
+        let frame = |t: f64, cache: &mut super::ClayCache| {
+            let mut g = ev.evaluate(t);
+            super::attach_clay(&mut g, cache);
+            g
+        };
+        let mesh = |g: &crate::FrameGraph, id: &str| g.nodes.iter().find(|n| &*n.id == id).unwrap().clay_mesh.clone();
+        let g0 = frame(0.0, &mut cache);
+        assert!(mesh(&g0, "box").is_none());
+        for id in ["a", "b", "still"] {
+            // what the renderer would extract itself, vertex for vertex
+            let n = g0.nodes.iter().find(|n| &*n.id == id).unwrap();
+            let spec = super::clay(n);
+            let made = mesh(&g0, id).expect("clay gets its surface");
+            assert_eq!(made.key, super::clay_key(&spec, n));
+            let own = super::extract_clay(&spec, n);
+            assert!(!own.1.is_empty());
+            assert_eq!(made.mesh.1, own.1);
+            assert!(made.mesh.0.iter().zip(&own.0).all(|(p, q)| p.pos == q.pos && p.normal == q.normal));
+        }
+        // within the boil step every surface is reused; past it, only the still one is
+        let g1 = frame(0.25, &mut cache);
+        for id in ["a", "b", "still"] {
+            assert!(std::sync::Arc::ptr_eq(&mesh(&g0, id).unwrap(), &mesh(&g1, id).unwrap()), "{id}");
+        }
+        let g2 = frame(0.5, &mut cache);
+        assert!(std::sync::Arc::ptr_eq(&mesh(&g0, "still").unwrap(), &mesh(&g2, "still").unwrap()));
+        for id in ["a", "b"] {
+            assert!(!std::sync::Arc::ptr_eq(&mesh(&g0, id).unwrap(), &mesh(&g2, id).unwrap()), "{id}");
+            assert_ne!(mesh(&g0, id).unwrap().key, mesh(&g2, id).unwrap().key);
+        }
+        // a frame without an object drops its surface from the cache
+        let mut g3 = ev.evaluate(0.5);
+        g3.nodes.retain(|n| &*n.id != "a");
+        super::attach_clay(&mut g3, &mut cache);
+        let g4 = frame(0.5, &mut cache);
+        assert!(!std::sync::Arc::ptr_eq(&mesh(&g2, "a").unwrap(), &mesh(&g4, "a").unwrap()));
+        assert!(std::sync::Arc::ptr_eq(&mesh(&g2, "b").unwrap(), &mesh(&g4, "b").unwrap()));
     }
 
     #[test]

@@ -32,3 +32,7 @@ This release makes the CPU path, lavapipe and llvmpipe, faster: the path tracer 
 The Linux archive contains the executable, source commit identifier, capability manifest, README, changelog, disclaimer, licence, notice, commercial-licence page and third-party notices. Its executable comes from the successful CI run for the release commit and is checksum-verified and smoke-tested before packaging.
 
 Verify the download with `sha256sum -c scene-render-v0.7.3-linux-x86_64.tar.gz.sha256`, extract it, then run `./scene-render --help`.
+
+## Unreleased
+
+- Delivery extracts a frame's clay surfaces on the thread that evaluates frames ahead of the renderer, so that work overlaps the previous frame's render. The objects that changed are extracted in parallel with each other, and a surface whose blobs, finish, resolution and boil step are unchanged is reused. The renderer keys its clay meshes by a hash of those inputs instead of formatting every blob, and uploads the extracted vectors without copying them. Frames are unchanged: a 736-frame 1280x720 claymation with 94 clay objects, 71 of them boiling every frame, encoded to the same frames (framemd5) on lavapipe in 86.2 s instead of 91.7 s.

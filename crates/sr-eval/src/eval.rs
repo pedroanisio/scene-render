@@ -269,6 +269,10 @@ pub struct FrameNode {
     /// The mesh of a parametric surface or heightfield at this time (SREP 70), in the object's local space.
     #[serde(skip)]
     pub param_mesh: Option<Arc<crate::parametric::ParamMesh>>,
+    /// A clay object's surface at this time, extracted ahead of rendering ([`crate::solid::attach_clay`]); None when
+    /// the renderer extracts it itself.
+    #[serde(skip)]
+    pub clay_mesh: Option<Arc<crate::solid::ClayMesh>>,
     /// The box of a parametric shape at this time (SREP 70): the bounding box `[x0, y0, x1, y1]` of its finite
     /// points, in local pixels. Its outline is the `path` property.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1351,6 +1355,7 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
             joints: None,
             connector: None,
             param_mesh: None,
+            clay_mesh: None,
             param_box: None,
             elem: node.elem.clone(),
         });
