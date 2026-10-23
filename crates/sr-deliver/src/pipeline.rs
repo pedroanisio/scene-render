@@ -434,6 +434,9 @@ impl Video<'_> {
         let p = self.ev.program();
         let working = self.renderer.working();
         let mut pending: Option<(f64, sr_gpu::output::Pending)> = None;
+        // The flash grid of the frame before, begun with that frame and collected with this one: the GPU reduces
+        // one frame while this thread prepares the next, and the observations keep their order.
+        let mut flash_pending: Option<(f64, sr_gpu::FlashPending)> = None;
         // A worker reuses its report for several chunks; retain earlier findings.
         let mut unsupported = report.unsupported.iter().cloned().collect::<std::collections::BTreeSet<_>>();
         let checks = Checks::of(p);
@@ -495,9 +498,10 @@ impl Video<'_> {
                         }
                         None => None,
                     };
+                    let mut begun = None;
                     if let Some(tex) = flash_picture.as_ref() {
                         self.stage.place_with_overlay(&picture, &working, tex, placement, over);
-                        seen.flash(out_t, self.renderer.flash_grid(tex));
+                        begun = Some(self.renderer.begin_flash_grid(tex));
                     }
                     seen.finish_frame().map_err(DeliverError::Invalid)?;
                     let next = self.stage.submit_placed(
@@ -513,6 +517,15 @@ impl Video<'_> {
                     let t2 = Instant::now();
                     meter::add(&mut report.stage_seconds, 0, (t1 - t0).as_secs_f64());
                     meter::add(&mut report.stage_seconds, 1, (t2 - t1).as_secs_f64());
+                    // the frame before: its flash grid (begun before its conversion, so done first), then its bytes
+                    if let Some(begun) = begun {
+                        if let Some((prev_t, prev)) = flash_pending.replace((out_t, begun)) {
+                            let w = Instant::now();
+                            let cells = self.renderer.finish_flash_grid(prev);
+                            meter::add(&mut report.stage_seconds, 2, w.elapsed().as_secs_f64());
+                            seen.flash(prev_t, cells);
+                        }
+                    }
                     if let Some((_, prev)) = pending.replace((t, next)) {
                         let w = Instant::now();
                         let bytes = self.stage.wait(prev);
@@ -520,6 +533,12 @@ impl Video<'_> {
                         meter::add(&mut report.stage_seconds, 3, sink(bytes)?);
                     }
                     if k + 1 == times.len() {
+                        if let Some((last_t, last)) = flash_pending.take() {
+                            let w = Instant::now();
+                            let cells = self.renderer.finish_flash_grid(last);
+                            meter::add(&mut report.stage_seconds, 2, w.elapsed().as_secs_f64());
+                            seen.flash(last_t, cells);
+                        }
                         if let Some((_, last)) = pending.take() {
                             let w = Instant::now();
                             let bytes = self.stage.wait(last);

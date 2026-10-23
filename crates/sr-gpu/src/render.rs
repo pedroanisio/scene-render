@@ -33,6 +33,7 @@ use crate::fx;
 
 #[path = "render_access.rs"]
 mod render_access;
+pub use render_access::FlashPending;
 #[path = "render_fx.rs"]
 mod render_fx;
 #[path = "render_map3d.rs"]
@@ -491,6 +492,11 @@ pub struct Renderer {
     /// Inline probes split vector batches, so deferred comparisons may need a 2D replay.
     contrast_batch_split: bool,
     grid: Option<(wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
+    /// The flash grid's 48 × 27 target, made once, and its staging buffers not in flight.
+    flash_out: Option<Tex>,
+    flash_ring: Vec<wgpu::Buffer>,
+    /// Staging buffers the flash grid has made: one per frame in flight at once.
+    flash_buffers: usize,
     /// Blurred glyph groups of the text layer being drawn (radius in node pixels, node-local scene).
     pending_blur: Vec<(f64, Scene)>,
     text: crate::text::TextCache,
@@ -1399,6 +1405,9 @@ impl Renderer {
             contrast_probe: false,
             contrast_batch_split: false,
             grid: None,
+            flash_out: None,
+            flash_ring: Vec::new(),
+            flash_buffers: 0,
             pending_blur: Vec::new(),
             video: crate::video::VideoEngine::new(gpu_device, gpu_queue),
             decoders: HashMap::new(),

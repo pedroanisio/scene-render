@@ -264,3 +264,37 @@ fn deferred_contrast_reuses_the_main_frame_and_returns_stable_pixels() {
     assert_eq!(renderer.read(&next.texture), fresh.read(&expected.texture));
     assert_eq!(renderer.read(&frame.texture), expected_pixels, "the returned main image survives subsequent renders");
 }
+
+#[test]
+fn a_flash_grid_begun_on_one_frame_is_collected_later_without_new_resources() {
+    let Some(gpu) = common::gpu() else { return };
+    let d = common::doc(
+        r##"width="96" height="54" background="#202020""##,
+        "",
+        r##"<shape id="a" shape="rect" x="0" y="0" width="48" height="27" fill="#ffffff"/>
+            <shape id="b" shape="rect" x="48" y="27" width="48" height="27" fill="#ff0000"/>"##,
+    );
+    let ev = sr_eval::Evaluator::new(&d, &Default::default()).unwrap();
+    let mut r = Renderer::new(gpu, ev.program());
+    let g = ev.evaluate(0.0);
+    let frame = r.render_with(&g, ev.program(), None).texture;
+    let other = r.render_with(&ev.evaluate(1.0), ev.program(), None).texture;
+    let cells = r.flash_grid(&frame);
+    assert_eq!(cells.len(), 48 * 27);
+    assert!(cells[0][0] > 0.9 && cells[48 * 27 - 1][1] < 0.1, "white top left, red bottom right: {cells:?}");
+    // the blocking grid and the grid begun then collected agree exactly
+    let p = r.begin_flash_grid(&frame);
+    assert_eq!(r.finish_flash_grid(p), cells);
+    // two frames in flight at once, collected in order, each from its own frame
+    let first = r.begin_flash_grid(&frame);
+    let second = r.begin_flash_grid(&other);
+    assert_eq!(r.finish_flash_grid(first), cells);
+    assert_eq!(r.finish_flash_grid(second), r.flash_grid(&other));
+    // the grid texture is made once and the staging buffers once per frame in flight, not per call
+    assert_eq!(r.flash_grid_buffers(), 2, "one staging buffer per frame in flight");
+    for _ in 0..4 {
+        let p = r.begin_flash_grid(&frame);
+        assert_eq!(r.finish_flash_grid(p), cells);
+    }
+    assert_eq!(r.flash_grid_buffers(), 2);
+}

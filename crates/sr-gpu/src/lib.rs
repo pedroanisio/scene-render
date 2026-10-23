@@ -35,7 +35,7 @@ pub mod volume;
 
 pub use fx::{GpuTimes, PassTime};
 pub use gpu::{begin_map_read, map_read, map_read_within, Gpu, GpuError, MapReadError, MapWait, MAP_READ_TIMEOUT};
-pub use render::{ContrastTarget, Frame, PathSamples, RenderStats, Renderer, Tier, VoxelSurfaceStat};
+pub use render::{ContrastTarget, FlashPending, Frame, PathSamples, RenderStats, Renderer, Tier, VoxelSurfaceStat};
 pub use wgpu::SubmissionIndex;
 
 /// The FrameGraph value of a document paint.

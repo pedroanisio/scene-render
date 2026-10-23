@@ -503,8 +503,22 @@ impl Renderer {
         })
     }
 
-    /// Display-referred linear sRGB of each cell of a 48 × 27 grid over a frame (flash analysis).
+    /// Display-referred linear sRGB of each cell of a 48 × 27 grid over a frame (flash analysis): the grid begun and
+    /// collected at once, so the caller waits for the GPU here.
     pub fn flash_grid(&mut self, frame: &Tex) -> Vec<[f64; 3]> {
+        let p = self.begin_flash_grid(frame);
+        self.finish_flash_grid(p)
+    }
+
+    /// Staging buffers the flash grid has made so far: one per grid in flight at once, reused after that.
+    pub fn flash_grid_buffers(&self) -> usize {
+        self.flash_buffers
+    }
+
+    /// Submits the reduction of `frame` to the flash grid and its copy to a staging buffer, and asks for the mapping,
+    /// without waiting: [`Self::finish_flash_grid`] collects the cells once the GPU is done, so the caller keeps
+    /// submitting work in the meantime. The grid texture is made once; a staging buffer is made when none is free.
+    pub fn begin_flash_grid(&mut self, frame: &Tex) -> FlashPending {
         let d = self.gpu.device.clone();
         let (pipe, bgl) = self.grid.get_or_insert_with(|| {
             let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -555,7 +569,16 @@ impl Renderer {
             };
             (pipe, bgl)
         });
-        let out = resources::create(&d, &self.bgl1, [48, 27], 1, "flash-grid");
+        let out = self.flash_out.get_or_insert_with(|| resources::create(&d, &self.bgl1, FLASH_GRID, 1, "flash-grid"));
+        let buffer = self.flash_ring.pop().unwrap_or_else(|| {
+            self.flash_buffers += 1;
+            d.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("flash-grid readback"),
+                size: (FLASH_ROW * FLASH_GRID[1]) as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            })
+        });
         let bg = d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("flash-grid"),
             layout: bgl,
@@ -583,8 +606,49 @@ impl Renderer {
             rp.set_bind_group(0, &bg, &[]);
             rp.draw(0..3, 0..1);
         }
-        self.gpu.queue.submit([enc.finish()]);
-        self.read(&out)
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &out.tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(FLASH_ROW),
+                    rows_per_image: Some(FLASH_GRID[1]),
+                },
+            },
+            wgpu::Extent3d { width: FLASH_GRID[0], height: FLASH_GRID[1], depth_or_array_layers: 1 },
+        );
+        let submitted = self.gpu.queue.submit([enc.finish()]);
+        let wait = crate::gpu::begin_map_read(buffer.slice(..));
+        FlashPending { buffer, submitted, wait }
+    }
+
+    /// Waits for a grid begun by [`Self::begin_flash_grid`] and returns its cells, row by row, as display-referred
+    /// linear sRGB. The staging buffer goes back to the ring for the next grid.
+    pub fn finish_flash_grid(&mut self, p: FlashPending) -> Vec<[f64; 3]> {
+        let FlashPending { buffer, submitted, wait } = p;
+        // wait for the grid's own submission, not for everything submitted since (the frames after it)
+        let _ = self.gpu.device.poll(wgpu::PollType::Wait { submission_index: Some(submitted), timeout: None });
+        wait.wait(&self.gpu.device, crate::gpu::MAP_READ_TIMEOUT)
+            .unwrap_or_else(|e| panic!("reading back the flash grid: {e}"));
+        let bytes = resources::texel_bytes(resources::FORMAT) as usize;
+        let cells = {
+            let data = buffer.slice(..).get_mapped_range().expect("mapped");
+            let mut cells = Vec::with_capacity((FLASH_GRID[0] * FLASH_GRID[1]) as usize);
+            for y in 0..FLASH_GRID[1] as usize {
+                let line = &data[y * FLASH_ROW as usize..][..FLASH_GRID[0] as usize * bytes];
+                cells.extend(line.chunks_exact(bytes).map(|px| resources::texel(resources::FORMAT, px)));
+            }
+            cells
+        };
+        buffer.unmap();
+        self.flash_ring.push(buffer);
+        cells
             .into_iter()
             .map(|p| {
                 let d = self.working.to_display_srgb([p[0] as f64, p[1] as f64, p[2] as f64]);
@@ -599,4 +663,17 @@ impl Renderer {
             })
             .collect()
     }
+}
+
+/// The flash grid's cells: 48 columns by 27 rows.
+const FLASH_GRID: [u32; 2] = [48, 27];
+/// Bytes per row of the grid's readback, padded as a texture copy requires.
+const FLASH_ROW: u32 = (FLASH_GRID[0] * 8).div_ceil(256) * 256;
+
+/// A flash grid in flight: its staging buffer, out of the renderer's ring until [`Renderer::finish_flash_grid`]
+/// returns it, the submission that fills it, and the mapping asked for.
+pub struct FlashPending {
+    buffer: wgpu::Buffer,
+    submitted: wgpu::SubmissionIndex,
+    wait: crate::gpu::MapWait,
 }
