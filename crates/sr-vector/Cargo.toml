@@ -15,6 +15,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 usvg = { version = "0.48", default-features = false }
 miniz_oxide = "0.8"
+rayon.workspace = true
 
 [lints]
 workspace = true

@@ -749,6 +749,18 @@ pub fn encode_cached(scene: &Scene, size: [u32; 2], cache: &mut TileCache) -> En
     Encoded { size, tiles, ranges, cmds, pieces, backdrops, paints: e.paints, flattened_layers: e.flattened }
 }
 
+/// Shares of the parallel tiling that ran on a thread other than the persistent pool's.
+#[cfg(test)]
+static OFF_POOL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Counts a share of the parallel tiling run off the persistent pool.
+fn on_worker() {
+    #[cfg(test)]
+    if rayon::current_thread_index().is_none() {
+        OFF_POOL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Tiles every path of the scene (unchanged ones from `cache`), laid out in path order as
 /// [`tile_fresh`] lays them out.
 fn tile_all(scene: &Scene, size: [u32; 2], cache: &mut TileCache) -> (Vec<Option<PathRange>>, TileArena) {
@@ -788,20 +800,16 @@ fn tile_all(scene: &Scene, size: [u32; 2], cache: &mut TileCache) -> (Vec<Option
         let mut scratch = Scratch::default();
         miss.iter().map(|&i| one(i, &mut scratch)).collect()
     } else {
+        // `threads` shares on the persistent pool: a frame spawns no threads of its own
+        use rayon::prelude::*;
         let chunk = miss.len().div_ceil(threads).max(1);
-        std::thread::scope(|sc| {
-            let handles: Vec<_> = miss
-                .chunks(chunk)
-                .map(|part| {
-                    let one = &one;
-                    sc.spawn(move || {
-                        let mut scratch = Scratch::default();
-                        part.iter().map(|&i| one(i, &mut scratch)).collect::<Vec<_>>()
-                    })
-                })
-                .collect();
-            handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
-        })
+        miss.par_chunks(chunk)
+            .flat_map_iter(|part| {
+                on_worker();
+                let mut scratch = Scratch::default();
+                part.iter().map(|&i| one(i, &mut scratch)).collect::<Vec<_>>()
+            })
+            .collect()
     };
     for (i, a) in fresh {
         let a = std::sync::Arc::new(a);
@@ -848,6 +856,7 @@ fn tile_fresh(scene: &Scene, size: [u32; 2]) -> (Vec<Option<PathRange>>, TileAre
         })
         .collect();
     let tile_part = |part: &[Option<&[Poly]>]| {
+        on_worker();
         let mut scratch = Scratch::default();
         // sized for flattened outlines: about one piece per point, a tile per dozen
         let points: usize = part.iter().flatten().map(|p| p.iter().map(|q| q.pts.len()).sum::<usize>()).sum();
@@ -865,16 +874,14 @@ fn tile_fresh(scene: &Scene, size: [u32; 2]) -> (Vec<Option<PathRange>>, TileAre
     if threads <= 1 || work < 20_000 {
         return tile_part(&polys);
     }
+    use rayon::prelude::*;
     let chunk = polys.len().div_ceil(threads);
+    let parts: Vec<_> = polys.par_chunks(chunk).map(tile_part).collect();
     let mut pre: Vec<Option<PathRange>> = Vec::with_capacity(polys.len());
     let mut arena = TileArena::default();
-    std::thread::scope(|sc| {
-        let handles: Vec<_> = polys.chunks(chunk).map(|part| sc.spawn(move || tile_part(part))).collect();
-        for h in handles {
-            let (part, a) = h.join().unwrap_or_default();
-            arena.append(&mut pre, part, a);
-        }
-    });
+    for (part, a) in parts {
+        arena.append(&mut pre, part, a);
+    }
     (pre, arena)
 }
 
@@ -1044,6 +1051,46 @@ pub fn render_cpu_rows(
 #[cfg(test)]
 mod tests {
     use super::{ceil_i64, floor_i64};
+
+    /// A scene well above the parallel threshold: 64 closed paths of 500 points.
+    fn heavy() -> crate::Scene {
+        let mut scene = crate::Scene::default();
+        for k in 0..64 {
+            let c = crate::P { x: 20.0 + 3.0 * k as f64, y: 128.0 };
+            let pts = (0..500)
+                .map(|i| {
+                    let a = i as f64 * std::f64::consts::TAU / 500.0;
+                    let r = 15.0 + (5 * i % 7) as f64;
+                    crate::P { x: c.x + r * a.cos(), y: c.y + r * a.sin() }
+                })
+                .collect();
+            scene.cmds.push(crate::Cmd::Fill {
+                polys: vec![crate::Poly { pts, closed: true }],
+                rule: crate::FillRule::NonZero,
+                paint: crate::Paint::Solid { rgba: [1.0, 0.5, 0.25, 1.0], srgb: false },
+                opacity: 1.0,
+            });
+        }
+        scene
+    }
+
+    /// Tiling a frame's paths in parallel runs on the persistent worker pool: no frame spawns threads of its own.
+    #[test]
+    fn parallel_tiling_runs_on_the_pool_not_threads_spawned_per_frame() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let scene = heavy();
+        crate::set_threads(4);
+        let before = super::OFF_POOL.load(Relaxed);
+        let mut cache = super::TileCache::default();
+        let a = super::encode_cached(&scene, [256, 256], &mut cache);
+        let b = super::encode(&scene, [256, 256]);
+        let (pre, arena) = super::tile_fresh(&scene, [256, 256]);
+        crate::set_threads(0);
+        assert_eq!(super::OFF_POOL.load(Relaxed), before, "a share of the tiling ran on a thread spawned for it");
+        assert_eq!(format!("{a:?}"), format!("{b:?}"));
+        assert_eq!(pre.iter().flatten().count(), 64);
+        assert!(!arena.tiles.is_empty());
+    }
 
     /// `floor_i64` and `ceil_i64` agree with `floor() as i64` and `ceil() as i64`
     /// at every awkward value: integers, halves, ±0, subnormals, the 2^52, 2^53
