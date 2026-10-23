@@ -616,16 +616,16 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
     }
     var base = 0u;
     var count = min(u32(fr.params.y), MAX_PER_TILE);
-    if (!ALL_GLOBAL_LIGHTS) {
+    if (!ALL_GLOBAL_LIGHTS && LIGHT_SIGNATURE == 0xffffffffu) {
         let tile = vec2<u32>(i.clip.xy) / TILE;
         let tiles_x = u32(fr.params.z);
         base = (tile.y * tiles_x + tile.x) * (MAX_PER_TILE + 1u);
         count = min(tiles[base], MAX_PER_TILE);
     }
     if (LIGHT_SIGNATURE != 0xffffffffu) {
-        if ((LIGHT_SIGNATURE >> 8u) > 0u) {
+        if ((LIGHT_SIGNATURE >> 12u) > 0u) {
             let li = lights[0u];
-            let ty = (LIGHT_SIGNATURE >> 0u) & 1u;
+            let ty = (LIGHT_SIGNATURE >> 0u) & 7u;
             let contribution = shade_light(li, s, ty);
             var sh = 1.0;
             // Shadowing cannot change a zero contribution (back-facing or unlit
@@ -646,9 +646,9 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
                 lit_sh += luma(contribution * sh);
             }
         }
-        if ((LIGHT_SIGNATURE >> 8u) > 1u) {
+        if ((LIGHT_SIGNATURE >> 12u) > 1u) {
             let li = lights[1u];
-            let ty = (LIGHT_SIGNATURE >> 1u) & 1u;
+            let ty = (LIGHT_SIGNATURE >> 3u) & 7u;
             let contribution = shade_light(li, s, ty);
             var sh = 1.0;
             // Shadowing cannot change a zero contribution (back-facing or unlit
@@ -669,9 +669,9 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
                 lit_sh += luma(contribution * sh);
             }
         }
-        if ((LIGHT_SIGNATURE >> 8u) > 2u) {
+        if ((LIGHT_SIGNATURE >> 12u) > 2u) {
             let li = lights[2u];
-            let ty = (LIGHT_SIGNATURE >> 2u) & 1u;
+            let ty = (LIGHT_SIGNATURE >> 6u) & 7u;
             let contribution = shade_light(li, s, ty);
             var sh = 1.0;
             // Shadowing cannot change a zero contribution (back-facing or unlit
@@ -692,9 +692,9 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
                 lit_sh += luma(contribution * sh);
             }
         }
-        if ((LIGHT_SIGNATURE >> 8u) > 3u) {
+        if ((LIGHT_SIGNATURE >> 12u) > 3u) {
             let li = lights[3u];
-            let ty = (LIGHT_SIGNATURE >> 3u) & 1u;
+            let ty = (LIGHT_SIGNATURE >> 9u) & 7u;
             let contribution = shade_light(li, s, ty);
             var sh = 1.0;
             // Shadowing cannot change a zero contribution (back-facing or unlit

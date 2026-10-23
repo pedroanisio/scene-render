@@ -2110,19 +2110,21 @@ impl ThreeEngine {
         // original 63-light cap and overflow diagnostic without a repeated list.
         let global_lights = self.specialize_global_lights
             && scene.lights.iter().all(|l| matches!(l.kind, LightKind::Ambient | LightKind::Directional));
-        // A small global-light list can preserve order while exposing each kind
-        // and index to the shader compiler. Longer lists retain the tiled/general path.
-        let light_signature = if global_lights && scene.lights.len() <= 4 {
-            ((scene.lights.len() as u32) << 8)
-                | scene
-                    .lights
-                    .iter()
-                    .enumerate()
-                    .fold(0, |mask, (k, light)| mask | ((matches!(light.kind, LightKind::Directional) as u32) << k))
-        } else {
-            u32::MAX
+        // Up to four lights that every tile holds, in scene order, expose each kind and index to the shader
+        // compiler: three bits of kind per light, the count above them. Longer lists and lights culled from some
+        // tile keep the tiled loop.
+        let everywhere = || {
+            let all = Some([0, 0, tiles[0] - 1, tiles[1] - 1]);
+            scene.lights.iter().all(|l| light_tiles(l, &vp, size, tiles) == all)
         };
-        let tile_data = if global_lights {
+        let light_signature =
+            if self.specialize_global_lights && scene.lights.len() <= 4 && (global_lights || everywhere()) {
+                ((scene.lights.len() as u32) << 12)
+                    | scene.lights.iter().enumerate().fold(0, |mask, (k, light)| mask | (light.kind as u32) << (3 * k))
+            } else {
+                u32::MAX
+            };
+        let tile_data = if global_lights || light_signature != u32::MAX {
             stats.tile_overflow = scene.lights.len() > MAX_PER_TILE;
             vec![0u32]
         } else {
@@ -3664,6 +3666,120 @@ mod tests {
         let m = &mut scene.draws[0].material;
         m.clearcoat = 0.5;
         assert!(!plain_material(&scene.draws[0]));
+    }
+
+    /// Up to four lights that reach every tile are unrolled by kind, local ones too; a light culled from some tile
+    /// keeps the tiled loop. Both render the frame the tiled loop renders.
+    #[test]
+    fn local_lights_reaching_every_tile_unroll_without_changing_the_frame() {
+        use super::*;
+        let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "local_lights_reaching_every_tile_unroll");
+        let mut engine =
+            ThreeEngine::new_with(gpu.device.clone(), gpu.queue.clone(), gpu.gbuffer_depth, gpu.scalar_target);
+        let sphere = sr_3d::prim::sphere(22.0, 24);
+        let plane = sr_3d::prim::plane(160.0, 120.0, 1);
+        let draw = |mesh, at: Vec3, base_color| Draw3 {
+            mesh: MeshSrc::Cached(mesh),
+            model: Mat4::from_translation(at),
+            material: MaterialParams { base_color, roughness: 0.4, metallic: 0.3, ..Default::default() },
+            maps: Default::default(),
+            opacity: 1.0,
+            cast_shadow: true,
+            receive_shadow: true,
+            shadow_catcher: false,
+        };
+        let ball = engine.upload_mesh(&sphere.vertices, &sphere.indices);
+        let floor = engine.upload_mesh(&plane.vertices, &plane.indices);
+        let light = |kind, pos: Vec3, range: f32, shadow: bool, contact: f32| Light3 {
+            kind,
+            pos,
+            dir: (Vec3::new(48.0, 32.0, 0.0) - pos).normalize(),
+            right: Vec3::X,
+            color: Vec3::new(0.9, 0.7, 0.5) * if kind == LightKind::Ambient { 0.2 } else { 40.0 },
+            range,
+            falloff: 2.0,
+            cos_outer: 0.8,
+            cos_inner: 0.95,
+            cast_shadow: shadow,
+            softness: 0.0,
+            bias: 0.001,
+            map_size: 64,
+            size: if matches!(kind, LightKind::Rect | LightKind::Disk | LightKind::Sphere) {
+                [12.0, 8.0, 6.0]
+            } else {
+                [0.0; 3]
+            },
+            ies: None,
+            affects_diffuse: true,
+            affects_specular: true,
+            contact,
+        };
+        let mut scene = Scene3 {
+            cam: sr_3d::camera::resolve(&sr_3d::camera::CameraParams::default(), 96.0, 64.0),
+            clip_fix: Mat4::IDENTITY,
+            size: [96, 64],
+            exposure: 0.83,
+            dof: None,
+            lens_k1: 0.0,
+            draws: vec![
+                draw(ball, Vec3::new(48.0, 32.0, 0.0), [0.8, 0.4, 0.3, 1.0]),
+                draw(floor, Vec3::new(48.0, 32.0, 30.0), [0.5, 0.6, 0.7, 1.0]),
+            ],
+            lights: Vec::new(),
+            env: None,
+            splats: Vec::new(),
+            volumes: Vec::new(),
+            encode_srgb: false,
+            ao: None,
+            ssr: false,
+            path: None,
+            geodesic: None,
+        };
+        let above = Vec3::new(30.0, 10.0, -60.0);
+        let (amb, dir, point, spot) = (LightKind::Ambient, LightKind::Directional, LightKind::Point, LightKind::Spot);
+        let unrolled = [
+            vec![light(point, above, 0.0, false, 0.0)],
+            vec![
+                light(amb, above, 0.0, false, 0.0),
+                light(spot, above, 4000.0, true, 0.0),
+                light(point, above, 3000.0, false, 0.0),
+            ],
+            vec![light(spot, above, 0.0, false, 8.0), light(dir, above, 0.0, true, 0.0)],
+            vec![
+                light(LightKind::Rect, above, 0.0, false, 0.0),
+                light(LightKind::Disk, above, 500.0, false, 0.0),
+                light(LightKind::Sphere, above, 0.0, true, 0.0),
+                light(amb, above, 0.0, false, 0.0),
+            ],
+        ];
+        // a short-range light lights a corner: other tiles leave it out
+        let culled =
+            vec![light(amb, above, 0.0, false, 0.0), light(point, Vec3::new(4.0, 4.0, -10.0), 20.0, false, 0.0)];
+        let local_signatures = |e: &ThreeEngine| {
+            e.pipes
+                .keys()
+                .filter(|k| !k.global_lights && k.light_signature != u32::MAX)
+                .map(|k| k.light_signature)
+                .collect::<std::collections::HashSet<_>>()
+        };
+        for (case, lights) in unrolled.iter().chain([&culled]).enumerate() {
+            scene.lights = lights.clone();
+            let before = local_signatures(&engine).len();
+            engine.specialize_global_lights = true;
+            let actual = engine.render_now(&scene, None);
+            let actual_stats = engine.stats;
+            let added = local_signatures(&engine).len() - before;
+            engine.specialize_global_lights = false;
+            let expected = engine.render_now(&scene, None);
+            assert!(actual.iter().any(|p| p[0] > 0.01 && p[3] > 0.01), "case {case} draws something");
+            assert_same_render(&gpu.info, &actual, &expected, &format!("lights case {case}"));
+            assert_eq!(actual_stats, engine.stats, "case {case}: statistics unchanged");
+            assert_eq!(
+                added,
+                usize::from(case < unrolled.len()),
+                "case {case}: unrolled only when every tile holds every light"
+            );
+        }
     }
 
     #[test]
