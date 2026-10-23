@@ -4865,6 +4865,13 @@ impl Renderer {
         realloc
     }
 
+    /// Tells the 3D engine the queue took the passes recorded so far (after every submit).
+    fn three_submitted(&mut self) {
+        if let Some(three) = self.three.as_mut() {
+            three.submitted();
+        }
+    }
+
     /// The queue submission of the last frame, to wait on without draining later work.
     pub fn last_submission(&self) -> Option<wgpu::SubmissionIndex> {
         self.last_submit.clone()
@@ -5190,6 +5197,7 @@ impl Renderer {
                     d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") }),
                 );
                 self.gpu.queue.submit([done.finish()]);
+                self.three_submitted();
                 let f = self.video.flow(a, b);
                 let _ = slot.set(f.create_view(&Default::default()));
             }
@@ -5440,6 +5448,7 @@ impl Renderer {
                         d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") }),
                     );
                     self.gpu.queue.submit([done.finish()]);
+                    self.three_submitted();
                     self.gpu.wait();
                     plan.stats.mid_frame_submits += 1;
                     unsubmitted = 0;
@@ -5466,6 +5475,7 @@ impl Renderer {
             self.last_timer = Some(t);
         }
         self.last_submit = Some(self.gpu.queue.submit([enc.finish()]));
+        self.three_submitted();
         for (_, t) in scratch {
             self.pool.put(t);
         }

@@ -508,6 +508,11 @@ pub struct Stats3 {
     pub pt_atlas_texels: usize,
     /// Scenes the CPU tracer built this pass: none when the GPU traced it or a kept one served.
     pub pt_cpu_scenes: usize,
+    /// Buffers a rasterised pass made for its frame, lights, tiles, shadow matrices, objects, materials and object
+    /// order: none when the set kept from an earlier pass holds them.
+    pub buffers_created: usize,
+    /// Material bind groups a rasterised pass made: none when every draw's maps had one from an earlier pass.
+    pub material_binds_created: usize,
     pub draws: usize,
     pub triangles: u64,
     pub shadow_views: usize,
@@ -710,6 +715,98 @@ fn plain_material(draw: &Draw3) -> bool {
         && m.subsurface == 0.0
 }
 
+/// A buffer a pass writes with `queue.write_buffer`, grown when a pass needs more, bound over the bytes written.
+struct Grown {
+    buf: wgpu::Buffer,
+    cap: u64,
+    len: u64,
+}
+
+/// A buffer of a [`PassSet`] as a pass binds it: the handle and the bytes written.
+#[derive(Clone)]
+struct Bound {
+    buf: wgpu::Buffer,
+    len: u64,
+}
+
+impl Bound {
+    fn binding(&self) -> wgpu::BindingResource<'_> {
+        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            buffer: &self.buf,
+            offset: 0,
+            size: std::num::NonZeroU64::new(self.len),
+        })
+    }
+}
+
+/// The buffers one rasterised pass binds and the material bind groups over its material buffer, kept for the
+/// passes after the next submit. Several passes may be recorded before one submit, and a `queue.write_buffer`
+/// lands before that submit's first command, so each pass between submits has its own set; the renderer says when
+/// the queue took them with [`ThreeEngine::submitted`].
+#[derive(Default)]
+struct PassSet {
+    bufs: [Option<Grown>; 7],
+    mat_binds: HashMap<[u64; 6], wgpu::BindGroup>,
+}
+
+/// Sets kept at most: a pass beyond them between two submits makes its own and drops it.
+const KEPT_SETS: usize = 16;
+
+impl PassSet {
+    const FRAME: usize = 0;
+    const LIGHTS: usize = 1;
+    const TILES: usize = 2;
+    const SHADOW_MATS: usize = 3;
+    const OBJECTS: usize = 4;
+    const MATERIALS: usize = 5;
+    const ORDER: usize = 6;
+    const LABELS: [&'static str; 7] = [
+        "three-frame",
+        "three-lights",
+        "three-tiles",
+        "three-shadow-mats",
+        "three-objects",
+        "three-materials",
+        "three-object-order",
+    ];
+
+    /// Writes `bytes` to buffer `which`, making it when it is missing or too small (counted in `made`); true when
+    /// the buffer is new, so what bound the old one is stale.
+    fn write(
+        &mut self,
+        d: &wgpu::Device,
+        q: &wgpu::Queue,
+        which: usize,
+        bytes: &[u8],
+        usage: wgpu::BufferUsages,
+        made: &mut usize,
+    ) -> bool {
+        let need = bytes.len() as u64;
+        let new = self.bufs[which].as_ref().is_none_or(|b| b.cap < need);
+        if new {
+            let cap = need.max(self.bufs[which].as_ref().map_or(0, |b| b.cap * 2)).div_ceil(256) * 256;
+            let buf = d.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(Self::LABELS[which]),
+                size: cap.max(256),
+                usage: usage | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.bufs[which] = Some(Grown { buf, cap, len: 0 });
+            *made += 1;
+        }
+        let b = self.bufs[which].as_mut().expect("written");
+        b.len = need;
+        q.write_buffer(&b.buf, 0, bytes);
+        new
+    }
+
+    /// Buffer `which` as the pass binds it; panics when the pass has not written it.
+    fn bound(&self, which: usize) -> Bound {
+        let b = self.bufs[which].as_ref().expect("written before it is bound");
+        Bound { buf: b.buf.clone(), len: b.len }
+    }
+}
+
 /// GPU state of the 3D renderer.
 pub struct ThreeEngine {
     device: Arc<wgpu::Device>,
@@ -800,7 +897,9 @@ pub struct ThreeEngine {
     black_env: wgpu::TextureView,
     /// The aperture of a camera without depth of field: zeroed, never written.
     no_aperture: wgpu::Buffer,
-    mat_binds: HashMap<[u64; 6], wgpu::BindGroup>,
+    /// The sets of the passes recorded since the last submit, in order, and the kept ones after them.
+    sets: Vec<PassSet>,
+    sets_used: usize,
     /// Meshes keyed by the caller.
     pub meshes: HashMap<String, Arc<MeshGpu>>,
     /// The mesh of each parametric surface or heightfield node (SREP 70) with its content key: one upload per node,
@@ -1432,7 +1531,8 @@ impl ThreeEngine {
             repeat_smp,
             clamp_smp,
             cmp_smp,
-            mat_binds: HashMap::new(),
+            sets: Vec::new(),
+            sets_used: 0,
             meshes: HashMap::new(),
             param_meshes: HashMap::new(),
             textures: HashMap::new(),
@@ -1788,9 +1888,40 @@ impl ThreeEngine {
         })
     }
 
-    fn mat_bind(&mut self, maps: &Maps, uniform: &wgpu::Buffer) -> [u64; 6] {
+    /// The sets the next pass writes: the first the queue has not taken since [`Self::submitted`], or a new one.
+    fn take_set(&mut self) -> (usize, PassSet) {
+        let slot = self.sets_used;
+        self.sets_used += 1;
+        let set = if slot < self.sets.len() { std::mem::take(&mut self.sets[slot]) } else { PassSet::default() };
+        (slot, set)
+    }
+
+    /// Keeps `set` as the one of pass `slot` since the last submit, for the pass in that place after the next.
+    fn keep_set(&mut self, slot: usize, set: PassSet) {
+        if slot < self.sets.len() {
+            self.sets[slot] = set;
+        } else if slot < KEPT_SETS {
+            self.sets.resize_with(slot, Default::default);
+            self.sets.push(set);
+        }
+    }
+
+    /// The queue took every pass recorded so far: their buffer sets serve the passes recorded next. The renderer
+    /// calls this after each submit; until it does, every pass recorded gets a set of its own.
+    pub fn submitted(&mut self) {
+        self.sets_used = 0;
+    }
+
+    /// The key of the bind group over `maps` and `uniform` in `binds`, made when it is missing (counted in `made`).
+    fn mat_bind(
+        &self,
+        binds: &mut HashMap<[u64; 6], wgpu::BindGroup>,
+        maps: &Maps,
+        uniform: &wgpu::Buffer,
+        made: &mut usize,
+    ) -> [u64; 6] {
         let key = std::array::from_fn(|k| maps[k].as_ref().map(|t| t.key).unwrap_or(0));
-        if !self.mat_binds.contains_key(&key) {
+        if let std::collections::hash_map::Entry::Vacant(e) = binds.entry(key) {
             let views: Vec<&wgpu::TextureView> =
                 (0..6).map(|k| maps[k].as_ref().map(|t| &t.view).unwrap_or(&self.white.view)).collect();
             let mut entries = vec![wgpu::BindGroupEntry {
@@ -1814,7 +1945,8 @@ impl ThreeEngine {
                 layout: &self.bgl_mat,
                 entries: &entries,
             });
-            self.mat_binds.insert(key, bg);
+            e.insert(bg);
+            *made += 1;
         }
         key
     }
@@ -2372,9 +2504,12 @@ impl ThreeEngine {
         let buf = |data: &[u8], usage: wgpu::BufferUsages, label: &str| {
             d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: data, usage })
         };
-        let frame_buf = buf(bytemuck::bytes_of(&frame), wgpu::BufferUsages::UNIFORM, "three-frame");
-        let light_buf = buf(bytemuck::cast_slice(&lights_u), wgpu::BufferUsages::STORAGE, "three-lights");
-        let tile_buf = buf(bytemuck::cast_slice(&tile_data), wgpu::BufferUsages::STORAGE, "three-tiles");
+        let (slot, mut set) = self.take_set();
+        let (q, mut buffers_made, mut binds_made) = (self.queue.clone(), 0, 0);
+        let (uniform, storage) = (wgpu::BufferUsages::UNIFORM, wgpu::BufferUsages::STORAGE);
+        set.write(&d, &q, PassSet::FRAME, bytemuck::bytes_of(&frame), uniform, &mut buffers_made);
+        set.write(&d, &q, PassSet::LIGHTS, bytemuck::cast_slice(&lights_u), storage, &mut buffers_made);
+        set.write(&d, &q, PassSet::TILES, bytemuck::cast_slice(&tile_data), storage, &mut buffers_made);
         if tile_data.len() > 1 {
             self.tile_words = tile_data;
         }
@@ -2383,7 +2518,7 @@ impl ThreeEngine {
         } else {
             shadow_mats.iter().map(|m| m.to_cols_array_2d()).collect()
         };
-        let smat_buf = buf(bytemuck::cast_slice(&mats), wgpu::BufferUsages::STORAGE, "three-shadow-mats");
+        set.write(&d, &q, PassSet::SHADOW_MATS, bytemuck::cast_slice(&mats), storage, &mut buffers_made);
         let contact = scene.lights.iter().any(|l| l.contact > 0.0);
         let prepass = scene.ao.is_some() || scene.ssr || contact;
         // ------------------------------------------------ draws: classify, uniforms
@@ -2548,21 +2683,25 @@ impl ThreeEngine {
         {
             return Err("3D instance objects exceed device storage buffer limit".into());
         }
-        let obj_buf = buf(&obj_bytes, wgpu::BufferUsages::STORAGE, "three-objects");
-        // one material buffer per render, like the object buffer: several 3D passes can be recorded before a
-        // single submit, and rewriting a shared buffer with queue.write_buffer would hand every pass the data of
-        // the last one. Bind groups reference this buffer, so the cache lives for this render only.
-        let mat_buf = buf(&mat_bytes, wgpu::BufferUsages::UNIFORM, "three-materials");
-        self.mat_binds.clear();
+        set.write(&d, &q, PassSet::OBJECTS, &obj_bytes, storage, &mut buffers_made);
+        // the material bind groups reference the material buffer: a new one makes them stale
+        if set.write(&d, &q, PassSet::MATERIALS, &mat_bytes, uniform, &mut buffers_made) {
+            set.mat_binds.clear();
+        }
+        let mat_buf = set.bound(PassSet::MATERIALS).buf;
+        let mut keys_used = Vec::new();
         for (i, dr) in scene.draws.iter().enumerate() {
             if preps[i].active {
-                preps[i].key = self.mat_bind(&dr.maps, &mat_buf);
+                preps[i].key = self.mat_bind(&mut set.mat_binds, &dr.maps, &mat_buf, &mut binds_made);
+                keys_used.push(preps[i].key);
             }
         }
         if preps.iter().all(|p| !p.active) {
             let none: Maps = Default::default();
-            self.mat_bind(&none, &mat_buf);
+            keys_used.push(self.mat_bind(&mut set.mat_binds, &none, &mat_buf, &mut binds_made));
         }
+        // bind groups keep their textures alive: only the ones this pass binds stay
+        set.mat_binds.retain(|key, _| keys_used.contains(key));
         let mut order: Vec<usize> = (0..preps.len()).filter(|&i| preps[i].visible).collect();
         order.sort_by(|a, b| preps[*a].depth.total_cmp(&preps[*b].depth));
         let opaque: Vec<usize> = order.iter().copied().filter(|i| preps[*i].kind == Kind::Opaque).collect();
@@ -2597,7 +2736,15 @@ impl ThreeEngine {
         let trans_runs = batches(&trans);
         let blended_runs = batches(&blended);
         stats.draws = opaque_runs.len() + trans_runs.len() + blended_runs.len();
-        let index_buf = buf(bytemuck::cast_slice(&object_indices), wgpu::BufferUsages::STORAGE, "three-object-order");
+        set.write(&d, &q, PassSet::ORDER, bytemuck::cast_slice(&object_indices), storage, &mut buffers_made);
+        stats.buffers_created = buffers_made;
+        stats.material_binds_created = binds_made;
+        let (frame_buf, light_buf, tile_buf) =
+            (set.bound(PassSet::FRAME), set.bound(PassSet::LIGHTS), set.bound(PassSet::TILES));
+        let (smat_buf, obj_buf, index_buf) =
+            (set.bound(PassSet::SHADOW_MATS), set.bound(PassSet::OBJECTS), set.bound(PassSet::ORDER));
+        let mat_binds = set.mat_binds.clone();
+        self.keep_set(slot, set);
         let mut shadow_runs: Vec<(usize, u32, u32, u32)> = Vec::new();
         for &(i, view, offset) in &shadow_objs {
             let merge = shadow_runs.last().is_some_and(|&(first, v, off, count)| {
@@ -2660,8 +2807,8 @@ impl ThreeEngine {
             label: Some("three-object"),
             layout: &self.bgl_obj,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: obj_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: index_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: obj_buf.binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: index_buf.binding() },
             ],
         });
         // ------------------------------------------------ targets
@@ -2715,7 +2862,7 @@ impl ThreeEngine {
                 label: Some("three-dof-aperture"),
                 layout: &pipe.get_bind_group_layout(0),
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: frame_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 0, resource: frame_buf.binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: aperture.as_entire_binding() },
                 ],
             });
@@ -2740,7 +2887,7 @@ impl ThreeEngine {
                 label: Some("three-post"),
                 layout: &self.bgl_post,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: frame_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 0, resource: frame_buf.binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(aux) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.clamp_smp) },
@@ -2820,12 +2967,12 @@ impl ThreeEngine {
                 label: Some("three-frame"),
                 layout: &self.bgl_frame,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: frame_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: light_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: tile_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 0, resource: frame_buf.binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: light_buf.binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: tile_buf.binding() },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(shadow_view) },
                     wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.cmp_smp) },
-                    wgpu::BindGroupEntry { binding: 5, resource: smat_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 5, resource: smat_buf.binding() },
                     wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(env_view) },
                     wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(&self.repeat_smp) },
                     wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&self.brdf) },
@@ -2878,7 +3025,7 @@ impl ThreeEngine {
                 }
                 let dr = &scene.draws[i];
                 let m = dr.mesh.mesh();
-                rp.set_bind_group(1, &self.mat_binds[&preps[i].key], &[preps[i].mat]);
+                rp.set_bind_group(1, &mat_binds[&preps[i].key], &[preps[i].mat]);
                 rp.set_bind_group(2, &obj_bind, &[]);
                 rp.set_vertex_buffer(0, preps[i].vbuf.as_ref().unwrap_or(&m.vbuf).slice(..));
                 rp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
@@ -2890,7 +3037,7 @@ impl ThreeEngine {
             for &(i, first, count) in runs {
                 let m = scene.draws[i].mesh.mesh();
                 rp.set_pipeline(&eng.pipes[&preps[i].pipe]);
-                rp.set_bind_group(1, &eng.mat_binds[&preps[i].key], &[preps[i].mat]);
+                rp.set_bind_group(1, &mat_binds[&preps[i].key], &[preps[i].mat]);
                 rp.set_bind_group(2, &obj_bind, &[]);
                 rp.set_vertex_buffer(0, preps[i].vbuf.as_ref().unwrap_or(&m.vbuf).slice(..));
                 rp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
@@ -2938,7 +3085,7 @@ impl ThreeEngine {
                     let dr = &scene.draws[i];
                     let m = dr.mesh.mesh();
                     rp.set_pipeline(&self.pre_pipes[&PreKey::of(&preps[i].pipe, scene.ssr)]);
-                    rp.set_bind_group(1, &self.mat_binds[&preps[i].key], &[preps[i].mat]);
+                    rp.set_bind_group(1, &mat_binds[&preps[i].key], &[preps[i].mat]);
                     rp.set_bind_group(2, &obj_bind, &[]);
                     rp.set_vertex_buffer(0, preps[i].vbuf.as_ref().unwrap_or(&m.vbuf).slice(..));
                     rp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
@@ -2983,7 +3130,7 @@ impl ThreeEngine {
             rp.set_bind_group(0, &fb_plain, &[]);
             if env.map(|e| e.visible).unwrap_or(false) {
                 rp.set_pipeline(&self.dome_pipe);
-                rp.set_bind_group(1, &self.mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 6])], &[0]);
+                rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 6])], &[0]);
                 rp.set_bind_group(2, &obj_bind, &[]);
                 rp.draw(0..3, 0..1);
             }
@@ -3181,7 +3328,7 @@ impl ThreeEngine {
                 layout: &self.bgl_depth,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&depth_ms) },
-                    wgpu::BindGroupEntry { binding: 1, resource: frame_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: frame_buf.binding() },
                 ],
             });
             let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -3211,7 +3358,7 @@ impl ThreeEngine {
                 label: Some("three-ssr"),
                 layout: &self.bgl_ssr,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: frame_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 0, resource: frame_buf.binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&resolved) },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(gz) },
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(gn) },
@@ -3321,6 +3468,7 @@ impl ThreeEngine {
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.render(&mut enc, scene, backdrop, &out.create_view(&Default::default())).expect("valid 3D test scene");
         self.queue.submit([enc.finish()]);
+        self.submitted();
         self.read(&out)
     }
 
@@ -3437,6 +3585,14 @@ mod tests {
     /// driver (615.71, RTX 3050) differs by one half-float step in some channels, the bound for a hardware adapter.
     /// Two engines built apart from each other are held to the same bound: with a cold shader cache that driver does
     /// not render two compilations of the same shaders bit-identically either.
+    /// `stats` without what a pass made for its buffer set: the first pass on an engine makes the set, the next
+    /// writes into it, and the renders the tests compare are otherwise the same work.
+    fn warm(mut stats: super::Stats3) -> super::Stats3 {
+        stats.buffers_created = 0;
+        stats.material_binds_created = 0;
+        stats
+    }
+
     fn assert_same_render(info: &wgpu::AdapterInfo, actual: &[[f32; 4]], expected: &[[f32; 4]], what: &str) {
         let bound = if info.name.to_lowercase().contains("llvmpipe") { 0 } else { 1 };
         let steps = half_steps(actual, expected);
@@ -3794,7 +3950,7 @@ mod tests {
                             actual, expected,
                             "mode={mode:?}, prepass={prepass}, alpha={alpha}, opacity={opacity}, mapped={mapped}"
                         );
-                        assert_eq!(stats, engine.stats);
+                        assert_eq!(warm(stats), warm(engine.stats));
                     }
                 }
             }
@@ -3994,7 +4150,7 @@ mod tests {
                     &expected,
                     &format!("global count={count}, kinds={kinds:?}, mixed={mixed}, transparent={transparent}"),
                 );
-                assert_eq!(actual_stats, engine.stats, "lighting statistics and overflow stay unchanged");
+                assert_eq!(warm(actual_stats), warm(engine.stats), "lighting statistics and overflow stay unchanged");
                 assert_eq!(actual_stats.tile_overflow, count > MAX_PER_TILE);
             }
         }
@@ -4209,7 +4365,7 @@ mod tests {
             let expected = engine.render_now(&scene, None);
             assert!(actual.iter().any(|p| p[0] > 0.01 && p[3] > 0.01), "case {case} draws something");
             assert_same_render(&gpu.info, &actual, &expected, &format!("lights case {case}"));
-            assert_eq!(actual_stats, engine.stats, "case {case}: statistics unchanged");
+            assert_eq!(warm(actual_stats), warm(engine.stats), "case {case}: statistics unchanged");
             assert_eq!(
                 added,
                 usize::from(case < unrolled.len()),

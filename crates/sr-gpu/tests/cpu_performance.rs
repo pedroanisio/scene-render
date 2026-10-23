@@ -409,6 +409,58 @@ fn opacity_changes_reuse_splat_order_but_view_changes_invalidate_it() {
 }
 
 #[test]
+fn warm_raster_passes_reuse_their_buffers_and_material_bind_groups() {
+    let Some(gpu) = common::gpu() else { return };
+    let mut engine = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+    let mut textured = draw(&engine, Vec3::new(40., 40., 0.));
+    textured.maps[0] = Some(engine.upload_rgba8(1, 1, &[64, 128, 192, 255], true));
+    let mut s = scene(vec![draw(&engine, Vec3::new(20., 20., 0.)), textured]);
+    engine.render_now(&s, None);
+    assert!(engine.stats.buffers_created > 0, "the first pass makes its buffers");
+    assert_eq!(engine.stats.material_binds_created, 2, "one bind group per distinct set of maps");
+    s.draws[0].model.w_axis.x += 2.;
+    let warm = engine.render_now(&s, None);
+    assert_eq!(engine.stats.buffers_created, 0, "a pass that fits the kept buffers makes none");
+    assert_eq!(engine.stats.material_binds_created, 0, "the same maps reuse their bind groups");
+    let mut fresh = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+    assert_eq!(warm, fresh.render_now(&s, None));
+    s.draws[1].maps[0] = Some(engine.upload_rgba8(1, 1, &[200, 20, 20, 255], true));
+    engine.render_now(&s, None);
+    assert_eq!(engine.stats.material_binds_created, 1, "other maps are another bind group");
+    assert_eq!(engine.stats.buffers_created, 0);
+    for k in 0..48 {
+        s.draws.push(draw(&engine, Vec3::new(k as f32, 8., 0.)));
+    }
+    engine.render_now(&s, None);
+    assert!(engine.stats.buffers_created > 0, "more objects than the kept buffers hold grow them");
+    assert_eq!(engine.stats.material_binds_created, 0, "the grown material buffer keeps its bind groups valid");
+}
+
+#[test]
+fn raster_passes_recorded_before_one_submit_keep_their_own_data() {
+    let Some(gpu) = common::gpu() else { return };
+    let mut engine = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+    let mut a = scene(vec![draw(&engine, Vec3::new(20., 20., 0.))]);
+    a.draws[0].material.base_color = [0.9, 0.1, 0.1, 1.];
+    let mut b = scene(vec![draw(&engine, Vec3::new(44., 44., 0.)), draw(&engine, Vec3::new(10., 50., 0.))]);
+    b.draws[1].material.base_color = [0.1, 0.1, 0.9, 1.];
+    // warm the kept buffers, then record two passes and submit them in reverse
+    engine.render_now(&a, None);
+    let (ta, tb) = (engine.target(a.size), engine.target(b.size));
+    let mut ea = gpu.device.create_command_encoder(&Default::default());
+    engine.render(&mut ea, &a, None, &ta.create_view(&Default::default())).expect("scene a");
+    let mut eb = gpu.device.create_command_encoder(&Default::default());
+    engine.render(&mut eb, &b, None, &tb.create_view(&Default::default())).expect("scene b");
+    gpu.queue.submit([eb.finish(), ea.finish()]);
+    let mut fresh = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+    assert_eq!(engine.read(&ta), fresh.render_now(&a, None), "pass a draws its own objects");
+    assert_eq!(engine.read(&tb), fresh.render_now(&b, None), "pass b draws its own objects");
+    engine.submitted();
+    engine.render_now(&a, None);
+    assert_eq!(engine.stats.buffers_created, 0, "after the submit the first set serves again");
+}
+
+#[test]
 fn warm_cpu_traced_passes_reuse_the_scene_the_tracer_built() {
     let Some(gpu) = common::gpu() else { return };
     let mut engine = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
