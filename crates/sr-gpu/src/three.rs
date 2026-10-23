@@ -953,6 +953,8 @@ pub struct ThreeEngine {
     pub splat_cache: HashMap<String, Arc<SplatGpu>>,
     next_key: u64,
     ies_rows: HashMap<usize, usize>,
+    /// The atlas of the last render's profiles, with the tables it holds: reused while the lights hold the same.
+    ies_kept: Option<(Vec<Arc<Vec<f32>>>, wgpu::TextureView)>,
     /// Statistics of the last render.
     pub stats: Stats3,
     /// Whether raster and path-traced passes record timestamp queries.
@@ -1580,6 +1582,7 @@ impl ThreeEngine {
             splat_cache: HashMap::new(),
             next_key: 1,
             ies_rows: HashMap::new(),
+            ies_kept: None,
             ies_empty: None,
             #[cfg(test)]
             ies_uploads: 0,
@@ -2176,6 +2179,11 @@ impl ThreeEngine {
         if let (true, true, Some(view)) = (skip_unused, rows.is_empty(), &self.ies_empty) {
             return (view.clone(), index);
         }
+        if let Some((kept, view)) = &self.ies_kept {
+            if !rows.is_empty() && kept.len() == rows.len() && kept.iter().zip(&rows).all(|(a, b)| Arc::ptr_eq(a, b)) {
+                return (view.clone(), index);
+            }
+        }
         let h = (rows.len().max(1) * IES_ROWS) as u32;
         let tex = texture(&self.device, [IES_W as u32, h], FORMAT, 1, 1, 1, "ies");
         let mut data = vec![0u16; IES_W * h as usize * 4];
@@ -2189,6 +2197,8 @@ impl ThreeEngine {
         let view = tex.create_view(&Default::default());
         if rows.is_empty() {
             self.ies_empty = Some(view.clone());
+        } else {
+            self.ies_kept = Some((rows, view.clone()));
         }
         #[cfg(test)]
         {
@@ -3809,6 +3819,74 @@ mod tests {
                 assert_eq!(uploaded, usize::from(case == 0), "samples {samples}, case {case}");
             }
         }
+    }
+
+    #[test]
+    fn the_ies_atlas_is_kept_while_the_lights_hold_the_same_profiles() {
+        use super::*;
+        let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "the_ies_atlas_is_kept");
+        let mut engine = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+        let sphere = sr_3d::prim::sphere(22.0, 24);
+        let mesh = engine.upload_mesh(&sphere.vertices, &sphere.indices);
+        let profile = |v: f32| Arc::new(vec![v; IES_W * IES_ROWS]);
+        let light = |ies: Arc<Vec<f32>>| Light3 {
+            kind: LightKind::Spot,
+            pos: Vec3::new(48.0, 32.0, -90.0),
+            dir: Vec3::Z,
+            right: Vec3::X,
+            color: Vec3::splat(3.0),
+            range: 400.0,
+            falloff: 2.0,
+            cos_outer: 0.5,
+            cos_inner: 0.8,
+            cast_shadow: false,
+            softness: 0.0,
+            bias: 0.001,
+            map_size: 64,
+            size: [0.0; 3],
+            ies: Some(ies),
+            affects_diffuse: true,
+            affects_specular: true,
+            contact: 0.0,
+        };
+        let mut scene = Scene3 {
+            cam: sr_3d::camera::resolve(&sr_3d::camera::CameraParams::default(), 96.0, 64.0),
+            clip_fix: Mat4::IDENTITY,
+            size: [96, 64],
+            exposure: 1.0,
+            dof: None,
+            lens_k1: 0.0,
+            draws: vec![Draw3 {
+                mesh: MeshSrc::Cached(mesh),
+                model: Mat4::from_translation(Vec3::new(48.0, 32.0, 0.0)),
+                material: MaterialParams { base_color: [0.7, 0.3, 0.2, 1.0], roughness: 0.4, ..Default::default() },
+                maps: Default::default(),
+                opacity: 1.0,
+                cast_shadow: true,
+                receive_shadow: true,
+                shadow_catcher: false,
+            }],
+            lights: vec![light(profile(0.5))],
+            env: None,
+            splats: Vec::new(),
+            volumes: Vec::new(),
+            encode_srgb: false,
+            ao: None,
+            ssr: false,
+            path: None,
+            geodesic: None,
+        };
+        let first = engine.render_now(&scene, None);
+        assert_eq!(engine.ies_uploads, 1);
+        assert!(first.iter().any(|p| p[0] > 0.01));
+        scene.draws[0].model = Mat4::from_translation(Vec3::new(50.0, 32.0, 0.0));
+        let warm = engine.render_now(&scene, None);
+        assert_eq!(engine.ies_uploads, 1, "the same profiles keep their atlas");
+        let mut fresh = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+        assert_eq!(warm, fresh.render_now(&scene, None));
+        scene.lights[0].ies = Some(profile(0.25));
+        engine.render_now(&scene, None);
+        assert_eq!(engine.ies_uploads, 2, "other profiles are another atlas");
     }
 
     #[test]
