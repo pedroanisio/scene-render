@@ -400,11 +400,13 @@ fn opacity_changes_reuse_splat_order_but_view_changes_invalidate_it() {
     s.splats[0].opacity = 0.7;
     let warm = engine.render_now(&s, None);
     assert_eq!(engine.stats.splat_sorts, 0);
+    assert_eq!(engine.stats.buffers_created, 0, "a pass without a sort makes no buffers");
     let mut fresh = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
     assert_eq!(warm, fresh.render_now(&s, None));
     s.splats[0].model = Mat4::from_rotation_y(0.5);
     let moved = engine.render_now(&s, None);
     assert_eq!(engine.stats.splat_sorts, 1);
+    assert_eq!(engine.stats.buffers_created, 1, "a re-sort makes only the order buffer the cache keeps");
     assert_eq!(moved, fresh.render_now(&s, None));
 }
 

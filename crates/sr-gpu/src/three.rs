@@ -747,8 +747,25 @@ impl Bound {
 struct PassSet {
     bufs: [Option<Grown>; 7],
     mat_binds: HashMap<[u64; 6], wgpu::BindGroup>,
-    /// The vertices of the pass's deformed draws, in draw order.
+    /// The vertices of the pass's deformed draws, in draw order. As the two lists below, it stays as long as the
+    /// most a pass used, so a pass with fewer leaves the rest for the next one with more.
     deformed: Vec<Option<Grown>>,
+    /// The parameters of the pass's splat sorts and the uniforms of its splat draws, in order.
+    sort_params: Vec<Option<Grown>>,
+    splat_objects: Vec<Option<Grown>>,
+}
+
+/// The buffers a splat sort works in, kept for the sorts after it and grown to the largest: the keys of both
+/// halves, the second values, and the histogram. The sorted order itself is a buffer of its own that the sort cache
+/// keeps.
+#[derive(Clone)]
+struct SortScratch {
+    n: u32,
+    blocks: u32,
+    keys_a: wgpu::Buffer,
+    keys_b: wgpu::Buffer,
+    vals_b: wgpu::Buffer,
+    hist: wgpu::Buffer,
 }
 
 /// Writes `bytes` to the buffer in `slot`, making it when it is missing or too small (counted in `made`); true when
@@ -925,6 +942,7 @@ pub struct ThreeEngine {
     sort_pipes: [wgpu::ComputePipeline; 4],
     software_scatter: Option<wgpu::ComputePipeline>,
     sorted_splats: sort_cache::Cache,
+    sort_scratch: Option<SortScratch>,
     /// Enables linear-work splat scattering on software adapters. Renderer sets
     /// this from the selected adapter; direct engine users can select it too.
     pub software_adapter: bool,
@@ -1568,6 +1586,7 @@ impl ThreeEngine {
             sort_pipes,
             software_scatter: None,
             sorted_splats: Default::default(),
+            sort_scratch: None,
             software_adapter: false,
             repeat_smp,
             clamp_smp,
@@ -2550,12 +2569,6 @@ impl ThreeEngine {
             env_rot: env.map(|e| e.rotation.transpose()).unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
             sky: env.and_then(|e| e.sky).map(|s| s.uniforms()).unwrap_or([[0.0; 4]; 5]),
         };
-        // the buffers this pass makes for itself alone, counted with the ones its set grew
-        let own_buffers = std::cell::Cell::new(0usize);
-        let buf = |data: &[u8], usage: wgpu::BufferUsages, label: &str| {
-            own_buffers.set(own_buffers.get() + 1);
-            d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: data, usage })
-        };
         let (slot, mut set) = self.take_set();
         let mut deformed_draws = 0;
         let (q, mut buffers_made, mut binds_made) = (self.queue.clone(), 0, 0);
@@ -2742,7 +2755,6 @@ impl ThreeEngine {
         {
             return Err("3D instance objects exceed device storage buffer limit".into());
         }
-        set.deformed.truncate(deformed_draws);
         set.write(&d, &q, PassSet::OBJECTS, &obj_bytes, storage, &mut buffers_made);
         // the material bind groups reference the material buffer: a new one makes them stale
         if set.write(&d, &q, PassSet::MATERIALS, &mat_bytes, uniform, &mut buffers_made) {
@@ -2797,14 +2809,12 @@ impl ThreeEngine {
         let blended_runs = batches(&blended);
         stats.draws = opaque_runs.len() + trans_runs.len() + blended_runs.len();
         set.write(&d, &q, PassSet::ORDER, bytemuck::cast_slice(&object_indices), storage, &mut buffers_made);
-        stats.buffers_created = buffers_made;
         stats.material_binds_created = binds_made;
         let (frame_buf, light_buf, tile_buf) =
             (set.bound(PassSet::FRAME), set.bound(PassSet::LIGHTS), set.bound(PassSet::TILES));
         let (smat_buf, obj_buf, index_buf) =
             (set.bound(PassSet::SHADOW_MATS), set.bound(PassSet::OBJECTS), set.bound(PassSet::ORDER));
         let mat_binds = set.mat_binds.clone();
-        self.keep_set(slot, set);
         let mut shadow_runs: Vec<(usize, u32, u32, u32)> = Vec::new();
         for &(i, view, offset) in &shadow_objs {
             let merge = shadow_runs.last().is_some_and(|&(first, v, off, count)| {
@@ -3240,7 +3250,8 @@ impl ThreeEngine {
             }));
         }
         let mut splat_binds = Vec::new();
-        for sp in &scene.splats {
+        let mut sorts = 0;
+        for (sp_no, sp) in scene.splats.iter().enumerate() {
             let n = sp.gpu.n.max(1);
             stats.splats += sp.gpu.n as u64;
             let transform = scene.cam.view * sp.model;
@@ -3256,7 +3267,17 @@ impl ThreeEngine {
                     let u = SortU { n: sp.gpu.n, blocks, shift: pass * 8, pad: 0, view };
                     pad(&mut ubytes, bytemuck::bytes_of(&u));
                 }
-                let ubuf = buf(&ubytes, wgpu::BufferUsages::UNIFORM, "sort-params");
+                sorts += 1;
+                let ubuf = grow_bound(
+                    nth(&mut set.sort_params, sorts - 1),
+                    &d,
+                    &q,
+                    &ubytes,
+                    uniform,
+                    "three-sort-params",
+                    &mut buffers_made,
+                )
+                .buf;
                 let mk = |label: &str, len: u64| {
                     d.create_buffer(&wgpu::BufferDescriptor {
                         label: Some(label),
@@ -3265,9 +3286,25 @@ impl ThreeEngine {
                         mapped_at_creation: false,
                     })
                 };
-                let (ka, va, kb, vb) =
-                    (mk("keys-a", n as u64), mk("vals-a", n as u64), mk("keys-b", n as u64), mk("vals-b", n as u64));
-                let hist = mk("hist", 256 * blocks as u64);
+                let va = mk("vals-a", n as u64);
+                buffers_made += 1;
+                let scratch = match &self.sort_scratch {
+                    Some(s) if s.n >= n && s.blocks >= blocks => s.clone(),
+                    _ => {
+                        buffers_made += 4;
+                        let s = SortScratch {
+                            n,
+                            blocks,
+                            keys_a: mk("keys-a", n as u64),
+                            keys_b: mk("keys-b", n as u64),
+                            vals_b: mk("vals-b", n as u64),
+                            hist: mk("hist", 256 * blocks as u64),
+                        };
+                        self.sort_scratch = Some(s.clone());
+                        s
+                    }
+                };
+                let (ka, kb, vb, hist) = (&scratch.keys_a, &scratch.keys_b, &scratch.vals_b, &scratch.hist);
                 let bind = |ki: &wgpu::Buffer, vi: &wgpu::Buffer, ko: &wgpu::Buffer, vo: &wgpu::Buffer| {
                     d.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("sort"),
@@ -3290,8 +3327,8 @@ impl ThreeEngine {
                         ],
                     })
                 };
-                let ab = bind(&ka, &va, &kb, &vb);
-                let ba = bind(&kb, &vb, &ka, &va);
+                let ab = bind(ka, &va, kb, vb);
+                let ba = bind(kb, vb, ka, &va);
                 let groups = [blocks.min(65535), blocks.div_ceil(65535)];
                 {
                     let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -3326,19 +3363,29 @@ impl ThreeEngine {
                 model_inv: sp.model.inverse().to_cols_array_2d(),
                 params: [sp.opacity, sp.gpu.sh_degree as f32, 0.0, 0.0],
             };
-            let obuf = buf(bytemuck::bytes_of(&so), wgpu::BufferUsages::UNIFORM, "splat-object");
+            let so_bytes = bytemuck::bytes_of(&so);
+            let obuf = grow_bound(
+                nth(&mut set.splat_objects, sp_no),
+                &d,
+                &q,
+                so_bytes,
+                uniform,
+                "three-splat-object",
+                &mut buffers_made,
+            );
             let sb = d.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("splat"),
                 layout: &self.bgl_splat,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: sp.gpu.buf.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: va.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: obuf.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: obuf.binding() },
                     wgpu::BindGroupEntry { binding: 3, resource: sp.gpu.sh.as_entire_binding() },
                 ],
             });
             splat_binds.push((sb, sp.gpu.n));
         }
+        stats.buffers_created = buffers_made;
         // ------------------------------------------------ transmissive, splats, blended
         // the pass draws the transparent objects and resolves a multisampled target: without either it changes nothing
         let transparent = (fb_trans.is_some() && !trans_runs.is_empty())
@@ -3462,7 +3509,7 @@ impl ThreeEngine {
             self.raster_timers.push(timer);
         }
         self.targets.lock().unwrap_or_else(|e| e.into_inner()).end_call();
-        stats.buffers_created += own_buffers.get();
+        self.keep_set(slot, set);
         self.stats = stats;
         Ok(())
     }
