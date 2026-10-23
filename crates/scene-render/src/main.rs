@@ -2194,8 +2194,8 @@ fn encode(
                     let [e, s, w, b] = r.stage_seconds;
                     writeln!(
                         out.w,
-                        "  {} frames {}x{} at {} fps in {:.2} s: {:.1} frames/s (evaluate {:.2} s, render {:.2} s of which decode wait {:.2} s and vector geometry {:.2} s, GPU/readback blocked {:.2} s, encoder blocked {:.2} s), {} pass(es){}",
-                        r.frames, r.size[0], r.size[1], r.fps, r.seconds, r.render_fps, e, s, r.decode_wait_seconds, r.vector_seconds, w, b, r.passes,
+                        "  {} frames {}x{} at {} fps in {:.2} s: {:.1} frames/s (evaluate {:.2} s, render {:.2} s of which decode wait {:.2} s, vector geometry {:.2} s and shutter sub-frames {:.2} s, GPU/readback blocked {:.2} s, encoder blocked {:.2} s), {} pass(es){}",
+                        r.frames, r.size[0], r.size[1], r.fps, r.seconds, r.render_fps, e, s, r.decode_wait_seconds, r.vector_seconds, r.subframe_seconds, w, b, r.passes,
                         if r.segments > 1 { format!(", {} segments at once (stage times summed over them)", r.segments) } else { String::new() }
                     )?;
                 }

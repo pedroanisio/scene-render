@@ -535,3 +535,23 @@ fn a_crossfade_join_delivers_at_f32_working_precision() {
         assert!(near(b, 32, 18, rgb(a, 32, 18)), "frame {k}: f16 {:?}, f32 {:?}", rgb(a, 32, 18), rgb(b, 32, 18));
     }
 }
+
+#[test]
+fn the_report_carries_the_seconds_spent_on_shutter_sub_frames() {
+    if gpu().is_none() {
+        return;
+    }
+    let d = dir("subframes");
+    let xml = format!(
+        r##"<scene version="1.2"><project width="64" height="36" fps="10" duration="1" background="#000000" motionBlur="true" shutterAngle="180" motionBlurSamples="8" adaptiveMotionBlur="false"/>
+          <output path="{}/f_%03d.png" codec="png-sequence"/>
+          <composition><shape id="b" shape="rect" width="4" height="36" y="0" fill="#FFFFFF">
+            <animate property="x"><key time="0" value="4"/><key time="1" value="44"/></animate></shape></composition></scene>"##,
+        d.display()
+    );
+    let (frames, report) = render(&d, &xml);
+    assert_eq!(frames.len(), 10);
+    assert!(report.subframe_seconds > 0.0, "the shutter samples were evaluated: {report:?}");
+    let json = serde_json::to_value(&report).unwrap();
+    assert!(json["subframe_seconds"].as_f64().is_some_and(|s| s > 0.0), "{json}");
+}

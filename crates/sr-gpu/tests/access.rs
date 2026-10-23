@@ -185,7 +185,7 @@ fn batched_contrast_preserves_ratios_and_reuses_the_original_frame() {
         let ordinary = plain.render_with(&g, ev.program(), Some(&mut |t| ev.evaluate(t)));
         let pixels = plain.read(&ordinary.texture);
         let (main, prefetched) =
-            streaming.render_with_deferred_contrasts(&g, ev.program(), &targets, &mut |t| ev.evaluate(t));
+            streaming.render_with_deferred_contrasts(&g, ev.program(), &targets, &|t| ev.evaluate(t));
         assert_eq!(streaming.read(&main.texture), pixels);
         assert_eq!(
             main.stats.contrast_unprobed, ordinary.stats.contrast_unprobed,
@@ -241,17 +241,21 @@ fn deferred_contrast_reuses_the_main_frame_and_returns_stable_pixels() {
     let mut renderer = Renderer::new(gpu.clone(), ev.program());
     renderer.time_gpu = true;
     assert_eq!(renderer.contrast_candidates(&g, ev.program()), vec![(target.clone(), 1.0)]);
-    let mut calls = 0;
+    let calls = std::sync::atomic::AtomicUsize::new(0);
     let (frame, measured) =
-        renderer.render_with_deferred_contrasts(&g, ev.program(), std::slice::from_ref(&target), &mut |t| {
-            calls += 1;
+        renderer.render_with_deferred_contrasts(&g, ev.program(), std::slice::from_ref(&target), &|t| {
+            calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             ev.evaluate(t)
         });
     assert_eq!(renderer.read(&frame.texture), expected_pixels);
     assert_eq!(measured, vec![(target, expected_ratio)]);
     assert!(!renderer.contrast_probe, "restore caller's setting");
     assert!(frame.stats.errors.is_empty());
-    assert_eq!(calls, 8, "deferred probes must not render the original frame twice");
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::Relaxed),
+        8,
+        "deferred probes must not render the original frame twice"
+    );
     if gpu.timestamps {
         assert!(
             renderer.gpu_times().unwrap().passes.iter().all(|p| !p.label.starts_with("three-")),

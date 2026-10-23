@@ -136,6 +136,9 @@ pub struct Report {
     pub decode_wait_seconds: f64,
     /// Seconds of the render stage spent building and tile-encoding vector geometry.
     pub vector_seconds: f64,
+    /// Seconds of the render stage spent evaluating the scene at a shutter's sample times (wall-clock: samples
+    /// evaluated at once count once).
+    pub subframe_seconds: f64,
     /// Seconds spent mixing audio.
     pub audio_seconds: f64,
     /// Whether the audio chain (mix, loudness, ceiling) ran on a thread of its own while the picture rendered, because
@@ -347,17 +350,18 @@ impl Video<'_> {
     ) -> Result<sr_gpu::Frame, DeliverError> {
         let (ev, p, fps) = (self.ev, self.ev.program(), self.fps);
         let seg = self.segments.as_ref().zip(f).map(|((tm, _), f)| (*tm, *f));
-        let mut sub = |st: f64| match seg {
+        // shared by the threads that evaluate a shutter's samples at once
+        let sub = |st: f64| match seg {
             Some((tm, f)) if (st - t).abs() < 1.0 / fps => ev.evaluate(tm.sample(&f, st - t)),
             _ => ev.evaluate(st),
         };
         let frame = match self.contrasts.planned.remove(&t.to_bits()) {
             Some(targets) if seg.is_none() => {
-                let (frame, ratios) = self.renderer.render_with_deferred_contrasts(g, p, &targets, &mut sub);
+                let (frame, ratios) = self.renderer.render_with_deferred_contrasts(g, p, &targets, &sub);
                 self.contrasts.measured.extend(ratios.into_iter().map(|(id, ratio)| ((t.to_bits(), id), ratio)));
                 frame
             }
-            _ => self.renderer.render_with(g, p, Some(&mut sub)),
+            _ => self.renderer.render_with_parallel(g, p, &sub),
         };
         if !frame.stats.errors.is_empty() {
             return Err(DeliverError::Render { time: t, message: crate::overlay::failure_message(&frame.stats) });
@@ -479,6 +483,7 @@ impl Video<'_> {
                     }
                     report.decode_wait_seconds += frame.stats.decode_wait;
                     report.vector_seconds += frame.stats.vector_seconds;
+                    report.subframe_seconds += frame.stats.subframe_seconds;
                     stateful(report, &frame.stats);
                     seen_in_3d(report, &frame.stats, t);
                     let (picture, placement) = self.picture(&frame, ft.as_ref(), &mut unsupported)?;
@@ -2064,6 +2069,7 @@ fn run_delivery(
                 }
                 report.decode_wait_seconds += part.decode_wait_seconds;
                 report.vector_seconds += part.vector_seconds;
+                report.subframe_seconds += part.subframe_seconds;
                 report.checkpoint_hits += part.checkpoint_hits;
                 report.checkpoint_misses += part.checkpoint_misses;
                 for (who, [lo, hi]) in part.iterate_steps {

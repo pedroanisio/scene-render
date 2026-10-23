@@ -4368,8 +4368,23 @@ impl Renderer {
         &mut self,
         g: &FrameGraph,
         p: &Program,
-        mut provider: Option<&mut dyn FnMut(f64) -> FrameGraph>,
+        provider: Option<&mut dyn FnMut(f64) -> FrameGraph>,
     ) -> Frame {
+        self.render_from(g, p, provider.map(SubProvider::Serial))
+    }
+
+    /// [`Self::render_with`] with a provider several threads may call at once: the shutter samples of a motion
+    /// blur are evaluated in parallel instead of one after another on this thread.
+    pub fn render_with_parallel(
+        &mut self,
+        g: &FrameGraph,
+        p: &Program,
+        provider: &(dyn Fn(f64) -> FrameGraph + Sync),
+    ) -> Frame {
+        self.render_from(g, p, Some(SubProvider::Parallel(provider)))
+    }
+
+    pub(crate) fn render_from(&mut self, g: &FrameGraph, p: &Program, mut provider: Option<SubProvider<'_>>) -> Frame {
         self.tiles.next_frame();
         let persistent =
             *self.persistent_isf.get_or_insert_with(|| crate::shader::has_persistent(p, &Self::base_dir(p)));
@@ -4415,11 +4430,11 @@ impl Renderer {
                     }
                 }
                 for k in start..g.frame {
-                    let gk = pv(k as f64 / fps);
+                    let gk = pv.call(k as f64 / fps);
                     // SREP 68: a stateful pair's state depends on its node alone, so the frames before a seek draw only
                     // the nodes of stateful effects (with their subtrees and ancestors), not the whole scene
                     let gk = if local { only_stateful(p, &gk, &ids) } else { gk };
-                    let f = self.render_graph(&gk, p, Some(&mut **pv));
+                    let f = self.render_graph(&gk, p, Some(pv.reborrow()));
                     self.fx.checkpoint(k, interval);
                     self.save_states(p, k, interval);
                     replayed += 1;
@@ -4510,12 +4525,7 @@ impl Renderer {
         self.fx.install(frame, feedback);
     }
 
-    fn render_graph(
-        &mut self,
-        g: &FrameGraph,
-        p: &Program,
-        provider: Option<&mut dyn FnMut(f64) -> FrameGraph>,
-    ) -> Frame {
+    fn render_graph(&mut self, g: &FrameGraph, p: &Program, provider: Option<SubProvider<'_>>) -> Frame {
         self.contrast_batch_split = false;
         self.tier = Tier::of(self.quality.unwrap_or(p.scene.project.quality));
         // SREP 72: a supersampled frame renders n times larger, as by a render scale, and is filtered down at the end
@@ -5620,6 +5630,31 @@ impl<'a> Ctx<'a> {
 pub(crate) trait SubSource {
     fn at(&self, t: f64) -> Arc<SubGraph>;
     fn count(&self) -> usize;
+    /// Evaluates `times` ahead of [`Self::at`], in parallel when the provider allows it.
+    fn prefetch(&self, _times: &[f64]) {}
+}
+
+/// Evaluates the scene at other times for one frame's sub-frames: one call after another through a closure that
+/// may keep state, or from several threads at once.
+pub(crate) enum SubProvider<'a> {
+    Serial(&'a mut dyn FnMut(f64) -> FrameGraph),
+    Parallel(&'a (dyn Fn(f64) -> FrameGraph + Sync)),
+}
+
+impl SubProvider<'_> {
+    fn call(&mut self, t: f64) -> FrameGraph {
+        match self {
+            SubProvider::Serial(f) => f(t),
+            SubProvider::Parallel(f) => f(t),
+        }
+    }
+
+    pub(crate) fn reborrow(&mut self) -> SubProvider<'_> {
+        match self {
+            SubProvider::Serial(f) => SubProvider::Serial(&mut **f),
+            SubProvider::Parallel(f) => SubProvider::Parallel(*f),
+        }
+    }
 }
 
 /// A sub-frame FrameGraph with its child lists and id index.
@@ -5631,26 +5666,8 @@ pub(crate) struct SubGraph {
     el: HashMap<Arc<str>, u64>,
 }
 
-/// Evaluates and caches the scene at other times during one frame.
-pub(crate) struct SubFrames<'a> {
-    provider: std::cell::RefCell<&'a mut dyn FnMut(f64) -> FrameGraph>,
-    cache: std::cell::RefCell<HashMap<u64, Arc<SubGraph>>>,
-    /// Seconds spent in the provider.
-    seconds: std::cell::Cell<f64>,
-}
-
-impl SubSource for SubFrames<'_> {
-    fn count(&self) -> usize {
-        self.cache.borrow().len()
-    }
-    fn at(&self, t: f64) -> Arc<SubGraph> {
-        let key = (t * 1e6).round() as i64 as u64;
-        if let Some(s) = self.cache.borrow().get(&key) {
-            return s.clone();
-        }
-        let started = std::time::Instant::now();
-        let g = (self.provider.borrow_mut())(t);
-        self.seconds.set(self.seconds.get() + started.elapsed().as_secs_f64());
+impl SubGraph {
+    fn of(g: FrameGraph) -> SubGraph {
         let mut kids = vec![Vec::new(); g.nodes.len()];
         let mut index = HashMap::new();
         for (i, n) in g.nodes.iter().enumerate() {
@@ -5661,9 +5678,60 @@ impl SubSource for SubFrames<'_> {
         }
         let elements = elements_hash(&g.elements);
         let el = element_hashes(&g.elements);
-        let s = Arc::new(SubGraph { g, kids, index, elements, el });
+        SubGraph { g, kids, index, elements, el }
+    }
+}
+
+/// Evaluates and caches the scene at other times during one frame.
+pub(crate) struct SubFrames<'a> {
+    provider: std::cell::RefCell<SubProvider<'a>>,
+    cache: std::cell::RefCell<HashMap<u64, Arc<SubGraph>>>,
+    /// Seconds spent in the provider: wall-clock, so a parallel prefetch counts once.
+    seconds: std::cell::Cell<f64>,
+}
+
+impl SubFrames<'_> {
+    fn key(t: f64) -> u64 {
+        (t * 1e6).round() as i64 as u64
+    }
+}
+
+impl SubSource for SubFrames<'_> {
+    fn count(&self) -> usize {
+        self.cache.borrow().len()
+    }
+    fn at(&self, t: f64) -> Arc<SubGraph> {
+        let key = Self::key(t);
+        if let Some(s) = self.cache.borrow().get(&key) {
+            return s.clone();
+        }
+        let started = std::time::Instant::now();
+        let g = self.provider.borrow_mut().call(t);
+        self.seconds.set(self.seconds.get() + started.elapsed().as_secs_f64());
+        let s = Arc::new(SubGraph::of(g));
         self.cache.borrow_mut().insert(key, s.clone());
         s
+    }
+    fn prefetch(&self, times: &[f64]) {
+        use rayon::prelude::*;
+        let f = match &*self.provider.borrow() {
+            SubProvider::Parallel(f) => *f,
+            SubProvider::Serial(_) => return,
+        };
+        let mut missing: Vec<(u64, f64)> = {
+            let cache = self.cache.borrow();
+            times.iter().map(|&t| (Self::key(t), t)).filter(|(k, _)| !cache.contains_key(k)).collect()
+        };
+        missing.sort_by_key(|&(k, _)| k);
+        missing.dedup_by_key(|&mut (k, _)| k);
+        if missing.len() < 2 {
+            return;
+        }
+        let started = std::time::Instant::now();
+        let built: Vec<(u64, Arc<SubGraph>)> =
+            missing.par_iter().map(|&(k, t)| (k, Arc::new(SubGraph::of(f(t))))).collect();
+        self.seconds.set(self.seconds.get() + started.elapsed().as_secs_f64());
+        self.cache.borrow_mut().extend(built);
     }
 }
 

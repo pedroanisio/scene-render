@@ -2755,7 +2755,7 @@ impl Renderer {
         &mut self,
         g: &FrameGraph,
         p: &Program,
-        mut provider: Option<&mut dyn FnMut(f64) -> FrameGraph>,
+        mut provider: Option<super::SubProvider<'_>>,
     ) -> Frame {
         let s = p.scene.scene360.as_ref().expect("scene360");
         let (w, hgt) = (s.width.clamp(16, 16384) as f32, s.height.clamp(16, 16384) as f32);
@@ -2849,13 +2849,7 @@ impl Renderer {
                     fov: 90.0,
                     frame: [g.size[0] as f32, g.size[1] as f32],
                 });
-                let f = match provider.as_mut() {
-                    Some(pv) => {
-                        let mut wrap = |st: f64| pv(st);
-                        self.render_with(&gf, p, Some(&mut wrap))
-                    }
-                    None => self.render_with(&gf, p, None),
-                };
+                let f = self.render_from(&gf, p, provider.as_mut().map(|pv| pv.reborrow()));
                 let mut enc = d.create_command_encoder(&Default::default());
                 enc.copy_texture_to_texture(
                     wgpu::TexelCopyTextureInfo {

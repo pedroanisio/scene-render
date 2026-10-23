@@ -34,11 +34,11 @@ impl Renderer {
         g: &sr_eval::FrameGraph,
         p: &sr_eval::Program,
         targets: &[ContrastTarget],
-        sub: &mut dyn FnMut(f64) -> sr_eval::FrameGraph,
+        sub: &(dyn Fn(f64) -> sr_eval::FrameGraph + Sync),
     ) -> (Frame, Vec<(ContrastTarget, Option<f64>)>) {
         let previous_cache = self.contrast_three_cache.replace(ContrastThreeCache::default());
         let probe = std::mem::replace(&mut self.contrast_probe, true);
-        let mut frame = self.render_with(g, p, Some(&mut *sub));
+        let mut frame = self.render_with_parallel(g, p, sub);
         let active: Vec<_> = targets.iter().filter(|t| frame.stats.contrast_unprobed.contains(t)).cloned().collect();
         if active.is_empty()
             || !frame.stats.errors.is_empty()
@@ -70,12 +70,13 @@ impl Renderer {
         // Replay the 2D composition in the legacy checker's layout when needed;
         // the scoped cache still reuses the main frame's 3D shutter samples.
         let original = if needs_replay {
-            let replay = self.render_with(g, p, Some(&mut *sub));
+            let replay = self.render_with_parallel(g, p, sub);
             self.read_rect(&replay.texture, [0, 0, w, h])
         } else {
             self.read_rect(&frame.texture, [0, 0, w, h])
         };
-        let ratios = self.contrasts_from_pixels(g, p, &active, sub, [w, h], &original);
+        let mut serial = |t| sub(t);
+        let ratios = self.contrasts_from_pixels(g, p, &active, &mut serial, [w, h], &original);
         let elapsed = self.cache_frame - before;
         for age in saved_ages.values_mut() {
             *age += elapsed;

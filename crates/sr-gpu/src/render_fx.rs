@@ -1532,6 +1532,8 @@ impl Renderer {
         // shapes whose ink stays near their box), else the whole target
         let (fw, fh) = (space.size[0] as f64, space.size[1] as f64);
         let mut rect = [0.0, 0.0, fw, fh];
+        // every sample is drawn from here on: a parallel provider evaluates them all at once
+        sub.prefetch(&times);
         if matches!(n.kind, "layer" | "shape") && ctx.kids[i].is_empty() && !stencil {
             // Size, stroke width, effect reach and scale can all change during the shutter.
             // Bound each evaluated sample before taking their union; if any sample cannot
