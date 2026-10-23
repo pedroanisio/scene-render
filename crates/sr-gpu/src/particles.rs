@@ -7,7 +7,10 @@ use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
 
-use crate::resources::FORMAT;
+use crate::resources::{grow_bound, nth, Bound, Grown, FORMAT};
+
+/// Instance buffers kept between submits at most; a batch beyond them gets one of its own for the frame.
+const KEPT_INSTS: usize = 64;
 
 /// One particle instance.
 #[repr(C)]
@@ -45,15 +48,23 @@ pub struct ParticleEngine {
     /// Bind groups by sprite texture and target size. The texture, not the asset id: two
     /// documents' assets may share an id, and one asset decodes differently by colour settings.
     binds: HashMap<(Option<wgpu::TextureView>, [u32; 2]), (wgpu::BindGroup, wgpu::Buffer)>,
+    queue: Arc<wgpu::Queue>,
+    /// The instance buffers of the batches recorded since the last submit, in order, and the kept ones after them:
+    /// a `queue.write_buffer` lands before the next submit's first command, so each batch between submits has its
+    /// own. The renderer says when the queue took them with [`ParticleEngine::submitted`].
+    insts: Vec<Option<Grown>>,
+    insts_used: usize,
+    /// Instance buffers made so far (a batch that fits a kept buffer makes none).
+    pub buffers_made: usize,
 }
 
 impl ParticleEngine {
-    pub fn new(device: Arc<wgpu::Device>, queue: &wgpu::Queue) -> ParticleEngine {
+    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> ParticleEngine {
         Self::new_as(device, queue, FORMAT)
     }
 
     /// The engine for targets of `format` (a working format of SREP 72).
-    pub fn new_as(device: Arc<wgpu::Device>, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> ParticleEngine {
+    pub fn new_as(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, format: wgpu::TextureFormat) -> ParticleEngine {
         let d = &*device;
         let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("particles"),
@@ -169,7 +180,23 @@ impl ParticleEngine {
             wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
         );
         let white = white_t.create_view(&Default::default());
-        ParticleEngine { device, pipe, bgl, smp, white, binds: HashMap::new() }
+        ParticleEngine {
+            device,
+            pipe,
+            bgl,
+            smp,
+            white,
+            binds: HashMap::new(),
+            queue,
+            insts: Vec::new(),
+            insts_used: 0,
+            buffers_made: 0,
+        }
+    }
+
+    /// The queue took every batch recorded so far: their instance buffers serve the batches recorded next.
+    pub fn submitted(&mut self) {
+        self.insts_used = 0;
     }
 
     /// The bind group (and its uniform buffer) for drawing with `sprite` into a target of `size`.
@@ -218,6 +245,38 @@ impl ParticleEngine {
             .chain(job.more.iter().map(|batch| (&batch.insts, &batch.sprite)))
             .map(|(insts, sprite)| (insts, self.bind(sprite, size)))
             .collect();
+        // the buffers outlive the pass: a batch's instances go into the buffer kept for its place since the submit
+        let buffers: Vec<Option<Bound>> = batches
+            .iter()
+            .map(|(insts, _)| {
+                if insts.is_empty() {
+                    return None;
+                }
+                let bytes: &[u8] = bytemuck::cast_slice(insts);
+                let k = self.insts_used;
+                self.insts_used += 1;
+                let usage = wgpu::BufferUsages::VERTEX;
+                Some(if k < KEPT_INSTS {
+                    grow_bound(
+                        nth(&mut self.insts, k),
+                        &d,
+                        &self.queue,
+                        bytes,
+                        usage,
+                        "particles",
+                        &mut self.buffers_made,
+                    )
+                } else {
+                    self.buffers_made += 1;
+                    let buf = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("particles"),
+                        contents: bytes,
+                        usage,
+                    });
+                    Bound { buf, len: bytes.len() as u64 }
+                })
+            })
+            .collect();
         let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("particles"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -235,23 +294,10 @@ impl ParticleEngine {
             multiview_mask: None,
         });
         rp.set_pipeline(&self.pipe);
-        // the buffers outlive the pass
-        let buffers: Vec<wgpu::Buffer> = batches
-            .iter()
-            .map(|(insts, _)| {
-                d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("particles"),
-                    contents: bytemuck::cast_slice(insts),
-                    usage: wgpu::BufferUsages::VERTEX,
-                })
-            })
-            .collect();
         for ((insts, key), ibuf) in batches.iter().zip(&buffers) {
-            if insts.is_empty() {
-                continue;
-            }
+            let Some(ibuf) = ibuf else { continue };
             rp.set_bind_group(0, &self.binds[key].0, &[]);
-            rp.set_vertex_buffer(0, ibuf.slice(..));
+            rp.set_vertex_buffer(0, ibuf.buf.slice(..ibuf.len));
             rp.draw(0..6, 0..insts.len() as u32);
         }
     }

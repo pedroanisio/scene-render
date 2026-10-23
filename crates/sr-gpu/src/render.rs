@@ -129,6 +129,8 @@ pub struct RenderStats {
     pub textures_created: usize,
     /// Offscreen and cached textures destroyed this frame.
     pub textures_released: usize,
+    /// Buffers made this frame for 3D passes and particle batches: none when the ones the engines keep hold them.
+    pub buffers_created: usize,
     /// CPU seconds evaluating the scene at other times (sub-frames for motion blur and time effects).
     pub subframe_seconds: f64,
     /// Sub-frames rendered for motion blur and time effects.
@@ -4865,10 +4867,14 @@ impl Renderer {
         realloc
     }
 
-    /// Tells the 3D engine the queue took the passes recorded so far (after every submit).
-    fn three_submitted(&mut self) {
+    /// Tells the engines the queue took the passes recorded so far (after every submit), so the buffers those
+    /// passes wrote serve the next ones.
+    fn submitted(&mut self) {
         if let Some(three) = self.three.as_mut() {
             three.submitted();
+        }
+        if let Some(particles) = self.particles.as_mut() {
+            particles.submitted();
         }
     }
 
@@ -5197,7 +5203,7 @@ impl Renderer {
                     d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") }),
                 );
                 self.gpu.queue.submit([done.finish()]);
-                self.three_submitted();
+                self.submitted();
                 let f = self.video.flow(a, b);
                 let _ = slot.set(f.create_view(&Default::default()));
             }
@@ -5207,9 +5213,11 @@ impl Renderer {
             if let Some(pj) = &job.parts {
                 let g = &self.gpu;
                 let eng = self.particles.get_or_insert_with(|| {
-                    Box::new(crate::particles::ParticleEngine::new_as(g.device.clone(), &g.queue, self.format))
+                    Box::new(crate::particles::ParticleEngine::new_as(g.device.clone(), g.queue.clone(), self.format))
                 });
+                let made = eng.buffers_made;
                 eng.record(&mut enc, pj, &job.target.view, job.target.size);
+                plan.stats.buffers_created += eng.buffers_made - made;
             }
             if !job.draw {
                 continue;
@@ -5265,6 +5273,7 @@ impl Renderer {
                         plan.stats.pt_assemble_seconds += eng.stats.pt_assemble_seconds;
                         plan.stats.pt_bvh_seconds += eng.stats.pt_bvh_seconds;
                         plan.stats.pt_pack_seconds += eng.stats.pt_pack_seconds;
+                        plan.stats.buffers_created += eng.stats.buffers_created;
                     }
                 }
                 let j = compositor_batch_end(job.cmds.len(), i, snapshot_at.filter(|_| job.root), |k| {
@@ -5448,7 +5457,7 @@ impl Renderer {
                         d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") }),
                     );
                     self.gpu.queue.submit([done.finish()]);
-                    self.three_submitted();
+                    self.submitted();
                     self.gpu.wait();
                     plan.stats.mid_frame_submits += 1;
                     unsubmitted = 0;
@@ -5475,7 +5484,7 @@ impl Renderer {
             self.last_timer = Some(t);
         }
         self.last_submit = Some(self.gpu.queue.submit([enc.finish()]));
-        self.three_submitted();
+        self.submitted();
         for (_, t) in scratch {
             self.pool.put(t);
         }

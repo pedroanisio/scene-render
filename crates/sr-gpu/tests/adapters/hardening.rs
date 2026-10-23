@@ -388,7 +388,7 @@ fn solid(g: &sr_gpu::Gpu, c: [u8; 4]) -> wgpu::TextureView {
 fn emitters_sharing_a_sprite_id_keep_their_own_textures() {
     use sr_gpu::particles::{Inst, ParticleEngine, ParticleJob};
     let Some(g) = gpu() else { return };
-    let mut eng = ParticleEngine::new(g.device.clone(), &g.queue);
+    let mut eng = ParticleEngine::new(g.device.clone(), g.queue.clone());
     let layout = sr_gpu::resources::source_layout(&g.device);
     // two documents' assets with the same id: a red sprite and a blue one
     let mut centre = Vec::new();

@@ -2889,7 +2889,7 @@ impl Renderer {
                     },
                 );
                 self.gpu.queue.submit([enc.finish()]);
-                self.three_submitted();
+                self.submitted();
                 let fs = f.stats;
                 stats.draws += fs.draws;
                 stats.targets += fs.targets;
@@ -2989,7 +2989,7 @@ impl Renderer {
             }
         }
         self.gpu.queue.submit([enc.finish()]);
-        self.three_submitted();
+        self.submitted();
         stats.targets += 1;
         Frame { texture: out, stats }
     }

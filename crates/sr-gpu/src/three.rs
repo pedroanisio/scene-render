@@ -20,7 +20,7 @@ use sr_3d::camera::CameraView;
 use sr_3d::{AlphaMode, MaterialParams, Vertex};
 use wgpu::util::DeviceExt;
 
-use crate::resources::FORMAT;
+use crate::resources::{grow, grow_bound, nth, Bound, Grown, FORMAT};
 
 /// The multisampled targets of the 3D pass: each format, the usages it is created with and the capabilities it is
 /// drawn with at the highest `antialias3d` (4x multisampling, and resolving the colour into a single-sampled texture).
@@ -715,30 +715,6 @@ fn plain_material(draw: &Draw3) -> bool {
         && m.subsurface == 0.0
 }
 
-/// A buffer a pass writes with `queue.write_buffer`, grown when a pass needs more, bound over the bytes written.
-struct Grown {
-    buf: wgpu::Buffer,
-    cap: u64,
-    len: u64,
-}
-
-/// A buffer of a [`PassSet`] as a pass binds it: the handle and the bytes written.
-#[derive(Clone)]
-struct Bound {
-    buf: wgpu::Buffer,
-    len: u64,
-}
-
-impl Bound {
-    fn binding(&self) -> wgpu::BindingResource<'_> {
-        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-            buffer: &self.buf,
-            offset: 0,
-            size: std::num::NonZeroU64::new(self.len),
-        })
-    }
-}
-
 /// The buffers one rasterised pass binds and the material bind groups over its material buffer, kept for the
 /// passes after the next submit. Several passes may be recorded before one submit, and a `queue.write_buffer`
 /// lands before that submit's first command, so each pass between submits has its own set; the renderer says when
@@ -766,59 +742,6 @@ struct SortScratch {
     keys_b: wgpu::Buffer,
     vals_b: wgpu::Buffer,
     hist: wgpu::Buffer,
-}
-
-/// Writes `bytes` to the buffer in `slot`, making it when it is missing or too small (counted in `made`); true when
-/// the buffer is new, so what bound the old one is stale.
-fn grow(
-    slot: &mut Option<Grown>,
-    d: &wgpu::Device,
-    q: &wgpu::Queue,
-    bytes: &[u8],
-    usage: wgpu::BufferUsages,
-    label: &str,
-    made: &mut usize,
-) -> bool {
-    let need = bytes.len() as u64;
-    let new = slot.as_ref().is_none_or(|b| b.cap < need);
-    if new {
-        let cap = need.max(slot.as_ref().map_or(0, |b| b.cap * 2)).div_ceil(256) * 256;
-        let buf = d.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size: cap.max(256),
-            usage: usage | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        *slot = Some(Grown { buf, cap, len: 0 });
-        *made += 1;
-    }
-    let b = slot.as_mut().expect("written");
-    b.len = need;
-    q.write_buffer(&b.buf, 0, bytes);
-    new
-}
-
-/// The `k`th slot of `list`, added when the list is shorter.
-fn nth(list: &mut Vec<Option<Grown>>, k: usize) -> &mut Option<Grown> {
-    if list.len() <= k {
-        list.resize_with(k + 1, || None);
-    }
-    &mut list[k]
-}
-
-/// Writes `bytes` to the buffer in `slot` as [`grow`] does and returns it as bound.
-fn grow_bound(
-    slot: &mut Option<Grown>,
-    d: &wgpu::Device,
-    q: &wgpu::Queue,
-    bytes: &[u8],
-    usage: wgpu::BufferUsages,
-    label: &str,
-    made: &mut usize,
-) -> Bound {
-    grow(slot, d, q, bytes, usage, label, made);
-    let b = slot.as_ref().expect("written");
-    Bound { buf: b.buf.clone(), len: b.len }
 }
 
 /// Sets kept at most: a pass beyond them between two submits makes its own and drops it.
