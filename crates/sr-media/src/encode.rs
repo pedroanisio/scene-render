@@ -207,16 +207,53 @@ pub enum InputFormat {
     Rgba16,
     /// 32-bit float planar G, B, R, A, scene-linear.
     Gbrapf32,
+    /// 8-bit 4:2:0 planar: the Y plane, then Cb, then Cr (I420).
+    Yuv420p,
+    /// 10-bit 4:2:0 planar in 16-bit words, LSB aligned.
+    Yuv420p10,
+    /// 8-bit 4:2:2 planar.
+    Yuv422p,
+    /// 10-bit 4:2:2 planar in 16-bit words.
+    Yuv422p10,
+    /// 8-bit 4:4:4 planar.
+    Yuv444p,
+    /// 10-bit 4:4:4 planar in 16-bit words.
+    Yuv444p10,
+    /// 10-bit 4:4:4 planar in 16-bit words, with a full-range alpha plane after the chroma.
+    Yuva444p10,
 }
 
 impl InputFormat {
-    fn ffmpeg(&self) -> &'static str {
+    /// FFmpeg's name for the format, as `-pix_fmt` takes it.
+    pub fn ffmpeg(&self) -> &'static str {
         match self {
             InputFormat::Nv12 => "nv12",
             InputFormat::P010 => "p010le",
             InputFormat::Rgba8 => "rgba",
             InputFormat::Rgba16 => "rgba64le",
             InputFormat::Gbrapf32 => "gbrapf32le",
+            InputFormat::Yuv420p => "yuv420p",
+            InputFormat::Yuv420p10 => "yuv420p10le",
+            InputFormat::Yuv422p => "yuv422p",
+            InputFormat::Yuv422p10 => "yuv422p10le",
+            InputFormat::Yuv444p => "yuv444p",
+            InputFormat::Yuv444p10 => "yuv444p10le",
+            InputFormat::Yuva444p10 => "yuva444p10le",
+        }
+    }
+
+    /// The planes of a planar YUV format: the chroma subsampling in x and y, the bytes a sample takes and whether an
+    /// alpha plane follows the chroma.
+    fn planes(&self) -> Option<(usize, usize, usize, bool)> {
+        match self {
+            InputFormat::Yuv420p => Some((2, 2, 1, false)),
+            InputFormat::Yuv420p10 => Some((2, 2, 2, false)),
+            InputFormat::Yuv422p => Some((2, 1, 1, false)),
+            InputFormat::Yuv422p10 => Some((2, 1, 2, false)),
+            InputFormat::Yuv444p => Some((1, 1, 1, false)),
+            InputFormat::Yuv444p10 => Some((1, 1, 2, false)),
+            InputFormat::Yuva444p10 => Some((1, 1, 2, true)),
+            _ => None,
         }
     }
 
@@ -229,11 +266,17 @@ impl InputFormat {
             InputFormat::Rgba8 => 4 * w * h,
             InputFormat::Rgba16 => 8 * w * h,
             InputFormat::Gbrapf32 => 16 * w * h,
+            planar => {
+                let (sx, sy, bytes, alpha) = planar.planes().expect("planar");
+                let luma = w * h;
+                bytes * (luma * if alpha { 2 } else { 1 } + 2 * w.div_ceil(sx) * h.div_ceil(sy))
+            }
         }
     }
 
+    /// Whether the frames arrive as YUV samples already (no `scale` filter converts them from RGB).
     fn is_yuv(&self) -> bool {
-        matches!(self, InputFormat::Nv12 | InputFormat::P010)
+        !matches!(self, InputFormat::Rgba8 | InputFormat::Rgba16 | InputFormat::Gbrapf32)
     }
 }
 
@@ -1446,6 +1489,29 @@ mod tests {
         // another name is probed on its own
         assert!(!probed(&cache, "h265_test", || false));
         assert_eq!(probes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn planar_frames_have_the_bytes_ffmpeg_reads_for_their_pixel_format() {
+        // chroma planes round up: 7 x 5 is 4 x 3 at 4:2:0 and 4 x 5 at 4:2:2
+        assert_eq!(InputFormat::Yuv420p.frame_bytes(7, 5), 35 + 2 * 12);
+        assert_eq!(InputFormat::Yuv420p10.frame_bytes(7, 5), 2 * (35 + 2 * 12));
+        assert_eq!(InputFormat::Yuv422p.frame_bytes(7, 5), 35 + 2 * 20);
+        assert_eq!(InputFormat::Yuv422p10.frame_bytes(7, 5), 2 * (35 + 2 * 20));
+        assert_eq!(InputFormat::Yuv444p.frame_bytes(7, 5), 3 * 35);
+        assert_eq!(InputFormat::Yuv444p10.frame_bytes(7, 5), 6 * 35);
+        assert_eq!(InputFormat::Yuva444p10.frame_bytes(7, 5), 8 * 35);
+        for f in [
+            InputFormat::Yuv420p,
+            InputFormat::Yuv420p10,
+            InputFormat::Yuv422p,
+            InputFormat::Yuv422p10,
+            InputFormat::Yuv444p,
+            InputFormat::Yuv444p10,
+            InputFormat::Yuva444p10,
+        ] {
+            assert!(f.is_yuv(), "{f:?} needs no RGB to YUV conversion");
+        }
     }
 
     /// NVENC and x264 take nv12 as it comes; asking them for yuv420p from nv12 frames put a software pixel conversion

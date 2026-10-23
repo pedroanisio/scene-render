@@ -196,7 +196,61 @@ fn frame(input: InputFormat, k: u32, w: usize, h: usize) -> Vec<u8> {
             (0..4).flat_map(|p| (0..w * h).flat_map(move |_| (0.25f32 * p as f32).to_le_bytes())).collect()
         }
         InputFormat::P010 => vec![0x40; input.frame_bytes(w as u32, h as u32)],
+        InputFormat::Yuv420p | InputFormat::Yuv422p | InputFormat::Yuv444p => {
+            let mut v = vec![128u8; input.frame_bytes(w as u32, h as u32)];
+            for (i, y) in v[..w * h].iter_mut().enumerate() {
+                *y = (16 + (i * 3 + k as usize * 4) % 200) as u8;
+            }
+            v
+        }
+        InputFormat::Yuv420p10 | InputFormat::Yuv422p10 | InputFormat::Yuv444p10 | InputFormat::Yuva444p10 => {
+            let samples = input.frame_bytes(w as u32, h as u32) / 2;
+            (0..samples)
+                .flat_map(|i| {
+                    let code: u16 = if i < w * h { (64 + (i * 3 + k as usize * 4) % 800) as u16 } else { 512 };
+                    code.to_le_bytes()
+                })
+                .collect()
+        }
     }
+}
+
+/// Planar frames in the encoder's own pixel format reach it as they are: no scale filter converts them, and the
+/// encoder is asked for that format.
+#[test]
+fn planar_frames_reach_the_encoder_without_a_software_conversion() {
+    if !common::ffmpeg_available("planar_frames_reach_the_encoder_without_a_software_conversion") {
+        return;
+    }
+    let d = dir();
+    let cases = [
+        (Codec::Prores, "p.mov", InputFormat::Yuv422p10, "yuv422p10le"),
+        (Codec::Dnxhr, "d.mxf", InputFormat::Yuv422p, "yuv422p"),
+        (Codec::H265, "h.mp4", InputFormat::Yuv420p, "yuv420p"),
+        (Codec::Vp9, "v.webm", InputFormat::Yuv420p, "yuv420p"),
+        (Codec::Ffv1, "f.mkv", InputFormat::Yuv444p10, "yuv444p10le"),
+    ];
+    for (codec, name, input, pix) in cases {
+        let mut s = spec(&d.join(name), codec, input);
+        // DNxHR takes no frame under 256×120
+        (s.width, s.height) = (256, 144);
+        if codec == Codec::Ffv1 {
+            s.pixel_format = pix.into();
+        }
+        let (args, _) = s.args().unwrap();
+        let flat = args.join(" ");
+        assert!(!flat.contains("scale="), "{codec:?}: {flat}");
+        assert!(flat.contains(&format!("-pix_fmt {pix}")), "{codec:?}: {flat}");
+        let at = args.iter().position(|a| a == "-pix_fmt").unwrap();
+        assert_eq!(args[at + 1], pix, "{codec:?}: the rawvideo input is {pix}");
+    }
+    // the alpha channel of ProRes 4444 arrives in the frames too
+    let mut s = spec(&d.join("a.mov"), Codec::Prores, InputFormat::Yuva444p10);
+    s.alpha = true;
+    s.prores_profile = Some("4444".into());
+    let (args, _) = s.args().unwrap();
+    let flat = args.join(" ");
+    assert!(!flat.contains("scale=") && flat.contains("-pix_fmt yuva444p10le"), "{flat}");
 }
 
 fn encode(s: &EncodeSpec, frames: u32) {
@@ -242,8 +296,8 @@ fn every_video_codec_produces_a_readable_file() {
         (Codec::H265, "a.mov", InputFormat::Nv12, "hevc"),
         (Codec::Av1, "a.mkv", InputFormat::Nv12, "av1"),
         (Codec::Vp9, "a.webm", InputFormat::Rgba8, "vp9"),
-        (Codec::Prores, "p.mov", InputFormat::Rgba16, "prores"),
-        (Codec::Dnxhr, "a.mxf", InputFormat::Rgba8, "dnxhd"),
+        (Codec::Prores, "p.mov", InputFormat::Yuv422p10, "prores"),
+        (Codec::Dnxhr, "a.mxf", InputFormat::Yuv422p, "dnxhd"),
         (Codec::Ffv1, "a.mkv", InputFormat::P010, "ffv1"),
         (Codec::Gif, "a.gif", InputFormat::Rgba8, "gif"),
         (Codec::Apng, "a.png", InputFormat::Rgba8, "apng"),

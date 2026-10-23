@@ -231,12 +231,25 @@ fn resolve(dir: &Path, p: &str) -> PathBuf {
     }
 }
 
-/// The raw frame format the GPU writes for an output.
-fn input_format(o: &m::Output, codec: Codec) -> InputFormat {
+/// The raw frame format the GPU writes for an output: the encoder's own pixel format where the pack shader
+/// makes it, so FFmpeg converts nothing in software; RGB otherwise.
+fn input_format(o: &m::Output, codec: Codec, hardware: Hardware) -> InputFormat {
     let deep = o.pixel_format.contains("10") || o.pixel_format.contains("12") || o.pixel_format.contains("16");
     match codec {
         Codec::ExrSequence => InputFormat::Gbrapf32,
-        Codec::TiffSequence | Codec::Prores | Codec::Dnxhr => InputFormat::Rgba16,
+        Codec::TiffSequence => InputFormat::Rgba16,
+        Codec::Prores => {
+            let profile = o.prores_profile.map(|p| p.as_str().to_string()).unwrap_or_else(|| "hq".into());
+            if o.alpha {
+                InputFormat::Yuva444p10
+            } else if profile.starts_with("4444") {
+                InputFormat::Yuv444p10
+            } else {
+                InputFormat::Yuv422p10
+            }
+        }
+        Codec::Dnxhr if deep => InputFormat::Yuv422p10,
+        Codec::Dnxhr => InputFormat::Yuv422p,
         Codec::PngSequence | Codec::Apng => {
             if deep {
                 InputFormat::Rgba16
@@ -245,12 +258,23 @@ fn input_format(o: &m::Output, codec: Codec) -> InputFormat {
             }
         }
         Codec::Gif | Codec::Webp | Codec::JpegSequence => InputFormat::Rgba8,
+        Codec::Ffv1 if o.alpha => InputFormat::Yuva444p10,
         _ if o.alpha => InputFormat::Rgba16,
-        _ => match o.pixel_format.as_str() {
-            "yuv420p" | "nv12" => InputFormat::Nv12,
-            "yuv420p10le" | "p010le" | "p010" => InputFormat::P010,
-            _ => InputFormat::Rgba16,
-        },
+        _ => {
+            // the encoder FFmpeg will run decides: libx264 and the hardware encoders read NV12 and P010 as they are
+            // (VA-API uploads them), while x265, SVT-AV1, libaom, rav1e and VP9 read the planes and converted the
+            // interleaved chroma in software
+            let software = sr_media::encode::choose_encoder(codec, hardware).is_ok_and(|e| {
+                matches!(e.as_str(), "libx265" | "libsvtav1" | "libaom-av1" | "librav1e" | "libvpx-vp9")
+            });
+            match o.pixel_format.as_str() {
+                "yuv420p" | "nv12" if software => InputFormat::Yuv420p,
+                "yuv420p" | "nv12" => InputFormat::Nv12,
+                "yuv420p10le" | "p010le" | "p010" if software => InputFormat::Yuv420p10,
+                "yuv420p10le" | "p010le" | "p010" => InputFormat::P010,
+                _ => InputFormat::Rgba16,
+            }
+        }
     }
 }
 
@@ -1528,7 +1552,7 @@ fn run_delivery(
         let size = sr_gpu::output::frame_size(output_frame(p, output).0, &gpu.device.limits())
             .map_err(DeliverError::Invalid)?;
         report.size = size;
-        let format = input_format(output, codec);
+        let format = input_format(output, codec, opts.hardware);
         let exr = codec == Codec::ExrSequence;
         let rgb_image = codec.is_sequence() || matches!(codec, Codec::Gif | Codec::Apng | Codec::Webp);
         let color = if exr {
@@ -1782,7 +1806,8 @@ fn run_delivery(
                 InputFormat::Nv12 => "yuv420p",
                 InputFormat::P010 => "yuv420p10le",
                 InputFormat::Rgba8 => "bgra",
-                _ => "gbrap16le",
+                InputFormat::Rgba16 | InputFormat::Gbrapf32 => "gbrap16le",
+                planar => planar.ffmpeg(),
             };
             let ispec = EncodeSpec {
                 path: inter.clone(),
@@ -2506,13 +2531,7 @@ fn replay(
     frames: u64,
 ) -> Result<String, DeliverError> {
     use std::io::Read;
-    let pix = match format {
-        InputFormat::Nv12 => "nv12",
-        InputFormat::P010 => "p010le",
-        InputFormat::Rgba8 => "rgba",
-        InputFormat::Rgba16 => "rgba64le",
-        InputFormat::Gbrapf32 => "gbrapf32le",
-    };
+    let pix = format.ffmpeg();
     let mut dec = std::process::Command::new(sr_media::ffmpeg())
         .args(["-nostdin", "-v", "error", "-i"])
         .arg(inter)
@@ -2961,6 +2980,44 @@ fn shader_signals(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outputs_render_to_the_planar_format_their_encoder_reads() {
+        let out = |path: &str, codec: &str, attrs: &str| {
+            let xml = format!(r#"<output path="{path}" codec="{codec}" {attrs}/>"#);
+            let doc = format!(
+                r##"<scene version="1.1"><project width="16" height="16" fps="1" duration="1"/>{xml}<composition/></scene>"##
+            );
+            sr_model::load_str(&doc, &sr_model::LoadOptions::without_assets()).unwrap().scene.outputs.remove(0)
+        };
+        let f = |o: &m::Output, hw: Hardware| input_format(o, Codec::parse(o.codec.as_str()).unwrap(), hw);
+        use Hardware::{Auto, Nvenc, Software, Vaapi};
+        // ProRes and DNxHR take 4:2:2 and 4:4:4 planes; swscale converted RGB for them before
+        assert_eq!(f(&out("a.mov", "prores", ""), Auto), InputFormat::Yuv422p10);
+        assert_eq!(f(&out("a.mov", "prores", r#"proresProfile="4444""#), Auto), InputFormat::Yuv444p10);
+        assert_eq!(f(&out("a.mov", "prores", r#"proresProfile="4444" alpha="true""#), Auto), InputFormat::Yuva444p10);
+        assert_eq!(f(&out("a.mxf", "dnxhr", ""), Auto), InputFormat::Yuv422p);
+        assert_eq!(f(&out("a.mxf", "dnxhr", r#"pixelFormat="yuv422p10le""#), Auto), InputFormat::Yuv422p10);
+        assert_eq!(f(&out("a.mkv", "ffv1", r#"alpha="true""#), Auto), InputFormat::Yuva444p10);
+        // H.264 encoders all read NV12 as it is; the software x265, SVT-AV1 and VP9 get the planes they read
+        // (what Auto picks for H.265 and AV1 depends on the host, so only fixed choices are asserted)
+        assert_eq!(f(&out("a.mp4", "h264", ""), Auto), InputFormat::Nv12);
+        assert_eq!(f(&out("a.mp4", "h264", ""), Software), InputFormat::Nv12);
+        assert_eq!(f(&out("a.mp4", "h265", ""), Software), InputFormat::Yuv420p);
+        assert_eq!(f(&out("a.mkv", "av1", ""), Software), InputFormat::Yuv420p);
+        assert_eq!(f(&out("a.webm", "vp9", ""), Auto), InputFormat::Yuv420p);
+        // a hardware encoder, present or not, is never handed the planes: NV12 and P010 stay; VA-API uploads them
+        assert_eq!(f(&out("a.mp4", "h265", ""), Nvenc), InputFormat::Nv12);
+        assert_eq!(f(&out("a.mp4", "h265", ""), Vaapi), InputFormat::Nv12);
+        assert_eq!(f(&out("a.mp4", "h265", r#"pixelFormat="yuv420p10le""#), Software), InputFormat::Yuv420p10);
+        assert_eq!(f(&out("a.mp4", "h265", r#"pixelFormat="yuv420p10le""#), Nvenc), InputFormat::P010);
+        assert_eq!(f(&out("a.mp4", "h265", r#"pixelFormat="yuv420p10le""#), Vaapi), InputFormat::P010);
+        assert_eq!(f(&out("a.mp4", "h264", r#"pixelFormat="yuv420p10le""#), Software), InputFormat::P010);
+        // what no planar pack serves keeps RGB
+        assert_eq!(f(&out("a.mp4", "h265", r#"pixelFormat="yuv444p""#), Software), InputFormat::Rgba16);
+        assert_eq!(f(&out("a.webm", "vp9", r#"alpha="true""#), Software), InputFormat::Rgba16);
+        assert_eq!(f(&out("a.tif", "tiff-sequence", ""), Auto), InputFormat::Rgba16);
+    }
 
     #[test]
     fn workers_divide_the_frame_queue_bytes_and_keep_a_few_frames() {

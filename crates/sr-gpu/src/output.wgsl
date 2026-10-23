@@ -7,7 +7,8 @@ struct Out {
   osize: vec2<u32>,       // output size
   offset: vec2<f32>,      // letterbox offset (output pixels)
   scale: f32,             // output pixels per frame pixel
-  format: u32,            // 0 NV12, 1 P010, 2 RGBA8, 3 RGBA16, 4 GBRAPF32
+  format: u32,            // 0 NV12, 1 P010, 2 RGBA8, 3 RGBA16, 4 GBRAPF32, then the planar YUV formats:
+                          // 5 yuv420p, 6 yuv420p10, 7 yuv422p, 8 yuv422p10, 9 yuv444p, 10 yuv444p10, 11 yuva444p10
   transfer: u32,          // output transfer id
   full_range: u32,
   linear_light: u32,
@@ -168,6 +169,58 @@ fn yuv_sample(i: u32, bits: u32) -> u32 {
   return code(v, false, bits, d * select(0.0, 1.0, bits == 8u));
 }
 
+// mean chroma of the sx × sy block of output pixels at chroma position (cx, cy), in the chroma's own order
+fn chroma_block(cx: u32, cy: u32, sx: u32, sy: u32) -> vec3<f32> {
+  var s = vec3(0.0);
+  var n = 0.0;
+  for (var yy = 0u; yy < sy; yy = yy + 1u) {
+    for (var xx = 0u; xx < sx; xx = xx + 1u) {
+      let x = cx * sx + xx;
+      let y = cy * sy + yy;
+      if (x < o.osize.x && y < o.osize.y) {
+        s = s + px(x, y).rgb;
+        n = n + 1.0;
+      }
+    }
+  }
+  return yuv(s / n);
+}
+
+// Sample `i` of a planar YUV frame: the Y plane, then Cb and Cr at the chroma size, then alpha when `alpha` is
+// set. `sx`, `sy`: the chroma subsampling (2, 2 for 4:2:0; 2, 1 for 4:2:2; 1, 1 for 4:4:4). An 8-bit 4:2:0 sample
+// is dithered as its NV12 sample would be, so the planes equal the interleaved ones.
+fn planar_sample(i: u32, bits: u32, sx: u32, sy: u32, alpha: bool) -> u32 {
+  let w = o.osize.x; let h = o.osize.y;
+  let n = w * h;
+  if (i < n) {
+    let d = hash(vec2(i, 7u), o.seed) - hash(vec2(i, 11u), o.seed);
+    let p = px(i % w, i / w);
+    return code(yuv(p.rgb).x, true, bits, d * select(0.0, 1.0, bits == 8u));
+  }
+  let cw = (w + sx - 1u) / sx; let ch = (h + sy - 1u) / sy;
+  let cn = cw * ch;
+  let j = i - n;
+  if (j < 2u * cn) {
+    let k = j % cn;
+    let c = chroma_block(k % cw, k / cw, sx, sy);
+    let di = n + 2u * k + select(0u, 1u, j >= cn);
+    let d = hash(vec2(di, 7u), o.seed) - hash(vec2(di, 11u), o.seed);
+    return code(select(c.z, c.y, j < cn), false, bits, d * select(0.0, 1.0, bits == 8u));
+  }
+  // alpha, full range
+  let pi = j - 2u * cn;
+  let a = clamp(px(pi % w, pi / w).a, 0.0, 1.0);
+  let m = f32((1u << bits) - 1u);
+  return u32(clamp(floor(a * m + 0.5), 0.0, m));
+}
+
+// the samples of a planar frame of `planes` planes (3, or 4 with alpha) at chroma subsampling sx × sy
+fn planar_samples(sx: u32, sy: u32, planes: u32) -> u32 {
+  let w = o.osize.x; let h = o.osize.y;
+  let cw = (w + sx - 1u) / sx; let ch = (h + sy - 1u) / sy;
+  return w * h * (planes - 2u) + 2u * cw * ch;
+}
+
 @compute @workgroup_size(64)
 fn cs_pack(@builtin(global_invocation_id) gid: vec3<u32>) {
   let wi = o.base + gid.x + gid.y * 65535u * 64u;
@@ -203,6 +256,29 @@ fn cs_pack(@builtin(global_invocation_id) gid: vec3<u32>) {
       let pair = select(p.ba, p.rg, (wi & 1u) == 0u);
       let q = vec2<u32>(floor(clamp(pair, vec2(0.0), vec2(1.0)) * 65535.0 + 0.5));
       word = q.x | (q.y << 16u);
+    }
+    case 5u, 7u, 9u: {
+      // 8-bit planar: four samples a word
+      let fmt = out_format();
+      let sx = select(2u, 1u, fmt == 9u);
+      let sy = select(1u, 2u, fmt == 5u);
+      let samples = planar_samples(sx, sy, 3u);
+      for (var k = 0u; k < 4u; k = k + 1u) {
+        let s = wi * 4u + k;
+        if (s < samples) { word = word | (planar_sample(s, 8u, sx, sy, false) << (8u * k)); }
+      }
+    }
+    case 6u, 8u, 10u, 11u: {
+      // 10-bit planar in 16-bit words: two samples a word
+      let fmt = out_format();
+      let sx = select(1u, 2u, fmt == 6u || fmt == 8u);
+      let sy = select(1u, 2u, fmt == 6u);
+      let alpha = fmt == 11u;
+      let samples = planar_samples(sx, sy, select(3u, 4u, alpha));
+      for (var k = 0u; k < 2u; k = k + 1u) {
+        let s = wi * 2u + k;
+        if (s < samples) { word = word | (planar_sample(s, 10u, sx, sy, alpha) << (16u * k)); }
+      }
     }
     default: {
       let plane = wi / n;

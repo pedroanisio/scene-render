@@ -135,6 +135,24 @@ pub struct Pending {
     ready: Vec<crate::gpu::MapWait>,
 }
 
+/// The pack shader's number for an input format (`Out.format` in output.wgsl).
+fn format_id(format: InputFormat) -> u32 {
+    match format {
+        InputFormat::Nv12 => 0,
+        InputFormat::P010 => 1,
+        InputFormat::Rgba8 => 2,
+        InputFormat::Rgba16 => 3,
+        InputFormat::Gbrapf32 => 4,
+        InputFormat::Yuv420p => 5,
+        InputFormat::Yuv420p10 => 6,
+        InputFormat::Yuv422p => 7,
+        InputFormat::Yuv422p10 => 8,
+        InputFormat::Yuv444p => 9,
+        InputFormat::Yuv444p10 => 10,
+        InputFormat::Yuva444p10 => 11,
+    }
+}
+
 /// Staging buffers in the ring: one mapping, one converting, one spare.
 const RING: usize = 3;
 
@@ -599,13 +617,7 @@ impl OutputStage {
         let per = (self.piece / 4).clamp(1, u32::MAX as u64) as u32;
         let pieces: Vec<(u32, u32)> = (0..words.div_ceil(per)).map(|k| (k * per, per.min(words - k * per))).collect();
         let mut p = Self::params(frame, working, out, size, placement);
-        p.format = match format {
-            InputFormat::Nv12 => 0,
-            InputFormat::P010 => 1,
-            InputFormat::Rgba8 => 2,
-            InputFormat::Rgba16 => 3,
-            InputFormat::Gbrapf32 => 4,
-        };
+        p.format = format_id(format);
         p.keep_alpha = keep_alpha as u32;
         p.seed = self.frame_index;
         if let Some(o) = overlay {
@@ -999,19 +1011,20 @@ mod tests {
                     InputFormat::Rgba8,
                     InputFormat::Rgba16,
                     InputFormat::Gbrapf32,
+                    InputFormat::Yuv420p,
+                    InputFormat::Yuv420p10,
+                    InputFormat::Yuv422p,
+                    InputFormat::Yuv422p10,
+                    InputFormat::Yuv444p,
+                    InputFormat::Yuv444p10,
+                    InputFormat::Yuva444p10,
                 ] {
                     for keep_alpha in [false, true] {
                         for stage in [&mut block, &mut piecewise] {
                             stage.seek(911);
                         }
                         let mut params = OutputStage::params(&frame, &working, &out, [8, 6], Placement::default());
-                        params.format = match format {
-                            InputFormat::Nv12 => 0,
-                            InputFormat::P010 => 1,
-                            InputFormat::Rgba8 => 2,
-                            InputFormat::Rgba16 => 3,
-                            InputFormat::Gbrapf32 => 4,
-                        };
+                        params.format = format_id(format);
                         force_general(&mut piecewise, &params);
                         let a = block.submit(&frame, &working, &out, format, [8, 6], keep_alpha);
                         let b = piecewise.submit(&frame, &working, &out, format, [8, 6], keep_alpha);
@@ -1023,6 +1036,136 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod planar_tests {
+    use super::*;
+
+    fn words(bytes: &[u8]) -> Vec<u16> {
+        bytes.as_chunks::<2>().0.iter().map(|p| u16::from_le_bytes(*p)).collect()
+    }
+
+    /// A code at `bits` as output.wgsl's `code` makes it, from a luma or chroma value.
+    fn code(v: f64, luma: bool, bits: u32, full_range: bool) -> i64 {
+        let m = (1u32 << (bits - 8)) as f64;
+        let x = if full_range {
+            (if luma { v } else { v + 0.5 }) * 255.0 * m
+        } else if luma {
+            (16.0 + 219.0 * v) * m
+        } else {
+            (128.0 + 224.0 * v) * m
+        };
+        (x + 0.5).floor().clamp(0.0, 255.0 * m + (m - 1.0)) as i64
+    }
+
+    #[test]
+    fn planar_packs_agree_with_the_interleaved_and_rgb_packs() {
+        let gpu =
+            sr_testkit::require_gpu!(crate::gpu::test_gpu(), "planar_packs_agree_with_the_interleaved_and_rgb_packs");
+        let layout = crate::resources::source_layout(&gpu.device);
+        let (w, h) = (8usize, 6usize);
+        let frame = crate::resources::create(&gpu.device, &layout, [w as u32, h as u32], 1, "planar oracle");
+        let alphas: Vec<f32> = (0..w * h).map(|i| half::f16::from_f32((i % 7) as f32 / 6.0).to_f32()).collect();
+        let bytes: Vec<u8> = (0..w * h)
+            .flat_map(|i| {
+                let alpha = alphas[i];
+                [i as f32 / 20.0 * alpha, (i % 9) as f32 / 8.0 * alpha, 0.7 * alpha, alpha]
+                    .into_iter()
+                    .flat_map(|v| half::f16::from_f32(v).to_le_bytes())
+            })
+            .collect();
+        gpu.queue.write_texture(
+            frame.tex.as_image_copy(),
+            &bytes,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(64), rows_per_image: Some(6) },
+            wgpu::Extent3d { width: 8, height: 6, depth_or_array_layers: 1 },
+        );
+        let mut stage = OutputStage::new(gpu.device.clone(), gpu.queue.clone());
+        let working = Working { space: ColorSpace::Srgb, linear: false };
+        let n = w * h;
+        let (cw, ch) = (w / 2, h / 2);
+        for full_range in [false, true] {
+            let out = OutputColor::new(ColorSpace::Rec709, Transfer::Auto, full_range);
+            let mut pack = |format: InputFormat, keep_alpha: bool| {
+                stage.seek(29);
+                let p = stage.submit(&frame, &working, &out, format, [8, 6], keep_alpha);
+                let bytes = stage.wait(p).into_vec();
+                assert_eq!(bytes.len(), format.frame_bytes(8, 6), "{format:?}");
+                bytes
+            };
+            // 4:2:0: the planes of the interleaved formats, with the same dither
+            let nv12 = pack(InputFormat::Nv12, false);
+            let i420 = pack(InputFormat::Yuv420p, false);
+            assert_eq!(&i420[..n], &nv12[..n], "full={full_range}: luma plane");
+            let (u, v): (Vec<u8>, Vec<u8>) = nv12[n..].as_chunks::<2>().0.iter().map(|p| (p[0], p[1])).unzip();
+            assert_eq!(&i420[n..n + cw * ch], &u[..], "full={full_range}: Cb plane");
+            assert_eq!(&i420[n + cw * ch..], &v[..], "full={full_range}: Cr plane");
+            let p010 = words(&pack(InputFormat::P010, false));
+            let i420_10 = words(&pack(InputFormat::Yuv420p10, false));
+            assert_eq!(i420_10[..n], p010[..n].iter().map(|c| c >> 6).collect::<Vec<_>>()[..]);
+            let (u, v): (Vec<u16>, Vec<u16>) =
+                p010[n..].as_chunks::<2>().0.iter().map(|p| (p[0] >> 6, p[1] >> 6)).unzip();
+            assert_eq!(i420_10[n..n + cw * ch], u[..]);
+            assert_eq!(i420_10[n + cw * ch..], v[..]);
+            // 4:4:4 and 4:2:2 against the output-encoded RGB of the RGBA16 pack
+            let rgb = words(&pack(InputFormat::Rgba16, false));
+            let (kr, kb) = (out.matrix.0 as f64, out.matrix.1 as f64);
+            let yuv_of = |rgb: [f64; 3]| {
+                let y = kr * rgb[0] + (1.0 - kr - kb) * rgb[1] + kb * rgb[2];
+                [y, (rgb[2] - y) / (2.0 * (1.0 - kb)), (rgb[0] - y) / (2.0 * (1.0 - kr))]
+            };
+            let px = |i: usize| [rgb[4 * i], rgb[4 * i + 1], rgb[4 * i + 2]].map(|c| c as f64 / 65535.0);
+            let yuv444_10 = words(&pack(InputFormat::Yuv444p10, false));
+            let yuv444 = pack(InputFormat::Yuv444p, false);
+            for i in 0..n {
+                let [y, u, v] = yuv_of(px(i));
+                for (k, (value, luma)) in [(y, true), (u, false), (v, false)].into_iter().enumerate() {
+                    let want = code(value, luma, 10, full_range);
+                    let got = yuv444_10[k * n + i] as i64;
+                    assert!(
+                        (got - want).abs() <= 1,
+                        "full={full_range} 4:4:4 10-bit plane {k} sample {i}: {got} vs {want}"
+                    );
+                    // 8-bit: dithered, so a code away from the 10-bit one quartered
+                    let got8 = yuv444[k * n + i] as i64;
+                    assert!(
+                        (got8 - (want + 2) / 4).abs() <= 1,
+                        "full={full_range} 4:4:4 8-bit plane {k} sample {i}: {got8} vs {want}"
+                    );
+                }
+            }
+            let yuv422_10 = words(&pack(InputFormat::Yuv422p10, false));
+            let yuv422 = pack(InputFormat::Yuv422p, false);
+            assert_eq!(yuv422_10[..n], yuv444_10[..n], "full={full_range}: 4:2:2 luma is 4:4:4 luma");
+            for cy in 0..h {
+                for cx in 0..cw {
+                    let (a, b) = (px(cy * w + 2 * cx), px(cy * w + 2 * cx + 1));
+                    let [_, u, v] = yuv_of([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0]);
+                    let at = cy * cw + cx;
+                    for (k, value) in [u, v].into_iter().enumerate() {
+                        let want = code(value, false, 10, full_range);
+                        let got = yuv422_10[n + k * cw * h + at] as i64;
+                        assert!(
+                            (got - want).abs() <= 1,
+                            "full={full_range} 4:2:2 10-bit chroma {k} at {at}: {got} vs {want}"
+                        );
+                        let got8 = yuv422[n + k * cw * h + at] as i64;
+                        assert!(
+                            (got8 - (want + 2) / 4).abs() <= 1,
+                            "full={full_range} 4:2:2 8-bit chroma {k} at {at}: {got8} vs {want}"
+                        );
+                    }
+                }
+            }
+            // alpha: a fourth plane, full range whatever the output's range
+            let yuva = words(&pack(InputFormat::Yuva444p10, true));
+            for i in 0..n {
+                let want = (alphas[i] as f64 * 1023.0).round() as i64;
+                assert!((yuva[3 * n + i] as i64 - want).abs() <= 1, "alpha {i}: {} vs {want}", yuva[3 * n + i]);
             }
         }
     }
