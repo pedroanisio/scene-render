@@ -40,6 +40,8 @@ const TILE: u32 = 16;
 const MAX_PER_TILE: usize = 63;
 const UNIFORM_ALIGN: u64 = 256;
 const SHADOW_BUDGET: u64 = 512 << 20;
+/// The blurred occlusion: one channel, as filterable as the colour targets.
+const AO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 /// Shadow arrays kept between renders. One: a miss reuses its texture, so a pass whose casters change every frame
 /// holds no more memory than the pool would.
 const KEPT_SHADOW_MAPS: usize = 1;
@@ -748,6 +750,11 @@ pub struct ThreeEngine {
     pre_pipes: HashMap<PreKey, wgpu::RenderPipeline>,
     ssao_pipe: wgpu::RenderPipeline,
     ao_blur_pipe: wgpu::RenderPipeline,
+    /// The occlusion passes writing four channels and reading depth apart, the reference of the packed ones.
+    #[cfg(test)]
+    ao_separate: (wgpu::RenderPipeline, wgpu::RenderPipeline),
+    #[cfg(test)]
+    pack_ao: bool,
     ssr_pipe: wgpu::RenderPipeline,
     bgl_post: wgpu::BindGroupLayout,
     bgl_depth: wgpu::BindGroupLayout,
@@ -1199,8 +1206,37 @@ impl ThreeEngine {
             })
         };
         let blit_pipe = post("fs_blit", FORMAT);
-        let ssao_pipe = post("fs_ssao", FORMAT);
-        let ao_blur_pipe = post("fs_ao_blur", FORMAT);
+        let ao_post = |entry: &str, format: wgpu::TextureFormat, packed: bool| {
+            let _creation = crate::gpu::creation_lock();
+            let constants = [("PACKED_AO", packed as u32 as f64)];
+            let options = wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() };
+            d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(entry),
+                layout: Some(&post_layout),
+                vertex: wgpu::VertexState {
+                    module: &post_mod,
+                    entry_point: Some("vs_post"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &post_mod,
+                    entry_point: Some(entry),
+                    compilation_options: options,
+                    targets: &[Some(format.into())],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        // the raw occlusion shares the depth target's format, so its depth channel holds the same value
+        let ssao_pipe = ao_post("fs_ssao", gbuffer, true);
+        let ao_blur_pipe = ao_post("fs_ao_blur", AO_FORMAT, true);
+        #[cfg(test)]
+        let ao_separate = (ao_post("fs_ssao", FORMAT, false), ao_post("fs_ao_blur", FORMAT, false));
         let ssr_mod = module(ssr_src(), "three-ssr");
         let unf = wgpu::TextureSampleType::Float { filterable: false };
         let bgl_ssr = bgl(
@@ -1351,6 +1387,10 @@ impl ThreeEngine {
             pre_pipes: HashMap::new(),
             ssao_pipe,
             ao_blur_pipe,
+            #[cfg(test)]
+            ao_separate,
+            #[cfg(test)]
+            pack_ao: true,
             ssr_pipe,
             bgl_post,
             bgl_depth,
@@ -2678,10 +2718,15 @@ impl ThreeEngine {
             (None, None, None)
         };
         stats.ao_size = scene.ao.map(|_| gsize);
+        #[cfg(not(test))]
+        let pack_ao = true;
+        #[cfg(test)]
+        let pack_ao = self.pack_ao;
+        let (raw_format, ao_format) = if pack_ao { (self.gbuffer, AO_FORMAT) } else { (FORMAT, FORMAT) };
         let ao_views = scene.ao.map(|_| {
             (
-                pool(gsize, FORMAT, 1, 1, 1, "three-ao-raw").create_view(&Default::default()),
-                pool(gsize, FORMAT, 1, 1, 1, "three-ao").create_view(&Default::default()),
+                pool(gsize, raw_format, 1, 1, 1, "three-ao-raw").create_view(&Default::default()),
+                pool(gsize, ao_format, 1, 1, 1, "three-ao").create_view(&Default::default()),
             )
         });
         let ao_view = ao_views.as_ref().map(|a| &a.1).unwrap_or(&self.white.view);
@@ -2821,8 +2866,17 @@ impl ThreeEngine {
                 }
             }
             if let Some((raw, ao)) = &ao_views {
-                post_pass(enc, &self.ssao_pipe, &post_bind(gn, gz), raw, raster_stamp(&mut timer, "three-ssao"));
-                post_pass(enc, &self.ao_blur_pipe, &post_bind(raw, gz), ao, raster_stamp(&mut timer, "three-ao-blur"));
+                let (ssao, blur) = (&self.ssao_pipe, &self.ao_blur_pipe);
+                // the packed occlusion is read through the unfilterable depth binding
+                let blur_bind = post_bind(&self.white.view, raw);
+                #[cfg(test)]
+                let (ssao, blur, blur_bind) = if pack_ao {
+                    (ssao, blur, blur_bind)
+                } else {
+                    (&self.ao_separate.0, &self.ao_separate.1, post_bind(raw, gz))
+                };
+                post_pass(enc, ssao, &post_bind(gn, gz), raw, raster_stamp(&mut timer, "three-ssao"));
+                post_pass(enc, blur, &blur_bind, ao, raster_stamp(&mut timer, "three-ao-blur"));
             }
         }
         {
@@ -4015,6 +4069,96 @@ mod tests {
             assert!(actual.iter().any(|p| p[0] > 0.01 && p[3] > 0.01), "{what} draws something");
             assert_same_render(&gpu.info, &actual, &expected, what);
         }
+    }
+
+    /// The occlusion passes packed into one (occlusion, depth) target, and a one-channel result, render the frame
+    /// the four-channel passes reading depth apart render, within a half-float step: the packed blur averages the
+    /// occlusion before it is rounded to f16. At full size and at the reduced size of a software adapter, with
+    /// contact shadows and reflections beside them.
+    #[test]
+    fn packed_occlusion_matches_the_separate_targets() {
+        use super::*;
+        let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "packed_occlusion_matches_the_separate_targets");
+        let mut engine =
+            ThreeEngine::new_with(gpu.device.clone(), gpu.queue.clone(), gpu.gbuffer_depth, gpu.scalar_target);
+        let sphere = sr_3d::prim::sphere(16.0, 20);
+        let cube = sr_3d::prim::cuboid(24.0, 24.0, 24.0);
+        let plane = sr_3d::prim::plane(200.0, 160.0, 1);
+        let ball = engine.upload_mesh(&sphere.vertices, &sphere.indices);
+        let block = engine.upload_mesh(&cube.vertices, &cube.indices);
+        let floor = engine.upload_mesh(&plane.vertices, &plane.indices);
+        let draw = |mesh: &Arc<MeshGpu>, model: Mat4| Draw3 {
+            mesh: MeshSrc::Cached(mesh.clone()),
+            model,
+            material: MaterialParams { base_color: [0.8, 0.75, 0.7, 1.0], roughness: 0.6, ..Default::default() },
+            maps: Default::default(),
+            opacity: 1.0,
+            cast_shadow: false,
+            receive_shadow: false,
+            shadow_catcher: false,
+        };
+        let light = |kind| Light3 {
+            kind,
+            pos: Vec3::new(30.0, 0.0, -80.0),
+            dir: Vec3::new(0.2, 0.5, 1.0).normalize(),
+            right: Vec3::X,
+            color: Vec3::splat(if kind == LightKind::Ambient { 0.6 } else { 1.5 }),
+            range: 0.0,
+            falloff: 2.0,
+            cos_outer: 0.0,
+            cos_inner: 1.0,
+            cast_shadow: false,
+            softness: 0.0,
+            bias: 0.001,
+            map_size: 64,
+            size: [0.0; 3],
+            ies: None,
+            affects_diffuse: true,
+            affects_specular: true,
+            contact: 0.0,
+        };
+        let mut scene = Scene3 {
+            cam: sr_3d::camera::resolve(&sr_3d::camera::CameraParams::default(), 120.0, 80.0),
+            clip_fix: Mat4::IDENTITY,
+            size: [120, 80],
+            exposure: 1.0,
+            dof: None,
+            lens_k1: 0.0,
+            draws: vec![
+                draw(&floor, Mat4::from_translation(Vec3::new(60.0, 40.0, 20.0))),
+                draw(&ball, Mat4::from_translation(Vec3::new(50.0, 40.0, 4.0))),
+                draw(&block, Mat4::from_translation(Vec3::new(75.0, 45.0, 6.0)) * Mat4::from_rotation_y(0.6)),
+            ],
+            lights: vec![light(LightKind::Ambient), light(LightKind::Directional)],
+            env: None,
+            splats: Vec::new(),
+            volumes: Vec::new(),
+            encode_srgb: false,
+            ao: None,
+            ssr: false,
+            path: None,
+            geodesic: None,
+        };
+        for case in 0..8 {
+            scene.ao = Some([[6.0, 16.0, 40.0][case % 3], [0.5, 1.0, 2.0][case % 3]]);
+            engine.software_adapter = case & 1 != 0;
+            scene.lights[1].contact = if case & 2 != 0 { 12.0 } else { 0.0 };
+            scene.ssr = case & 4 != 0;
+            engine.pack_ao = true;
+            let packed = engine.render_now(&scene, None);
+            let packed_size = engine.stats.ao_size;
+            engine.pack_ao = false;
+            let separate = engine.render_now(&scene, None);
+            assert_eq!(packed_size, engine.stats.ao_size, "case {case}");
+            // the blur reads the occlusion at the depth target's precision, not rounded to f16 first
+            let steps = half_steps(&packed, &separate);
+            assert!(steps <= 1, "occlusion case {case}: {steps} half-float steps apart");
+            let ao = scene.ao.take();
+            let open = engine.render_now(&scene, None);
+            scene.ao = ao;
+            assert!(half_steps(&packed, &open) > 16, "case {case}: the occlusion darkens the frame");
+        }
+        engine.software_adapter = false;
     }
 
     #[test]

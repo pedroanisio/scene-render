@@ -9,6 +9,9 @@
 @group(0) @binding(5) var<uniform> aperture: array<vec4<f32>, 128>;
 
 const DOF_TILE: i32 = 16;
+// The occlusion pass writes (occlusion, view depth) at the depth target's precision, which its blur reads through
+// post_depth in one load per tap; without it, the occlusion alone, and the blur reads depth from post_depth.
+override PACKED_AO: bool = true;
 
 struct PostOut {
     @builtin(position) pos: vec4<f32>,
@@ -191,7 +194,7 @@ fn to_px(p: vec3<f32>) -> vec2<f32> {
 fn fs_ssao(i: PostOut) -> @location(0) vec4<f32> {
     let px = vec2<i32>(i.pos.xy);
     let z = textureLoad(post_depth, px, 0).r;
-    if (z <= 0.0) { return vec4(1.0); }
+    if (z <= 0.0) { return select(vec4(1.0), vec4(1.0, z, 0.0, 1.0), PACKED_AO); }
     // the occlusion may run below the frame's size: to_frame turns its pixels into the frame's
     let to_frame = pfr.screen.xy / vec2<f32>(textureDimensions(post_depth));
     let p = view_pos(i.pos.xy * to_frame, z);
@@ -224,6 +227,7 @@ fn fs_ssao(i: PostOut) -> @location(0) vec4<f32> {
         if (sz < s.z - 0.02 * radius) { occ += range; }
     }
     let ao = clamp(1.0 - pfr.fx.y * occ / f32(count), 0.0, 1.0);
+    if (PACKED_AO) { return vec4(ao, z, 0.0, 1.0); }
     return vec4(ao, ao, ao, 1.0);
 }
 
@@ -231,16 +235,25 @@ fn fs_ssao(i: PostOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_ao_blur(i: PostOut) -> @location(0) vec4<f32> {
     let px = vec2<i32>(i.pos.xy);
-    let z = textureLoad(post_depth, px, 0).r;
-    let dims = vec2<i32>(textureDimensions(post_src));
+    let dims = vec2<i32>(textureDimensions(post_depth));
+    let centre = textureLoad(post_depth, px, 0);
+    let z = select(centre.r, centre.g, PACKED_AO);
     var sum = 0.0;
     var w = 0.0;
     for (var y = -2; y < 2; y++) {
         for (var x = -2; x < 2; x++) {
             let q = clamp(px + vec2(x, y), vec2(0), dims - 1);
-            let qz = textureLoad(post_depth, q, 0).r;
+            let tap = textureLoad(post_depth, q, 0);
+            var qz = tap.r;
+            var occ = 0.0;
+            if (PACKED_AO) {
+                qz = tap.g;
+                occ = tap.r;
+            } else {
+                occ = textureLoad(post_src, q, 0).r;
+            }
             let wt = select(0.0, 1.0, abs(qz - z) <= max(0.05 * z, 1.0));
-            sum += textureLoad(post_src, q, 0).r * wt;
+            sum += occ * wt;
             w += wt;
         }
     }
