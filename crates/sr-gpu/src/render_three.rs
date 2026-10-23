@@ -1128,8 +1128,8 @@ impl Renderer {
         format: &str,
     ) -> Result<Option<Arc<sr_volume::Volume>>, sr_volume::Error> {
         let key = (path.to_owned(), format.to_owned());
-        if let Some(cached) = self.volume_assets.get(&key) {
-            return cached.clone().map_err(|e| sr_volume::Error::Io(std::io::Error::other(e)));
+        if let Some(cached) = self.volumes.asset(&key) {
+            return cached.map_err(|e| sr_volume::Error::Io(std::io::Error::other(e)));
         }
         let loaded = (|| {
             let file = match std::fs::File::open(path) {
@@ -1153,14 +1153,8 @@ impl Renderer {
                 .map_err(|e| sr_volume::Error::Io(std::io::Error::other(format!("{}: {e}", path.display()))))
         })();
         let bytes = loaded.as_ref().ok().and_then(|v| v.as_ref()).map_or(0, |v| v.bytes());
-        if self.volume_cache_bytes.saturating_add(bytes) > self.volume_cache_budget() || self.volume_assets.len() >= 64
-        {
-            self.volume_assets.clear();
-            self.baked_frames.clear();
-            self.volume_cache_bytes = 0;
-        }
-        self.volume_cache_bytes += bytes;
-        self.volume_assets.insert(key, loaded.as_ref().cloned().map_err(ToString::to_string));
+        let budget = self.volume_cache_budget();
+        self.volumes.insert_asset(key, loaded.as_ref().cloned().map_err(ToString::to_string), bytes, budget);
         loaded
     }
 
@@ -1190,25 +1184,19 @@ impl Renderer {
                 sequence
             }
         };
+        let budget = self.volume_cache_budget();
+        let volumes = &mut self.volumes;
         let load = |frame: &sr_volume::bake::BakedFrame| {
             let key = (sequence.directory().to_owned(), frame.sha256());
-            if let Some(volume) = self.baked_frames.get(&key) {
-                return Ok(volume.clone());
+            if let Some(volume) = volumes.baked(&key) {
+                return Ok(volume);
             }
             let volume = frame.read(sequence.directory(), limits.frame)?;
             let bytes = volume.bytes();
             if bytes > 256 << 20 {
                 return Err(sr_volume::Error::Limit("baked frame resident bytes"));
             }
-            if self.volume_cache_bytes.saturating_add(bytes) > self.volume_cache_budget()
-                || self.baked_frames.len() >= 64
-            {
-                self.volume_assets.clear();
-                self.baked_frames.clear();
-                self.volume_cache_bytes = 0;
-            }
-            self.volume_cache_bytes += bytes;
-            self.baked_frames.insert(key, volume.clone());
+            volumes.insert_baked(key, volume.clone(), bytes, budget);
             Ok(volume)
         };
         if advect {
@@ -3954,6 +3942,114 @@ mod scope_tests {
 
 /// Decoded volumes and baked frames a renderer alone keeps between frames.
 const VOLUME_CACHE_BUDGET: usize = 256 << 20;
+/// Decoded volumes, and baked frames, kept at most, each kind apart.
+const VOLUME_CACHE_ENTRIES: usize = 64;
+
+type VolumeKey = (std::path::PathBuf, String);
+
+/// Decoded volumes and baked frames kept between frames under one byte budget. When one does not fit, or a kind
+/// holds [`VOLUME_CACHE_ENTRIES`], the least recently used entries go first, not the whole cache.
+#[derive(Default)]
+pub(super) struct VolumeCache {
+    assets: HashMap<VolumeKey, (CachedVolume, usize, u64)>,
+    baked: HashMap<VolumeKey, (Arc<sr_volume::Volume>, usize, u64)>,
+    bytes: usize,
+    clock: u64,
+}
+
+impl VolumeCache {
+    fn tick(&mut self) -> u64 {
+        self.clock += 1;
+        self.clock
+    }
+
+    /// The decoded volume (or the failure to decode it) at `key`, now the most recently used.
+    pub fn asset(&mut self, key: &VolumeKey) -> Option<CachedVolume> {
+        let now = self.tick();
+        let (v, _, used) = self.assets.get_mut(key)?;
+        *used = now;
+        Some(v.clone())
+    }
+
+    /// The baked frame at `key`, now the most recently used.
+    pub fn baked(&mut self, key: &VolumeKey) -> Option<Arc<sr_volume::Volume>> {
+        let now = self.tick();
+        let (v, _, used) = self.baked.get_mut(key)?;
+        *used = now;
+        Some(v.clone())
+    }
+
+    /// Keeps `volume`, holding `bytes`, under `key`, dropping the least recently used entries until it fits
+    /// `budget`. One that does not fit alone is not kept.
+    pub fn insert_asset(&mut self, key: VolumeKey, volume: CachedVolume, bytes: usize, budget: usize) {
+        if let Some((_, old, _)) = self.assets.remove(&key) {
+            self.bytes -= old;
+        }
+        if !self.make_room(bytes, budget, false) {
+            return;
+        }
+        let now = self.tick();
+        self.bytes += bytes;
+        self.assets.insert(key, (volume, bytes, now));
+    }
+
+    /// As [`Self::insert_asset`], for a baked frame.
+    pub fn insert_baked(&mut self, key: VolumeKey, volume: Arc<sr_volume::Volume>, bytes: usize, budget: usize) {
+        if let Some((_, old, _)) = self.baked.remove(&key) {
+            self.bytes -= old;
+        }
+        if !self.make_room(bytes, budget, true) {
+            return;
+        }
+        let now = self.tick();
+        self.bytes += bytes;
+        self.baked.insert(key, (volume, bytes, now));
+    }
+
+    /// Drops the least recently used entries until `bytes` more fit `budget` and the kind (`baked` or not) has
+    /// room for one more; false when `bytes` alone exceed the budget.
+    fn make_room(&mut self, bytes: usize, budget: usize, baked: bool) -> bool {
+        if bytes > budget {
+            return false;
+        }
+        loop {
+            let over = self.bytes.saturating_add(bytes) > budget;
+            let full = if baked { self.baked.len() } else { self.assets.len() } >= VOLUME_CACHE_ENTRIES;
+            if !over && !full {
+                return true;
+            }
+            let oldest_asset = self.assets.iter().map(|(k, (_, b, used))| (*used, *b, k.clone())).min();
+            let oldest_baked = self.baked.iter().map(|(k, (_, b, used))| (*used, *b, k.clone())).min();
+            // the kind that is full gives up an entry; over the budget, whichever holds the oldest
+            let from_baked = match (over, baked, &oldest_asset, &oldest_baked) {
+                (false, b, _, _) => b,
+                (true, _, Some(a), Some(f)) => f < a,
+                (true, _, None, Some(_)) => true,
+                (true, _, Some(_), None) => false,
+                (true, _, None, None) => return false,
+            };
+            let dropped = if from_baked {
+                oldest_baked.and_then(|(_, _, k)| self.baked.remove(&k)).map(|(_, b, _)| b)
+            } else {
+                oldest_asset.and_then(|(_, _, k)| self.assets.remove(&k)).map(|(_, b, _)| b)
+            };
+            let Some(b) = dropped else { return false };
+            self.bytes -= b;
+        }
+    }
+
+    /// Entries of both kinds.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.assets.len() + self.baked.len()
+    }
+
+    /// Bytes of every entry kept.
+    #[cfg(test)]
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+}
 
 /// What an imported asset was read from: each file's path with its length and modification time (`None` when missing).
 type AssetStamp = Vec<(std::path::PathBuf, Option<(u64, Option<std::time::SystemTime>)>)>;
@@ -3987,6 +4083,58 @@ mod wgsl_layout_tests {
     fn sphere_u_matches_wgsl_params() {
         let fields = rust_fields!(super::SphereU; faces, mode, region);
         assert_agree(include_str!("sphere.wgsl"), "Params", std::mem::size_of::<super::SphereU>(), &fields);
+    }
+}
+
+#[cfg(test)]
+mod volume_cache_tests {
+    use super::VolumeCache;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    fn key(s: &str) -> (PathBuf, String) {
+        (PathBuf::from(s), "srvol".into())
+    }
+
+    #[test]
+    fn a_volume_over_the_budget_drops_the_least_recently_used_ones_not_all() {
+        let mut c = VolumeCache::default();
+        c.insert_asset(key("a"), Ok(None), 40, 100);
+        c.insert_asset(key("b"), Ok(None), 40, 100);
+        assert!(c.asset(&key("a")).is_some(), "a is now more recent than b");
+        c.insert_asset(key("c"), Ok(None), 40, 100);
+        assert!(c.asset(&key("b")).is_none(), "the least recently used volume went");
+        assert!(c.asset(&key("a")).is_some() && c.asset(&key("c")).is_some(), "the others stayed");
+        assert_eq!((c.len(), c.bytes()), (2, 80));
+        // a baked frame shares the budget: it pushes out the least recently used volume, a
+        let frame = Arc::new(sr_volume::Volume::new());
+        c.insert_baked(key("f"), frame.clone(), 40, 100);
+        assert!(c.asset(&key("a")).is_none() && c.asset(&key("c")).is_some());
+        assert!(c.baked(&key("f")).is_some_and(|f| Arc::ptr_eq(&f, &frame)));
+        assert_eq!((c.len(), c.bytes()), (2, 80));
+        // a volume that does not fit alone is not kept, and pushes nothing out
+        c.insert_asset(key("huge"), Ok(None), 101, 100);
+        assert!(c.asset(&key("huge")).is_none());
+        assert_eq!((c.len(), c.bytes()), (2, 80));
+    }
+
+    #[test]
+    fn each_kind_keeps_at_most_sixty_four_entries() {
+        let mut c = VolumeCache::default();
+        c.insert_asset(key("first"), Ok(None), 0, 100);
+        for i in 0..64 {
+            c.insert_asset(key(&format!("v{i}")), Ok(None), 0, 100);
+        }
+        assert_eq!(c.len(), 64);
+        assert!(c.asset(&key("first")).is_none(), "the sixty-fifth volume pushed out the oldest");
+        assert!(c.asset(&key("v0")).is_some() && c.asset(&key("v63")).is_some());
+        // the baked frames count apart from the volumes
+        let frame = Arc::new(sr_volume::Volume::new());
+        for i in 0..64 {
+            c.insert_baked(key(&format!("f{i}")), frame.clone(), 0, 100);
+        }
+        assert_eq!(c.len(), 128);
+        assert!(c.asset(&key("v0")).is_some(), "a frame does not push out a volume while both fit");
     }
 }
 

@@ -132,6 +132,9 @@ pub struct RenderStats {
     /// Buffers made this frame for 3D passes, particle batches and vector raster jobs: none when the ones the
     /// engines keep hold them.
     pub buffers_created: usize,
+    /// Meshes and textures the 3D engine dropped after this frame: ones no pass of the frame used, least recently
+    /// used first, beyond its idle budget.
+    pub assets_evicted: usize,
     /// CPU seconds evaluating the scene at other times (sub-frames for motion blur and time effects).
     pub subframe_seconds: f64,
     /// Sub-frames rendered for motion blur and time effects.
@@ -461,12 +464,11 @@ pub struct Renderer {
     three: Option<Box<crate::three::ThreeEngine>>,
     contrast_three_cache: Option<ContrastThreeCache>,
     three_assets: HashMap<String, Arc<Result<sr_3d::Asset, String>>>,
-    volume_assets: HashMap<(std::path::PathBuf, String), CachedVolume>,
-    volume_cache_bytes: usize,
+    /// Decoded volumes and baked frames, under one budget.
+    volumes: render_three::VolumeCache,
     /// Renderers in the process sharing the default cache budgets (parallel delivery workers): 1 alone.
     budget_share: usize,
     baked_sequences: HashMap<(std::path::PathBuf, String), Arc<sr_volume::bake::BakedSequence>>,
-    baked_frames: HashMap<(std::path::PathBuf, String), Arc<sr_volume::Volume>>,
     mtlx: HashMap<String, Arc<Result<sr_3d::mtlx::MtlxMaterial, String>>>,
     ies: HashMap<String, Result<Arc<Vec<f32>>, String>>,
     /// Camera replacement for 360 faces and stereo eyes.
@@ -1381,11 +1383,9 @@ impl Renderer {
             three: None,
             contrast_three_cache: None,
             three_assets: HashMap::new(),
-            volume_assets: HashMap::new(),
-            volume_cache_bytes: 0,
+            volumes: Default::default(),
             budget_share: 1,
             baked_sequences: HashMap::new(),
-            baked_frames: HashMap::new(),
             mtlx: HashMap::new(),
             ies: HashMap::new(),
             view_override: None,
@@ -4800,6 +4800,9 @@ impl Renderer {
             self.pool.put(t);
         }
         self.pool.trim();
+        if let Some(e) = &mut self.three {
+            stats.assets_evicted = e.end_frame();
+        }
         stats.textures_created = self.pool.created - created_before;
         stats.textures_released = self.pool.released - released_before;
         stats.voxel_states = self.voxel_surfaces.len();

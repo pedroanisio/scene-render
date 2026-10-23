@@ -44,7 +44,7 @@ fn remember_drape(engine: &mut crate::three::ThreeEngine, key: String, t: Arc<cr
     engine.textures.insert(key.clone(), t);
     engine.drape_order.push_back(key);
     let mut bytes: usize =
-        engine.drape_order.iter().filter_map(|k| engine.textures.get(k)).map(|t| t.rgba.len().saturating_mul(3)).sum();
+        engine.drape_order.iter().filter_map(|k| engine.textures.peek(k)).map(|t| t.rgba.len().saturating_mul(3)).sum();
     while engine.drape_order.len() > 32 || bytes > budget {
         let Some(old) = engine.drape_order.pop_front() else { break };
         if let Some(t) = engine.textures.remove(&old) {
@@ -468,7 +468,7 @@ mod cache_tests {
         assert_eq!(first.len(), 2, "both resolution variants must remain cached");
         let frame = r.render(&ev.evaluate(0.1), ev.program());
         for (key, texture) in first {
-            assert!(std::sync::Arc::ptr_eq(&texture, &r.three_engine().textures[&key]));
+            assert!(std::sync::Arc::ptr_eq(&texture, r.three_engine().textures.get(&key).unwrap()));
         }
         let mut fresh = crate::Renderer::new(gpu, ev.program());
         let reference = fresh.render(&ev.evaluate(0.1), ev.program());

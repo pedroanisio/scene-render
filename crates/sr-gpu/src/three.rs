@@ -11,6 +11,7 @@
 
 mod sort_cache;
 
+use crate::asset_cache::{AssetCache, Charged};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -40,6 +41,8 @@ const TILE: u32 = 16;
 const MAX_PER_TILE: usize = 63;
 const UNIFORM_ALIGN: u64 = 256;
 const SHADOW_BUDGET: u64 = 512 << 20;
+/// Bytes of meshes and textures a frame does not draw that the engine keeps for a later frame, each kind apart.
+pub const IDLE_ASSET_BUDGET: u64 = 256 << 20;
 /// The blurred occlusion: one channel, as filterable as the colour targets.
 const AO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 /// Shadow arrays kept between renders. One: a miss reuses its texture, so a pass whose casters change every frame
@@ -68,6 +71,14 @@ pub struct MeshGpu {
     pub hi: Vec3,
 }
 
+impl Charged for MeshGpu {
+    /// The host copy and the vertex and index buffers.
+    fn bytes(&self) -> u64 {
+        let (v, i) = (self.cpu.0.len() as u64, self.cpu.1.len() as u64);
+        2 * (v * std::mem::size_of::<Vertex>() as u64 + i * 4)
+    }
+}
+
 /// A texture on the GPU (with mips).
 pub struct TexGpu {
     pub view: wgpu::TextureView,
@@ -78,6 +89,13 @@ pub struct TexGpu {
     pub rgba: Arc<[u8]>,
     pub srgb: bool,
     pub sampler: Option<sr_3d::sampling::TextureSampler>,
+}
+
+impl Charged for TexGpu {
+    /// The retained base level and the texture with its mips.
+    fn bytes(&self) -> u64 {
+        self.rgba.len() as u64 + u64::from(self.size[0]) * u64::from(self.size[1]) * 4 * 4 / 3
+    }
 }
 
 impl TexGpu {
@@ -835,6 +853,8 @@ pub struct ThreeEngine {
     pt_geometry: crate::pathtrace::BuildCache,
     /// Renderers in the process sharing the default cache budgets (parallel delivery workers): 1 alone.
     budget_share: usize,
+    /// This engine's share of [`IDLE_ASSET_BUDGET`].
+    idle_budget: u64,
     geodesic: Option<crate::geodesic::GeodesicGpu>,
     /// Depth and normal prepass pipelines, built on first use.
     pre_pipes: HashMap<PreKey, wgpu::RenderPipeline>,
@@ -880,13 +900,13 @@ pub struct ThreeEngine {
     /// The sets of the passes recorded since the last submit, in order, and the kept ones after them.
     sets: Vec<PassSet>,
     sets_used: usize,
-    /// Meshes keyed by the caller.
-    pub meshes: HashMap<String, Arc<MeshGpu>>,
+    /// Meshes keyed by the caller, dropped by [`Self::end_frame`] when idle beyond the budget.
+    pub meshes: AssetCache<MeshGpu>,
     /// The mesh of each parametric surface or heightfield node (SREP 70) with its content key: one upload per node,
     /// replaced when the sampled mesh changes, so an animated surface holds one mesh, not one per frame.
     pub param_meshes: HashMap<Arc<str>, (u64, Arc<MeshGpu>)>,
-    /// Textures keyed by the caller.
-    pub textures: HashMap<String, Arc<TexGpu>>,
+    /// Textures keyed by the caller, dropped by [`Self::end_frame`] when idle beyond the budget.
+    pub textures: AssetCache<TexGpu>,
     pub(crate) drape_order: std::collections::VecDeque<String>,
     /// Environments keyed by the caller.
     pub envs: HashMap<String, Arc<EnvGpu>>,
@@ -1481,6 +1501,7 @@ impl ThreeEngine {
             pt: None,
             pt_geometry: Default::default(),
             budget_share: 1,
+            idle_budget: IDLE_ASSET_BUDGET,
             geodesic: None,
             pre_pipes: HashMap::new(),
             ssao_pipe,
@@ -1516,9 +1537,9 @@ impl ThreeEngine {
             cmp_smp,
             sets: Vec::new(),
             sets_used: 0,
-            meshes: HashMap::new(),
+            meshes: AssetCache::default(),
             param_meshes: HashMap::new(),
-            textures: HashMap::new(),
+            textures: AssetCache::default(),
             drape_order: Default::default(),
             envs: HashMap::new(),
             splat_cache: HashMap::new(),
@@ -1685,10 +1706,22 @@ impl ThreeEngine {
     /// process.
     pub fn share_budgets(&mut self, workers: usize) {
         self.budget_share = workers.max(1);
+        self.idle_budget = IDLE_ASSET_BUDGET / self.budget_share as u64;
         self.pt_geometry.set_budget(crate::pathtrace::GEOMETRY_BUDGET / self.budget_share);
         if let Some(pt) = &self.pt {
             pt.share_budgets(self.budget_share);
         }
+    }
+
+    /// Keeps at most `bytes` of idle meshes and at most `bytes` of idle textures between frames.
+    pub fn set_idle_budget(&mut self, bytes: u64) {
+        self.idle_budget = bytes;
+    }
+
+    /// Ends a frame: drops the meshes and textures no pass used since the last call, least recently used first,
+    /// until the idle ones of each kind fit the budget. Returns how many were dropped.
+    pub fn end_frame(&mut self) -> usize {
+        self.meshes.end_frame(self.idle_budget) + self.textures.end_frame(self.idle_budget)
     }
 
     /// The path tracer, made on first use with this engine's share of the cache budgets.
@@ -3595,6 +3628,30 @@ pub(crate) fn assert_translates_to_glsl(name: &str, src: &str, constants: &[(&st
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn idle_meshes_and_textures_beyond_the_engine_budget_are_dropped() {
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "idle_meshes_and_textures_beyond_the_engine_budget_are_dropped"
+        );
+        let mut e = super::ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+        let v = |x: f32| sr_3d::Vertex { pos: [x, 0.0, 0.0], ..Default::default() };
+        let tri = e.upload_mesh(&[v(0.0), v(1.0), v(0.5)], &[0, 1, 2]);
+        let px = e.upload_rgba8(2, 2, &[255; 16], true);
+        e.meshes.insert("tri".into(), tri);
+        e.textures.insert("px".into(), px);
+        let (mesh_bytes, tex_bytes) = (e.meshes.bytes(), e.textures.bytes());
+        assert!(mesh_bytes > 0 && tex_bytes > 0, "{mesh_bytes} {tex_bytes}");
+        // both fit the idle budget: kept over two frames that draw neither
+        e.set_idle_budget(mesh_bytes.max(tex_bytes));
+        assert_eq!(e.end_frame() + e.end_frame(), 0);
+        assert_eq!((e.meshes.len(), e.textures.len()), (1, 1));
+        // neither fits: both go
+        e.set_idle_budget(mesh_bytes.min(tex_bytes) - 1);
+        assert_eq!(e.end_frame(), 2);
+        assert!(e.meshes.is_empty() && e.textures.is_empty());
+    }
+
     /// The largest distance between two renders of one size, in steps of the half floats the target stores.
     fn half_steps(a: &[[f32; 4]], b: &[[f32; 4]]) -> u32 {
         assert_eq!(a.len(), b.len(), "renders of one size");
