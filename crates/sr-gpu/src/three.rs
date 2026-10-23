@@ -40,6 +40,17 @@ const TILE: u32 = 16;
 const MAX_PER_TILE: usize = 63;
 const UNIFORM_ALIGN: u64 = 256;
 const SHADOW_BUDGET: u64 = 512 << 20;
+/// Shadow arrays kept between renders. One: a miss reuses its texture, so a pass whose casters change every frame
+/// holds no more memory than the pool would.
+const KEPT_SHADOW_MAPS: usize = 1;
+
+/// A shadow array kept from an earlier render and the key of what it holds.
+struct KeptShadow {
+    key: u64,
+    tex: wgpu::Texture,
+    /// The casters' meshes, held so that no other mesh takes an address the key hashes.
+    _meshes: Vec<Arc<MeshGpu>>,
+}
 const IES_W: usize = 128;
 const IES_ROWS: usize = 32;
 
@@ -716,6 +727,13 @@ pub struct ThreeEngine {
     /// IES tables uploaded so far.
     #[cfg(test)]
     ies_uploads: usize,
+    /// Shadow arrays drawn by earlier renders, least recently used first.
+    shadow_maps: Vec<KeptShadow>,
+    #[cfg(test)]
+    keep_shadow_maps: bool,
+    /// Shadow views drawn so far.
+    #[cfg(test)]
+    shadow_views_drawn: usize,
     specialize_global_lights: bool,
     bgl_frame: wgpu::BindGroupLayout,
     bgl_mat: wgpu::BindGroupLayout,
@@ -1369,6 +1387,11 @@ impl ThreeEngine {
             ies_empty: None,
             #[cfg(test)]
             ies_uploads: 0,
+            shadow_maps: Vec::new(),
+            #[cfg(test)]
+            keep_shadow_maps: true,
+            #[cfg(test)]
+            shadow_views_drawn: 0,
             #[cfg(test)]
             skip_unused_passes: true,
             stats: Stats3::default(),
@@ -1803,6 +1826,40 @@ fn light_tiles(l: &Light3, vp: &Mat4, size: [u32; 2], tiles: [u32; 2]) -> Option
     Some([t(lo.x, tiles[0]), t(lo.y, tiles[1]), t(hi.x, tiles[0]), t(hi.y, tiles[1])])
 }
 
+/// The key of a shadow array's content and the casters' meshes it hashes by address, or `None` when a caster is
+/// deformed (`deformed`) or displaced: their vertices are not known by the mesh alone.
+fn shadow_key(
+    scene: &Scene3,
+    mats: &[Mat4],
+    map_size: u32,
+    runs: &[(usize, u32, u32, u32)],
+    obj_bytes: &[u8],
+    deformed: impl Fn(usize) -> bool,
+) -> Option<(u64, Vec<Arc<MeshGpu>>)> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut meshes = Vec::new();
+    (map_size, mats.len(), runs.len()).hash(&mut h);
+    for m in mats {
+        m.to_cols_array().map(f32::to_bits).hash(&mut h);
+    }
+    for &(i, view, offset, count) in runs {
+        let dr = &scene.draws[i];
+        let MeshSrc::Cached(mesh) = &dr.mesh else { return None };
+        if deformed(i) || dr.maps[5].is_some() {
+            return None;
+        }
+        (Arc::as_ptr(mesh) as usize, view, count).hash(&mut h);
+        meshes.push(mesh.clone());
+        for k in 0..count as usize {
+            let at = offset as usize + k * 256;
+            let o: &ObjectU = bytemuck::from_bytes(&obj_bytes[at..at + std::mem::size_of::<ObjectU>()]);
+            (o.model.map(|c| c.map(f32::to_bits)), o.spacing[3].to_bits()).hash(&mut h);
+        }
+    }
+    Some((h.finish(), meshes))
+}
+
 impl ThreeEngine {
     /// The IES table of `lights` and each light's row in it (-1 without a profile).
     fn ies_atlas(&mut self, lights: &[Light3], skip_unused: bool) -> (wgpu::TextureView, Vec<f32>) {
@@ -2207,11 +2264,6 @@ impl ThreeEngine {
             shadow_mats.iter().map(|m| m.to_cols_array_2d()).collect()
         };
         let smat_buf = buf(bytemuck::cast_slice(&mats), wgpu::BufferUsages::STORAGE, "three-shadow-mats");
-        let shadow = pool([map_size, map_size], wgpu::TextureFormat::Depth32Float, 1, 1, layers, "three-shadows");
-        let shadow_view = shadow.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        });
         let contact = scene.lights.iter().any(|l| l.contact > 0.0);
         let prepass = scene.ao.is_some() || scene.ssr || contact;
         // ------------------------------------------------ draws: classify, uniforms
@@ -2442,6 +2494,48 @@ impl ThreeEngine {
                 shadow_runs.push((i, view, offset, 1));
             }
         }
+        // A shadow array is kept while its views and what they draw hold: the views' matrices and size, and for
+        // each caster its mesh and placement. A deformed or displaced caster draws it anew every render.
+        #[cfg(not(test))]
+        let keep_maps = true;
+        #[cfg(test)]
+        let keep_maps = self.keep_shadow_maps;
+        let kept = (keep_maps && !shadow_mats.is_empty())
+            .then(|| shadow_key(scene, &shadow_mats, map_size, &shadow_runs, &obj_bytes, |i| preps[i].vbuf.is_some()))
+            .flatten();
+        let (shadow, draw_shadows) = match kept {
+            Some((key, meshes)) => match self.shadow_maps.iter().position(|k| k.key == key) {
+                Some(at) => {
+                    let hit = self.shadow_maps.remove(at);
+                    let tex = hit.tex.clone();
+                    self.shadow_maps.push(hit);
+                    (tex, false)
+                }
+                None => {
+                    let extent = wgpu::Extent3d { width: map_size, height: map_size, depth_or_array_layers: layers };
+                    let evicted = (self.shadow_maps.len() >= KEPT_SHADOW_MAPS).then(|| self.shadow_maps.remove(0));
+                    let tex = match evicted {
+                        Some(old) if old.tex.size() == extent => old.tex,
+                        _ => {
+                            texture(&d, [map_size; 2], wgpu::TextureFormat::Depth32Float, 1, 1, layers, "three-shadows")
+                        }
+                    };
+                    self.shadow_maps.push(KeptShadow { key, tex: tex.clone(), _meshes: meshes });
+                    (tex, true)
+                }
+            },
+            None => {
+                (pool([map_size, map_size], wgpu::TextureFormat::Depth32Float, 1, 1, layers, "three-shadows"), true)
+            }
+        };
+        let shadow_view = shadow.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        #[cfg(test)]
+        if draw_shadows {
+            self.shadow_views_drawn += shadow_mats.len();
+        }
         let obj_bind = d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("three-object"),
             layout: &self.bgl_obj,
@@ -2632,7 +2726,7 @@ impl ThreeEngine {
         // shadow passes write the shadow array, so they bind a frame group without it
         let fb_shadow = frame_bind_with(&self.white.view, env_view, &dummy_shadow_view);
         // ------------------------------------------------ shadow passes
-        for v in 0..shadow_mats.len() {
+        for v in (0..shadow_mats.len()).filter(|_| draw_shadows) {
             let layer = shadow.create_view(&wgpu::TextureViewDescriptor {
                 dimension: Some(wgpu::TextureViewDimension::D2),
                 base_array_layer: v as u32,
@@ -3779,6 +3873,147 @@ mod tests {
                 usize::from(case < unrolled.len()),
                 "case {case}: unrolled only when every tile holds every light"
             );
+        }
+    }
+
+    /// A shadow map whose views, casters and their placement are unchanged is kept from the previous render
+    /// instead of being drawn again; any change to them, a deformed caster or a displaced one draws it anew. Every
+    /// render matches one drawn without the cache.
+    #[test]
+    fn unchanged_shadow_maps_are_kept_without_changing_the_frame() {
+        use super::*;
+        let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "unchanged_shadow_maps_are_kept");
+        let mut engine =
+            ThreeEngine::new_with(gpu.device.clone(), gpu.queue.clone(), gpu.gbuffer_depth, gpu.scalar_target);
+        let sphere = sr_3d::prim::sphere(18.0, 16);
+        let cube = sr_3d::prim::cuboid(30.0, 30.0, 30.0);
+        let plane = sr_3d::prim::plane(160.0, 120.0, 1);
+        let ball = engine.upload_mesh(&sphere.vertices, &sphere.indices);
+        let block = engine.upload_mesh(&cube.vertices, &cube.indices);
+        let floor = engine.upload_mesh(&plane.vertices, &plane.indices);
+        let draw = |mesh: &Arc<MeshGpu>, at: Vec3| Draw3 {
+            mesh: MeshSrc::Cached(mesh.clone()),
+            model: Mat4::from_translation(at),
+            material: MaterialParams { base_color: [0.7, 0.6, 0.5, 1.0], roughness: 0.5, ..Default::default() },
+            maps: Default::default(),
+            opacity: 1.0,
+            cast_shadow: true,
+            receive_shadow: true,
+            shadow_catcher: false,
+        };
+        let light = |kind, pos: Vec3| Light3 {
+            kind,
+            pos,
+            dir: (Vec3::new(48.0, 32.0, 20.0) - pos).normalize(),
+            right: Vec3::X,
+            color: Vec3::splat(60.0),
+            range: 4000.0,
+            falloff: 2.0,
+            cos_outer: 0.7,
+            cos_inner: 0.9,
+            cast_shadow: true,
+            softness: 0.0,
+            bias: 0.001,
+            map_size: 128,
+            size: [0.0; 3],
+            ies: None,
+            affects_diffuse: true,
+            affects_specular: true,
+            contact: 0.0,
+        };
+        let mut scene = Scene3 {
+            cam: sr_3d::camera::resolve(&sr_3d::camera::CameraParams::default(), 96.0, 64.0),
+            clip_fix: Mat4::IDENTITY,
+            size: [96, 64],
+            exposure: 0.83,
+            dof: None,
+            lens_k1: 0.0,
+            draws: vec![draw(&ball, Vec3::new(48.0, 32.0, 0.0)), draw(&floor, Vec3::new(48.0, 32.0, 30.0))],
+            lights: vec![
+                light(LightKind::Spot, Vec3::new(20.0, 0.0, -80.0)),
+                light(LightKind::Point, Vec3::new(70.0, 10.0, -60.0)),
+            ],
+            env: None,
+            splats: Vec::new(),
+            volumes: Vec::new(),
+            encode_srgb: false,
+            ao: None,
+            ssr: false,
+            path: None,
+            geodesic: None,
+        };
+        let bump = engine.upload_rgba8(2, 2, &[200; 16], false);
+        // one spot view and six cube faces
+        let views = 7;
+        type Step = Box<dyn Fn(&mut Scene3)>;
+        let steps: Vec<(&str, Step, usize)> = vec![
+            ("cold", Box::new(|_| {}), views),
+            ("unchanged", Box::new(|_| {}), 0),
+            (
+                "camera moved",
+                Box::new(|s| {
+                    s.cam = sr_3d::camera::resolve(
+                        &sr_3d::camera::CameraParams { offset: Vec3::new(6.0, 0.0, 0.0), ..Default::default() },
+                        96.0,
+                        64.0,
+                    )
+                }),
+                0,
+            ),
+            (
+                "caster moved",
+                Box::new(|s| s.draws[0].model = Mat4::from_translation(Vec3::new(44.0, 30.0, 0.0))),
+                views,
+            ),
+            ("unchanged again", Box::new(|_| {}), 0),
+            ("light moved", Box::new(|s| s.lights[0].pos.x += 5.0), views),
+            ("mesh swapped", Box::new(move |s| s.draws[0].mesh = MeshSrc::Cached(block.clone())), views),
+            ("caster added", Box::new(move |s| s.draws.push(draw(&ball, Vec3::new(70.0, 40.0, 10.0)))), views),
+            ("map size", Box::new(|s| s.lights.iter_mut().for_each(|l| l.map_size = 64)), views),
+            (
+                "displaced",
+                Box::new(move |s| {
+                    s.draws[0].maps[5] = Some(bump.clone());
+                    s.draws[0].material.displacement_scale = 2.0
+                }),
+                views,
+            ),
+            ("still displaced", Box::new(|_| {}), views),
+            (
+                "deformed",
+                Box::new(|s| {
+                    s.draws[0].maps[5] = None;
+                    let (MeshSrc::Cached(m) | MeshSrc::Deformed(_, m)) = &s.draws[0].mesh;
+                    let m = m.clone();
+                    s.draws[0].mesh = MeshSrc::Deformed(m.cpu.0.clone(), m)
+                }),
+                views,
+            ),
+            ("still deformed", Box::new(|_| {}), views),
+            (
+                "cached again",
+                Box::new(|s| {
+                    let (MeshSrc::Cached(m) | MeshSrc::Deformed(_, m)) = &s.draws[0].mesh;
+                    let m = m.clone();
+                    s.draws[0].mesh = MeshSrc::Cached(m)
+                }),
+                0,
+            ),
+            ("moved after", Box::new(|s| s.draws[0].model = Mat4::from_translation(Vec3::new(50.0, 34.0, 0.0))), views),
+            ("unchanged after", Box::new(|_| {}), 0),
+        ];
+        // "cached again" is the scene of "map size", whose array is still kept: the displaced and deformed
+        // renders keep none
+        for (what, step, drawn) in &steps {
+            step(&mut scene);
+            engine.keep_shadow_maps = true;
+            let before = engine.shadow_views_drawn;
+            let actual = engine.render_now(&scene, None);
+            assert_eq!(engine.shadow_views_drawn - before, *drawn, "{what}: shadow views drawn");
+            engine.keep_shadow_maps = false;
+            let expected = engine.render_now(&scene, None);
+            assert!(actual.iter().any(|p| p[0] > 0.01 && p[3] > 0.01), "{what} draws something");
+            assert_same_render(&gpu.info, &actual, &expected, what);
         }
     }
 
