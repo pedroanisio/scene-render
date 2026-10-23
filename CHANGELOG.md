@@ -46,6 +46,11 @@ Versions up to v0.4.1 were released under the MIT License from github.com/pedroa
 
 - Each particle batch writes its instances into a buffer the engine keeps between submits (up to 64), grown when a batch needs more, instead of a new buffer every frame.
 
+### Delivery
+
+- The flash check's 48x27 grid is collected one frame after it is submitted, on a second mapped buffer, instead of being read back while the render thread waits for it. Only the last frame of a programme waits. On perf_layers (1080p60, 600 frames, RTX 3050) with the flash check on, the encode went from 11.2 s to 8.9-9.2 s, level with the same scene with no check (8.65 s); the grid's cells are the same.
+- The sample times of a motion blur are evaluated in parallel on the rayon pool once the blur knows it will draw them all, and the seconds they take reach the encode report as `subframe_seconds` (summed over workers) and the text summary as `shutter sub-frames`. The counterfactual probes of a contrast check still evaluate serially. Frames are the same; on perf_3d with 32 samples and perf_effects with 16, evaluation is under a millisecond a frame, so frame times do not move.
+
 ## v0.7.4 — 2026-10-23
 
 This release renders 3D scenes with less GPU work and holds less memory while it delivers. The 3D renderer unrolls point, spot and area lights, keeps its shadow map while the shadow casters hold still, filters one-texel shadows with four gathers, blurs ambient occlusion with one load per tap and skips passes nothing reads. Delivery extracts clay surfaces ahead of the renderer, reuses read-back frame buffers, closes idle video decoders, shares fonts, 3D assets and cache budgets across workers, and keeps one malloc arena. On lavapipe the 736-frame 1280x720 06-marx-engels-clay film encoded in 69.00 s and 68.72 s instead of 92.63 s and 92.11 s with v0.7.3 (user CPU 561 s and 560 s instead of 748 s and 739 s), with a peak RSS of 2.08 to 2.12 GiB instead of 3.65 to 3.75 GiB. Ambient occlusion now blurs at the depth target's precision, which moves frames on every adapter by at most one half-float step; the bounds are given below. The vendored schema is still sr-core 1.7.0.

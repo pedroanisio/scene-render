@@ -88,3 +88,8 @@ Verify the download with `sha256sum -c scene-render-v0.7.4-linux-x86_64.tar.gz.s
 ### Particles
 
 - Each particle batch writes its instances into a buffer the engine keeps between submits (up to 64), grown when a batch needs more, instead of a new buffer every frame.
+
+### Delivery
+
+- The flash check's 48x27 grid is collected one frame after it is submitted, on a second mapped buffer, instead of being read back while the render thread waits for it. Only the last frame of a programme waits. On perf_layers (1080p60, 600 frames, RTX 3050) with the flash check on, the encode went from 11.2 s to 8.9-9.2 s, level with the same scene with no check (8.65 s); the grid's cells are the same.
+- The sample times of a motion blur are evaluated in parallel on the rayon pool once the blur knows it will draw them all, and the seconds they take reach the encode report as `subframe_seconds` (summed over workers) and the text summary as `shutter sub-frames`. The counterfactual probes of a contrast check still evaluate serially. Frames are the same; on perf_3d with 32 samples and perf_effects with 16, evaluation is under a millisecond a frame, so frame times do not move.
