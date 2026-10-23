@@ -2124,8 +2124,9 @@ fn radiance_params(base: &Params, lights: &[PtLight]) -> cpu::RadianceParams {
 
 /// Whether a pass runs on the CPU tracer: a software adapter, `SR_PT_CPU` not "0", a scene the plain shader traces
 /// (`plain`: no media, water or foam), and none of the features the CPU loop leaves out (adaptive sampling, light
-/// grids, counters, hardware rays, procedural sky). A backdrop does not
-/// count: only paths that have met nothing but glass read it, and the CPU loop has no transmission.
+/// grids, counters, procedural sky). It takes the pass ahead of the adapter's ray queries, which are then not built.
+/// A backdrop does not count: only paths that have met nothing but glass read it, and the CPU loop has no
+/// transmission.
 #[allow(clippy::too_many_arguments)]
 fn cpu_trace_selected(
     cpu_adapter: bool,
@@ -2135,7 +2136,6 @@ fn cpu_trace_selected(
     base: &Params,
     grid: bool,
     counter: bool,
-    rays: bool,
     env_available: bool,
 ) -> bool {
     cpu_adapter
@@ -2145,7 +2145,6 @@ fn cpu_trace_selected(
         && base.out[3] <= 0.0
         && !grid
         && !counter
-        && !rays
         && base.sky[1][3] <= 0.5
         && (base.env[0] <= 0.5 || env_available)
 }
@@ -2362,7 +2361,6 @@ pub(crate) fn render_cached(
         })
     });
     // built into this encoder ahead of the passes that trace it, so no pass reads a structure still being built
-    let rays = pt.rays_layout().and_then(|layout| Some((layout, rays::build(d, enc, data, layout)?)));
     let mats = storage("pt-mats", bytemuck::cast_slice(&materials));
     let mut lights = data.lights.clone();
     for light in &mut lights {
@@ -2438,22 +2436,31 @@ pub(crate) fn render_cached(
         };
         build_light_grids(pt, d, enc, &mut timer, plan, group, make_base(&tiles[0]), &buffers, inputs);
     }
+    // whether the CPU tracer takes the pass, which no tile's own position changes; the GPU trace alone reads the
+    // driver's acceleration structures, so they are built only for it
+    let on_cpu = {
+        let base = make_base(&tiles[0]);
+        cpu_trace_selected(
+            pt.cpu_adapter,
+            std::env::var("SR_PT_CPU").map_or(true, |v| v != "0"),
+            cpu::supported(data, &radiance_params(&base, &data.lights)),
+            plain_trace(scene.draws.iter().map(|dr| &dr.material), !scene.volumes.is_empty()),
+            &base,
+            grid_plan.is_some(),
+            counter.is_some(),
+            inputs.env_texels.is_some(),
+        )
+    };
+    let rays = if on_cpu {
+        None
+    } else {
+        pt.rays_layout().and_then(|layout| Some((layout, rays::build(d, enc, data, layout)?)))
+    };
     for (tile_index, tile) in tiles.iter().enumerate() {
         enc.clear_buffer(&accum, 0, None);
         enc.clear_buffer(&guide, 0, None);
         let base = make_base(tile);
         let rp = radiance_params(&base, &data.lights);
-        let on_cpu = cpu_trace_selected(
-            pt.cpu_adapter,
-            std::env::var("SR_PT_CPU").map_or(true, |v| v != "0"),
-            cpu::supported(data, &rp),
-            plain_trace(scene.draws.iter().map(|dr| &dr.material), !scene.volumes.is_empty()),
-            &base,
-            grid_plan.is_some(),
-            counter.is_some(),
-            rays.is_some(),
-            inputs.env_texels.is_some(),
-        );
         if on_cpu {
             let cpu_env = cpu::EnvMap {
                 w: inputs.env_texels.map_or(1, |e| e.0),
@@ -2745,24 +2752,23 @@ mod wgsl_layout_tests {
 
     #[test]
     fn cpu_trace_is_selected_only_when_nothing_disables_it() {
-        let sel = |p: &super::Params, f: [bool; 8]| {
-            super::cpu_trace_selected(f[0], f[1], f[2], f[7], p, f[3], f[4], f[5], f[6])
-        };
-        let on = [true, true, true, false, false, false, true, true];
+        let sel =
+            |p: &super::Params, f: [bool; 7]| super::cpu_trace_selected(f[0], f[1], f[2], f[6], p, f[3], f[4], f[5]);
+        let on = [true, true, true, false, false, true, true];
         let base = zero_params();
         assert!(sel(&base, on));
-        // flag 7: the scene traces with the plain shader (no media, water or foam)
-        for k in 0..8 {
+        // flag 6: the scene traces with the plain shader (no media, water or foam)
+        for k in 0..7 {
             let mut f = on;
             f[k] = !f[k];
             // the env is only required when the pass shows or lights with a dome
-            assert!(!sel(&base, f) || k == 6, "flag {k}");
+            assert!(!sel(&base, f) || k == 5, "flag {k}");
         }
         let mut dome = zero_params();
         dome.env[0] = 1.0;
         assert!(sel(&dome, on));
         let mut off = on;
-        off[6] = false;
+        off[5] = false;
         assert!(!sel(&dome, off));
         let mut p = zero_params();
         p.out[3] = 0.05;

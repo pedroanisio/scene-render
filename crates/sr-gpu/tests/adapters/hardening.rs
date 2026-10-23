@@ -5,7 +5,7 @@ use super::common;
 use common::*;
 
 use glam::Vec3;
-use sr_gpu::gpu::{adapter_features, device_limits, is_software, ray_query_features, GpuOptions};
+use sr_gpu::gpu::{adapter_features, device_limits, ray_query_features, GpuOptions};
 use sr_gpu::output::{OutputColor, OutputStage};
 use sr_gpu::three::{self, Light3, LightKind, ThreeEngine};
 use sr_media::encode::InputFormat;
@@ -52,17 +52,17 @@ fn the_device_asks_for_the_adapters_buffer_binding_and_layer_limits() {
 fn the_device_asks_for_ray_queries_where_the_adapter_has_them() {
     let rq = wgpu::Features::EXPERIMENTAL_RAY_QUERY;
     let other = wgpu::Features::TIMESTAMP_QUERY;
-    assert_eq!(ray_query_features(rq | other, None, false), rq);
-    assert_eq!(ray_query_features(rq, Some(""), false), rq, "an empty setting is no setting");
-    assert_eq!(ray_query_features(rq, Some("1"), false), rq);
+    assert_eq!(ray_query_features(rq | other, None), rq);
+    assert_eq!(ray_query_features(rq, Some("")), rq, "an empty setting is no setting");
+    assert_eq!(ray_query_features(rq, Some("1")), rq);
     for off in ["0", "off", "false", " OFF "] {
-        assert_eq!(ray_query_features(rq, Some(off), false), wgpu::Features::empty(), "SR_GPU_RAY_QUERY={off:?}");
+        assert_eq!(ray_query_features(rq, Some(off)), wgpu::Features::empty(), "SR_GPU_RAY_QUERY={off:?}");
     }
-    assert_eq!(ray_query_features(other, None, false), wgpu::Features::empty(), "the adapter has none");
+    assert_eq!(ray_query_features(other, None), wgpu::Features::empty(), "the adapter has none");
 }
 
 #[test]
-fn the_shared_device_has_ray_queries_when_its_adapter_and_kind_give_them() {
+fn the_shared_device_has_ray_queries_when_its_adapter_does() {
     let Some(g) = gpu() else { return };
     if std::env::var("SR_GPU_RAY_QUERY").is_ok() {
         println!("SKIPPED: SR_GPU_RAY_QUERY is set, which this test leaves to the unit above");
@@ -73,9 +73,7 @@ fn the_shared_device_has_ray_queries_when_its_adapter_and_kind_give_them() {
         .into_iter()
         .find(|(info, _)| *info == g.info)
         .expect("the device's adapter is enumerated");
-    // software adapters leave them off by default
-    let wanted =
-        ray_query_features(features, None, is_software(&g.info)).contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY);
+    let wanted = features.contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY);
     assert_eq!(g.device.features().contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY), wanted, "{}", g.info.name);
     if wanted {
         let l = g.device.limits();
