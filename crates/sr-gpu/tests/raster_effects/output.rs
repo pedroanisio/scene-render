@@ -78,3 +78,31 @@ fn pq_output_places_reference_white_at_203_nits() {
     // PQ(203 cd/m²) = 0.5807; 10-bit limited code 64 + 876·0.5807 = 572.7
     assert!((y - 572.7).abs() < 1.5, "{y}");
 }
+
+#[test]
+fn read_back_frames_reuse_the_buffers_their_consumers_dropped() {
+    let Some((r, f)) = frame_of("#3080C0") else { return };
+    let gpu = r.gpu().clone();
+    let mut st = OutputStage::new(gpu.device.clone(), gpu.queue.clone());
+    let out = OutputColor::new(ColorSpace::Rec709, Transfer::Auto, false);
+    // the same frame index each time: the dither follows it
+    let convert = |st: &mut OutputStage| {
+        st.seek(0);
+        let p = st.submit(&f.texture, &r.working(), &out, InputFormat::Nv12, [8, 4], false);
+        st.wait(p)
+    };
+    let first = convert(&mut st).to_vec();
+    // a consumer on another thread (the encoder) drops each frame once written
+    for _ in 0..8 {
+        let frame = convert(&mut st);
+        let bytes = std::thread::spawn(move || frame.to_vec()).join().unwrap();
+        assert_eq!(bytes, first, "a refilled buffer holds the whole frame, and only it");
+    }
+    assert_eq!(st.frames_allocated(), 1, "every frame refilled the buffer the one before returned");
+    // frames still held are not reused
+    let held: Vec<_> = (0..3).map(|_| convert(&mut st)).collect();
+    assert_eq!(st.frames_allocated(), 3);
+    drop(held);
+    convert(&mut st);
+    assert_eq!(st.frames_allocated(), 3);
+}

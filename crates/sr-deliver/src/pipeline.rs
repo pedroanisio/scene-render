@@ -429,7 +429,7 @@ impl Video<'_> {
         times: &[f64],
         report: &mut Report,
         seen: &mut dyn Observe,
-        mut sink: impl FnMut(Vec<u8>) -> Result<f64, DeliverError>,
+        mut sink: impl FnMut(sr_gpu::output::FrameBytes) -> Result<f64, DeliverError>,
     ) -> Result<(), DeliverError> {
         let p = self.ev.program();
         let working = self.renderer.working();
@@ -687,7 +687,7 @@ pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
 
 /// Writes frames through an encoder on its own thread; returns blocked seconds per frame.
 struct Feeder {
-    tx: Option<std::sync::mpsc::SyncSender<Vec<u8>>>,
+    tx: Option<std::sync::mpsc::SyncSender<sr_gpu::output::FrameBytes>>,
     handle: Option<std::thread::JoinHandle<Result<String, sr_media::MediaError>>>,
     /// Set once every frame was sent: an encode whose frames stop short is abandoned, not finished.
     complete: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -711,7 +711,10 @@ impl Feeder {
     fn start(spec: &EncodeSpec, workers: usize) -> Result<Feeder, DeliverError> {
         use std::sync::atomic::Ordering::Relaxed;
         let mut enc = Encoder::start(spec)?;
-        let (tx, rx) = sync_channel::<Vec<u8>>(frame_queue(spec.input.frame_bytes(spec.width, spec.height), workers));
+        let (tx, rx) = sync_channel::<sr_gpu::output::FrameBytes>(frame_queue(
+            spec.input.frame_bytes(spec.width, spec.height),
+            workers,
+        ));
         let complete = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let all_sent = complete.clone();
         let handle = std::thread::Builder::new().name("sr-encode".into()).spawn(move || {
@@ -729,7 +732,8 @@ impl Feeder {
         Ok(Feeder { tx: Some(tx), handle: Some(handle), complete })
     }
 
-    fn send(&mut self, frame: Vec<u8>) -> Result<f64, DeliverError> {
+    /// Queues `frame` for the encoder thread, which drops it, returning its buffer to its stage, once written.
+    fn send(&mut self, frame: sr_gpu::output::FrameBytes) -> Result<f64, DeliverError> {
         let t = Instant::now();
         let Some(tx) = self.tx.as_ref() else {
             return Err(DeliverError::Invalid("a frame was sent after the encode was finished".into()));
@@ -3271,7 +3275,7 @@ mod tests {
     fn a_frame_sent_to_a_finished_encode_is_an_error() {
         let mut feeder =
             Feeder { tx: None, handle: None, complete: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)) };
-        let error = feeder.send(vec![0; 4]).unwrap_err().to_string();
+        let error = feeder.send(vec![0; 4].into()).unwrap_err().to_string();
         assert!(error.contains("after the encode was finished"), "{error}");
     }
 

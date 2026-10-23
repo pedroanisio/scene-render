@@ -138,6 +138,85 @@ pub struct Pending {
 /// Staging buffers in the ring: one mapping, one converting, one spare.
 const RING: usize = 3;
 
+/// The most dropped frame buffers a stage keeps for the frames after them.
+const FREE_FRAMES: usize = 4;
+
+/// Frame buffers that read back frames return to when they are dropped, for the next [`OutputStage::wait`] to refill.
+#[derive(Clone, Default)]
+struct FramePool {
+    free: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    allocated: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl FramePool {
+    /// An empty buffer holding at least `bytes`: a returned one when there is one.
+    fn take(&self, bytes: usize) -> Vec<u8> {
+        let returned = self.free.lock().unwrap_or_else(|e| e.into_inner()).pop();
+        match returned {
+            Some(mut v) if v.capacity() >= bytes => {
+                v.clear();
+                v
+            }
+            _ => {
+                self.allocated.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Vec::with_capacity(bytes)
+            }
+        }
+    }
+
+    fn give(&self, v: Vec<u8>) {
+        let mut free = self.free.lock().unwrap_or_else(|e| e.into_inner());
+        if free.len() < FREE_FRAMES && v.capacity() > 0 {
+            free.push(v);
+        }
+    }
+}
+
+/// A read back frame's bytes. Dropped, on whatever thread, its buffer returns to the stage that filled it.
+pub struct FrameBytes {
+    bytes: Vec<u8>,
+    pool: FramePool,
+}
+
+impl FrameBytes {
+    /// The bytes, kept from the stage's reuse.
+    pub fn into_vec(mut self) -> Vec<u8> {
+        std::mem::take(&mut self.bytes)
+    }
+}
+
+impl From<Vec<u8>> for FrameBytes {
+    /// Bytes of no stage: dropped, they are freed.
+    fn from(bytes: Vec<u8>) -> FrameBytes {
+        FrameBytes { bytes, pool: FramePool::default() }
+    }
+}
+
+impl std::ops::Deref for FrameBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl Drop for FrameBytes {
+    fn drop(&mut self) {
+        self.pool.give(std::mem::take(&mut self.bytes));
+    }
+}
+
+impl PartialEq for FrameBytes {
+    fn eq(&self, other: &FrameBytes) -> bool {
+        self.bytes == other.bytes
+    }
+}
+
+impl std::fmt::Debug for FrameBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.bytes.fmt(f)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PackKey {
     format: u32,
@@ -197,6 +276,8 @@ pub struct OutputStage {
     /// The slot the next submission takes.
     head: usize,
     frame_index: u32,
+    /// Buffers of read back frames, back from their consumers.
+    frames: FramePool,
 }
 
 impl OutputStage {
@@ -399,6 +480,7 @@ impl OutputStage {
             ring: [None, None, None],
             head: 0,
             frame_index: 0,
+            frames: FramePool::default(),
         }
     }
 
@@ -755,15 +837,16 @@ impl OutputStage {
     /// Waits for a conversion and returns its bytes; the staging buffer returns to the ring.
     ///
     /// Only this conversion's submission is waited for, so work submitted after it (the
-    /// next frame's render and pack) keeps running on the GPU meanwhile.
-    pub fn wait(&mut self, p: Pending) -> Vec<u8> {
+    /// next frame's render and pack) keeps running on the GPU meanwhile. The bytes fill a buffer an
+    /// earlier frame returned when dropped, if one is free.
+    pub fn wait(&mut self, p: Pending) -> FrameBytes {
         let Pending { slot, buffers, bytes, submitted, ready } = p;
         let _ = self.device.poll(wgpu::PollType::Wait { submission_index: Some(submitted), timeout: None });
         for map in ready {
             map.wait(&self.device, crate::gpu::MAP_READ_TIMEOUT)
                 .unwrap_or_else(|e| panic!("reading back a converted frame: {e}"));
         }
-        let mut out = Vec::with_capacity(bytes);
+        let mut out = self.frames.take(bytes);
         for b in &buffers {
             let view = b.slice(..).get_mapped_range().expect("mapped");
             out.extend_from_slice(&view[..view.len().min(bytes - out.len())]);
@@ -771,7 +854,12 @@ impl OutputStage {
             b.unmap();
         }
         self.ring[slot] = Some(buffers);
-        out
+        FrameBytes { bytes: out, pool: self.frames.clone() }
+    }
+
+    /// Frame buffers [`OutputStage::wait`] has allocated: the rest of its frames reused one an earlier frame returned.
+    pub fn frames_allocated(&self) -> usize {
+        self.frames.allocated.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
