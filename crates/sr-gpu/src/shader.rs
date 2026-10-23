@@ -1478,22 +1478,47 @@ pub fn persistent_effects(p: &sr_eval::Program, base: &Path) -> std::collections
 /// document's effects read the files next to it. A source that cannot be loaded or compiled renders as a pass-through
 /// and reads nothing.
 pub fn reads_audio(p: &sr_eval::Program, base: &Path) -> bool {
-    (0..=p.includes.len() as u16).any(|doc| {
-        let Some(fx) = p.doc_scene(doc).and_then(|s| s.effects.as_ref()) else { return false };
+    audio_sources(p, base).is_none_or(|s| !s.is_empty())
+}
+
+/// The tracks and buses ([`AudioSignals::channels`]) the shader effects' audio inputs read, as [`reads_audio`] finds
+/// the inputs: each input reads the channel its `param` (or the effect attribute of its name) names, or `master`.
+/// `None` when an input's attribute is animated, so it may read any channel.
+pub fn audio_sources(p: &sr_eval::Program, base: &Path) -> Option<std::collections::BTreeSet<String>> {
+    let mut read = std::collections::BTreeSet::new();
+    for doc in 0..=p.includes.len() as u16 {
+        let Some(fx) = p.doc_scene(doc).and_then(|s| s.effects.as_ref()) else { continue };
         let base = if doc == 0 { base.to_path_buf() } else { p.doc_base(doc) };
-        fx.effects.iter().filter(|e| e.r#type.as_str() == "shader").any(|e| {
+        for e in fx.effects.iter().filter(|e| e.r#type.as_str() == "shader") {
             let a = Attrs { e: e as &dyn Element, props: None };
-            let Some(src) = a.str("src") else { return false };
-            let Ok((code, _)) = glsl::load_source(&src, &base) else { return false };
-            glsl::build_effect(&code)
-                .ok()
-                .and_then(|p| p.isf)
-                .and_then(|h| h.get("INPUTS").and_then(|v| v.as_array()).cloned())
-                .is_some_and(|inputs| {
-                    inputs.iter().any(|i| matches!(i.get("TYPE").and_then(|t| t.as_str()), Some("audio" | "audioFFT")))
-                })
-        })
-    })
+            let Some(src) = a.str("src") else { continue };
+            let Ok((code, _)) = glsl::load_source(&src, &base) else { continue };
+            let Some(inputs) =
+                glsl::build_effect(&code).ok().and_then(|p| p.isf).and_then(|h| h.get("INPUTS")?.as_array().cloned())
+            else {
+                continue;
+            };
+            let params = param_map(e);
+            let key = p.doc_key(doc, &e.id);
+            let animated = |name: &str| {
+                p.elements
+                    .iter()
+                    .filter(|t| *t.key == *key)
+                    .any(|t| t.slots.iter().any(|&s| &*p.slots[s as usize].prop == name))
+            };
+            for i in &inputs {
+                if !matches!(i.get("TYPE").and_then(|t| t.as_str()), Some("audio" | "audioFFT")) {
+                    continue;
+                }
+                let Some(name) = i.get("NAME").and_then(|v| v.as_str()) else { continue };
+                if !params.contains_key(name) && animated(name) {
+                    return None;
+                }
+                read.insert(params.get(name).cloned().or_else(|| a.str(name)).unwrap_or_else(|| "master".into()));
+            }
+        }
+    }
+    Some(read)
 }
 
 #[cfg(test)]
@@ -1506,20 +1531,46 @@ mod audio_input_tests {
 
     /// A scene with one shader effect on `src`; the main document's directory has `fx.fs` holding `shader`.
     fn reads(src: &str, shader: &str) -> bool {
+        sources(src, shader, "").is_none_or(|s| !s.is_empty())
+    }
+
+    /// The channels the effect on `src` reads, `inner` holding the effect's children.
+    fn sources(src: &str, shader: &str, inner: &str) -> Option<std::collections::BTreeSet<String>> {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let d = std::env::temp_dir().join(format!("sr-gpu-reads-audio-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("fx.fs"), shader).unwrap();
         let xml = format!(
-            r##"<scene version="1.1"><project width="10" height="10" fps="10" duration="1"/><composition><shape id="r" shape="rect" width="10" height="10" fill="#FFFFFF" effects="s"/></composition><effects><effect id="s" type="shader" src="{src}"/></effects></scene>"##
+            r##"<scene version="1.1"><project width="10" height="10" fps="10" duration="1"/><composition><shape id="r" shape="rect" width="10" height="10" fill="#FFFFFF" effects="s"/></composition><effects><effect id="s" type="shader" src="{src}">{inner}</effect></effects></scene>"##
         );
         let opts = sr_model::LoadOptions { verify_assets: false, base_dir: Some(d.clone()) };
         let doc = sr_model::load_str(&xml, &opts).unwrap();
         let ev = sr_eval::Evaluator::new(&doc, &Default::default()).unwrap();
-        let answer = reads_audio(ev.program(), &d);
+        let answer = audio_sources(ev.program(), &d);
+        assert_eq!(reads_audio(ev.program(), &d), answer.as_ref().is_none_or(|s| !s.is_empty()));
         let _ = std::fs::remove_dir_all(&d);
         answer
+    }
+
+    fn set(names: &[&str]) -> Option<std::collections::BTreeSet<String>> {
+        Some(names.iter().map(|n| n.to_string()).collect())
+    }
+
+    #[test]
+    fn an_audio_input_reads_the_channel_its_param_names_or_the_master() {
+        assert_eq!(sources("fx.fs", ISF_AUDIO, ""), set(&["master"]));
+        assert_eq!(sources("fx.fs", ISF_FFT, r#"<param name="fft" value="music"/>"#), set(&["music"]));
+        assert_eq!(sources("fx.fs", ISF_PLAIN, r#"<param name="k" value="music"/>"#), set(&[]));
+        assert_eq!(sources("missing.fs", ISF_AUDIO, ""), set(&[]));
+    }
+
+    #[test]
+    fn an_animated_source_may_read_any_channel() {
+        let isf = ISF_AUDIO.replace("\"snd\"", "\"color\"");
+        let keys =
+            r##"<animate property="color"><key time="0" value="#000000"/><key time="1" value="#FFFFFF"/></animate>"##;
+        assert_eq!(sources("fx.fs", &isf, keys), None);
     }
 
     #[test]

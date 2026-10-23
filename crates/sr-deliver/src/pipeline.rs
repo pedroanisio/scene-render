@@ -1519,13 +1519,16 @@ fn run_delivery(
         // with segments, captions burn in output time over the placed picture
         renderer.captions_off = segments.is_some();
         if let Some(sa) = audio_done.scene_audio.as_mut() {
-            // the mix is done with these buffers (the master was sliced to disk above), so
-            // the shaders take them over rather than doubling a programme's worth of audio
-            let mut channels: std::collections::HashMap<String, std::sync::Arc<Vec<Vec<f32>>>> =
-                std::mem::take(&mut sa.mixed.nodes).into_iter().map(|(k, v)| (k, std::sync::Arc::new(v))).collect();
-            channels.insert("master".into(), std::sync::Arc::new(std::mem::take(&mut sa.mixed.master)));
+            // the mix is done with these buffers (the master was sliced to disk above), so the shaders take over the
+            // channels they read rather than doubling a programme's worth of audio; the output's overlay is a document
+            // of its own whose shaders may read any of them
+            let read = if overlay_audio_needed {
+                None
+            } else {
+                sr_gpu::shader::audio_sources(p, &p.base_dirs.first().cloned().unwrap_or_default())
+            };
             renderer.audio =
-                Some(std::sync::Arc::new(sr_gpu::shader::AudioSignals { rate: sa.mix.rate as f64, channels }));
+                shader_signals(&mut sa.mixed.master, &mut sa.mixed.nodes, sa.mix.rate as f64, read.as_ref());
         }
         let overlay_audio = renderer.audio.as_ref().filter(|_| overlay_audio_needed).map(|audio| {
             if let Some(mixed) = audio_done.programme.take() {
@@ -2903,9 +2906,56 @@ fn thinned_contrasts(
         .collect()
 }
 
+/// Takes the mix's `master` and `nodes` over as the shaders' audio, keeping only the channels in `read` (every one when
+/// `None`); nothing when no shader reads any. What is not kept is released here rather than held for the render.
+fn shader_signals(
+    master: &mut sr_audio::loudness::Planar,
+    nodes: &mut std::collections::HashMap<String, sr_audio::loudness::Planar>,
+    rate: f64,
+    read: Option<&std::collections::BTreeSet<String>>,
+) -> Option<std::sync::Arc<sr_gpu::shader::AudioSignals>> {
+    let master = std::mem::take(master);
+    let mut channels: std::collections::HashMap<String, std::sync::Arc<sr_audio::loudness::Planar>> =
+        std::mem::take(nodes)
+            .into_iter()
+            .chain([("master".to_string(), master)])
+            .filter(|(k, _)| read.is_none_or(|r| r.contains(k)))
+            .map(|(k, v)| (k, std::sync::Arc::new(v)))
+            .collect();
+    channels.shrink_to_fit();
+    // a shader reading only a channel the mix lacks still finds the mix, and reports the missing channel
+    read.is_none_or(|r| !r.is_empty()).then(|| std::sync::Arc::new(sr_gpu::shader::AudioSignals { rate, channels }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shaders_take_over_only_the_mixed_channels_they_read() {
+        let take = |read: Option<&[&str]>| {
+            let mut master = vec![vec![1.0f32; 4]];
+            let mut nodes: std::collections::HashMap<String, sr_audio::loudness::Planar> =
+                [("music".to_string(), vec![vec![2.0; 4]]), ("voice".to_string(), vec![vec![3.0; 4]])].into();
+            let read: Option<std::collections::BTreeSet<String>> =
+                read.map(|r| r.iter().map(|n| n.to_string()).collect());
+            let signals = shader_signals(&mut master, &mut nodes, 48000.0, read.as_ref());
+            // what the shaders do not take is released with the mix, not held for the render
+            assert!(master.is_empty() && nodes.is_empty());
+            signals.map(|s| {
+                assert_eq!(s.rate, 48000.0);
+                let mut kept: Vec<(String, f32)> = s.channels.iter().map(|(k, v)| (k.clone(), v[0][0])).collect();
+                kept.sort_by(|a, b| a.0.cmp(&b.0));
+                kept
+            })
+        };
+        let all = vec![("master".to_string(), 1.0), ("music".to_string(), 2.0), ("voice".to_string(), 3.0)];
+        assert_eq!(take(None), Some(all));
+        assert_eq!(take(Some(&["music"])), Some(vec![("music".to_string(), 2.0)]));
+        assert_eq!(take(Some(&["master", "ghost"])), Some(vec![("master".to_string(), 1.0)]));
+        assert_eq!(take(Some(&["ghost"])), Some(vec![]));
+        assert_eq!(take(Some(&[])), None);
+    }
 
     #[test]
     fn the_wait_for_workers_ends_as_the_last_one_returns() {
