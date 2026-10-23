@@ -649,6 +649,22 @@ struct PipeKey {
     alpha_mask: bool,
 }
 
+/// A prepass pipeline: the opaque pass's culling and material specializations, and whether the reflectance is written.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct PreKey {
+    cull: bool,
+    plain: bool,
+    alpha_mask: bool,
+    reflectance: bool,
+}
+
+impl PreKey {
+    /// The prepass pipeline of a draw on the opaque pipeline `pipe`, writing the reflectance when `ssr` reads it.
+    fn of(pipe: &PipeKey, ssr: bool) -> PreKey {
+        PreKey { cull: pipe.cull, plain: pipe.plain, alpha_mask: pipe.alpha_mask, reflectance: ssr }
+    }
+}
+
 fn plain_material(draw: &Draw3) -> bool {
     let m = &draw.material;
     draw.maps.iter().all(Option::is_none)
@@ -687,8 +703,8 @@ pub struct ThreeEngine {
     pt: Option<crate::pathtrace::PtGpu>,
     pt_geometry: crate::pathtrace::BuildCache,
     geodesic: Option<crate::geodesic::GeodesicGpu>,
-    /// Depth and normal prepass pipelines (by culling).
-    pre_pipes: [wgpu::RenderPipeline; 2],
+    /// Depth and normal prepass pipelines, built on first use.
+    pre_pipes: HashMap<PreKey, wgpu::RenderPipeline>,
     ssao_pipe: wgpu::RenderPipeline,
     ao_blur_pipe: wgpu::RenderPipeline,
     ssr_pipe: wgpu::RenderPipeline,
@@ -1029,43 +1045,6 @@ impl ThreeEngine {
             })
         };
         let main_layout = layout(&[&bgl_frame, &bgl_mat, &bgl_obj]);
-        // depth and normal prepass for the screen-space effects: view normal + roughness, view
-        // depth + reflectance
-        let pre_pipe = |cull: bool| {
-            let _creation = crate::gpu::creation_lock();
-            d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("three-prepass"),
-                layout: Some(&main_layout),
-                vertex: wgpu::VertexState {
-                    module: &main_mod,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(vertex_layout())],
-                },
-                primitive: wgpu::PrimitiveState {
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: if cull { Some(wgpu::Face::Back) } else { None },
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &main_mod,
-                    entry_point: Some("fs_prepass"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(FORMAT.into()), Some(gbuffer.into())],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let pre_pipes = [pre_pipe(true), pre_pipe(false)];
         let shadow_pipe = {
             let _creation = crate::gpu::creation_lock();
             d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1320,7 +1299,7 @@ impl ThreeEngine {
             pt: None,
             pt_geometry: Default::default(),
             geodesic: None,
-            pre_pipes,
+            pre_pipes: HashMap::new(),
             ssao_pipe,
             ao_blur_pipe,
             ssr_pipe,
@@ -1391,6 +1370,53 @@ impl ThreeEngine {
             },
             wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
         );
+    }
+
+    /// The depth and normal prepass for the screen-space effects (view normal + roughness, view depth +
+    /// reflectance), specialized as `key` says.
+    fn pre_pipe(&mut self, key: PreKey) {
+        let (d, m, l, gbuffer) = (&self.device, &self.main_mod, &self.main_layout, self.gbuffer);
+        self.pre_pipes.entry(key).or_insert_with(|| {
+            let _creation = crate::gpu::creation_lock();
+            d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("three-prepass"),
+                layout: Some(l),
+                vertex: wgpu::VertexState {
+                    module: m,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(vertex_layout())],
+                },
+                primitive: wgpu::PrimitiveState {
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: if key.cull { Some(wgpu::Face::Back) } else { None },
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: m,
+                    entry_point: Some("fs_prepass"),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &[
+                            ("PLAIN_MATERIAL", key.plain as u32 as f64),
+                            ("ALPHA_MASK", key.alpha_mask as u32 as f64),
+                            ("PREPASS_REFLECTANCE", key.reflectance as u32 as f64),
+                        ],
+                        ..Default::default()
+                    },
+                    targets: &[Some(FORMAT.into()), Some(gbuffer.into())],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        });
     }
 
     fn pipe(&mut self, key: PipeKey) -> &wgpu::RenderPipeline {
@@ -2131,6 +2157,8 @@ impl ThreeEngine {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
+        let contact = scene.lights.iter().any(|l| l.contact > 0.0);
+        let prepass = scene.ao.is_some() || scene.ssr || contact;
         // ------------------------------------------------ draws: classify, uniforms
         #[derive(Clone, Copy, PartialEq)]
         enum Kind {
@@ -2235,6 +2263,9 @@ impl ThreeEngine {
                 alpha_mask,
             };
             self.pipe(pipe);
+            if prepass {
+                self.pre_pipe(PreKey::of(&pipe, scene.ssr));
+            }
             let center = dr.model.transform_point3(lo * 0.5 + hi * 0.5);
             let vbuf = match &dr.mesh {
                 MeshSrc::Deformed(vs, _) => Some(buf(bytemuck::cast_slice(vs), wgpu::BufferUsages::VERTEX, "deformed")),
@@ -2471,8 +2502,6 @@ impl ThreeEngine {
             rp.draw(0..3, 0..1);
         };
         // ------------------------------------------------ screen-space targets
-        let contact = scene.lights.iter().any(|l| l.contact > 0.0);
-        let prepass = scene.ao.is_some() || scene.ssr || contact;
         // A software rasteriser shades every prepass and occlusion pixel on the CPU: when only the
         // occlusion reads the prepass, both run at half size, and the opaque pass reads the result
         // at its own pixel's position.
@@ -2629,7 +2658,7 @@ impl ThreeEngine {
                 for &(i, first, count) in &opaque_runs {
                     let dr = &scene.draws[i];
                     let m = dr.mesh.mesh();
-                    rp.set_pipeline(&self.pre_pipes[if preps[i].pipe.cull { 0 } else { 1 }]);
+                    rp.set_pipeline(&self.pre_pipes[&PreKey::of(&preps[i].pipe, scene.ssr)]);
                     rp.set_bind_group(1, &self.mat_binds[&preps[i].key], &[preps[i].mat]);
                     rp.set_bind_group(2, &obj_bind, &[]);
                     rp.set_vertex_buffer(0, preps[i].vbuf.as_ref().unwrap_or(&m.vbuf).slice(..));
@@ -3235,7 +3264,12 @@ mod tests {
             &[255, 255, 255, 0, 255, 128, 64, 255, 64, 128, 255, 255, 255, 255, 255, 0],
             false,
         );
-        for mode in [AlphaMode::Opaque, AlphaMode::Mask, AlphaMode::Blend] {
+        for (mode, prepass) in
+            [AlphaMode::Opaque, AlphaMode::Mask, AlphaMode::Blend].into_iter().flat_map(|m| [(m, 0), (m, 1), (m, 2)])
+        {
+            // the prepass specializes as the opaque pass does: none, occlusion only, occlusion and reflections
+            scene.ao = (prepass > 0).then_some([16.0, 1.0]);
+            scene.ssr = prepass == 2;
             for alpha in [0.0, 0.49, 1.0] {
                 for opacity in [0.4, 1.0] {
                     for mapped in [false, true] {
@@ -3257,7 +3291,7 @@ mod tests {
                         assert!(actual.iter().any(|p| p[3] > 0.01));
                         assert_eq!(
                             actual, expected,
-                            "mode={mode:?}, alpha={alpha}, opacity={opacity}, mapped={mapped}"
+                            "mode={mode:?}, prepass={prepass}, alpha={alpha}, opacity={opacity}, mapped={mapped}"
                         );
                         assert_eq!(stats, engine.stats);
                     }
@@ -3266,6 +3300,10 @@ mod tests {
         }
         assert!(engine.pipes.keys().any(|key| key.alpha_mask));
         assert!(engine.pipes.keys().any(|key| !key.alpha_mask), "non-masked materials must omit discard");
+        assert!(engine.pre_pipes.keys().any(|key| key.alpha_mask));
+        assert!(engine.pre_pipes.keys().any(|key| !key.alpha_mask), "the prepass omits discard as well");
+        assert!(engine.pre_pipes.keys().any(|key| key.reflectance));
+        assert!(engine.pre_pipes.keys().any(|key| !key.reflectance), "without reflections nothing reads it");
     }
 
     #[test]
@@ -3348,6 +3386,9 @@ mod tests {
                 ..Default::default()
             };
             scene.encode_srgb = case % 2 == 1;
+            // and through the prepass: occlusion on every other case, reflections on every third
+            scene.ao = (case % 2 == 0).then_some([16.0, 1.0]);
+            scene.ssr = case % 3 == 0;
             assert!(plain_material(&scene.draws[0]));
             engine.specialize_plain = true;
             engine.specialize_global_lights = true;
@@ -3361,6 +3402,10 @@ mod tests {
         }
         assert!(engine.pipes.keys().any(|key| key.plain));
         assert!(engine.pipes.keys().any(|key| !key.plain));
+        assert!(engine.pre_pipes.keys().any(|key| key.plain));
+        assert!(engine.pre_pipes.keys().any(|key| !key.plain));
+        scene.ao = None;
+        scene.ssr = false;
         // Exercise both G-buffer channels and the paired depth/CoC target,
         // including their interactions with transparent refraction and MSAA edges.
         let plane = sr_3d::prim::plane(100.0, 80.0, 1);
@@ -3866,7 +3911,12 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
         // the variants the main pass compiles
         for plain in [0.0, 1.0] {
             for lights in [0.0, 1.0] {
-                let constants = [("PLAIN_MATERIAL", plain), ("ALL_GLOBAL_LIGHTS", lights), ("ALPHA_MASK", 1.0 - plain)];
+                let constants = [
+                    ("PLAIN_MATERIAL", plain),
+                    ("ALL_GLOBAL_LIGHTS", lights),
+                    ("ALPHA_MASK", 1.0 - plain),
+                    ("PREPASS_REFLECTANCE", lights),
+                ];
                 super::assert_translates_to_glsl("main", &super::main_src(), &constants);
             }
         }

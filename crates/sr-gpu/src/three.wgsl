@@ -3,6 +3,8 @@ override PLAIN_MATERIAL: bool = false;
 override ALL_GLOBAL_LIGHTS: bool = false;
 override LIGHT_SIGNATURE: u32 = 0xffffffffu;
 override ALPHA_MASK: bool = true;
+// Whether the prepass writes the reflectance, which only the screen-space reflections read.
+override PREPASS_REFLECTANCE: bool = true;
 
 struct Material {
     base_color: vec4<f32>,
@@ -798,11 +800,14 @@ fn fs_prepass(i: VOut, @builtin(front_facing) front: bool) -> GOut {
     var o: GOut;
     let s = surface(i, front);
     let mode = u32(mat.p1.x);
-    if (mode == 1u && s.alpha < mat.p0.w) { discard; }
-    let nv = max(dot(s.n, s.v), 1e-3);
-    let lut = textureSampleLevel(brdf_lut, clamp_smp, vec2(nv, s.rough), 0.0).rg;
-    let spec = (s.f0 * lut.x + s.f90 * lut.y) * s.specular_weight;
-    let refl = select(dot(spec, vec3(0.2126, 0.7152, 0.0722)), 0.0, mat.p1.z > 0.5);
+    if (ALPHA_MASK && mode == 1u && s.alpha < mat.p0.w) { discard; }
+    var refl = 0.0;
+    if (PREPASS_REFLECTANCE) {
+        let nv = max(dot(s.n, s.v), 1e-3);
+        let lut = textureSampleLevel(brdf_lut, clamp_smp, vec2(nv, s.rough), 0.0).rg;
+        let spec = (s.f0 * lut.x + s.f90 * lut.y) * s.specular_weight;
+        refl = select(dot(spec, vec3(0.2126, 0.7152, 0.0722)), 0.0, mat.p1.z > 0.5);
+    }
     o.nr = vec4(normalize((fr.view * vec4(s.n, 0.0)).xyz), s.rough);
     o.zr = vec4((fr.view * vec4(s.world, 1.0)).z, refl, 0.0, 0.0);
     return o;
