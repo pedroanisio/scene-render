@@ -96,6 +96,31 @@ fn has_color(face: &ttf_parser::Face) -> bool {
     t.colr.is_some() || t.cbdt.is_some() || t.sbix.is_some()
 }
 
+/// A font file's bytes, shared by every library in the process (each delivery worker has its own) while any face
+/// holds them: keyed by the file's path, length and modification time, so a file replaced on disk is read anew.
+type FileKey = (PathBuf, u64, Option<std::time::SystemTime>);
+static FILES: Mutex<Option<HashMap<FileKey, std::sync::Weak<Vec<u8>>>>> = Mutex::new(None);
+
+/// The bytes of face `id` and its index in them: a font file's from [`FILES`], a font given as data copied.
+fn shared_face_data(db: &fontdb::Database, id: fontdb::ID) -> Option<(Arc<Vec<u8>>, u32)> {
+    let key = match &db.face(id)?.source {
+        fontdb::Source::File(path) => std::fs::metadata(path).ok().map(|m| (path.clone(), m.len(), m.modified().ok())),
+        _ => None,
+    };
+    let Some(key) = key else {
+        return db.with_face_data(id, |d, i| (Arc::new(d.to_vec()), i));
+    };
+    let mut files = cache(&FILES);
+    let files = files.get_or_insert_with(HashMap::new);
+    if let Some(data) = files.get(&key).and_then(std::sync::Weak::upgrade) {
+        return Some((data, db.face(id)?.index));
+    }
+    let (data, index) = db.with_face_data(id, |d, i| (Arc::new(d.to_vec()), i))?;
+    files.retain(|_, w| w.strong_count() > 0);
+    files.insert(key, Arc::downgrade(&data));
+    Some((data, index))
+}
+
 /// Locks one of the library's memo caches. Every holder does a single `get` or `insert` of a finished value, so a
 /// panic elsewhere while the lock was held leaves the map whole: a poisoned cache is used as it is, not propagated.
 pub(crate) fn cache<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -182,13 +207,13 @@ impl FontLib {
         let family = self.db.face(id).and_then(|f| f.families.first().map(|x| x.0.clone())).unwrap_or_default();
         let (weight, italic) =
             self.db.face(id).map(|f| (f.weight.0, f.style != fontdb::Style::Normal)).unwrap_or((400, false));
-        let (data, index) = self.db.with_face_data(id, |d, i| (d.to_vec(), i))?;
+        let (data, index) = shared_face_data(&self.db, id)?;
         let (color, variable_weight) = ttf_parser::Face::parse(&data, index)
             .map(|f| {
                 (has_color(&f), f.variation_axes().into_iter().any(|a| a.tag == ttf_parser::Tag::from_bytes(b"wght")))
             })
             .ok()?;
-        self.faces.push(FaceData { data: Arc::new(data), index, family, color, weight, italic, variable_weight });
+        self.faces.push(FaceData { data, index, family, color, weight, italic, variable_weight });
         self.by_id.insert(id, self.faces.len() - 1);
         Some(self.faces.len() - 1)
     }
@@ -523,6 +548,15 @@ mod face_cache_tests {
             .join()
         });
         assert!(held.is_err() && m.is_poisoned());
+    }
+
+    #[test]
+    fn libraries_share_a_font_files_bytes_while_one_holds_them() {
+        let path = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../sr-eval/tests/fixtures/solid.ttf"));
+        let (mut a, mut b) = (FontLib::new(false), FontLib::pinned());
+        let (fa, fb) = (a.file(&path, 0).expect("loads"), b.file(&path, 0).expect("loads"));
+        assert!(Arc::ptr_eq(&a.face(fa).data, &b.face(fb).data), "each delivery worker's library reads the same bytes");
+        assert_eq!(*a.face(fa).data, std::fs::read(&path).unwrap());
     }
 
     #[test]
