@@ -122,7 +122,9 @@ pub struct PtScene {
     pub pos: Vec<[f32; 4]>,
     pub nrm: Vec<[f32; 4]>,
     pub uv: Vec<[[f32; 2]; 6]>,
-    pub pixels: Vec<u32>,
+    /// The texture atlas's slices in order: packed into words ([`PtScene::atlas_pixels`]) only when the packed
+    /// storage cache does not already hold them.
+    pub atlas: Vec<AtlasPart>,
     pub colors: Vec<[f32; 4]>,
     pub splats: std::collections::HashMap<usize, [[f32; 4]; 24]>,
     /// Top-level instance records referencing shared local-space prototype BVHs.
@@ -136,6 +138,63 @@ pub struct PtScene {
     pub notes: Vec<String>,
     /// CPU time `build` spent, for statistics.
     pub timing: BuildTiming,
+}
+
+/// A slice of the path tracer's texture atlas: a texture's base level, or words kept as they are (an IES profile, the
+/// one word of an empty atlas).
+#[derive(Clone)]
+pub enum AtlasPart {
+    Texture { key: u64, rgba: std::sync::Arc<[u8]> },
+    Words(Vec<u32>),
+}
+
+/// What identifies an atlas slice without its pixels: a texture by its upload key (an upload never changes its pixels),
+/// other words by value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AtlasKey {
+    Texture(u64),
+    Words(Vec<u32>),
+}
+
+impl AtlasPart {
+    fn len(&self) -> usize {
+        match self {
+            AtlasPart::Texture { rgba, .. } => rgba.len() / 4,
+            AtlasPart::Words(w) => w.len(),
+        }
+    }
+}
+
+impl PtScene {
+    /// Appends `part` to the atlas and returns the word it starts at.
+    fn push_atlas(&mut self, part: AtlasPart) -> u32 {
+        let offset = self.atlas.iter().map(AtlasPart::len).sum::<usize>() as u32;
+        self.atlas.push(part);
+        offset
+    }
+
+    /// The atlas's identity, as the packed storage cache keys it.
+    pub fn atlas_key(&self) -> Vec<AtlasKey> {
+        let key = |p: &AtlasPart| match p {
+            AtlasPart::Texture { key, .. } => AtlasKey::Texture(*key),
+            AtlasPart::Words(w) => AtlasKey::Words(w.clone()),
+        };
+        self.atlas.iter().map(key).collect()
+    }
+
+    /// The atlas packed into words: RGBA8 texels little-endian, other words as they are.
+    pub fn atlas_pixels(&self) -> Vec<u32> {
+        let mut out = Vec::with_capacity(self.atlas.iter().map(AtlasPart::len).sum());
+        for part in &self.atlas {
+            match part {
+                AtlasPart::Texture { rgba, .. } => {
+                    out.extend(rgba.as_chunks::<4>().0.iter().map(|p| u32::from_le_bytes(*p)))
+                }
+                AtlasPart::Words(w) => out.extend_from_slice(w),
+            }
+        }
+        out
+    }
 }
 
 /// CPU seconds `build` spent, split so BVH construction shows apart from the rest.
@@ -157,6 +216,8 @@ pub struct BuildTiming {
 pub struct RenderTiming {
     /// Packed geometry storage uploads recorded this pass.
     pub geometry_uploads: usize,
+    /// Texture atlas words packed this pass: none when the cache holds the pass's textures.
+    pub atlas_texels: usize,
     /// CPU seconds packing and uploading the scene buffers before the first tile.
     pub pack_seconds: f64,
     /// Timestamps of the trace and denoise passes, when requested and supported.
@@ -335,9 +396,7 @@ fn build_inner(scene: &Scene3, cache: &mut BuildCache, take: bool) -> (PtScene, 
         let maps = std::array::from_fn(|slot| {
             dr.maps[slot].as_ref().map_or([0; 4], |texture| {
                 let offset = *texture_offsets.entry(texture.key).or_insert_with(|| {
-                    let offset = s.pixels.len() as u32;
-                    s.pixels.extend(texture.rgba.as_chunks::<4>().0.iter().map(|p| u32::from_le_bytes(*p)));
-                    offset
+                    s.push_atlas(AtlasPart::Texture { key: texture.key, rgba: texture.rgba.clone() })
                 });
                 [
                     offset,
@@ -430,8 +489,8 @@ fn build_inner(scene: &Scene3, cache: &mut BuildCache, take: bool) -> (PtScene, 
         }
     }
 
-    if s.pixels.is_empty() {
-        s.pixels.push(u32::MAX);
+    if s.atlas.is_empty() {
+        s.push_atlas(AtlasPart::Words(vec![u32::MAX]));
     }
     s.notes = notes(scene);
     if let Some(geometry) = reused {
@@ -534,11 +593,8 @@ fn build_inner(scene: &Scene3, cache: &mut BuildCache, take: bool) -> (PtScene, 
             LightKind::Disk => 5.0,
             LightKind::Sphere => 6.0,
         };
-        let ies = l.ies.as_ref().map(|profile| {
-            let offset = s.pixels.len() as u32;
-            s.pixels.extend(profile.iter().map(|v| v.to_bits()));
-            offset
-        });
+        let ies =
+            l.ies.as_ref().map(|profile| s.push_atlas(AtlasPart::Words(profile.iter().map(|v| v.to_bits()).collect())));
         s.lights.push(PtLight {
             pos: [l.pos.x, l.pos.y, l.pos.z, kind],
             dir: [l.dir.x, l.dir.y, l.dir.z, l.range],
@@ -2310,21 +2366,30 @@ pub(crate) fn render_cached(
         })
     };
     let identity = identity.filter(|_| scene.volumes.is_empty());
-    let cached = identity.and_then(|id| pt.packed.lock().unwrap_or_else(|e| e.into_inner()).get(id, &data.pixels));
+    let packed_cache = || pt.packed.lock().unwrap_or_else(|e| e.into_inner());
+    // the atlas is packed only when the cache holds no storage for its textures, and then still may match an
+    // entry's pixels
+    let key = identity.map(|_| data.atlas_key());
+    let mut cached = identity.zip(key.as_deref()).and_then(|(id, key)| packed_cache().get(id, key));
+    let atlas = if cached.is_none() { data.atlas_pixels() } else { Vec::new() };
+    if cached.is_none() {
+        cached = identity.zip(key.as_deref()).and_then(|(id, key)| packed_cache().get_packed(id, key, &atlas));
+    }
+    let atlas_texels = atlas.len();
     let geometry_uploads = usize::from(cached.is_none());
     let (geometry, media) = if let Some(buffers) = cached {
         let media = [(buffers.verts.size() / 16) as u32, 0, 0, 0];
         (buffers, media)
     } else {
-        let (mut verts, offset) = packed::vertices(data);
+        let (mut verts, offset) = packed::vertices(data, &atlas);
         let media = crate::volume::pack(&mut verts, &scene.volumes);
         let buffers = packed::Buffers {
             verts: storage("pt-verts", bytemuck::cast_slice(&verts)),
             nodes: storage("pt-nodes", bytemuck::cast_slice(&data.nodes)),
             offset,
         };
-        if let Some(id) = identity {
-            pt.packed.lock().unwrap_or_else(|e| e.into_inner()).insert(id, &data.pixels, buffers.clone());
+        if let Some((id, key)) = identity.zip(key) {
+            packed_cache().insert(id, key, atlas, buffers.clone());
         }
         (buffers, media)
     };
@@ -2651,6 +2716,7 @@ pub(crate) fn render_cached(
         pack_seconds,
         gpu: timer,
         geometry_uploads,
+        atlas_texels,
         samples: SampleCount { budget, counter, hardware_rays: rays.is_some() },
     }
 }

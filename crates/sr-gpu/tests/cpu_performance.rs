@@ -92,7 +92,8 @@ fn same_payload(a: &sr_gpu::pathtrace::PtScene, b: &sr_gpu::pathtrace::PtScene) 
     bytes!(colors);
     bytes!(tri_mat);
     bytes!(nodes);
-    bytes!(pixels);
+    assert_eq!(a.atlas_key(), b.atlas_key(), "atlas");
+    assert_eq!(a.atlas_pixels(), b.atlas_pixels(), "atlas pixels");
     bytes!(mats);
     bytes!(lights);
     for (left, right) in [(&a.instances, &b.instances), (&a.splats, &b.splats)] {
@@ -438,6 +439,36 @@ fn packed_geometry_is_immutable_across_reversed_submissions_and_texture_changes(
     assert_eq!(changed, fresh.render_now(&s, None));
     assert_eq!(e.render_now(&s, None), changed);
     assert_eq!(e.stats.pt_geometry_uploads, 0);
+}
+
+#[test]
+fn warm_pathtrace_passes_pack_texture_pixels_only_when_their_textures_change() {
+    let Some(gpu) = common::gpu() else { return };
+    let mut e = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+    let mut s = scene(vec![draw(&e, Vec3::new(32., 32., 0.))]);
+    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 1, bounces: 1, denoise: false, noise: None });
+    let red = e.upload_rgba8(2, 2, &[255, 32, 32, 255].repeat(4), true);
+    let blue = e.upload_rgba8(2, 1, &[32, 64, 255, 255].repeat(2), true);
+    s.draws[0].maps[0] = Some(red.clone());
+    e.render_now(&s, None);
+    assert_eq!((e.stats.pt_geometry_uploads, e.stats.pt_atlas_texels), (1, 4));
+    // the same textures under another material: nothing packed, nothing uploaded
+    s.draws[0].material.base_color = [0.2, 0.8, 0.4, 1.];
+    let warm = e.render_now(&s, None);
+    assert_eq!((e.stats.pt_geometry_uploads, e.stats.pt_atlas_texels), (0, 0));
+    let mut fresh = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+    let fresh_red = fresh.upload_rgba8(2, 2, &[255, 32, 32, 255].repeat(4), true);
+    let mut f = scene(vec![draw(&fresh, Vec3::new(32., 32., 0.))]);
+    f.path = s.path;
+    f.draws[0].material = s.draws[0].material.clone();
+    f.draws[0].maps[0] = Some(fresh_red);
+    assert_eq!(warm, fresh.render_now(&f, None));
+    // another texture: packed and uploaded once, then reused
+    s.draws[0].maps[0] = Some(blue);
+    let changed = e.render_now(&s, None);
+    assert_eq!((e.stats.pt_geometry_uploads, e.stats.pt_atlas_texels), (1, 2));
+    assert_eq!(e.render_now(&s, None), changed);
+    assert_eq!((e.stats.pt_geometry_uploads, e.stats.pt_atlas_texels), (0, 0));
 }
 
 #[test]

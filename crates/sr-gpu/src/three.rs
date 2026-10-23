@@ -504,6 +504,8 @@ pub struct Stats3 {
     pub splat_sorts: usize,
     /// Packed vertex/BVH buffer sets uploaded by the path tracer this pass.
     pub pt_geometry_uploads: usize,
+    /// Texels (and IES profile values) the path tracer packed into its texture atlas this pass.
+    pub pt_atlas_texels: usize,
     pub draws: usize,
     pub triangles: u64,
     pub shadow_views: usize,
@@ -2052,6 +2054,7 @@ impl ThreeEngine {
                 pt_bvh_seconds: data.timing.bvh_seconds,
                 pt_pack_seconds: timing.pack_seconds,
                 pt_geometry_uploads: timing.geometry_uploads,
+                pt_atlas_texels: timing.atlas_texels,
                 ..Default::default()
             };
             self.pt_geometry.recycle(data, ticket);

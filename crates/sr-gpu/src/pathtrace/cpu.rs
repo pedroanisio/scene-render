@@ -171,6 +171,8 @@ fn reciprocal(d: [f32; 3]) -> [f32; 3] {
 /// instance, so the hot paths skip the hash lookup.
 pub(crate) struct Dense<'a> {
     scene: &'a PtScene,
+    /// The texture atlas packed into words.
+    pixels: Vec<u32>,
     records: Vec<[[f32; 4]; 24]>,
     slot: Vec<u32>,
     /// The CPU's own top-level BVH (binned SAH): leaves `top[i].a .. + b` index `order`, inner nodes have their
@@ -191,7 +193,7 @@ impl<'a> Dense<'a> {
             records.push(scene.instances[&k]);
         }
         let (top, order) = sah_bvh(top_level_prims(scene));
-        Dense { scene, records, slot, top, order }
+        Dense { scene, pixels: scene.atlas_pixels(), records, slot, top, order }
     }
 
     /// The record of instance `k`; panics like the map index when `k` is not an instance.
@@ -1169,7 +1171,12 @@ mod texture_tests {
     #[test]
     fn base_colour_is_material_times_texel_times_vertex_colour() {
         let mut s = PtScene {
-            pixels: pack(&[[51, 102, 153, 255], [204, 51, 102, 255], [255, 255, 0, 255], [0, 0, 0, 255]]),
+            atlas: vec![super::super::AtlasPart::Words(pack(&[
+                [51, 102, 153, 255],
+                [204, 51, 102, 255],
+                [255, 255, 0, 255],
+                [0, 0, 0, 255],
+            ]))],
             ..Default::default()
         };
         let corners = [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75]];
@@ -1187,7 +1194,8 @@ mod texture_tests {
         m.params = [1.0, 0.5, 0.0, 1.5];
         m.maps[0] = [0, 2, 2, 2];
         s.mats = vec![m];
-        let texel = |i: usize| s.pixels[i].to_le_bytes().map(|b| b as f32 / 255.0);
+        let pixels = s.atlas_pixels();
+        let texel = |i: usize| pixels[i].to_le_bytes().map(|b| b as f32 / 255.0);
         for (c, (u, v)) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)].into_iter().enumerate() {
             let hit = Hit { t: 1.0, u, v, tri: 0, instance: u32::MAX };
             let got = shade_hit(&Dense::new(&s), &hit);
