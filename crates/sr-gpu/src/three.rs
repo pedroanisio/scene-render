@@ -747,6 +747,61 @@ impl Bound {
 struct PassSet {
     bufs: [Option<Grown>; 7],
     mat_binds: HashMap<[u64; 6], wgpu::BindGroup>,
+    /// The vertices of the pass's deformed draws, in draw order.
+    deformed: Vec<Option<Grown>>,
+}
+
+/// Writes `bytes` to the buffer in `slot`, making it when it is missing or too small (counted in `made`); true when
+/// the buffer is new, so what bound the old one is stale.
+fn grow(
+    slot: &mut Option<Grown>,
+    d: &wgpu::Device,
+    q: &wgpu::Queue,
+    bytes: &[u8],
+    usage: wgpu::BufferUsages,
+    label: &str,
+    made: &mut usize,
+) -> bool {
+    let need = bytes.len() as u64;
+    let new = slot.as_ref().is_none_or(|b| b.cap < need);
+    if new {
+        let cap = need.max(slot.as_ref().map_or(0, |b| b.cap * 2)).div_ceil(256) * 256;
+        let buf = d.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: cap.max(256),
+            usage: usage | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        *slot = Some(Grown { buf, cap, len: 0 });
+        *made += 1;
+    }
+    let b = slot.as_mut().expect("written");
+    b.len = need;
+    q.write_buffer(&b.buf, 0, bytes);
+    new
+}
+
+/// The `k`th slot of `list`, added when the list is shorter.
+fn nth(list: &mut Vec<Option<Grown>>, k: usize) -> &mut Option<Grown> {
+    if list.len() <= k {
+        list.resize_with(k + 1, || None);
+    }
+    &mut list[k]
+}
+
+/// Writes `bytes` to the buffer in `slot` as [`grow`] does and returns it as bound.
+fn grow_bound(
+    slot: &mut Option<Grown>,
+    d: &wgpu::Device,
+    q: &wgpu::Queue,
+    bytes: &[u8],
+    usage: wgpu::BufferUsages,
+    label: &str,
+    made: &mut usize,
+) -> Bound {
+    grow(slot, d, q, bytes, usage, label, made);
+    let b = slot.as_ref().expect("written");
+    Bound { buf: b.buf.clone(), len: b.len }
 }
 
 /// Sets kept at most: a pass beyond them between two submits makes its own and drops it.
@@ -781,23 +836,7 @@ impl PassSet {
         usage: wgpu::BufferUsages,
         made: &mut usize,
     ) -> bool {
-        let need = bytes.len() as u64;
-        let new = self.bufs[which].as_ref().is_none_or(|b| b.cap < need);
-        if new {
-            let cap = need.max(self.bufs[which].as_ref().map_or(0, |b| b.cap * 2)).div_ceil(256) * 256;
-            let buf = d.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(Self::LABELS[which]),
-                size: cap.max(256),
-                usage: usage | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.bufs[which] = Some(Grown { buf, cap, len: 0 });
-            *made += 1;
-        }
-        let b = self.bufs[which].as_mut().expect("written");
-        b.len = need;
-        q.write_buffer(&b.buf, 0, bytes);
-        new
+        grow(&mut self.bufs[which], d, q, bytes, usage, Self::LABELS[which], made)
     }
 
     /// Buffer `which` as the pass binds it; panics when the pass has not written it.
@@ -2501,10 +2540,14 @@ impl ThreeEngine {
             env_rot: env.map(|e| e.rotation.transpose()).unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
             sky: env.and_then(|e| e.sky).map(|s| s.uniforms()).unwrap_or([[0.0; 4]; 5]),
         };
+        // the buffers this pass makes for itself alone, counted with the ones its set grew
+        let own_buffers = std::cell::Cell::new(0usize);
         let buf = |data: &[u8], usage: wgpu::BufferUsages, label: &str| {
+            own_buffers.set(own_buffers.get() + 1);
             d.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: data, usage })
         };
         let (slot, mut set) = self.take_set();
+        let mut deformed_draws = 0;
         let (q, mut buffers_made, mut binds_made) = (self.queue.clone(), 0, 0);
         let (uniform, storage) = (wgpu::BufferUsages::UNIFORM, wgpu::BufferUsages::STORAGE);
         set.write(&d, &q, PassSet::FRAME, bytemuck::bytes_of(&frame), uniform, &mut buffers_made);
@@ -2536,7 +2579,7 @@ impl ThreeEngine {
             obj: u32,
             mat: u32,
             key: [u64; 6],
-            vbuf: Option<wgpu::Buffer>,
+            vbuf: Option<Bound>,
             depth: f32,
             pipe: PipeKey,
             visible: bool,
@@ -2630,7 +2673,13 @@ impl ThreeEngine {
             }
             let center = dr.model.transform_point3(lo * 0.5 + hi * 0.5);
             let vbuf = match &dr.mesh {
-                MeshSrc::Deformed(vs, _) => Some(buf(bytemuck::cast_slice(vs), wgpu::BufferUsages::VERTEX, "deformed")),
+                MeshSrc::Deformed(vs, _) => {
+                    deformed_draws += 1;
+                    let bytes = bytemuck::cast_slice(vs);
+                    let vertex = wgpu::BufferUsages::VERTEX;
+                    let slot = nth(&mut set.deformed, deformed_draws - 1);
+                    Some(grow_bound(slot, &d, &q, bytes, vertex, "three-deformed", &mut buffers_made))
+                }
                 MeshSrc::Cached(_) => None,
             };
             preps.push(Prep {
@@ -2683,6 +2732,7 @@ impl ThreeEngine {
         {
             return Err("3D instance objects exceed device storage buffer limit".into());
         }
+        set.deformed.truncate(deformed_draws);
         set.write(&d, &q, PassSet::OBJECTS, &obj_bytes, storage, &mut buffers_made);
         // the material bind groups reference the material buffer: a new one makes them stale
         if set.write(&d, &q, PassSet::MATERIALS, &mat_bytes, uniform, &mut buffers_made) {
@@ -3027,7 +3077,7 @@ impl ThreeEngine {
                 let m = dr.mesh.mesh();
                 rp.set_bind_group(1, &mat_binds[&preps[i].key], &[preps[i].mat]);
                 rp.set_bind_group(2, &obj_bind, &[]);
-                rp.set_vertex_buffer(0, preps[i].vbuf.as_ref().unwrap_or(&m.vbuf).slice(..));
+                rp.set_vertex_buffer(0, preps[i].vbuf.as_ref().map_or(m.vbuf.slice(..), |b| b.buf.slice(..b.len)));
                 rp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 rp.draw_indexed(0..m.count, 0, off / 256..off / 256 + count);
             }
@@ -3039,7 +3089,7 @@ impl ThreeEngine {
                 rp.set_pipeline(&eng.pipes[&preps[i].pipe]);
                 rp.set_bind_group(1, &mat_binds[&preps[i].key], &[preps[i].mat]);
                 rp.set_bind_group(2, &obj_bind, &[]);
-                rp.set_vertex_buffer(0, preps[i].vbuf.as_ref().unwrap_or(&m.vbuf).slice(..));
+                rp.set_vertex_buffer(0, preps[i].vbuf.as_ref().map_or(m.vbuf.slice(..), |b| b.buf.slice(..b.len)));
                 rp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 rp.draw_indexed(0..m.count, 0, first..first + count);
             }
@@ -3087,7 +3137,7 @@ impl ThreeEngine {
                     rp.set_pipeline(&self.pre_pipes[&PreKey::of(&preps[i].pipe, scene.ssr)]);
                     rp.set_bind_group(1, &mat_binds[&preps[i].key], &[preps[i].mat]);
                     rp.set_bind_group(2, &obj_bind, &[]);
-                    rp.set_vertex_buffer(0, preps[i].vbuf.as_ref().unwrap_or(&m.vbuf).slice(..));
+                    rp.set_vertex_buffer(0, preps[i].vbuf.as_ref().map_or(m.vbuf.slice(..), |b| b.buf.slice(..b.len)));
                     rp.set_index_buffer(m.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                     rp.draw_indexed(0..m.count, 0, first..first + count);
                 }
@@ -3402,6 +3452,7 @@ impl ThreeEngine {
             self.raster_timers.push(timer);
         }
         self.targets.lock().unwrap_or_else(|e| e.into_inner()).end_call();
+        stats.buffers_created += own_buffers.get();
         self.stats = stats;
         Ok(())
     }

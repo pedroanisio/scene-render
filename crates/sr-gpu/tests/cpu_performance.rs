@@ -437,6 +437,27 @@ fn warm_raster_passes_reuse_their_buffers_and_material_bind_groups() {
 }
 
 #[test]
+fn deformed_meshes_write_the_vertex_buffers_the_pass_keeps() {
+    let Some(gpu) = common::gpu() else { return };
+    let mut engine = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+    let mut d = draw(&engine, Vec3::new(32., 32., 0.));
+    let MeshSrc::Cached(m) = &d.mesh else { unreachable!() };
+    let (m, mut vs) = (m.clone(), m.cpu.0.clone());
+    d.mesh = MeshSrc::Deformed(vs.clone(), m.clone());
+    let mut s = scene(vec![d]);
+    engine.render_now(&s, None);
+    assert!(engine.stats.buffers_created > 0);
+    for v in &mut vs {
+        v.pos[0] += 1.;
+    }
+    s.draws[0].mesh = MeshSrc::Deformed(vs, m);
+    let warm = engine.render_now(&s, None);
+    assert_eq!(engine.stats.buffers_created, 0, "the deformed vertices go into the buffer the pass kept");
+    let mut fresh = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+    assert_eq!(warm, fresh.render_now(&s, None));
+}
+
+#[test]
 fn raster_passes_recorded_before_one_submit_keep_their_own_data() {
     let Some(gpu) = common::gpu() else { return };
     let mut engine = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
