@@ -325,9 +325,9 @@ fn the_world_replays_the_cut_the_same_from_any_checkpoint_and_in_any_order_of_as
 }
 
 #[test]
-fn a_body_of_cells_is_charged_to_the_checkpoints_by_its_cells() {
-    // what an edited body keeps in the checkpoints taken before the edit is a private copy of its shape, about two bytes a cell: so the
-    // charge of a checkpoint grows with the cells of the bodies, as that of a mesh does with its triangles
+fn a_body_of_cells_no_step_edits_is_not_charged_to_the_checkpoints_again() {
+    // the checkpoints share the shape of a body that is not cut with the initial one, which is outside the budget: they are charged the same
+    // however many cells it has (an edited body's copy is charged once for the checkpoints that share it, below)
     let bytes = |n: i32| {
         let cells = cells_of(0..n, 0..20, 0..10);
         let mut w = World3::new(World3Spec {
@@ -350,14 +350,14 @@ fn a_body_of_cells_is_charged_to_the_checkpoints_by_its_cells() {
         "VOXEL SPLIT checkpoint bytes: {small} for 400 cells, {big} for 24 000 ({kept} and {kept_big} checkpoints)"
     );
     assert_eq!(kept, kept_big);
-    let taken = kept - 1;
-    assert!(big - small >= taken * 2 * (24_000 - 400), "{} against {}", big - small, taken * 2 * 23_600);
+    assert!(kept >= 3, "{kept} checkpoints");
+    assert_eq!(big, small, "the shared shape is charged to no checkpoint");
 }
 
 #[test]
-fn a_registered_parent_is_charged_to_the_checkpoints_for_the_cells_the_state_keeps_of_it_too() {
-    // the state keeps the cells of every body that can be cut (twelve bytes a cell, a new copy for every cut) on top of the shape (about two): a
-    // checkpoint of a registered parent is charged for both
+fn a_registered_parent_no_step_cuts_is_not_charged_to_the_checkpoints_for_its_cells_again() {
+    // the state keeps the cells of every body that can be cut (twelve bytes a cell, a new copy for every cut) on top of the shape (about two):
+    // while no cut has made a copy, the checkpoints share both with the initial one and are charged for neither
     let bytes = |n: i32| {
         let cells = cells_of(0..n, 0..20, 0..10);
         let w = World3::new(World3Spec {
@@ -381,8 +381,8 @@ fn a_registered_parent_is_charged_to_the_checkpoints_for_the_cells_the_state_kee
     };
     let ((small, kept), (big, kept_big)) = (bytes(2), bytes(120));
     assert_eq!(kept, kept_big);
-    let taken = kept - 1;
-    assert!(big - small >= taken * 14 * (24_000 - 400), "{} against {}", big - small, taken * 14 * 23_600);
+    assert!(kept >= 3, "{kept} checkpoints");
+    assert_eq!(big, small, "the shared cells and shape are charged to no checkpoint");
 }
 
 /// Takes the first column of cells (x = 0) off the parent at 0.5 s.
@@ -417,8 +417,8 @@ impl Driver3 for FirstColumn {
 
 #[test]
 fn the_cells_a_cut_leaves_in_the_state_are_charged_for_what_they_hold_and_not_for_the_room_the_vector_has() {
-    // the cells that stay are collected over a filter, which leaves the vector up to twice as long as it is full: held by every checkpoint taken
-    // after the cut, they are charged at twelve bytes a cell and the shape's two, not at the capacity
+    // the cells that stay are collected over a filter, which leaves the vector up to twice as long as it is full: shared by every checkpoint
+    // taken after the cut, they are charged once at twelve bytes a cell and the shape's two, not at the capacity nor once a checkpoint
     let bytes = |n: i32| {
         let mut w = World3::new(World3Spec {
             fix_internal_edges: false,
@@ -464,10 +464,10 @@ fn the_cells_a_cut_leaves_in_the_state_are_charged_for_what_they_hold_and_not_fo
     assert!(capacity <= len + len / 16, "after the cut the room for the cells is {capacity} for {len}");
     let ((small, kept), (big, kept_big)) = (bytes(21), bytes(141));
     assert_eq!(kept, kept_big);
-    // checkpoints 1.. are taken after the cut at 0.5 s (a world keeps one a second)
-    let taken = kept - 1;
-    let per_cell = (big - small) as f64 / (taken as f64 * 200.0 * 120.0);
-    assert!((14.0..=14.6).contains(&per_cell), "{per_cell} bytes a cell in every checkpoint");
+    // checkpoints 1.. are taken after the cut at 0.5 s (a world keeps one a second) and share what it left
+    assert!(kept >= 3, "{kept} checkpoints");
+    let per_cell = (big - small) as f64 / (200.0 * 120.0);
+    assert!((14.0..=14.6).contains(&per_cell), "{per_cell} bytes a cell, once for the checkpoints that share them");
 }
 
 #[test]

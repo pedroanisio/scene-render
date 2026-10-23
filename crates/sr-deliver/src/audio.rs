@@ -134,6 +134,11 @@ fn duck(under: &Option<Vec<String>>, amount: f64, threshold: f64, attack: f64, r
     under.as_ref().filter(|u| !u.is_empty()).map(|u| Duck { under: u.clone(), amount, threshold, attack, release })
 }
 
+/// A mix source of decoded audio, its buffers taken as they are.
+fn source(a: sr_media::AudioPlanes) -> Source {
+    Source { layout: Layout::for_channels(a.channels as u32, &a.layout), planar: a.planes }
+}
+
 /// Decoded sources at the mix rate, each decoded once however many tracks play it.
 pub(crate) struct Sources {
     rate: u32,
@@ -149,12 +154,7 @@ impl Sources {
         if let Some(s) = self.cache.get(&(path.clone(), stream)) {
             return Ok(s.clone());
         }
-        let a = sr_media::decode_audio(&path, stream as usize, self.rate)?;
-        let s = Arc::new(Source::from_interleaved(
-            &a.samples,
-            a.channels as usize,
-            Layout::for_channels(a.channels as u32, &a.layout),
-        ));
+        let s = Arc::new(source(sr_media::decode_audio_planar(&path, stream as usize, self.rate)?));
         self.cache.insert((path, stream), s.clone());
         Ok(s)
     }
@@ -170,9 +170,8 @@ impl Sources {
         let decoded: Vec<_> = wanted
             .into_par_iter()
             .filter_map(|(path, stream)| {
-                let a = sr_media::decode_audio(&path, stream as usize, rate).ok()?;
-                let layout = Layout::for_channels(a.channels as u32, &a.layout);
-                Some(((path, stream), Arc::new(Source::from_interleaved(&a.samples, a.channels as usize, layout))))
+                let a = sr_media::decode_audio_planar(&path, stream as usize, rate).ok()?;
+                Some(((path, stream), Arc::new(source(a))))
             })
             .collect();
         self.cache.extend(decoded);

@@ -405,21 +405,124 @@ impl AudioData {
 
 /// Decodes audio stream `stream` of `path` to interleaved `f32` at `rate`.
 pub fn decode_audio(path: &Path, stream: usize, rate: u32) -> Result<AudioData, MediaError> {
+    let (mut samples, channels, layout) =
+        read_audio(path, stream, rate, |_, n| Vec::with_capacity(n), |all: &mut Vec<f32>, s| all.extend_from_slice(s))?;
+    samples.shrink_to_fit();
+    Ok(AudioData { sample_rate: rate, channels, layout, samples })
+}
+
+/// Decoded audio, one buffer per channel.
+#[derive(Debug, Clone, Default)]
+pub struct AudioPlanes {
+    /// Sample rate.
+    pub sample_rate: u32,
+    /// Channels.
+    pub channels: u16,
+    /// Channel layout name from the source.
+    pub layout: String,
+    /// One buffer per channel, all as long: a last frame that FFmpeg left incomplete is dropped.
+    pub planes: Vec<Vec<f32>>,
+}
+
+/// Decodes audio stream `stream` of `path` to `f32` at `rate`, a buffer per channel. The samples go
+/// to their channel as FFmpeg writes them, so the decoded audio is held once, not also interleaved.
+pub fn decode_audio_planar(path: &Path, stream: usize, rate: u32) -> Result<AudioPlanes, MediaError> {
+    let mut next = 0;
+    let (mut planes, channels, layout) = read_audio(
+        path,
+        stream,
+        rate,
+        |c, n| (0..c).map(|_| Vec::with_capacity(n / c)).collect(),
+        |planes: &mut Vec<Vec<f32>>, s| {
+            for &v in s {
+                planes[next].push(v);
+                next = (next + 1) % planes.len();
+            }
+        },
+    )?;
+    let frames = planes.iter().map(Vec::len).min().unwrap_or(0);
+    for p in &mut planes {
+        p.truncate(frames);
+        p.shrink_to_fit();
+    }
+    Ok(AudioPlanes { sample_rate: rate, channels, layout, planes })
+}
+
+/// Samples a duration hint may reserve ahead: a container's duration is the file's word, so what
+/// it asks for is capped (about 6 minutes of 48 kHz stereo) and longer audio grows as it is read.
+/// The room left unused is given back when the decoding ends.
+const RESERVE_SAMPLES: usize = 1 << 25;
+
+/// Runs FFmpeg on audio stream `stream` of `path` and hands `sink` its `f32` samples (interleaved)
+/// as they arrive, into what `start` makes of the channels and the samples the container's duration
+/// promises (none when it gives no duration). Returns that, the channels and the layout name.
+fn read_audio<S>(
+    path: &Path,
+    stream: usize,
+    rate: u32,
+    start: impl FnOnce(usize, usize) -> S,
+    mut sink: impl FnMut(&mut S, &[f32]),
+) -> Result<(S, u16, String), MediaError> {
     let info = probe(path)?;
     let a = info.audio.get(stream).cloned().ok_or_else(|| MediaError::NoStream(path.display().to_string(), "audio"))?;
-    let out = Command::new(crate::ffmpeg())
+    let channels = a.channels.max(1);
+    let mut child = Command::new(crate::ffmpeg())
         .args(["-nostdin", "-v", "error", "-i"])
         .arg(path)
         .args(["-map", &format!("0:a:{stream}"), "-vn", "-f", "f32le", "-ar", &rate.to_string(), "pipe:1"])
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| MediaError::Spawn { tool: crate::ffmpeg(), source: e })?;
-    if !out.status.success() {
+    let mut out = child.stdout.take().expect("piped");
+    let mut err = child.stderr.take().expect("piped");
+    // drained so FFmpeg never blocks on it; its last lines say why decoding failed
+    let errors = std::thread::Builder::new()
+        .name("sr-audio-errors".into())
+        .spawn(move || {
+            let (mut kept, mut buf) = (Vec::new(), [0u8; 4096]);
+            while let Ok(n @ 1..) = err.read(&mut buf) {
+                kept.extend_from_slice(&buf[..n]);
+                if kept.len() > 16384 {
+                    kept.drain(..kept.len() - 8192);
+                }
+            }
+            kept
+        })
+        .map_err(MediaError::Io)?;
+    // with room for the frames a resampler adds past the duration: a buffer that outgrew its room would double
+    let promised = (info.duration * (1.0 + 1.0 / 64.0) + 1.0) * f64::from(rate) * f64::from(channels);
+    let promised =
+        if promised.is_finite() && promised > 0.0 { (promised.ceil() as usize).min(RESERVE_SAMPLES) } else { 0 };
+    let mut into = start(channels as usize, promised);
+    let (mut buf, mut held) = (vec![0u8; 1 << 16], 0usize);
+    let mut samples = Vec::with_capacity(buf.len() / 4);
+    let read = loop {
+        match out.read(&mut buf[held..]) {
+            Ok(0) => break Ok(()),
+            Ok(n) => {
+                held += n;
+                let whole = held / 4 * 4;
+                samples.clear();
+                samples.extend(buf[..whole].as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)));
+                sink(&mut into, &samples);
+                buf.copy_within(whole..held, 0);
+                held -= whole;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => break Err(MediaError::Io(e)),
+        }
+    };
+    drop(out);
+    let status = child.wait().map_err(MediaError::Io)?;
+    let stderr = errors.join().unwrap_or_default();
+    read?;
+    if !status.success() {
         return Err(MediaError::Failed {
             tool: "ffmpeg".into(),
             path: path.display().to_string(),
-            message: crate::tail(&out.stderr, 3),
+            message: crate::tail(&stderr, 3),
         });
     }
-    let samples = out.stdout.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
-    Ok(AudioData { sample_rate: rate, channels: a.channels.max(1), layout: a.layout, samples })
+    Ok((into, channels, a.layout))
 }

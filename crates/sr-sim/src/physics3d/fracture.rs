@@ -163,8 +163,7 @@ impl World3 {
         self.state.fractured = vec![false; events.len()];
         self.state.fracture_lost = vec![None; events.len()];
         self.fractures = events;
-        self.checkpoints.clear();
-        self.checkpoints.insert(0, Checkpoint { state: self.state.clone(), charge: 0 });
+        self.reset_checkpoints();
         Ok(self)
     }
 

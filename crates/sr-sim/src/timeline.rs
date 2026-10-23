@@ -10,6 +10,10 @@ use std::collections::BTreeMap;
 /// Memory kept in checkpoints per simulation, in bytes.
 pub const BUDGET: usize = 256 << 20;
 
+/// Checkpoints kept per simulation at most, however small its state: past it they are thinned as past [`BUDGET`], so
+/// a long simulation holds a bounded number of copies and replays further instead.
+pub const CHECKPOINTS: usize = 65;
+
 /// A state that can be checkpointed.
 pub trait State: Clone {
     /// Approximate size of one copy, in bytes.

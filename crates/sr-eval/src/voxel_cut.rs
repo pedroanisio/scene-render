@@ -454,6 +454,12 @@ impl VoxelOwner {
         Ok(sr_sim::physics3d::Impact3 { normal: axis, closing_speed: closing, ..*impact })
     }
 
+    /// Lets go of the grids of the revisions `kept` says no longer are: the world keeps the cells of its revisions under a budget of bytes and lets the
+    /// oldest go, and a grid of a revision it has let go is not asked for again until the world makes that revision again.
+    pub(crate) fn forget_grids(&self, kept: impl Fn(usize, u64) -> bool) {
+        self.grids.lock().unwrap_or_else(|e| e.into_inner()).retain(|&(body, revision), _| kept(body, revision));
+    }
+
     /// The grid of body `body` at `revision`, made of its `cells`: the palette index of a cell is the asset's, or the rim's for a cell that the cut heaped.
     pub(crate) fn grid_of(
         &self,
@@ -548,4 +554,46 @@ pub(crate) fn planes_of(text: &str, cell_size: f64) -> Result<Vec<sr_3d::pieces:
             Ok(sr_3d::pieces::Plane { normal: normal.map(|c| c as i64), offset: offset as i128 })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn owner() -> VoxelOwner {
+        let occupancy = Occupancy::from_cells((0..4).map(|x| ([x, 0, 0], 1))).unwrap();
+        let model = Arc::new(crate::voxel_asset::VoxelModel {
+            fingerprint: occupancy.fingerprint(),
+            materials_fingerprint: 0,
+            occupancy,
+            origin_cells: [0; 3],
+            colours: None,
+            materials: Default::default(),
+            cell_size: None,
+            source: crate::voxel_asset::Source { sha256: [0; 32], bytes: 0, modified: None },
+        });
+        VoxelOwner::new(&CellsInfo {
+            model,
+            size: [1.0; 3],
+            density: 1.0,
+            pixels_per_meter: 1.0,
+            min_cells: 1,
+            max_fragments: 1,
+            overflow: crate::voxels::Overflow::Error,
+            anchor: Anchor::Largest,
+        })
+    }
+
+    #[test]
+    fn the_grids_of_revisions_the_world_has_let_go_are_let_go() {
+        let owner = owner();
+        let cells = |r: u64| (0..4 - r as i32).map(|x| [x, 0, 0]).collect::<Vec<_>>();
+        for r in 0..4 {
+            owner.grid_of(0, r, &cells(r), None).unwrap();
+        }
+        owner.forget_grids(|_, r| r >= 2);
+        let held: Vec<(usize, u64)> = owner.grids.lock().unwrap().keys().copied().collect();
+        assert_eq!(held, [(0, 2), (0, 3)], "only the revisions the world still holds keep their grids");
+        assert_eq!(owner.grid_of(0, 1, &cells(1), None).unwrap().count(), 3, "a revision made again is gridded again");
+    }
 }

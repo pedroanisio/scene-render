@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 
 use rapier2d_f64::prelude::*;
 
+use crate::timeline;
+
 use crate::fields::{self, Field};
 use crate::soft::{SoftSpec, SoftState};
 
@@ -188,13 +190,24 @@ struct State {
     softs: Vec<SoftState>,
 }
 
+impl State {
+    /// Bytes a checkpoint of the state is charged: an estimate for each body, collider, joint and contact pair (the
+    /// rapier sets do not report their sizes), as [`crate::physics3d::World3`] charges its own, and the soft bodies.
+    fn charge(&self) -> usize {
+        let items = self.bodies.len() + self.colliders.len() + self.joints.len() + self.multibody.iter().count();
+        let pairs = self.narrow.contact_pairs().count();
+        4096 + items * 8192 + pairs * 4096 + self.softs.iter().map(SoftState::bytes).sum::<usize>()
+    }
+}
+
 /// A deterministic 2D world.
 pub struct World {
     spec: WorldSpec,
     params: IntegrationParameters,
     pipeline: PhysicsPipeline,
     state: State,
-    checkpoints: BTreeMap<u64, State>,
+    /// Copies of the state and the bytes each is charged ([`State::charge`]).
+    checkpoints: BTreeMap<u64, (State, usize)>,
     steps_per_checkpoint: u64,
     /// Solid colliders of recent steps, once `prepare_hits` has asked for any.
     solids: BTreeMap<u64, Solids>,
@@ -483,7 +496,7 @@ impl World {
             solids: BTreeMap::new(),
             keep_solids: false,
         };
-        w.checkpoints.insert(0, w.state.clone());
+        w.checkpoints.insert(0, (w.state.clone(), w.state.charge()));
         w
     }
 
@@ -658,10 +671,35 @@ impl World {
             }
         }
         st.step += 1;
-        if st.step % self.steps_per_checkpoint == 0 && !self.checkpoints.contains_key(&st.step) {
-            self.checkpoints.insert(st.step, st.clone());
-        }
+        self.save_checkpoint();
         self.remember();
+    }
+
+    /// Keeps the state every `steps_per_checkpoint` steps. Past [`timeline::CHECKPOINTS`] copies or
+    /// [`timeline::BUDGET`] bytes, every other one is dropped and they are kept half as often (the start always
+    /// stays), as [`crate::physics3d::World3`] does, so a long simulation holds a bounded history and replays
+    /// further on a seek instead.
+    fn save_checkpoint(&mut self) {
+        let step = self.state.step;
+        if step % self.steps_per_checkpoint != 0 || self.checkpoints.contains_key(&step) {
+            return;
+        }
+        let charge = self.state.charge();
+        let held = |c: &BTreeMap<u64, (State, usize)>| c.values().map(|(_, b)| b).sum::<usize>();
+        while self.checkpoints.len() >= timeline::CHECKPOINTS
+            || held(&self.checkpoints).saturating_add(charge) > timeline::BUDGET
+        {
+            if self.checkpoints.len() <= 1 {
+                return;
+            }
+            self.steps_per_checkpoint = self.steps_per_checkpoint.saturating_mul(2);
+            let every = self.steps_per_checkpoint;
+            self.checkpoints.retain(|&k, _| k == 0 || k % every == 0);
+            if step % every != 0 {
+                return;
+            }
+        }
+        self.checkpoints.insert(step, (self.state.clone(), charge));
     }
 
     /// Keeps the current step's solids for `hit_at`, dropping the step furthest back when full.
@@ -703,7 +741,7 @@ impl World {
 
     fn seek(&mut self, target: u64, driver: &mut dyn Driver) {
         if self.state.step > target || target - self.state.step > self.steps_per_checkpoint {
-            if let Some((_, cp)) = self.checkpoints.range(..=target).next_back() {
+            if let Some((_, (cp, _))) = self.checkpoints.range(..=target).next_back() {
                 if cp.step > self.state.step || self.state.step > target {
                     self.state = cp.clone();
                 }
@@ -808,6 +846,33 @@ mod tests {
             activate_at: 0.0,
             start: PxPose { x, y: 300.0, angle: 0.0 },
         }
+    }
+
+    #[test]
+    fn a_long_run_keeps_a_bounded_number_of_checkpoints_and_seeks_back_exactly() {
+        let mk = || {
+            let mut faller = wall(400.0);
+            faller.kind = BodyKind::Dynamic;
+            World::new(WorldSpec {
+                start: 0.0,
+                // ten steps a second keep a debug build quick and still checkpoint every second
+                step: 0.1,
+                gravity: [0.0, -9.80665],
+                pixels_per_meter: 100.0,
+                iterations: 4,
+                bounds: Bounds::Frame { w: 800.0, h: 600.0 },
+                bodies: vec![faller, wall(100.0)],
+                joints: Vec::new(),
+                softs: Vec::new(),
+            })
+        };
+        let mut long = mk();
+        long.frame_at(600.0, &mut Still);
+        let (_, held) = long.progress();
+        assert!(held <= crate::timeline::CHECKPOINTS, "{held} checkpoints after ten minutes");
+        assert!(long.checkpoints.contains_key(&0), "the start is always kept");
+        let back = long.frame_at(317.4, &mut Still);
+        assert_eq!(back, mk().frame_at(317.4, &mut Still), "the same state as stepping straight to it");
     }
 
     #[test]

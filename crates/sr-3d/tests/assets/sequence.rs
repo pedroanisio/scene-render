@@ -1,6 +1,6 @@
 use sr_3d::{
     sequence::{Interpolation, Missing, Sequence},
-    Model, Node, Primitive, Vertex,
+    Model, Node, Primitive, Texture, Vertex,
 };
 use std::sync::Arc;
 
@@ -34,6 +34,25 @@ fn sequence_sampling_clamps_replays_and_preserves_topology_changes_in_hold_mode(
     }
     assert!(seq.sample(f64::NAN, 1 << 20, |_| unreachable!()).is_err());
     assert!(Sequence::new(0, 1_000_000, 24., Interpolation::Hold, Missing::Error).is_err());
+}
+
+#[test]
+fn a_blended_frame_shares_the_texture_pixels_of_its_frames() {
+    let texture = |byte| Texture { width: 2, height: 2, rgba: Arc::new(vec![byte; 16]), srgb: true, sampler: None };
+    let mut a = (*model(0.)).clone();
+    a.textures.push(texture(9));
+    let a = Arc::new(a);
+    let mut b = (*model(2.)).clone();
+    b.textures.push(texture(9));
+    let seq = Sequence::new(0, 1, 2., Interpolation::Linear, Missing::Error).unwrap();
+    let out = seq.sample(0.25, 1 << 20, |i| Ok(Some(if i == 0 { a.clone() } else { Arc::new(b.clone()) }))).unwrap();
+    let out = out.model.unwrap();
+    assert!(Arc::ptr_eq(&out.textures[0].rgba, &a.textures[0].rgba), "the pixels are the first frame's, not a copy");
+    b.textures[0] = texture(8);
+    assert!(
+        seq.sample(0.25, 1 << 20, |i| Ok(Some(if i == 0 { a.clone() } else { Arc::new(b.clone()) }))).is_err(),
+        "frames whose pixels differ do not blend"
+    );
 }
 
 #[test]

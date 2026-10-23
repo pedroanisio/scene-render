@@ -151,8 +151,8 @@ pub struct Skin {
 pub struct Texture {
     pub width: u32,
     pub height: u32,
-    /// RGBA8, straight alpha.
-    pub rgba: Vec<u8>,
+    /// RGBA8, straight alpha; shared by the models that have the same pixels (the frames a mesh sequence blends).
+    pub rgba: std::sync::Arc<Vec<u8>>,
     /// Encoded with the sRGB transfer (colour maps) or linear (data maps).
     pub srgb: bool,
     /// Explicit base-level filtering; absent uses the renderer's mipmapped default.

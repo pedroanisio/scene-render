@@ -144,8 +144,7 @@ impl World3 {
         }
         self.state.slots_used = vec![0; splits.len()];
         self.voxel_splits = splits;
-        self.checkpoints.clear();
-        self.checkpoints.insert(0, Checkpoint { state: self.state.clone(), charge: 0 });
+        self.reset_checkpoints();
         Ok(self)
     }
 

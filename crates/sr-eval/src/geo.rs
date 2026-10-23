@@ -7,7 +7,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::SystemTime;
 
 use sr_geo::data::{self, Feature, Format, Geometry};
 use sr_geo::mvt;
@@ -32,15 +33,59 @@ thread_local! {
     static FITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-type FeatureCache = HashMap<String, Result<Arc<Vec<Feature>>, String>>;
+/// A file's size and modification time: what was read from it is current while they match.
+type Stamp = (u64, Option<SystemTime>);
 
-/// Features of a geo file, read once per process (keyed by path, size and modification time).
-pub fn load(path: &Path, format: &str, object: Option<&str>) -> Result<Arc<Vec<Feature>>, String> {
-    static CACHE: OnceLock<Mutex<FeatureCache>> = OnceLock::new();
+fn stamp(path: &Path) -> Result<Stamp, String> {
     let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let key = format!("{}|{}|{:?}|{format}|{}", path.display(), meta.len(), meta.modified().ok(), object.unwrap_or(""));
-    let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
-    cache.entry(key).or_insert_with(|| data::load(path, Format::parse(format), object).map(Arc::new)).clone()
+    Ok((meta.len(), meta.modified().ok()))
+}
+
+/// A process cache of what was read from files: one reading per key, replaced when its files
+/// change rather than kept beside the new one, so a long preview session holds a reading per
+/// file it names however often the files are rewritten.
+type Readings<K, S, V> = OnceLock<Mutex<HashMap<K, (S, V)>>>;
+
+/// Keys a [`Readings`] holds before it is emptied (as many maps, files or setups in one session).
+const READINGS: usize = 256;
+
+/// The reading under `key` while its files still carry `stamp`, else `read()` in its place.
+fn reading<K: std::hash::Hash + Eq, S: PartialEq, V: Clone>(
+    cache: &Readings<K, S, V>,
+    key: K,
+    stamp: S,
+    read: impl FnOnce() -> Result<V, String>,
+) -> Result<V, String> {
+    let cache = cache.get_or_init(Default::default);
+    let lock = || cache.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((s, v)) = lock().get(&key) {
+        if *s == stamp {
+            return Ok(v.clone());
+        }
+    }
+    match read() {
+        Ok(v) => {
+            let mut c = lock();
+            if c.len() >= READINGS && !c.contains_key(&key) {
+                c.clear();
+            }
+            c.insert(key, (stamp, v.clone()));
+            Ok(v)
+        }
+        Err(e) => {
+            lock().remove(&key);
+            Err(e)
+        }
+    }
+}
+
+type FeatureKey = (PathBuf, String, Option<String>);
+static FEATURES: Readings<FeatureKey, Stamp, Result<Arc<Vec<Feature>>, String>> = OnceLock::new();
+
+/// Features of a geo file, read once per process while its size and modification time hold.
+pub fn load(path: &Path, format: &str, object: Option<&str>) -> Result<Arc<Vec<Feature>>, String> {
+    let key = (path.to_path_buf(), format.to_string(), object.map(str::to_string));
+    reading(&FEATURES, key, stamp(path)?, || Ok(data::load(path, Format::parse(format), object).map(Arc::new)))?
 }
 
 /// The asset `id` of document `doc` (0 the main document, then the includes): a map, and the geo and tiles assets
@@ -85,9 +130,10 @@ pub fn camera(p: &Program, doc: u16, mp: &m::MapAsset) -> Result<Arc<Camera>, St
     Ok(cam)
 }
 
-/// The camera of a map asset, cached per process by its setup and the size and modification time of its fit files.
+static CAMERAS: Readings<String, Vec<Stamp>, Arc<Camera>> = OnceLock::new();
+
+/// The camera of a map asset, cached per process by its setup while its fit files keep their size and modification time.
 fn fit(p: &Program, doc: u16, mp: &m::MapAsset) -> Result<Arc<Camera>, String> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Arc<Camera>>>> = OnceLock::new();
     let kind = Kind::parse(&mp.projection.to_string()).ok_or("unknown projection")?;
     let parallels = mp.parallels.as_ref().filter(|p| p.len() >= 2).map(|p| [p[0], p[1]]);
     let fit_ids = mp.fit.clone().unwrap_or_default();
@@ -103,17 +149,25 @@ fn fit(p: &Program, doc: u16, mp: &m::MapAsset) -> Result<Arc<Camera>, String> {
     );
     #[cfg(test)]
     FITS.with(|c| c.set(c.get() + 1));
+    let mut stamps = Vec::with_capacity(fit_ids.len());
     for id in &fit_ids {
         let (g, path) = geo_asset(p, doc, id)?;
-        let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        sig.push_str(&format!("|{}|{}|{:?}|{:?}", path.display(), meta.len(), meta.modified().ok(), g.object));
+        stamps.push(stamp(&path)?);
+        sig.push_str(&format!("|{}|{:?}", path.display(), g.object));
     }
-    let cache = CACHE.get_or_init(Default::default);
-    if let Some(c) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&sig) {
-        return Ok(c.clone());
-    }
+    reading(&CAMERAS, sig, stamps, || fit_fresh(p, doc, mp, kind, parallels, &fit_ids))
+}
+
+fn fit_fresh(
+    p: &Program,
+    doc: u16,
+    mp: &m::MapAsset,
+    kind: Kind,
+    parallels: Option<[f64; 2]>,
+    fit_ids: &[String],
+) -> Result<Arc<Camera>, String> {
     let mut geoms: Vec<Geometry> = Vec::new();
-    for id in &fit_ids {
+    for id in fit_ids {
         geoms.extend(features(p, doc, id)?.iter().map(|f| f.geometry.clone()));
     }
     let refs: Vec<&Geometry> = geoms.iter().collect();
@@ -130,9 +184,7 @@ fn fit(p: &Program, doc: u16, mp: &m::MapAsset) -> Result<Arc<Camera>, String> {
     map.precision = mp.precision.get();
     // room round the frame for strokes, pins and labels reaching in from outside
     map.margin = 64.0;
-    let cam = Arc::new(Camera { map, center: c });
-    cache.lock().unwrap_or_else(|p| p.into_inner()).insert(sig, cam.clone());
-    Ok(cam)
+    Ok(Arc::new(Camera { map, center: c }))
 }
 
 /// The view of a map at composition time `t`. `animated` gives the evaluated value of an
@@ -196,21 +248,16 @@ pub fn tiles_asset<'p>(p: &'p Program, doc: u16, id: &str) -> Result<(&'p m::Til
     }
 }
 
-/// An open tile archive (per process, keyed by path, size and modification time).
+static ARCHIVES: Readings<PathBuf, Stamp, Arc<Archive>> = OnceLock::new();
+
+/// An open tile archive (per process, while the file keeps its size and modification time).
 pub fn archive(path: &Path) -> Result<Arc<Archive>, String> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Arc<Archive>>>> = OnceLock::new();
-    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let key = format!("{}|{}|{:?}", path.display(), meta.len(), meta.modified().ok());
-    let cache = CACHE.get_or_init(Default::default);
-    if let Some(a) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
-        return Ok(a.clone());
-    }
-    let a = Arc::new(Archive::open(path)?);
-    cache.lock().unwrap_or_else(|p| p.into_inner()).insert(key, a.clone());
-    Ok(a)
+    reading(&ARCHIVES, path.to_path_buf(), stamp(path)?, || Archive::open(path).map(Arc::new))
 }
 
-type TileCache = HashMap<(usize, u8, u32, u32), Option<Arc<TileData>>>;
+/// Tiles key on their archive's address; each entry holds the archive weakly, which keeps that
+/// address from being reused by a newer archive while the entry lives.
+type TileCache = HashMap<(usize, u8, u32, u32), (Weak<Archive>, Option<Arc<TileData>>)>;
 
 /// A tile's contents: vector layers, or the encoded image of a raster tile.
 pub enum TileData {
@@ -223,7 +270,7 @@ pub fn tile(a: &Arc<Archive>, z: u8, x: u32, y: u32) -> Result<Option<Arc<TileDa
     static CACHE: OnceLock<Mutex<TileCache>> = OnceLock::new();
     let key = (Arc::as_ptr(a) as usize, z, x, y);
     let cache = CACHE.get_or_init(Default::default);
-    if let Some(t) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
+    if let Some((_, t)) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
         return Ok(t.clone());
     }
     let t = match a.tile(z, x, y)? {
@@ -235,38 +282,29 @@ pub fn tile(a: &Arc<Archive>, z: u8, x: u32, y: u32) -> Result<Option<Arc<TileDa
     if c.len() > 1024 {
         c.clear();
     }
-    c.insert(key, t.clone());
+    c.insert(key, (Arc::downgrade(a), t.clone()));
     Ok(t)
 }
+
+/// Basemap styles: built-in ones by name (no stamp), style files by path.
+static STYLES: Readings<PathBuf, Option<Stamp>, Arc<Style>> = OnceLock::new();
 
 /// A basemap style: a built-in name (`protomaps-light` by default, `protomaps-dark`) or a style
 /// file relative to document `doc`, the one that declares the map.
 pub fn style(p: &Program, doc: u16, spec: Option<&str>) -> Result<Arc<Style>, String> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Arc<Style>>>> = OnceLock::new();
     let spec = spec.unwrap_or("protomaps-light");
-    let (key, text) = match sr_geo::style::builtin(spec) {
-        Some(t) => (spec.to_string(), t.to_string()),
-        None => {
-            let base = p.doc_base(doc);
-            let path = match sr_model::assets::resolve(spec, &base) {
-                sr_model::assets::Resolved::Local(path) => path,
-                sr_model::assets::Resolved::Remote(u) => return Err(format!("{u}: styles are read from local files")),
-            };
-            let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let key = format!("{}|{}|{:?}", path.display(), meta.len(), meta.modified().ok());
-            if let Some(s) = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
-                return Ok(s.clone());
-            }
-            (key, std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?)
-        }
-    };
-    let cache = CACHE.get_or_init(Default::default);
-    if let Some(s) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
-        return Ok(s.clone());
+    if let Some(t) = sr_geo::style::builtin(spec) {
+        return reading(&STYLES, PathBuf::from(spec), None, || Style::parse(t).map(Arc::new));
     }
-    let s = Arc::new(Style::parse(&text)?);
-    cache.lock().unwrap_or_else(|p| p.into_inner()).insert(key, s.clone());
-    Ok(s)
+    let path = match sr_model::assets::resolve(spec, &p.doc_base(doc)) {
+        sr_model::assets::Resolved::Local(path) => path,
+        sr_model::assets::Resolved::Remote(u) => return Err(format!("{u}: styles are read from local files")),
+    };
+    let read = || {
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Style::parse(&text).map(Arc::new)
+    };
+    reading(&STYLES, path.clone(), Some(stamp(&path)?), read)
 }
 
 /// The tile zoom a basemap draws at: raster tiles closest to their pixel size (rounded), vector
@@ -291,11 +329,11 @@ pub type Dem = (u32, Vec<f32>);
 
 /// Elevation tile z/x/y of an archive of encoded PNG (or WebP) tiles, in metres (cached).
 pub fn dem(a: &Arc<Archive>, z: u8, x: u32, y: u32, enc: DemEncoding) -> Result<Option<Arc<Dem>>, String> {
-    type DemCache = HashMap<(usize, u8, u32, u32, DemEncoding), Option<Arc<Dem>>>;
+    type DemCache = HashMap<(usize, u8, u32, u32, DemEncoding), (Weak<Archive>, Option<Arc<Dem>>)>;
     static CACHE: OnceLock<Mutex<DemCache>> = OnceLock::new();
     let key = (Arc::as_ptr(a) as usize, z, x, y, enc);
     let cache = CACHE.get_or_init(Default::default);
-    if let Some(d) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
+    if let Some((_, d)) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
         return Ok(d.clone());
     }
     let d = match a.tile(z, x, y)? {
@@ -320,7 +358,7 @@ pub fn dem(a: &Arc<Archive>, z: u8, x: u32, y: u32, enc: DemEncoding) -> Result<
     if c.len() > 512 {
         c.clear();
     }
-    c.insert(key, d.clone());
+    c.insert(key, (Arc::downgrade(a), d.clone()));
     Ok(d)
 }
 
@@ -345,6 +383,118 @@ pub fn elevation(a: &Arc<Archive>, z: u8, enc: DemEncoding, lon: f64, lat: f64) 
 #[cfg(test)]
 mod tests {
     use super::FITS;
+    use std::path::{Path, PathBuf};
+
+    /// A scratch directory of this test, removed when dropped.
+    struct Dir(PathBuf);
+    impl Dir {
+        fn new(name: &str) -> Dir {
+            let d = std::env::temp_dir().join(format!("sr-eval-geo-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&d).unwrap();
+            Dir(d)
+        }
+    }
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn held<K, S, V>(cache: &super::Readings<K, S, V>, matching: impl Fn(&K) -> bool) -> usize {
+        cache.get().map_or(0, |c| c.lock().unwrap().keys().filter(|k| matching(k)).count())
+    }
+
+    fn boxes(n: usize) -> String {
+        let f = r#"{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[0,0],[40,0],[40,20],[0,20],[0,0]]]}}"#;
+        format!(r#"{{"type":"FeatureCollection","features":[{}]}}"#, vec![f; n].join(","))
+    }
+
+    #[test]
+    fn a_rewritten_geo_file_replaces_its_cached_features() {
+        let d = Dir::new("rewrite");
+        let path = d.0.join("boxes.geojson");
+        for n in 1..=3 {
+            std::fs::write(&path, boxes(n)).unwrap();
+            assert_eq!(super::load(&path, "geojson", None).unwrap().len(), n, "the rewritten file is read again");
+        }
+        assert_eq!(held(&super::FEATURES, |k| k.0 == path), 1, "one reading per file, not one per revision");
+    }
+
+    fn archive_of(path: &Path, byte: u8) {
+        let tile = vec![byte; 16 + byte as usize];
+        std::fs::write(
+            path,
+            sr_geo::pmtiles::write(&[((0, 0, 0), tile)], sr_geo::pmtiles::TileType::Png, 1, &serde_json::json!({})),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_rewritten_archive_replaces_the_open_one_and_its_tiles() {
+        let d = Dir::new("archive");
+        let path = d.0.join("t.pmtiles");
+        for byte in 1..=3u8 {
+            archive_of(&path, byte);
+            let a = super::archive(&path).unwrap();
+            let Some(t) = super::tile(&a, 0, 0, 0).unwrap() else { panic!("tile 0/0/0") };
+            let super::TileData::Raster(b) = &*t else { panic!("a raster tile") };
+            assert_eq!(**b, vec![byte; 16 + byte as usize], "the tile of the current archive, not a stale one");
+        }
+        assert_eq!(held(&super::ARCHIVES, |k| *k == path), 1, "one open archive per file, not one per revision");
+    }
+
+    #[test]
+    fn a_rewritten_style_file_replaces_its_cached_style() {
+        let d = Dir::new("style");
+        let xml =
+            r##"<scene version="1.6"><project width="20" height="20" fps="10" duration="1"/><composition/></scene>"##;
+        let opts = sr_model::LoadOptions { verify_assets: false, base_dir: Some(d.0.clone()) };
+        let doc = sr_model::load_str(xml, &opts).unwrap_or_else(|e| panic!("{e:?}"));
+        let ev = crate::Evaluator::new(&doc, &Default::default()).unwrap_or_else(|e| panic!("{e:?}"));
+        let path = d.0.join("s.json");
+        for n in 1..=3 {
+            let layers: Vec<String> = (0..n).map(|i| format!(r#"{{"id":"l{i}","type":"background"}}"#)).collect();
+            std::fs::write(&path, format!(r#"{{"version":8,"layers":[{}]}}"#, layers.join(","))).unwrap();
+            let s = super::style(ev.program(), 0, Some(path.to_str().unwrap())).unwrap();
+            assert_eq!(s.layers.len(), n, "the rewritten style is read again");
+        }
+        assert_eq!(held(&super::STYLES, |k| *k == path), 1, "one style per file, not one per revision");
+    }
+
+    #[test]
+    fn a_rewritten_fit_file_refits_the_map_in_place() {
+        let d = Dir::new("refit");
+        let xml = r##"<scene version="1.6"><project width="200" height="200" fps="10" duration="1"/>
+<assets><geo id="g" src="fit.geojson"/><map id="m" width="200" height="200" projection="equirectangular" fit="g"/></assets>
+<composition><shape id="mark" shape="rect" width="4" height="4" fill="#FFFFFF"><expression property="x">geo('m', 20, 10)[0]</expression></shape></composition></scene>"##;
+        let opts = sr_model::LoadOptions { verify_assets: false, base_dir: Some(d.0.clone()) };
+        let doc = sr_model::load_str(xml, &opts).unwrap_or_else(|e| panic!("{e:?}"));
+        let mut xs = Vec::new();
+        for east in [40, 80, 120] {
+            let f = format!(
+                r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{}},"geometry":{{"type":"Polygon","coordinates":[[[0,0],[{east},0],[{east},20],[0,20],[0,0]]]}}}}]}}"#
+            );
+            std::fs::write(d.0.join("fit.geojson"), f).unwrap();
+            let ev = crate::Evaluator::new(&doc, &Default::default()).unwrap_or_else(|e| panic!("{e:?}"));
+            let g = ev.evaluate_layout(0.0);
+            xs.push(g.nodes.iter().find(|n| &*n.id == "mark").expect("mark").world.0[4]);
+        }
+        assert!(xs[0] > xs[1] && xs[1] > xs[2], "each revision of the fit data refits the map: {xs:?}");
+        let dir = d.0.display().to_string();
+        assert_eq!(held(&super::CAMERAS, |k| k.contains(&dir)), 1, "one camera per map setup, not one per revision");
+    }
+
+    #[test]
+    fn a_session_holds_a_bounded_number_of_readings() {
+        static CACHE: super::Readings<usize, u8, usize> = std::sync::OnceLock::new();
+        for k in 0..3 * super::READINGS {
+            assert_eq!(super::reading(&CACHE, k, 0, || Ok(k)), Ok(k));
+        }
+        assert!(held(&CACHE, |_| true) <= super::READINGS);
+        assert_eq!(super::reading(&CACHE, 7, 0, || Ok(7)), Ok(7));
+        assert_eq!(super::reading(&CACHE, 7, 1, || Err::<usize, _>("gone".to_string())), Err("gone".into()));
+        assert_eq!(held(&CACHE, |k| *k == 7), 0, "a failed read leaves no stale reading behind");
+    }
 
     #[test]
     fn a_program_fits_each_map_once() {

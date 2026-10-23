@@ -68,6 +68,14 @@ fn area(pos: &[[f64; 2]], ring: &[usize]) -> f64 {
 }
 
 impl SoftState {
+    /// Bytes a copy of the state holds: the room of its points, springs and boundary.
+    pub fn bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + (self.pos.capacity() + self.vel.capacity()) * 16
+            + self.springs.capacity() * std::mem::size_of::<(usize, usize, f64, f64)>()
+            + self.boundary.capacity() * 8
+    }
+
     pub fn new(spec: &SoftSpec) -> SoftState {
         let (r, c) = (spec.rows, spec.cols);
         let idx = |i: usize, j: usize| i * c + j;

@@ -399,8 +399,7 @@ impl World3 {
             self.state.stress_held[f.parent] = (0..f.pieces.len() as u32).collect();
         }
         self.stresses = families;
-        self.checkpoints.clear();
-        self.checkpoints.insert(0, Checkpoint { state: self.state.clone(), charge: 0 });
+        self.reset_checkpoints();
         Ok(self)
     }
 

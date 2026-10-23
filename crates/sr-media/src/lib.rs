@@ -31,7 +31,8 @@ pub mod spherical;
 pub mod still;
 
 pub use decode::{
-    decode_audio, lookahead_for, AudioData, PixelLayout, Plane, VideoDecoder, VideoFrame, LOOKAHEAD_BYTES,
+    decode_audio, decode_audio_planar, lookahead_for, AudioData, AudioPlanes, PixelLayout, Plane, VideoDecoder,
+    VideoFrame, LOOKAHEAD_BYTES,
 };
 pub use probe::{probe, MediaInfo};
 

@@ -200,7 +200,7 @@ pub fn parse(text: &str, base: &Path) -> Result<MtlxMaterial, String> {
                     sampler.border[1] = sampler.border[0];
                     sampler.border[2] = 1.0;
                 }
-                for pixel in texture.rgba.chunks_exact_mut(4) {
+                for pixel in std::sync::Arc::make_mut(&mut texture.rgba).chunks_exact_mut(4) {
                     pixel[1] = pixel[0];
                     pixel[2] = 255;
                 }

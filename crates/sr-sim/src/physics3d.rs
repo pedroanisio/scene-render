@@ -353,7 +353,65 @@ struct State {
 
 struct Checkpoint {
     state: State,
+    /// What the checkpoint is charged beyond its collider shapes.
     charge: usize,
+    /// The collider shapes it holds, by address: charged in the [`ShapeLedger`], once for all the checkpoints that share one.
+    shapes: Vec<usize>,
+}
+
+/// What a checkpoint shares with the state and the other checkpoints, charged once in the [`ShapeLedger`].
+enum Part<'a> {
+    Shape(&'a dyn rapier3d_f64::parry::shape::Shape),
+    /// The cells kept of a body that can be cut: twelve bytes a cell, by the room of their vector.
+    Cells(&'a std::sync::Arc<Vec<[i32; 3]>>),
+}
+
+impl Part<'_> {
+    fn charge(&self) -> usize {
+        match self {
+            Part::Shape(shape) => shape_charge(*shape),
+            Part::Cells(cells) => cells.capacity().saturating_mul(std::mem::size_of::<[i32; 3]>()),
+        }
+    }
+}
+
+/// The collider shapes (and kept cells, see [`Part`]) the checkpoints hold, by address: each one's charge and how many checkpoints hold it. A checkpoint's
+/// state shares its shapes with the world's and with the other checkpoints' until a step replaces them, so a shape is charged
+/// once however many checkpoints hold it, and is only measured when it is new. A held shape is kept alive by its
+/// checkpoints, so its address is not reused while it is in the ledger.
+#[derive(Default)]
+struct ShapeLedger {
+    held: std::collections::HashMap<usize, (usize, usize)>,
+    bytes: usize,
+}
+
+impl ShapeLedger {
+    fn hold(&mut self, shapes: &[(usize, usize)]) {
+        for &(at, bytes) in shapes {
+            let e = self.held.entry(at).or_insert_with(|| {
+                self.bytes = self.bytes.saturating_add(bytes);
+                (bytes, 0)
+            });
+            e.1 += 1;
+        }
+    }
+
+    fn release(&mut self, shapes: &[usize]) {
+        for at in shapes {
+            if let Some(e) = self.held.get_mut(at) {
+                e.1 -= 1;
+                if e.1 == 0 {
+                    self.bytes -= e.0;
+                    self.held.remove(at);
+                }
+            }
+        }
+    }
+
+    /// What holding `shapes` would add: the charges of those no checkpoint holds yet.
+    fn adds(&self, shapes: &[(usize, usize)]) -> usize {
+        shapes.iter().filter(|(at, _)| !self.held.contains_key(at)).fold(0usize, |sum, (_, b)| sum.saturating_add(*b))
+    }
 }
 
 /// One contact point resolved by the solver during a fixed step.
@@ -578,6 +636,7 @@ pub struct World3 {
     pipeline: PhysicsPipeline,
     state: State,
     checkpoints: BTreeMap<u64, Checkpoint>,
+    checkpoint_shapes: ShapeLedger,
     steps_per_checkpoint: u64,
     checkpoint_budget: usize,
     fractures: Vec<Fracture3>,
@@ -948,10 +1007,11 @@ impl World3 {
             pipeline: PhysicsPipeline::new(),
             state: st,
             checkpoints: BTreeMap::new(),
+            checkpoint_shapes: ShapeLedger::default(),
             steps_per_checkpoint,
             checkpoint_budget: crate::timeline::BUDGET,
         };
-        w.checkpoints.insert(0, Checkpoint { state: w.state.clone(), charge: 0 });
+        w.reset_checkpoints();
         w
     }
 
@@ -961,14 +1021,51 @@ impl World3 {
     /// Charges estimate shape/BVH, contacts and world storage; they are not RSS.
     pub fn with_checkpoint_budget(mut self, bytes: usize) -> Self {
         self.checkpoint_budget = bytes;
-        self.checkpoints.retain(|&k, _| k == 0);
+        self.thin_checkpoints(|k| k == 0);
         self.steps_per_checkpoint = ((1.0 / self.spec.step.max(1e-6)).round() as u64).max(1);
         self
     }
 
     /// Sum of admission charges for optional retained replay checkpoints.
     pub fn checkpoint_bytes(&self) -> usize {
-        self.checkpoints.values().fold(0usize, |sum, cp| sum.saturating_add(cp.charge))
+        self.checkpoints.values().fold(self.checkpoint_shapes.bytes, |sum, cp| sum.saturating_add(cp.charge))
+    }
+
+    /// Starts the checkpoints again from the state: the initial checkpoint alone, which is outside the budget, and so are the shapes it holds.
+    fn reset_checkpoints(&mut self) {
+        self.checkpoints.clear();
+        self.checkpoint_shapes = ShapeLedger::default();
+        let shapes: Vec<(usize, usize)> = self.parts_held().into_iter().map(|(at, _)| (at, 0)).collect();
+        self.checkpoint_shapes.hold(&shapes);
+        let shapes = shapes.into_iter().map(|(at, _)| at).collect();
+        self.checkpoints.insert(0, Checkpoint { state: self.state.clone(), charge: 0, shapes });
+    }
+
+    /// Drops the checkpoints whose step `keep` refuses, and lets go of the shapes only they held.
+    fn thin_checkpoints(&mut self, keep: impl Fn(u64) -> bool) {
+        let ledger = &mut self.checkpoint_shapes;
+        self.checkpoints.retain(|&k, cp| {
+            let kept = keep(k);
+            if !kept {
+                ledger.release(&cp.shapes);
+            }
+            kept
+        });
+    }
+
+    /// What the state shares with the checkpoints, by address: its distinct collider shapes, and the cells it keeps of
+    /// every body that can be cut (every cut makes a copy of its own).
+    fn parts_held(&self) -> Vec<(usize, Part<'_>)> {
+        let mut seen = std::collections::HashSet::new();
+        let shapes = self
+            .state
+            .colliders
+            .iter()
+            .map(|(_, c)| c.shared_shape())
+            .map(|s| (std::sync::Arc::as_ptr(&s.0) as *const u8 as usize, Part::Shape(&*s.0)));
+        let cells =
+            self.state.voxel_cells.iter().flatten().map(|c| (std::sync::Arc::as_ptr(c) as usize, Part::Cells(c)));
+        shapes.chain(cells).filter(|(at, _)| seen.insert(*at)).collect()
     }
 
     /// Set the bytes the frame memory may use together with the contact record, and
@@ -1461,13 +1558,6 @@ impl World3 {
         let st = &self.state;
         let items = st.bodies.len().saturating_add(st.colliders.len()).saturating_add(self.spec.joints.len());
         let mut bytes = items.saturating_mul(8192).saturating_add(4096);
-        for (_, collider) in st.colliders.iter() {
-            bytes = bytes.saturating_add(shape_charge(collider.shape()));
-        }
-        // the cells the state keeps of every body that can be cut: twelve bytes a cell, and every cut makes a copy of its own
-        for cells in st.voxel_cells.iter().flatten() {
-            bytes = bytes.saturating_add(cells.capacity().saturating_mul(std::mem::size_of::<[i32; 3]>()));
-        }
         // the pieces that the bodies of a family hold and the joints that are gone
         for held in &st.stress_held {
             bytes = bytes.saturating_add(held.capacity().saturating_mul(4));
@@ -1497,20 +1587,31 @@ impl World3 {
             return;
         }
         let charge = self.checkpoint_charge();
-        if charge > self.checkpoint_budget {
+        // the shapes and cells the checkpoints already hold keep their charge; only a new one is measured
+        let shapes: Vec<(usize, usize)> = self
+            .parts_held()
+            .into_iter()
+            .map(|(at, part)| (at, self.checkpoint_shapes.held.get(&at).map_or_else(|| part.charge(), |e| e.0)))
+            .collect();
+        if charge.saturating_add(shapes.iter().fold(0usize, |sum, s| sum.saturating_add(s.1))) > self.checkpoint_budget
+        {
             return;
         }
         // Admit before cloning. Thinning doubles temporal spacing, bounds the
         // count even for tiny worlds, and drops obsolete geometry Arcs first.
-        while self.checkpoints.len() >= 65 || self.checkpoint_bytes() > self.checkpoint_budget - charge {
+        while self.checkpoints.len() >= crate::timeline::CHECKPOINTS
+            || self.checkpoint_bytes() > self.checkpoint_budget - charge - self.checkpoint_shapes.adds(&shapes)
+        {
             self.steps_per_checkpoint = self.steps_per_checkpoint.saturating_mul(2);
             let every = self.steps_per_checkpoint;
-            self.checkpoints.retain(|&k, _| k == 0 || k % every == 0);
+            self.thin_checkpoints(|k| k == 0 || k % every == 0);
             if step % every != 0 {
                 return;
             }
         }
-        self.checkpoints.insert(step, Checkpoint { state: self.state.clone(), charge });
+        self.checkpoint_shapes.hold(&shapes);
+        let shapes = shapes.into_iter().map(|(at, _)| at).collect();
+        self.checkpoints.insert(step, Checkpoint { state: self.state.clone(), charge, shapes });
     }
 
     /// Synchronize birth/departure before stepping and at sample boundaries. On birth, take
@@ -2096,7 +2197,7 @@ fn shape_charge(shape: &dyn rapier3d_f64::parry::shape::Shape) -> usize {
             .fold(4096usize, |sum, (_, part)| sum.saturating_add(512).saturating_add(shape_charge(part.as_ref())))
     } else if let Some(voxels) = shape.as_voxels() {
         // about two bytes a cell, which is what a private copy of the shape holds (an edited body of cells keeps its old copy in the
-        // checkpoints taken before the edit); counted as the meshes are, in full for every checkpoint
+        // checkpoints taken before the edit); counted as the meshes are, once for the checkpoints that share the copy
         voxels.voxels().count().saturating_mul(2).saturating_add(4096)
     } else if let Some(poly) = shape.as_convex_polyhedron() {
         poly.points()
@@ -2195,6 +2296,37 @@ mod tests {
                 assert!(b.checkpoint_bytes() <= budget);
             }
         }
+    }
+
+    #[test]
+    fn checkpoints_that_share_a_shape_are_charged_for_it_once() {
+        // a ground of 5000 triangles (charged about 2.9 MB) that no step changes, so every checkpoint holds the same one
+        let n = 50u32;
+        let points: Vec<[f64; 3]> = (0..=n)
+            .flat_map(|i| (0..=n).map(move |j| [i as f64 * 20.0 - 500.0, 300.0, j as f64 * 20.0 - 500.0]))
+            .collect();
+        let at = |i: u32, j: u32| i * (n + 1) + j;
+        let triangles: Vec<[u32; 3]> = (0..n)
+            .flat_map(|i| {
+                (0..n).flat_map(move |j| {
+                    [[at(i, j), at(i, j + 1), at(i + 1, j)], [at(i + 1, j), at(i, j + 1), at(i + 1, j + 1)]]
+                })
+            })
+            .collect();
+        let mk = || {
+            let mut ground = body(Shape3::TriMesh(points.clone(), triangles.clone()), [0.0; 3]);
+            ground.kind = BodyKind::Static;
+            let mut s = spec(vec![ground, body(Shape3::Sphere(15.0), [0.0, 0.0, 0.0])], Bounds3::None);
+            s.step = 1.0 / 60.0;
+            World3::new(s)
+        };
+        let budget = 8 << 20;
+        let mut w = mk().with_checkpoint_budget(budget);
+        let late = w.frame_at(30.0, &mut NoDrive);
+        assert!(w.checkpoint_bytes() <= budget);
+        assert!(w.progress().1 >= 30, "a checkpoint a second, the shared ground charged once: {}", w.progress().1);
+        assert_eq!(w.frame_at(17.5, &mut NoDrive), mk().frame_at(17.5, &mut NoDrive));
+        assert_eq!(w.frame_at(30.0, &mut NoDrive), late);
     }
 
     #[test]

@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use crate::fields::{self, Field};
 use crate::rng;
+use crate::timeline;
 
 /// Where particles are born, in the emitter's local pixels.
 #[derive(Clone, Debug, PartialEq)]
@@ -119,6 +120,19 @@ struct State {
     emitted: u64,
     carry: f64,
     p: Store,
+}
+
+impl State {
+    /// Bytes a copy of the state holds: the room of its particle arrays.
+    fn bytes(&self) -> usize {
+        let p = &self.p;
+        let words = [&p.x, &p.y, &p.vx, &p.vy, &p.age, &p.life, &p.rot, &p.spin, &p.scale]
+            .iter()
+            .map(|v| v.capacity())
+            .sum::<usize>()
+            + p.id.capacity();
+        std::mem::size_of::<Self>() + words * 8
+    }
 }
 
 /// A deterministic emitter.
@@ -315,9 +329,33 @@ impl Emitter {
             compact!(id, x, y, vx, vy, age, life, rot, spin, scale);
         }
         self.state.step += 1;
-        if self.state.step % self.per_checkpoint == 0 && !self.checkpoints.contains_key(&self.state.step) {
-            self.checkpoints.insert(self.state.step, self.state.clone());
+        self.save_checkpoint();
+    }
+
+    /// Keeps the state every `per_checkpoint` steps. Past [`timeline::CHECKPOINTS`] copies or [`timeline::BUDGET`]
+    /// bytes, every other one is dropped and they are kept half as often (the start always stays), so a long
+    /// emitter holds a bounded history and replays further on a seek instead.
+    fn save_checkpoint(&mut self) {
+        let step = self.state.step;
+        if step % self.per_checkpoint != 0 || self.checkpoints.contains_key(&step) {
+            return;
         }
+        let charge = self.state.bytes();
+        let held = |c: &BTreeMap<u64, State>| c.values().map(State::bytes).sum::<usize>();
+        while self.checkpoints.len() >= timeline::CHECKPOINTS
+            || held(&self.checkpoints).saturating_add(charge) > timeline::BUDGET
+        {
+            if self.checkpoints.len() <= 1 {
+                return;
+            }
+            self.per_checkpoint = self.per_checkpoint.saturating_mul(2);
+            let every = self.per_checkpoint;
+            self.checkpoints.retain(|&k, _| k == 0 || k % every == 0);
+            if step % every != 0 {
+                return;
+            }
+        }
+        self.checkpoints.insert(step, self.state.clone());
     }
 
     /// Particles alive at `t`.
@@ -344,5 +382,72 @@ impl Emitter {
     /// Particles emitted so far (including dropped ones over `maxParticles`).
     pub fn emitted(&self) -> u64 {
         self.state.emitted
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fields::Field;
+    use crate::timeline::CHECKPOINTS;
+
+    struct Here;
+
+    impl EmitterDriver for Here {
+        fn origin(&mut self, _t: f64) -> [f64; 6] {
+            [1.0, 0.0, 0.0, 1.0, 400.0, 300.0]
+        }
+        fn rate(&mut self, _t: f64) -> f64 {
+            100.0
+        }
+        fn fields(&mut self, _t: f64) -> Vec<Field> {
+            Vec::new()
+        }
+        fn hit(&mut self, _t: f64, _p: [f64; 2]) -> Option<([f64; 2], [f64; 2])> {
+            None
+        }
+    }
+
+    fn spec() -> EmitterSpec {
+        EmitterSpec {
+            seed: 7,
+            start: 0.0,
+            end: None,
+            preroll: 0.0,
+            step: 1.0 / 30.0,
+            lifetime: 2.0,
+            lifetime_variance: 0.0,
+            speed: 100.0,
+            speed_variance: 20.0,
+            direction: -90.0,
+            spread: 30.0,
+            gravity: [0.0, 0.0],
+            drag: 0.0,
+            turbulence: 0.0,
+            turbulence_scale: 100.0,
+            rotation0: 0.0,
+            rotation_variance: 0.0,
+            angular_velocity: 0.0,
+            angular_velocity_variance: 0.0,
+            size_variance: 0.0,
+            max_particles: 10_000,
+            shape: EmitShape::Point,
+            bursts: vec![],
+            collide: false,
+            bounce: 0.3,
+            walls: Walls::None,
+        }
+    }
+
+    #[test]
+    fn a_long_run_keeps_a_bounded_number_of_checkpoints_and_seeks_back_exactly() {
+        let mut long = Emitter::new(spec());
+        long.at(600.0, &mut Here);
+        assert!(long.checkpoints.len() <= CHECKPOINTS, "{} checkpoints after ten minutes", long.checkpoints.len());
+        assert!(long.checkpoints.contains_key(&0), "the start is always kept");
+        // back to a time between the thinned checkpoints: the same particles as stepping straight to it
+        let back = long.at(317.4, &mut Here).clone();
+        let mut fresh = Emitter::new(spec());
+        assert_eq!(&back, fresh.at(317.4, &mut Here));
     }
 }

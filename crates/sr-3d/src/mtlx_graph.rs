@@ -305,7 +305,13 @@ impl Expr {
             }
         }
         (
-            crate::Texture { width: w, height: h, rgba, srgb: false, sampler: self.output_sampler(factor, normal) },
+            crate::Texture {
+                width: w,
+                height: h,
+                rgba: std::sync::Arc::new(rgba),
+                srgb: false,
+                sampler: self.output_sampler(factor, normal),
+            },
             factor,
         )
     }

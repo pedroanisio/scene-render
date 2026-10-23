@@ -1584,6 +1584,7 @@ fn voxel_state(
     let cells_of = |body: usize, rev: u64| {
         world.voxel_cells_at(body, rev).ok_or_else(|| format!("the world no longer has the cells of revision {rev}"))
     };
+    owner.forget_grids(|body, rev| world.voxel_cells_at(body, rev).is_some());
     let grid = owner.grid_of(k, revision, &cells_of(k, revision)?, cut.as_deref())?;
     let changed_bricks =
         if revision == 0 { Vec::new() } else { world.voxel_bricks_changed(k, 0, revision).unwrap_or_default() };
