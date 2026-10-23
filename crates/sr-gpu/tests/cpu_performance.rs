@@ -409,6 +409,50 @@ fn opacity_changes_reuse_splat_order_but_view_changes_invalidate_it() {
 }
 
 #[test]
+fn warm_cpu_traced_passes_reuse_the_scene_the_tracer_built() {
+    let Some(gpu) = common::gpu() else { return };
+    let mut engine = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+    engine.software_adapter = true;
+    let mut s = scene(vec![draw(&engine, Vec3::new(32., 32., 0.))]);
+    s.path = Some(sr_gpu::pathtrace::PathOpts { samples: 1, bounces: 1, denoise: false, noise: None });
+    // the CPU tracer takes lit scenes under a sun
+    s.lights.push(sr_gpu::three::Light3 {
+        kind: sr_gpu::three::LightKind::Directional,
+        pos: Vec3::ZERO,
+        dir: Vec3::Z,
+        right: Vec3::X,
+        color: Vec3::splat(2.),
+        range: 0.,
+        falloff: 0.,
+        cos_outer: 0.,
+        cos_inner: 0.,
+        cast_shadow: true,
+        softness: 0.,
+        bias: 0.001,
+        map_size: 64,
+        size: [0.; 3],
+        ies: None,
+        affects_diffuse: true,
+        affects_specular: true,
+        contact: 0.,
+    });
+    engine.render_now(&s, None);
+    assert_eq!(engine.stats.pt_cpu_scenes, 1, "the first pass builds the tracer's scene");
+    s.draws[0].material.base_color = [0.2, 0.8, 0.4, 1.];
+    let warm = engine.render_now(&s, None);
+    assert_eq!(engine.stats.pt_cpu_scenes, 0, "a pass over the same geometry and textures reuses it");
+    let mut fresh = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+    fresh.software_adapter = true;
+    assert_eq!(warm, fresh.render_now(&s, None));
+    s.draws[0].maps[0] = Some(engine.upload_rgba8(1, 1, &[64, 128, 192, 255], true));
+    engine.render_now(&s, None);
+    assert_eq!(engine.stats.pt_cpu_scenes, 1, "other textures are another scene");
+    s.draws[0].model.w_axis.x += 3.;
+    engine.render_now(&s, None);
+    assert_eq!(engine.stats.pt_cpu_scenes, 1, "other geometry is another scene");
+}
+
+#[test]
 fn packed_geometry_is_immutable_across_reversed_submissions_and_texture_changes() {
     let Some(gpu) = common::gpu() else { return };
     let mut e = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());

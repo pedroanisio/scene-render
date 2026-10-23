@@ -1756,6 +1756,10 @@ fn variant_source(base: &str, water: bool, foam: bool, scatter: bool) -> String 
     format!("{source}\n{}", include_str!("pathtrace_scatter.wgsl"))
 }
 
+/// How many of the CPU tracer's built scenes a tracer keeps, and their bytes in all.
+const CPU_TOPS: usize = 4;
+const CPU_TOP_BYTES: usize = 16 << 20;
+
 /// Pipelines of the path tracer (built on first use).
 pub struct PtGpu {
     bgl0: wgpu::BindGroupLayout,
@@ -1785,8 +1789,18 @@ pub struct PtGpu {
     tile_bytes: u64,
     packed: std::sync::Mutex<packed::Cache>,
     scratch: std::sync::Mutex<Option<Scratch>>,
+    /// What the CPU tracer built from the scenes of recent passes, by geometry identity and atlas key, most recent
+    /// last; at most [`CPU_TOPS`] of them and [`CPU_TOP_BYTES`] in all.
+    cpu_tops: std::sync::Mutex<std::collections::VecDeque<KeptTop>>,
     /// Whether the device is a CPU adapter (the renderer sets it): the trace workgroups are then permuted.
     pub cpu_adapter: bool,
+}
+
+/// What the CPU tracer built from the scene of geometry `id` with the atlas `key`.
+struct KeptTop {
+    id: u64,
+    key: Vec<AtlasKey>,
+    top: std::sync::Arc<cpu::Top>,
 }
 
 /// The buffers every tile of a pass works in, kept from one pass to the next and grown when a tile needs more: the
@@ -1874,6 +1888,26 @@ impl PtGpu {
             *kept = Some(scratch.clone());
         }
         (scratch, made)
+    }
+    /// What the CPU tracer builds from `data`, the scene of geometry `id` with the atlas `key`: the one kept from an
+    /// earlier pass over the same, or else built now, counted in `built`, and kept.
+    fn cpu_top(&self, id: u64, key: &[AtlasKey], data: &PtScene, built: &mut usize) -> std::sync::Arc<cpu::Top> {
+        let mut tops = self.cpu_tops.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = tops.iter().position(|kept| kept.id == id && kept.key == key) {
+            let entry = tops.remove(i).expect("found");
+            let top = entry.top.clone();
+            tops.push_back(entry);
+            return top;
+        }
+        *built += 1;
+        let top = std::sync::Arc::new(cpu::Top::new(data));
+        if top.bytes() <= CPU_TOP_BYTES {
+            tops.push_back(KeptTop { id, key: key.to_vec(), top: top.clone() });
+            while tops.len() > CPU_TOPS || tops.iter().map(|kept| kept.top.bytes()).sum::<usize>() > CPU_TOP_BYTES {
+                tops.pop_front();
+            }
+        }
+        top
     }
     /// The bind group the output pass reads the finished picture through.
     fn fin_group(&self, d: &wgpu::Device, fin: &wgpu::Buffer) -> wgpu::BindGroup {
@@ -2036,6 +2070,7 @@ impl PtGpu {
             tile_bytes: DEFAULT_TILE_BYTES,
             packed: Default::default(),
             scratch: Default::default(),
+            cpu_tops: Default::default(),
             cpu_adapter: false,
         }
     }
@@ -2267,6 +2302,9 @@ impl PtGpu {
     }
 }
 
+/// The one texel of the dome a pass without one samples.
+const BLACK_DOME: [[f32; 4]; 1] = [[0.0; 4]];
+
 /// Views and samplers the tracer reads that the 3D engine owns.
 pub struct PtInputs<'a> {
     pub env: &'a wgpu::TextureView,
@@ -2494,7 +2532,7 @@ pub(crate) fn render_cached(
             nodes: storage("pt-nodes", bytemuck::cast_slice(&data.nodes)),
             offset,
         };
-        if let Some((id, key)) = identity.zip(key) {
+        if let Some((id, key)) = identity.zip(key.clone()) {
             packed_cache().insert(id, key, atlas, buffers.clone());
         }
         (buffers, media)
@@ -2616,19 +2654,24 @@ pub(crate) fn render_cached(
     } else {
         pt.rays_layout().and_then(|layout| Some((layout, rays::build(d, enc, data, layout)?)))
     };
-    // Records, BVH, atlas and environment texels depend on the scene, not the tile: built once for every tile.
+    // Records, BVH, atlas and environment texels depend on the scene, not the tile: built once for every tile, and
+    // what is built from the scene is kept for the passes over the same geometry and textures.
+    let mut cpu_scenes = 0;
     let cpu = on_cpu.then(|| {
         let base = make_base(&tiles[0]);
-        let env = cpu::EnvMap {
-            w: inputs.env_texels.map_or(1, |e| e.0),
-            h: inputs.env_texels.map_or(1, |e| e.1),
-            rgba: inputs.env_texels.map_or_else(|| vec![[0.0; 4]], |e| e.2.clone()),
-            rot: base.env_rot,
-            intensity: base.env[1],
+        let env = match inputs.env_texels {
+            Some((w, h, texels)) => cpu::EnvMap::borrowed(*w, *h, texels, base.env_rot, base.env[1]),
+            None => cpu::EnvMap::borrowed(1, 1, &BLACK_DOME, base.env_rot, base.env[1]),
         };
-        (cpu::Dense::new(data), env)
+        let top = match identity.zip(key.as_deref()) {
+            Some((id, key)) => pt.cpu_top(id, key, data, &mut cpu_scenes),
+            None => {
+                cpu_scenes += 1;
+                std::sync::Arc::new(cpu::Top::new(data))
+            }
+        };
+        (cpu::Dense::with(data, top), env)
     });
-    let cpu_scenes = usize::from(cpu.is_some());
     for (tile_index, tile) in tiles.iter().enumerate() {
         enc.clear_buffer(accum, 0, None);
         enc.clear_buffer(guide, 0, None);

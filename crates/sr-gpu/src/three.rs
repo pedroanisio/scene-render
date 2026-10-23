@@ -506,6 +506,8 @@ pub struct Stats3 {
     pub pt_geometry_uploads: usize,
     /// Texels (and IES profile values) the path tracer packed into its texture atlas this pass.
     pub pt_atlas_texels: usize,
+    /// Scenes the CPU tracer built this pass: none when the GPU traced it or a kept one served.
+    pub pt_cpu_scenes: usize,
     pub draws: usize,
     pub triangles: u64,
     pub shadow_views: usize,
@@ -2099,6 +2101,7 @@ impl ThreeEngine {
                 pt_pack_seconds: timing.pack_seconds,
                 pt_geometry_uploads: timing.geometry_uploads,
                 pt_atlas_texels: timing.atlas_texels,
+                pt_cpu_scenes: timing.cpu_scenes,
                 ..Default::default()
             };
             self.pt_geometry.recycle(data, ticket);

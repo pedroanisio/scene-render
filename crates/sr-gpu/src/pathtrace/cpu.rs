@@ -23,21 +23,27 @@ impl Rng {
 }
 
 /// The dome as the shader reads it: mip 0 of the prefiltered chain, f16-rounded, sampled bilinearly with repeat
-/// addressing; `rot` is `env_rot` in column-major order and `intensity` is `env.y`.
-pub(crate) struct EnvMap {
+/// addressing; `rot` is `env_rot` in column-major order and `intensity` is `env.y`. A pass borrows the texels the
+/// engine keeps (about 32 MB for a 2K dome) rather than copying them.
+pub(crate) struct EnvMap<'a> {
     pub w: u32,
     pub h: u32,
-    pub rgba: Vec<[f32; 4]>,
+    pub rgba: std::borrow::Cow<'a, [[f32; 4]]>,
     pub rot: [[f32; 4]; 4],
     pub intensity: f32,
 }
 
-impl EnvMap {
+impl<'a> EnvMap<'a> {
     /// Rounds rgb texels to f16 as the rgba16float upload does (alpha 1).
-    pub(crate) fn from_rgb(w: u32, h: u32, rgb: &[[f32; 3]], rot: [[f32; 4]; 4], intensity: f32) -> EnvMap {
+    pub(crate) fn from_rgb(w: u32, h: u32, rgb: &[[f32; 3]], rot: [[f32; 4]; 4], intensity: f32) -> EnvMap<'static> {
         let f = |x: f32| half::f16::from_f32(x).to_f32();
         let rgba = rgb.iter().map(|p| [f(p[0]), f(p[1]), f(p[2]), 1.0]).collect();
-        EnvMap { w, h, rgba, rot, intensity }
+        EnvMap { w, h, rgba: std::borrow::Cow::Owned(rgba), rot, intensity }
+    }
+
+    /// The dome over texels the caller keeps, already rounded as the upload rounds them.
+    pub(crate) fn borrowed(w: u32, h: u32, rgba: &'a [[f32; 4]], rot: [[f32; 4]; 4], intensity: f32) -> Self {
+        EnvMap { w, h, rgba: std::borrow::Cow::Borrowed(rgba), rot, intensity }
     }
 
     fn texel(&self, x: i64, y: i64) -> [f32; 4] {
@@ -167,22 +173,23 @@ fn reciprocal(d: [f32; 3]) -> [f32; 3] {
     d.map(|c| 1.0 / if c.abs() < 1e-12 { 1e-12 } else { c })
 }
 
-/// A `PtScene` with its instance records in a dense array: `slot[k]` indexes `records` for a triangle `k` that is an
-/// instance, so the hot paths skip the hash lookup.
-pub(crate) struct Dense<'a> {
-    scene: &'a PtScene,
+/// What the CPU tracer builds from a `PtScene` beyond the scene itself, which the tracer keeps for the passes over
+/// the same geometry and textures: the instance records in a dense array (`slot[k]` indexes `records` for a
+/// triangle `k` that is an instance, so the hot paths skip the hash lookup), the atlas packed into words, and the
+/// CPU's own top-level BVH.
+pub(crate) struct Top {
     /// The texture atlas packed into words.
     pixels: Vec<u32>,
     records: Vec<[[f32; 4]; 24]>,
     slot: Vec<u32>,
-    /// The CPU's own top-level BVH (binned SAH): leaves `top[i].a .. + b` index `order`, inner nodes have their
+    /// The CPU's own top-level BVH (binned SAH): leaves `nodes[i].a .. + b` index `order`, inner nodes have their
     /// children at `a` and `a + 1`. It is empty when the scene has no top-level primitive.
-    top: Vec<PtNode>,
+    nodes: Vec<PtNode>,
     order: Vec<u32>,
 }
 
-impl<'a> Dense<'a> {
-    pub(crate) fn new(scene: &'a PtScene) -> Self {
+impl Top {
+    pub(crate) fn new(scene: &PtScene) -> Self {
         let mut keys: Vec<usize> = scene.instances.keys().copied().collect();
         keys.sort_unstable();
         let len = keys.last().map_or(0, |k| k + 1);
@@ -192,14 +199,40 @@ impl<'a> Dense<'a> {
             slot[k] = records.len() as u32;
             records.push(scene.instances[&k]);
         }
-        let (top, order) = sah_bvh(top_level_prims(scene));
-        Dense { scene, pixels: scene.atlas_pixels(), records, slot, top, order }
+        let (nodes, order) = sah_bvh(top_level_prims(scene));
+        Top { pixels: scene.atlas_pixels(), records, slot, nodes, order }
+    }
+
+    /// The bytes this holds, for the tracer's budget.
+    pub(crate) fn bytes(&self) -> usize {
+        self.pixels.len() * 4
+            + self.records.len() * std::mem::size_of::<[[f32; 4]; 24]>()
+            + self.slot.len() * 4
+            + self.nodes.len() * std::mem::size_of::<PtNode>()
+            + self.order.len() * 4
+    }
+}
+
+/// A `PtScene` with what the tracer built from it.
+pub(crate) struct Dense<'a> {
+    scene: &'a PtScene,
+    top: std::sync::Arc<Top>,
+}
+
+impl<'a> Dense<'a> {
+    pub(crate) fn new(scene: &'a PtScene) -> Self {
+        Self::with(scene, std::sync::Arc::new(Top::new(scene)))
+    }
+
+    /// `scene` with a `top` built from it, or from a scene with the same geometry, instances and atlas.
+    pub(crate) fn with(scene: &'a PtScene, top: std::sync::Arc<Top>) -> Self {
+        Dense { scene, top }
     }
 
     /// The record of instance `k`; panics like the map index when `k` is not an instance.
     #[inline]
     pub(crate) fn record(&self, k: usize) -> &[[f32; 4]; 24] {
-        &self.records[self.slot[k] as usize]
+        &self.top.records[self.top.slot[k] as usize]
     }
 }
 
@@ -243,7 +276,9 @@ fn prototype_hit(scene: &Dense, instance: usize, world_o: [f32; 3], world_d: [f3
 /// The shader's `trace`: the nearest hit along the ray within `tmax` (`tri == 0xffffffff` when there is none).
 pub(crate) fn trace(scene: &Dense, o: [f32; 3], d: [f32; 3], tmax: f32) -> Hit {
     let mut h = Hit { t: tmax, u: 0.0, v: 0.0, tri: NONE, instance: NONE };
-    if scene.top.is_empty() {
+    // the shared scene's slices, read once for the walk
+    let (nodes, order) = (&scene.top.nodes[..], &scene.top.order[..]);
+    if nodes.is_empty() {
         return h;
     }
     let inv = reciprocal(d);
@@ -251,12 +286,12 @@ pub(crate) fn trace(scene: &Dense, o: [f32; 3], d: [f32; 3], tmax: f32) -> Hit {
     let mut sp = 1usize;
     while sp > 0 {
         sp -= 1;
-        let n = &scene.top[stack[sp] as usize];
+        let n = &nodes[stack[sp] as usize];
         if !box_hit(n, o, inv, h.t) {
             continue;
         }
         if n.b > 0 {
-            for &k in &scene.order[n.a as usize..(n.a + n.b) as usize] {
+            for &k in &order[n.a as usize..(n.a + n.b) as usize] {
                 if scene.tri_mat[k as usize] == PROTOTYPE {
                     prototype_hit(scene, k as usize, o, d, tmax, &mut h);
                 } else {
@@ -719,7 +754,7 @@ mod bsdf_tests {
 mod tests {
     use super::*;
 
-    const IDENT: [[f32; 4]; 4] = [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]];
+    pub(super) const IDENT: [[f32; 4]; 4] = [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]];
 
     #[test]
     fn env_lookup_matches_hand_bilinear_values() {
@@ -881,10 +916,10 @@ mod tests {
         let mut seen = vec![0u32; 1000];
         let mut stack = vec![0usize];
         while let Some(i) = stack.pop() {
-            let n = d.top[i];
+            let n = d.top.nodes[i];
             if n.b > 0 {
                 assert!(n.b as usize <= SAH_LEAF);
-                for &k in &d.order[n.a as usize..(n.a + n.b) as usize] {
+                for &k in &d.top.order[n.a as usize..(n.a + n.b) as usize] {
                     seen[k as usize] += 1;
                     for c in 0..3 {
                         let p = xyz(&s.pos[k as usize * 3 + c]);
@@ -893,14 +928,14 @@ mod tests {
                 }
             } else {
                 for child in [n.a as usize, n.a as usize + 1] {
-                    let c = d.top[child];
+                    let c = d.top.nodes[child];
                     assert!((0..3).all(|a| n.lo[a] <= c.lo[a] && c.hi[a] <= n.hi[a]));
                     stack.push(child);
                 }
             }
         }
         assert!(seen.iter().all(|&c| c == 1));
-        assert_eq!(d.order.len(), 1000);
+        assert_eq!(d.top.order.len(), 1000);
     }
 
     #[test]
@@ -908,8 +943,8 @@ mod tests {
         let s = random_scene(20_000);
         let clock = std::time::Instant::now();
         let d = Dense::new(&s);
-        eprintln!("SAH build of 20000 triangles: {:?}, {} nodes", clock.elapsed(), d.top.len());
-        assert_eq!(d.order.len(), 20_000);
+        eprintln!("SAH build of 20000 triangles: {:?}, {} nodes", clock.elapsed(), d.top.nodes.len());
+        assert_eq!(d.top.order.len(), 20_000);
     }
 }
 
@@ -1031,15 +1066,15 @@ pub(crate) fn shade_hit(scene: &Dense, hit: &Hit) -> Shaded {
         let c = |i: usize| scene.uv[k * 3 + i][slot];
         [0, 1].map(|a| c(0)[a] * bary[0] + c(1)[a] * bary[1] + c(2)[a] * bary[2])
     };
-    let base_texel = map_sample(&scene.pixels, m.maps[0], uv(0), m.borders[0]);
+    let base_texel = map_sample(&scene.top.pixels, m.maps[0], uv(0), m.borders[0]);
     let color = [0, 1, 2, 3].map(|a| {
         scene.colors[k * 3][a] * bary[0] + scene.colors[k * 3 + 1][a] * bary[1] + scene.colors[k * 3 + 2][a] * bary[2]
     });
     m.base = [0, 1, 2, 3].map(|a| m.base[a] * base_texel[a] * color[a]);
-    let mr = map_sample(&scene.pixels, m.maps[2], uv(2), m.borders[2]);
+    let mr = map_sample(&scene.top.pixels, m.maps[2], uv(2), m.borders[2]);
     m.params[0] *= mr[2];
     m.params[1] *= mr[1];
-    let e = map_sample(&scene.pixels, m.maps[4], uv(4), m.borders[4]);
+    let e = map_sample(&scene.top.pixels, m.maps[4], uv(4), m.borders[4]);
     m.emissive = [m.emissive[0] * e[0], m.emissive[1] * e[1], m.emissive[2] * e[2], m.emissive[3]];
     if m.emissive[3] > 0.5 {
         m.emissive = [m.base[0], m.base[1], m.base[2], m.emissive[3]];
@@ -1077,7 +1112,7 @@ pub(crate) fn shade_hit(scene: &Dense, hit: &Hit) -> Shaded {
     let bw = 1.0 - hit.u - hit.v;
     let n = [0, 1, 2].map(|a| n0[a] * bw + n1[a] * hit.u + n2[a] * hit.v);
     let n = if dot(n, n) < 1e-8 { ng } else { normalize(n) };
-    let ao = map_sample(&scene.pixels, m.maps[3], uv(3), m.borders[3]);
+    let ao = map_sample(&scene.top.pixels, m.maps[3], uv(3), m.borders[3]);
     Shaded {
         base: m.base,
         params: m.params,
@@ -1511,7 +1546,7 @@ mod radiance_tests {
 
     const SUN_COLOUR: [f32; 3] = [2.0, 1.5, 1.0];
 
-    fn env_of(c: [f32; 3], intensity: f32) -> EnvMap {
+    fn env_of(c: [f32; 3], intensity: f32) -> EnvMap<'static> {
         let id = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
         EnvMap::from_rgb(4, 2, &[c; 8], id, intensity)
     }
@@ -1613,6 +1648,14 @@ mod radiance_tests {
     }
 
     #[test]
+    fn the_dome_the_pass_hands_the_tracer_is_borrowed_not_copied() {
+        let texels = vec![[0.5, 0.25, 0.125, 1.0]; 8];
+        let env = EnvMap::borrowed(4, 2, &texels, super::tests::IDENT, 1.0);
+        assert!(matches!(env.rgba, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(env.texel(5, -1), texels[0]);
+    }
+
+    #[test]
     fn dense_records_match_the_hash_map_for_every_instance() {
         let mut s = PtScene::default();
         for (n, k) in [7usize, 0, 3, 42, 19].into_iter().enumerate() {
@@ -1625,7 +1668,7 @@ mod radiance_tests {
         for (k, r) in &s.instances {
             assert_eq!(d.record(*k), r);
         }
-        assert!(Dense::new(&PtScene::default()).slot.is_empty());
+        assert!(Dense::new(&PtScene::default()).top.slot.is_empty());
     }
 
     #[test]
