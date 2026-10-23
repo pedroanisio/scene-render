@@ -275,6 +275,8 @@ pub struct InstNode {
     pub z_slot: Option<u32>,
     /// Whether any child has an animated `z`: the evaluator then restacks the children every frame.
     pub restack: bool,
+    /// Whether the element has a `transformConstraint` child, which the evaluator's constraint pass applies.
+    pub constrained: bool,
     /// `@threeD`.
     pub three_d: bool,
     /// `@matteVisible`.
@@ -361,6 +363,9 @@ pub struct Slot {
     /// document's assets, effects and materials) run on the included document's time, which the include's clock
     /// gives, as its content does.
     pub clock: Option<u32>,
+    /// The noise channel of `wiggle` and `random` in the slot's expression: [`crate::expr::vm::property_channel`] of
+    /// its property.
+    pub noise_channel: u64,
 }
 
 /// An element with animated properties that is not a node.
@@ -522,6 +527,8 @@ pub struct Program {
     /// Models read for joint sockets, and the joints each object is asked for.
     pub(crate) joint_models: crate::joints::Cache,
     pub(crate) joint_sockets: std::sync::OnceLock<crate::joints::Sockets>,
+    /// Fitted map cameras by document and map id ([`crate::geo::camera`]): a map's fit data is read once per program.
+    pub(crate) map_cameras: std::sync::Mutex<HashMap<u16, HashMap<String, std::sync::Arc<crate::geo::Camera>>>>,
     /// Stroke fonts read for `stroke-text` shapes.
     pub(crate) stroke_fonts: crate::stroke_font::Cache,
     /// Voxel assets read, by asset key (see `voxel_asset`).
@@ -555,6 +562,11 @@ pub struct Program {
     /// Whether another slot's expression or link reads the slot: one nobody reads is not evaluated while
     /// its node is off screen (see eval::Frame::slots).
     pub slot_read: Vec<bool>,
+    /// For each node, whether its slots are read while it is off screen by more than other slots: a transition's
+    /// properties, and the transform of a node another one is parented to (and of that node's ancestors), which
+    /// places the child even before the parent is drawn. The slots of other off-screen nodes that no slot reads
+    /// are not evaluated (see eval::Frame::slots).
+    pub pinned: Vec<bool>,
     /// Channels.
     pub channels: Vec<Channel>,
     /// Expressions.
@@ -1553,6 +1565,7 @@ impl Builder {
                 },
                 z_slot: None,
                 restack: false,
+                constrained: crate::rig::has_constraint(e),
                 three_d: attr_bool(e, "threeD").unwrap_or(false),
                 matte_visible: attr_bool(e, "matteVisible").unwrap_or(false),
                 visible: attr_bool(e, "visible").unwrap_or(true)
@@ -2621,6 +2634,7 @@ impl Builder {
             link: None,
             time_node,
             clock,
+            noise_channel: crate::expr::vm::property_channel(&key.1),
         });
         self.slot_ix.insert(key, i);
         match owner {
@@ -3496,6 +3510,26 @@ impl Builder {
         format!("{owner}.{}", slot.prop)
     }
 
+    /// [`Program::pinned`]: transition nodes, and parent-link targets with their ancestors, closed over the parent
+    /// links of those ancestors.
+    fn pinned(&self) -> Vec<bool> {
+        let mut pinned = vec![false; self.nodes.len()];
+        let mut stack: Vec<u32> = self.nodes.iter().filter_map(|n| n.parent_link).collect();
+        while let Some(n) = stack.pop() {
+            if std::mem::replace(&mut pinned[n as usize], true) {
+                continue;
+            }
+            let node = &self.nodes[n as usize];
+            stack.extend(node.parent.iter().chain(node.parent_link.iter()));
+        }
+        for t in &self.transitions {
+            if let Some(n) = t.node {
+                pinned[n as usize] = true;
+            }
+        }
+        pinned
+    }
+
     /// For each slot, whether another slot's expression or link reads it.
     fn slot_read(&self) -> Vec<bool> {
         let mut read = vec![false; self.slots.len()];
@@ -3775,6 +3809,7 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
     b.compile_pending();
     let order = b.order();
     let mut slot_read = b.slot_read();
+    let pinned = b.pinned();
     b.fill_tf_slots();
     // transition handles: extend visibility of the nodes on both sides
     let windows: Vec<(Option<u32>, Option<u32>, (f64, f64))> =
@@ -3895,6 +3930,7 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         mesh_sequence_cache: Default::default(),
         joint_models: Default::default(),
         joint_sockets: Default::default(),
+        map_cameras: Default::default(),
         stroke_fonts: Default::default(),
         voxel_models: Default::default(),
         base_dirs,
@@ -3916,6 +3952,7 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         slots: b.slots,
         order,
         slot_read,
+        pinned,
         channels: b.channels,
         exprs: b.exprs,
         geoms: b.geoms,
@@ -4243,6 +4280,28 @@ fn zero_opacity_sources(scene: &sr_model::model::Scene, warnings: &mut Vec<Diagn
                 loc,
                 id.as_str(),
             ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::expr::vm::property_channel;
+
+    #[test]
+    fn each_slot_keeps_the_noise_channel_of_its_property() {
+        let xml = r##"<scene version="1.1"><project width="200" height="200" fps="10" duration="1"/><composition>
+<shape id="a" shape="rect" width="4" height="4"><expression property="x">value + wiggle(2, 5)</expression><expression property="skewX">wiggle(1, 3)</expression></shape>
+<shape id="b" shape="ellipse" width="4" height="4"><expression property="opacity">random()</expression><expression property="strokeWidth">value + wiggle(1, 2)</expression></shape>
+</composition></scene>"##;
+        let doc = sr_model::load_str(xml, &sr_model::LoadOptions::without_assets()).expect("valid");
+        let ev = crate::Evaluator::new(&doc, &crate::EvalOptions::default()).unwrap_or_else(|r| panic!("{r}"));
+        let slots = &ev.program().slots;
+        for prop in ["x", "skewX", "opacity", "strokeWidth"] {
+            assert!(slots.iter().any(|s| &*s.prop == prop && s.expr.is_some()), "a slot with an expression on {prop}");
+        }
+        for s in slots {
+            assert_eq!(s.noise_channel, property_channel(&s.prop), "{}", s.prop);
         }
     }
 }

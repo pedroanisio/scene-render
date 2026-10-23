@@ -1293,6 +1293,10 @@ fn call(f: Func, args: &[V], site: u32, host: &mut dyn Host) -> V {
             };
             let (seed, channel) = (host.noise_seed(), host.noise_channel());
             let value = host.var(Var::Value);
+            if let (V::Num(b), V::Num(a)) = (&value, amp) {
+                // a number wiggled by a number: component 0 of the general case below
+                return V::Num(b + a * rng::weighted_octaves(seed, channel, t * freq, octaves, mult));
+            }
             let base = value.components().unwrap_or_else(|| vec![0.0]);
             let amps = amp.components().unwrap_or_else(|| vec![0.0]);
             // value + amp · Σ multᵏ N(seed, channel · 1024 + k, t · freq · 2ᵏ) / Σ multᵏ;
@@ -1635,6 +1639,21 @@ mod tests {
         // with a y: improved Perlin noise over the permutation of channel 7
         close(eval("noise(0.3, 0.7)").num(), 0.28006378512);
         assert_eq!(eval("wiggle(2, 30)"), V::nums(&[10.0, 20.0]), "noise is zero at integers");
+    }
+
+    #[test]
+    fn a_wiggled_number_is_component_zero_of_a_wiggled_array() {
+        // the golden values of `vectors_and_builtins` for component 0 of [10, 20], wiggling the number 10
+        let at = |src: &str, value: V| {
+            let code = compile(src, &mut NoRes).unwrap_or_else(|e| panic!("{src}: {e}"));
+            run(&code, &mut H { t: 2.0, value }, &mut Vec::new())
+        };
+        let close = |a: f64, b: f64| assert!((a - b).abs() < 1e-9, "{a} != {b}");
+        close(at("wiggle(1.3, 30)", V::Num(10.0)).num(), 4.2630009694359075);
+        close(at("wiggle(1.3, 30, 3, 0.7)", V::Num(10.0)).num(), 8.501919830169559);
+        // an array amplitude on a number takes its first component
+        close(at("wiggle(1.3, [30, 5])", V::Num(10.0)).num(), 4.2630009694359075);
+        assert_eq!(at("wiggle(2, 30)", V::Num(10.0)), V::Num(10.0), "noise is zero at integers");
     }
 
     #[test]

@@ -26,6 +26,12 @@ pub struct Camera {
     pub center: [f64; 2],
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Times a camera's fit signature was built (the fit files stat'ed).
+    static FITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 type FeatureCache = HashMap<String, Result<Arc<Vec<Feature>>, String>>;
 
 /// Features of a geo file, read once per process (keyed by path, size and modification time).
@@ -68,8 +74,19 @@ pub fn map_asset<'p>(p: &'p Program, doc: u16, id: &str) -> Option<&'p m::MapAss
     }
 }
 
-/// The fitted camera of a map asset of document `doc` (cached per process by its setup).
+/// The fitted camera of a map asset of document `doc`, fitted once per program.
 pub fn camera(p: &Program, doc: u16, mp: &m::MapAsset) -> Result<Arc<Camera>, String> {
+    let memo = || p.map_cameras.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(cam) = memo().get(&doc).and_then(|m| m.get(mp.id.as_str())) {
+        return Ok(cam.clone());
+    }
+    let cam = fit(p, doc, mp)?;
+    memo().entry(doc).or_default().insert(mp.id.clone(), cam.clone());
+    Ok(cam)
+}
+
+/// The camera of a map asset, cached per process by its setup and the size and modification time of its fit files.
+fn fit(p: &Program, doc: u16, mp: &m::MapAsset) -> Result<Arc<Camera>, String> {
     static CACHE: OnceLock<Mutex<HashMap<String, Arc<Camera>>>> = OnceLock::new();
     let kind = Kind::parse(&mp.projection.to_string()).ok_or("unknown projection")?;
     let parallels = mp.parallels.as_ref().filter(|p| p.len() >= 2).map(|p| [p[0], p[1]]);
@@ -84,6 +101,8 @@ pub fn camera(p: &Program, doc: u16, mp: &m::MapAsset) -> Result<Arc<Camera>, St
         mp.fit_padding.get(),
         mp.precision.get()
     );
+    #[cfg(test)]
+    FITS.with(|c| c.set(c.get() + 1));
     for id in &fit_ids {
         let (g, path) = geo_asset(p, doc, id)?;
         let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -321,4 +340,38 @@ pub fn elevation(a: &Arc<Archive>, z: u8, enc: DemEncoding, lon: f64, lat: f64) 
     let (u, v) = (fx - x0 as f64, fy - y0 as f64);
     let at = |x: usize, y: usize| d.1[y * w + x] as f64;
     Ok(Some((at(x0, y0) * (1.0 - u) + at(x1, y0) * u) * (1.0 - v) + (at(x0, y1) * (1.0 - u) + at(x1, y1) * u) * v))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FITS;
+
+    #[test]
+    fn a_program_fits_each_map_once() {
+        let d = std::env::temp_dir().join(format!("sr-eval-geo-fit-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("box.geojson"),
+            r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[0,0],[40,0],[40,20],[0,20],[0,0]]]}}]}"#,
+        )
+        .unwrap();
+        let xml = r##"<scene version="1.6"><project width="200" height="200" fps="10" duration="2"/>
+<assets><geo id="g" src="box.geojson"/><map id="m" width="200" height="200" projection="equirectangular" fit="g"/></assets>
+<composition><shape id="mark" shape="rect" width="4" height="4" fill="#FFFFFF"><expression property="x">geo('m', 20, 10)[0]</expression></shape></composition></scene>"##;
+        let opts = sr_model::LoadOptions { verify_assets: false, base_dir: Some(d.clone()) };
+        let doc = sr_model::load_str(xml, &opts).unwrap_or_else(|e| panic!("{e:?}"));
+        let ev = crate::Evaluator::new(&doc, &Default::default()).unwrap_or_else(|e| panic!("{e:?}"));
+        FITS.with(|c| c.set(0));
+        let xs: Vec<f64> = (0..4)
+            .map(|i| {
+                let g = ev.evaluate_layout(i as f64 * 0.25);
+                let n = g.nodes.iter().find(|n| &*n.id == "mark").expect("mark");
+                n.world.0[4]
+            })
+            .collect();
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(FITS.with(|c| c.get()), 1, "the fit data is looked up once per program, not per expression call");
+        assert!((xs[0] - 100.0).abs() < 1.0, "the box's centre is the frame's: {xs:?}");
+        assert!(xs.iter().all(|&x| x == xs[0]), "{xs:?}");
+    }
 }

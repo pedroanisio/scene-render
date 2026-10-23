@@ -691,16 +691,25 @@ fn apply_delta(nodes: &mut [FrameNode], i: usize, d: &Xf) {
     }
 }
 
-/// Constraints, skeleton poses and stabilisation for one frame.
-pub fn post_pass(prog: &Program, nodes: &mut [FrameNode], t: f64) {
+/// Whether `e` has a `transformConstraint` child: the nodes [`post_pass`] applies constraints to.
+pub fn has_constraint(e: &dyn Element) -> bool {
+    let mut found = false;
+    e.visit(&mut |c| found |= is(c, "transformConstraint"));
+    found
+}
+
+/// Constraints, skeleton poses and stabilisation for one frame. `inst[i]` is the program node of `nodes[i]`.
+pub fn post_pass(prog: &Program, nodes: &mut [FrameNode], inst: &[u32], t: f64) {
     let sc = Scene { p: prog, t };
     // node constraints in paint order
     for i in 0..nodes.len() {
         // constraints inside a skeleton belong to its bones
-        if nodes[i].kind == "skeleton" {
+        if nodes[i].kind == "skeleton" || !prog.nodes[inst[i] as usize].constrained {
             continue;
         }
         let e: Arc<sr_model::model::Node> = nodes[i].elem.clone();
+        #[cfg(test)]
+        CHILD_WALKS.with(|w| w.set(w.get() + 1));
         let mut ck = 0;
         for c in children(&*e) {
             if !is(c, "transformConstraint") {
@@ -875,4 +884,31 @@ fn stabilize(sc: &Scene, nodes: &[FrameNode], i: usize, te: &TrackEntry, smooth:
     };
     let m = sc.footage_map(n);
     Some(m.mul(&c).mul(&m.inverse()?))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Nodes whose children [`post_pass`] listed looking for constraints.
+    static CHILD_WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CHILD_WALKS;
+
+    #[test]
+    fn the_constraint_pass_lists_the_children_of_constrained_nodes_only() {
+        let xml = r##"<scene version="1.1"><project width="200" height="200" fps="10" duration="1"/><composition>
+<shape id="target" shape="rect" x="120" y="40" width="4" height="4"/>
+<shape id="plain" shape="rect" x="10" y="10" width="4" height="4"><animate property="x"><key time="0" value="0"/><key time="1" value="50"/></animate></shape>
+<shape id="dot" shape="rect" width="4" height="4"><transformConstraint type="copy-position" target="target"/></shape>
+</composition></scene>"##;
+        let doc = sr_model::load_str(xml, &sr_model::LoadOptions::without_assets()).expect("valid");
+        let ev = crate::Evaluator::new(&doc, &crate::EvalOptions::default()).unwrap_or_else(|r| panic!("{r}"));
+        CHILD_WALKS.with(|w| w.set(0));
+        let g = ev.evaluate(0.5);
+        assert_eq!(CHILD_WALKS.with(|w| w.get()), 1, "only the node with a transformConstraint is searched");
+        let dot = g.nodes.iter().find(|n| &*n.id == "dot").expect("dot");
+        assert!((dot.world.0[4] - 120.0).abs() < 1e-9 && (dot.world.0[5] - 40.0).abs() < 1e-9, "{:?}", dot.world);
+    }
 }

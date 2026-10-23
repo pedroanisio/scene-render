@@ -788,7 +788,7 @@ impl Host for ExprHost<'_, '_> {
 
     fn noise_channel(&mut self) -> u64 {
         match self.slot {
-            Some(s) => vm::property_channel(&self.p.slots[s as usize].prop),
+            Some(s) => self.p.slots[s as usize].noise_channel,
             None => vm::OTHER_CHANNEL,
         }
     }
@@ -843,10 +843,26 @@ impl<'p> Frame<'p> {
         node.is_some_and(|n| !self.alive[n as usize])
     }
 
+    /// Whether slot s can be left uncomputed this frame (keys, link and expression): it is [`Self::idle`] and its
+    /// node is not one whose properties are read off screen ([`crate::Program::pinned`]). Its value is never read.
+    fn unread(&self, s: u32) -> bool {
+        let p = self.p;
+        self.idle(s)
+            && match p.slots[s as usize].owner {
+                Owner::Node(n) => !p.pinned[n as usize],
+                Owner::Element(e) => p.elements[e as usize].node.is_some_and(|n| !p.pinned[n as usize]),
+            }
+    }
+
     fn slots(&mut self, definition_time: Option<f64>) {
         let p = self.p;
         for &s in &p.order {
             let slot = &p.slots[s as usize];
+            if self.unread(s) {
+                continue;
+            }
+            #[cfg(test)]
+            SLOTS_COMPUTED.with(|c| c.set(c.get() + 1));
             let t = if slot.time_node.is_none() {
                 definition_time.unwrap_or_else(|| p.slot_time(s, self.t, Some(&self.tl)))
             } else {
@@ -1241,8 +1257,15 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
         out_ix: Vec<Option<u32>>,
         problems: Vec<String>,
     }
-    let mut out =
-        Out { inst: Vec::new(), nodes: Vec::new(), world: vec![None; n], out_ix: vec![None; n], problems: Vec::new() };
+    // every drawn node is alive, so the alive count bounds the output without reserving for the whole document
+    let alive = f.alive.iter().filter(|&&a| a).count();
+    let mut out = Out {
+        inst: Vec::with_capacity(alive),
+        nodes: Vec::with_capacity(alive),
+        world: vec![None; n],
+        out_ix: vec![None; n],
+        problems: Vec::new(),
+    };
 
     // depth-first, z-sorted, active nodes only
     #[allow(clippy::too_many_arguments)]
@@ -1469,7 +1492,7 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
         }
     }
 
-    crate::rig::post_pass(p, &mut out.nodes, t);
+    crate::rig::post_pass(p, &mut out.nodes, &out.inst, t);
     // shapes on pdf regions follow their layer, and connectors read their ends as drawn, once every pose is final
     crate::region::resolve(p, &mut out.nodes);
     crate::connector::resolve(p, &mut out.nodes);
@@ -1651,4 +1674,81 @@ fn token_color(p: &Program, name: &str) -> Option<[f64; 4]> {
 /// Marker time lookup exposed for callers (includes `beat.N`/`bar.N`).
 pub fn marker(p: &Program, id: &str) -> Option<f64> {
     marker_time(&p.markers, p.beat, id)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Slots [`Frame::slots`] computed.
+    static SLOTS_COMPUTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SLOTS_COMPUTED;
+
+    fn frame(body: &str, t: f64) -> (crate::FrameGraph, usize) {
+        let xml = format!(
+            r##"<scene version="1.1"><project width="200" height="200" fps="10" duration="6"/><assets><image id="img" src="img.png" width="8" height="8"/></assets><composition>{body}</composition></scene>"##
+        );
+        let doc = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).expect("valid");
+        let ev = crate::Evaluator::new(&doc, &crate::EvalOptions::default()).unwrap_or_else(|r| panic!("{r}"));
+        SLOTS_COMPUTED.with(|c| c.set(0));
+        let g = ev.evaluate_layout(t);
+        (g, SLOTS_COMPUTED.with(|c| c.get()))
+    }
+
+    fn held(prop: &str, v: f64) -> String {
+        format!(r#"<animate property="{prop}"><key time="0" value="{v}"/><key time="10" value="{v}"/></animate>"#)
+    }
+
+    #[test]
+    fn keyframes_of_an_off_screen_node_nobody_reads_are_not_evaluated() {
+        let on = format!(r#"<shape id="on" shape="rect" width="4" height="4">{}</shape>"#, held("x", 30.0));
+        let (_, alone) = frame(&on, 0.5);
+        let later = format!(
+            r#"<shape id="later" shape="rect" width="4" height="4" start="2">{}{}</shape>"#,
+            held("x", 1.0),
+            held("y", 2.0)
+        );
+        let (g, with_later) = frame(&format!("{on}{later}"), 0.5);
+        assert!(g.nodes.iter().all(|n| &*n.id != "later"), "not on screen yet");
+        assert_eq!(with_later, alone, "the later shape's keyframes wait for its window");
+        let (g, shown) = frame(&format!("{on}{later}"), 2.5);
+        let n = g.nodes.iter().find(|n| &*n.id == "later").expect("on screen");
+        assert_eq!((n.world.0[4], n.world.0[5]), (1.0, 2.0));
+        assert!(shown > alone);
+    }
+
+    #[test]
+    fn a_node_parented_to_an_off_screen_node_reads_its_keyframes() {
+        let body = format!(
+            r#"<shape id="later" shape="rect" width="4" height="4" start="2">{}</shape><shape id="kid" shape="rect" width="4" height="4" parent="later" x="10"/>"#,
+            held("x", 100.0)
+        );
+        let (g, _) = frame(&body, 0.5);
+        let kid = g.nodes.iter().find(|n| &*n.id == "kid").expect("kid");
+        assert_eq!(kid.world.0[4], 110.0, "the parent's animated x, though the parent is not drawn yet");
+    }
+
+    #[test]
+    fn a_transition_reads_its_own_keyframes() {
+        let body = format!(
+            r#"<layer id="a" asset="img" end="2"/><layer id="b" asset="img" start="2"/><transition type="wipe" from="a" to="b" duration="1" curve="linear">{}</transition>"#,
+            held("softness", 0.6)
+        );
+        let (g, _) = frame(&body, 2.0);
+        assert_eq!(g.transitions.len(), 1);
+        assert_eq!(g.transitions[0].props.get("softness").and_then(|v| v.as_num()), Some(0.6));
+    }
+
+    #[test]
+    fn a_transition_outliving_its_group_reads_its_own_keyframes() {
+        let body = format!(
+            r#"<group id="g" end="1"><layer id="a" asset="img" end="2"/><layer id="b" asset="img" start="2"/><transition type="wipe" from="a" to="b" duration="1" curve="linear">{}</transition></group>"#,
+            held("softness", 0.6)
+        );
+        let (g, _) = frame(&body, 2.0);
+        assert_eq!(g.transitions.len(), 1);
+        assert_eq!(g.transitions[0].props.get("softness").and_then(|v| v.as_num()), Some(0.6));
+    }
 }
