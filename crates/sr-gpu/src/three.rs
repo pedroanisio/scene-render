@@ -733,6 +733,11 @@ pub struct ThreeEngine {
     shadow_maps: Vec<KeptShadow>,
     #[cfg(test)]
     keep_shadow_maps: bool,
+    /// The light-tile words of the previous render, refilled by the next one.
+    tile_words: Vec<u32>,
+    /// Unroll up to four lights even when some tile leaves one out: the reference of the tiled loop.
+    #[cfg(test)]
+    unroll_every_light: bool,
     /// Shadow views drawn so far.
     #[cfg(test)]
     shadow_views_drawn: usize,
@@ -1430,6 +1435,9 @@ impl ThreeEngine {
             shadow_maps: Vec::new(),
             #[cfg(test)]
             keep_shadow_maps: true,
+            tile_words: Vec::new(),
+            #[cfg(test)]
+            unroll_every_light: false,
             #[cfg(test)]
             shadow_views_drawn: 0,
             #[cfg(test)]
@@ -1900,6 +1908,34 @@ fn shadow_key(
     Some((h.finish(), meshes))
 }
 
+/// Fills `words` with the lights of each tile, row by row: a tile's [`MAX_PER_TILE`] + 1 words hold its count, then
+/// the lights whose tile rectangle (`rects`, by light) covers it, in scene order, at most [`MAX_PER_TILE`]. Words past
+/// a tile's count are left as they were: nothing reads them. Returns whether some tile had more lights.
+fn fill_tile_lists(words: &mut Vec<u32>, rects: &[Option<[u32; 4]>], tiles: [u32; 2]) -> bool {
+    let stride = MAX_PER_TILE + 1;
+    words.resize((tiles[0] * tiles[1]) as usize * stride, 0);
+    for count in words.iter_mut().step_by(stride) {
+        *count = 0;
+    }
+    let mut overflow = false;
+    for (li, r) in rects.iter().enumerate() {
+        let Some([x0, y0, x1, y1]) = *r else { continue };
+        for ty in y0..=y1 {
+            for tx in x0..=x1 {
+                let base = (ty * tiles[0] + tx) as usize * stride;
+                let n = words[base] as usize;
+                if n < MAX_PER_TILE {
+                    words[base + 1 + n] = li as u32;
+                    words[base] += 1;
+                } else {
+                    overflow = true;
+                }
+            }
+        }
+    }
+    overflow
+}
+
 impl ThreeEngine {
     /// The IES table of `lights` and each light's row in it (-1 without a profile).
     fn ies_atlas(&mut self, lights: &[Light3], skip_unused: bool) -> (wgpu::TextureView, Vec<f32>) {
@@ -2210,9 +2246,13 @@ impl ThreeEngine {
         // Up to four lights that every tile holds, in scene order, expose each kind and index to the shader
         // compiler: three bits of kind per light, the count above them. Longer lists and lights culled from some
         // tile keep the tiled loop.
+        #[cfg(not(test))]
+        let unroll_every_light = false;
+        #[cfg(test)]
+        let unroll_every_light = self.unroll_every_light;
         let everywhere = || {
             let all = Some([0, 0, tiles[0] - 1, tiles[1] - 1]);
-            scene.lights.iter().all(|l| light_tiles(l, &vp, size, tiles) == all)
+            unroll_every_light || scene.lights.iter().all(|l| light_tiles(l, &vp, size, tiles) == all)
         };
         let light_signature =
             if self.specialize_global_lights && scene.lights.len() <= 4 && (global_lights || everywhere()) {
@@ -2225,23 +2265,10 @@ impl ThreeEngine {
             stats.tile_overflow = scene.lights.len() > MAX_PER_TILE;
             vec![0u32]
         } else {
-            let mut tile_data = vec![0u32; (tiles[0] * tiles[1]) as usize * (MAX_PER_TILE + 1)];
-            for (li, l) in scene.lights.iter().enumerate() {
-                let Some([x0, y0, x1, y1]) = light_tiles(l, &vp, size, tiles) else { continue };
-                for ty in y0..=y1 {
-                    for tx in x0..=x1 {
-                        let base = (ty * tiles[0] + tx) as usize * (MAX_PER_TILE + 1);
-                        let n = tile_data[base] as usize;
-                        if n < MAX_PER_TILE {
-                            tile_data[base + 1 + n] = li as u32;
-                            tile_data[base] += 1;
-                        } else {
-                            stats.tile_overflow = true;
-                        }
-                    }
-                }
-            }
-            tile_data
+            let rects: Vec<_> = scene.lights.iter().map(|l| light_tiles(l, &vp, size, tiles)).collect();
+            let mut words = std::mem::take(&mut self.tile_words);
+            stats.tile_overflow = fill_tile_lists(&mut words, &rects, tiles);
+            words
         };
         // ------------------------------------------------ frame uniform
         let env = scene.env.as_ref();
@@ -2298,6 +2325,9 @@ impl ThreeEngine {
         let frame_buf = buf(bytemuck::bytes_of(&frame), wgpu::BufferUsages::UNIFORM, "three-frame");
         let light_buf = buf(bytemuck::cast_slice(&lights_u), wgpu::BufferUsages::STORAGE, "three-lights");
         let tile_buf = buf(bytemuck::cast_slice(&tile_data), wgpu::BufferUsages::STORAGE, "three-tiles");
+        if tile_data.len() > 1 {
+            self.tile_words = tile_data;
+        }
         let mats: Vec<[[f32; 4]; 4]> = if shadow_mats.is_empty() {
             vec![Mat4::IDENTITY.to_cols_array_2d()]
         } else {
@@ -3376,6 +3406,39 @@ mod tests {
         assert_eq!(half_steps(&[[1.0; 4], [0.0; 4]], &[[1.0; 4], [1.0, 0.0, 0.0, 0.0]]), 15360, "the largest channel");
     }
 
+    /// Each tile's words hold its count and its lights in scene order, at most [`MAX_PER_TILE`]; refilling a
+    /// buffer that held other lists gives the lists of a fresh one.
+    #[test]
+    fn tile_lists_hold_each_tiles_lights_in_order_and_cap_them() {
+        use super::*;
+        let stride = MAX_PER_TILE + 1;
+        let list =
+            |words: &[u32], t: usize| words[t * stride + 1..t * stride + 1 + words[t * stride] as usize].to_vec();
+        let tiles = [3, 2];
+        let rects = [Some([0, 0, 2, 1]), None, Some([1, 1, 2, 1]), Some([2, 0, 2, 0])];
+        let mut words = Vec::new();
+        assert!(!fill_tile_lists(&mut words, &rects, tiles));
+        assert_eq!(words.len(), 6 * stride);
+        let want: [&[u32]; 6] = [&[0], &[0], &[0, 3], &[0], &[0, 2], &[0, 2]];
+        for (t, w) in want.iter().enumerate() {
+            assert_eq!(list(&words, t), *w, "tile {t}");
+        }
+        // a tile with more lights than the cap keeps the first ones in scene order and reports the overflow
+        let many = vec![Some([0, 0, 0, 0]); MAX_PER_TILE + 2];
+        let mut crowded = Vec::new();
+        assert!(fill_tile_lists(&mut crowded, &many, [1, 1]));
+        assert_eq!(list(&crowded, 0), (0..MAX_PER_TILE as u32).collect::<Vec<_>>());
+        // refilled with other lights, the reused words give the lists a fresh buffer gives
+        let other = [None, Some([1, 0, 2, 1]), None, None];
+        let mut fresh = Vec::new();
+        fill_tile_lists(&mut fresh, &other, tiles);
+        fill_tile_lists(&mut words, &other, tiles);
+        for t in 0..6 {
+            assert_eq!(list(&words, t), list(&fresh, t), "tile {t}");
+        }
+        assert_eq!(list(&words, 0), Vec::<u32>::new());
+    }
+
     #[test]
     fn a_box_is_out_of_view_only_wholly_beyond_one_plane() {
         use super::*;
@@ -3814,6 +3877,97 @@ mod tests {
         let m = &mut scene.draws[0].material;
         m.clearcoat = 0.5;
         assert!(!plain_material(&scene.draws[0]));
+    }
+
+    /// Lights culled from tiles render as every light evaluated everywhere: what a tile leaves out contributes
+    /// nothing. Point and spot lights of short range in different corners, with and without shadows.
+    #[test]
+    fn culled_lights_render_like_every_light_everywhere() {
+        use super::*;
+        let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "culled_lights_render_like_every_light_everywhere");
+        let mut engine =
+            ThreeEngine::new_with(gpu.device.clone(), gpu.queue.clone(), gpu.gbuffer_depth, gpu.scalar_target);
+        let plane = sr_3d::prim::plane(400.0, 300.0, 4);
+        let floor = engine.upload_mesh(&plane.vertices, &plane.indices);
+        let sphere = sr_3d::prim::sphere(10.0, 16);
+        let ball = engine.upload_mesh(&sphere.vertices, &sphere.indices);
+        let draw = |mesh: &Arc<MeshGpu>, at: Vec3| Draw3 {
+            mesh: MeshSrc::Cached(mesh.clone()),
+            model: Mat4::from_translation(at),
+            material: MaterialParams { base_color: [0.8, 0.8, 0.8, 1.0], roughness: 0.5, ..Default::default() },
+            maps: Default::default(),
+            opacity: 1.0,
+            cast_shadow: true,
+            receive_shadow: true,
+            shadow_catcher: false,
+        };
+        let light = |kind, pos: Vec3, range: f32, shadow: bool| Light3 {
+            kind,
+            pos,
+            dir: Vec3::Z,
+            right: Vec3::X,
+            color: Vec3::new(1.0, 0.8, 0.6) * 30.0,
+            range,
+            falloff: 2.0,
+            cos_outer: 0.5,
+            cos_inner: 0.9,
+            cast_shadow: shadow,
+            softness: 0.0,
+            bias: 0.001,
+            map_size: 64,
+            size: [0.0; 3],
+            ies: None,
+            affects_diffuse: true,
+            affects_specular: true,
+            contact: 0.0,
+        };
+        let mut scene = Scene3 {
+            cam: sr_3d::camera::resolve(&sr_3d::camera::CameraParams::default(), 160.0, 96.0),
+            clip_fix: Mat4::IDENTITY,
+            size: [160, 96],
+            exposure: 1.0,
+            dof: None,
+            lens_k1: 0.0,
+            draws: vec![draw(&floor, Vec3::new(80.0, 48.0, 10.0)), draw(&ball, Vec3::new(30.0, 20.0, 0.0))],
+            lights: Vec::new(),
+            env: None,
+            splats: Vec::new(),
+            volumes: Vec::new(),
+            encode_srgb: false,
+            ao: None,
+            ssr: false,
+            path: None,
+            geodesic: None,
+        };
+        let (point, spot) = (LightKind::Point, LightKind::Spot);
+        for (case, lights) in [
+            vec![light(point, Vec3::new(25.0, 15.0, -15.0), 40.0, false)],
+            vec![
+                light(point, Vec3::new(25.0, 15.0, -15.0), 40.0, true),
+                light(spot, Vec3::new(130.0, 75.0, -20.0), 50.0, false),
+            ],
+            vec![
+                light(LightKind::Ambient, Vec3::ZERO, 0.0, false),
+                light(point, Vec3::new(140.0, 20.0, -10.0), 35.0, false),
+                light(point, Vec3::new(20.0, 80.0, -10.0), 35.0, true),
+                light(spot, Vec3::new(80.0, 48.0, -30.0), 60.0, false),
+            ],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            scene.lights = lights;
+            engine.unroll_every_light = false;
+            let tiled = engine.render_now(&scene, None);
+            assert!(
+                engine.pipes.keys().any(|k| k.light_signature == u32::MAX && !k.global_lights),
+                "case {case} takes the tiled loop"
+            );
+            engine.unroll_every_light = true;
+            let everywhere = engine.render_now(&scene, None);
+            assert!(tiled.iter().any(|p| p[0] > 0.05 && p[3] > 0.01), "case {case} is lit");
+            assert_same_render(&gpu.info, &tiled, &everywhere, &format!("culled lights case {case}"));
+        }
     }
 
     /// Up to four lights that reach every tile are unrolled by kind, local ones too; a light culled from some tile
