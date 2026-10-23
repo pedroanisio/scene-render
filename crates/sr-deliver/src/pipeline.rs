@@ -1849,7 +1849,7 @@ fn run_delivery(
                 let passes: &[u8] = if output.two_pass || fit.is_some() { &[1, 2] } else { &[0] };
                 for &pass in passes {
                     let s = EncodeSpec { bitrate, pass: (pass > 0).then(|| (pass, log.clone())), ..spec.clone() };
-                    report.encoder = replay(&inter, &s, format, size, n)?;
+                    report.encoder = replay(&inter, &s, n)?;
                     report.passes += 1;
                 }
                 match fit {
@@ -2481,6 +2481,7 @@ fn base_spec(
         max_bitrate: o.max_bitrate,
         buffer_size: o.buffer_size,
         pass: None,
+        source: None,
         keyframe_interval: o.keyframe_interval.get(),
         b_frames: o.b_frames.map(|b| b as u32),
         faststart: o.faststart,
@@ -2522,61 +2523,9 @@ pub fn sequence_name(pattern: &Path, k: u64) -> String {
     pattern.to_string_lossy().into_owned()
 }
 
-/// Decodes the intermediate and feeds it to an encoder for one pass.
-fn replay(
-    inter: &Path,
-    spec: &EncodeSpec,
-    format: InputFormat,
-    size: [u32; 2],
-    frames: u64,
-) -> Result<String, DeliverError> {
-    use std::io::Read;
-    let pix = format.ffmpeg();
-    let mut dec = std::process::Command::new(sr_media::ffmpeg())
-        .args(["-nostdin", "-v", "error", "-i"])
-        .arg(inter)
-        .args(["-f", "rawvideo", "-pix_fmt", pix, "pipe:1"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| sr_media::MediaError::Spawn { tool: sr_media::ffmpeg(), source: e })?;
-    let Some((mut out, mut err)) = crate::child::take_or_reap(&mut dec, |c| c.stdout.take().zip(c.stderr.take()))
-    else {
-        return Err(DeliverError::Invalid("ffmpeg was started without its output pipes".into()));
-    };
-    let said = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        let _ = err.read_to_end(&mut v);
-        v
-    });
-    let mut buf = vec![0u8; format.frame_bytes(size[0], size[1])];
-    let fed = Encoder::start(spec).map_err(DeliverError::from).and_then(|mut enc| {
-        let mut n = 0u64;
-        while out.read_exact(&mut buf).is_ok() {
-            enc.write(&buf)?;
-            n += 1;
-        }
-        Ok((enc, n))
-    });
-    // the decoder is reaped whatever became of the encoder
-    if fed.is_err() {
-        let _ = dec.kill();
-    }
-    let status = dec.wait()?;
-    let said = sr_media::reason(&said.join().unwrap_or_default());
-    let (enc, n) = fed?;
-    if !status.success() || n != frames {
-        // the encoder is dropped unfinished: a pass fed part of the frames is no output
-        return Err(sr_media::MediaError::Failed {
-            tool: "ffmpeg".into(),
-            path: inter.display().to_string(),
-            message: format!(
-                "the intermediate decoded to {n} of {frames} frames{}{said}",
-                if said.is_empty() { "" } else { ": " }
-            ),
-        }
-        .into());
-    }
+/// Encodes the intermediate for one pass: the encoder reads it directly and fails unless it holds `frames`.
+fn replay(inter: &Path, spec: &EncodeSpec, frames: u64) -> Result<String, DeliverError> {
+    let enc = Encoder::start(&EncodeSpec { source: Some((inter.to_path_buf(), frames)), ..spec.clone() })?;
     let name = enc.encoder.clone();
     enc.finish()?;
     Ok(name)
@@ -3543,16 +3492,16 @@ mod tests {
     fn a_partial_or_failed_intermediate_decode_fails_the_pass() {
         let dir = std::env::temp_dir().join(format!("sr-deliver-replay-{}", std::process::id()));
         let Some((spec, inter)) = intermediate(&dir) else { return };
-        assert!(replay(&inter, &spec, InputFormat::Rgba8, [64, 36], 5).is_ok());
+        assert!(replay(&inter, &spec, 5).is_ok());
         let successful_output = std::fs::read(&spec.path).unwrap();
         // cut in the middle of its frames
         let bytes = std::fs::read(&inter).unwrap();
         std::fs::write(&inter, &bytes[..bytes.len() * 6 / 10]).unwrap();
-        let cut = replay(&inter, &spec, InputFormat::Rgba8, [64, 36], 5);
+        let cut = replay(&inter, &spec, 5);
         assert!(cut.is_err(), "a truncated intermediate was encoded as if whole");
         assert_eq!(std::fs::read(&spec.path).unwrap(), successful_output, "a failed pass replaced the previous output");
         std::fs::write(&inter, b"not a video").unwrap();
-        let e = replay(&inter, &spec, InputFormat::Rgba8, [64, 36], 5).unwrap_err().to_string();
+        let e = replay(&inter, &spec, 5).unwrap_err().to_string();
         assert!(e.contains("intermediate.mkv") && e.contains("Invalid data"), "{e}");
         assert_eq!(std::fs::read(&spec.path).unwrap(), successful_output);
     }

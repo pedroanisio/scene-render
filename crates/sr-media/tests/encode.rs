@@ -32,6 +32,7 @@ fn spec(path: &Path, codec: Codec, input: InputFormat) -> EncodeSpec {
         max_bitrate: None,
         buffer_size: None,
         pass: None,
+        source: None,
         keyframe_interval: 2.0,
         b_frames: None,
         faststart: true,
@@ -785,4 +786,56 @@ fn the_encoders_frame_pipe_holds_a_large_share_of_a_frame() {
     }
     e.finish().unwrap();
     assert_eq!(probe(&s.path).unwrap().video.unwrap().codec, "h264");
+}
+
+/// Frames of a file, from its duration and rate (the containers here carry both exactly).
+fn frames_of(path: &Path) -> u64 {
+    let v = probe(path).unwrap();
+    (v.duration * v.video.unwrap().fps).round() as u64
+}
+
+#[test]
+fn a_pass_reads_its_frames_from_a_coded_source_and_counts_them() {
+    let context = "a_pass_reads_its_frames_from_a_coded_source_and_counts_them";
+    if !common::ffmpeg_available(context) {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    // a lossless intermediate at a fractional rate, as the two-pass path writes one
+    let mut inter = spec(&dir.path().join("intermediate.mkv"), Codec::Ffv1, InputFormat::Rgba8);
+    inter.fps = 30000.0 / 1001.0;
+    inter.pixel_format = "bgra".into();
+    encode(&inter, 7);
+    let mut s = spec(&dir.path().join("out.mp4"), Codec::H264, InputFormat::Rgba8);
+    s.fps = inter.fps;
+    s.source = Some((inter.path.clone(), 7));
+    let (args, _) = s.args().unwrap();
+    assert!(!args.iter().any(|a| a == "pipe:0" || a == "rawvideo"), "{args:?}");
+    let i = args.iter().position(|a| a == "-i").unwrap();
+    assert_eq!(args[i + 1], inter.path.display().to_string());
+    let enc = Encoder::start(&s).unwrap();
+    assert_eq!(enc.pipe_bytes(), None, "a source pass takes no frames on a pipe");
+    enc.finish().unwrap();
+    let v = probe(&s.path).unwrap().video.unwrap();
+    assert_eq!((v.codec.as_str(), v.width, v.height), ("h264", 64, 36));
+    assert_eq!(frames_of(&s.path), 7, "every frame of the source, once");
+    let whole = std::fs::read(&s.path).unwrap();
+    // a source short of the frames it was said to hold is no output: the previous file stays
+    s.source = Some((inter.path.clone(), 9));
+    let e = Encoder::start(&s).unwrap().finish().unwrap_err().to_string();
+    assert!(e.contains("7 of 9 frames") && e.contains("intermediate.mkv"), "{e}");
+    assert_eq!(std::fs::read(&s.path).unwrap(), whole);
+    // the first pass of two reads the source too, and writes only its statistics
+    let log = dir.path().join("pass");
+    s.source = Some((inter.path.clone(), 7));
+    s.bitrate = Some(200_000);
+    s.pass = Some((1, log.clone()));
+    Encoder::start(&s).unwrap().finish().unwrap();
+    assert!(std::fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().starts_with("pass")));
+    s.pass = Some((2, log));
+    Encoder::start(&s).unwrap().finish().unwrap();
+    assert_eq!(frames_of(&s.path), 7);
 }

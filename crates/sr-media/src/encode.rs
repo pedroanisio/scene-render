@@ -325,6 +325,10 @@ pub struct EncodeSpec {
     pub buffer_size: Option<u64>,
     /// `Some((pass, log file))` for one pass of a two-pass encode.
     pub pass: Option<(u8, PathBuf)>,
+    /// A coded file to read the frames from, with the frames it holds, in place of raw frames on the pipe: the
+    /// passes of a two-pass encode read the lossless intermediate. The pass fails unless it decodes exactly that
+    /// many frames.
+    pub source: Option<(PathBuf, u64)>,
     pub keyframe_interval: f64,
     pub b_frames: Option<u32>,
     pub faststart: bool,
@@ -655,7 +659,12 @@ impl EncodeSpec {
         if vaapi {
             s(&mut a, &["-vaapi_device", "/dev/dri/renderD128"]);
         }
-        if !self.codec.is_audio_only() {
+        if let Some((source, _)) = &self.source {
+            // `-r` on an input replaces the container's timestamps with the constant rate the frames were rendered
+            // at; the frames come out on stdout as `-progress` lines, counted when the pass ends
+            s(&mut a, &["-xerror", "-progress", "pipe:1", "-r", &format!("{}", self.fps), "-i"]);
+            a.push(source.display().to_string());
+        } else if !self.codec.is_audio_only() {
             s(
                 &mut a,
                 &[
@@ -1225,6 +1234,9 @@ pub struct Encoder {
     child: Child,
     stdin: Option<ChildStdin>,
     errors: Option<std::thread::JoinHandle<Vec<u8>>>,
+    /// Collects FFmpeg's progress lines when the frames come from `source`.
+    progress: Option<std::thread::JoinHandle<Vec<u8>>>,
+    source: Option<(PathBuf, u64)>,
     path: PathBuf,
     /// The one file this run writes (none for a first pass or a sequence).
     output: Option<tempfile::TempPath>,
@@ -1253,10 +1265,11 @@ impl Encoder {
         } else {
             None
         };
+        let from_file = spec.source.is_some();
         let mut child = Command::new(crate::ffmpeg())
             .args(&args)
-            .stdin(if spec.codec.is_audio_only() { Stdio::null() } else { Stdio::piped() })
-            .stdout(Stdio::null())
+            .stdin(if spec.codec.is_audio_only() || from_file { Stdio::null() } else { Stdio::piped() })
+            .stdout(if from_file { Stdio::piped() } else { Stdio::null() })
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| MediaError::Spawn { tool: crate::ffmpeg(), source: e })?;
@@ -1270,10 +1283,19 @@ impl Encoder {
             let _ = err.read_to_end(&mut v);
             v
         });
+        let progress = child.stdout.take().map(|mut out| {
+            std::thread::spawn(move || {
+                let mut v = Vec::new();
+                let _ = out.read_to_end(&mut v);
+                v
+            })
+        });
         Ok(Encoder {
             stdin: child.stdin.take(),
             child,
             errors: Some(errors),
+            progress,
+            source: spec.source.clone(),
             path: spec.path.clone(),
             output,
             finished: false,
@@ -1314,12 +1336,29 @@ impl Encoder {
         drop(self.stdin.take());
         let status = self.child.wait()?;
         let err = self.said();
+        let said = crate::reason(&err);
+        let failed = |message: String| MediaError::Failed {
+            tool: "ffmpeg".into(),
+            path: self.path.display().to_string(),
+            message,
+        };
         if !status.success() {
-            return Err(MediaError::Failed {
-                tool: "ffmpeg".into(),
-                path: self.path.display().to_string(),
-                message: crate::reason(&err),
-            });
+            return Err(failed(match &self.source {
+                Some((source, _)) => format!("{said} (input {})", source.display()),
+                None => said,
+            }));
+        }
+        if let Some((source, frames)) = &self.source {
+            // a source short of its frames is no output: the staged file is dropped, not published
+            let progress = self.progress.take().and_then(|h| h.join().ok()).unwrap_or_default();
+            let n = frames_reported(&progress);
+            if n != *frames {
+                return Err(failed(format!(
+                    "{} decoded to {n} of {frames} frames{}{said}",
+                    source.display(),
+                    if said.is_empty() { "" } else { ": " }
+                )));
+            }
         }
         if let Some(output) = self.output.take() {
             publish_output(output, &self.path)?;
@@ -1327,6 +1366,16 @@ impl Encoder {
         self.finished = true;
         Ok(())
     }
+}
+
+/// The frames FFmpeg reports in its `-progress` output: the last `frame=` line, 0 without one.
+fn frames_reported(progress: &[u8]) -> u64 {
+    String::from_utf8_lossy(progress)
+        .lines()
+        .rev()
+        .filter_map(|l| l.strip_prefix("frame="))
+        .find_map(|n| n.trim().parse().ok())
+        .unwrap_or(0)
 }
 
 impl Drop for Encoder {
