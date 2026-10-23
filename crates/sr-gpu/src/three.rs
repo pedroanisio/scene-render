@@ -723,6 +723,9 @@ pub struct ThreeEngine {
     specialize_plain: bool,
     #[cfg(test)]
     specialize_alpha_mask: bool,
+    /// Off, every shadow filter takes its nine filtered taps (tests compare the frames).
+    #[cfg(test)]
+    gather_shadows: bool,
     /// Off, every pass runs whether or not anything reads it (tests compare the frames).
     #[cfg(test)]
     skip_unused_passes: bool,
@@ -1384,6 +1387,8 @@ impl ThreeEngine {
             specialize_plain: true,
             #[cfg(test)]
             specialize_alpha_mask: true,
+            #[cfg(test)]
+            gather_shadows: true,
             specialize_global_lights: true,
             bgl_frame,
             bgl_mat,
@@ -1533,6 +1538,10 @@ impl ThreeEngine {
 
     fn pipe(&mut self, key: PipeKey) -> &wgpu::RenderPipeline {
         let samples = self.samples;
+        #[cfg(test)]
+        let gather = self.gather_shadows;
+        #[cfg(not(test))]
+        let gather = true;
         let (d, m, l) = (&self.device, &self.main_mod, &self.main_layout);
         self.pipes.entry(key).or_insert_with(|| {
             {
@@ -1569,6 +1578,7 @@ impl ThreeEngine {
                                 ("ALL_GLOBAL_LIGHTS", key.global_lights as u32 as f64),
                                 ("LIGHT_SIGNATURE", key.light_signature as f64),
                                 ("ALPHA_MASK", key.alpha_mask as u32 as f64),
+                                ("GATHER_SHADOW", gather as u32 as f64),
                             ],
                             ..Default::default()
                         },
@@ -3589,6 +3599,90 @@ mod tests {
                 assert_eq!(uploaded, usize::from(case == 0), "samples {samples}, case {case}");
             }
         }
+    }
+
+    #[test]
+    fn gathered_shadow_filter_matches_the_nine_filtered_taps() {
+        use super::*;
+        let gpu =
+            sr_testkit::require_gpu!(crate::gpu::test_gpu(), "gathered_shadow_filter_matches_the_nine_filtered_taps");
+        let engine = |gather: bool| {
+            let mut e =
+                ThreeEngine::new_with(gpu.device.clone(), gpu.queue.clone(), gpu.gbuffer_depth, gpu.scalar_target);
+            e.gather_shadows = gather;
+            e
+        };
+        let (mut gathered, mut tapped) = (engine(true), engine(false));
+        let ball = sr_3d::prim::sphere(18.0, 32);
+        let wall = sr_3d::prim::cuboid(240.0, 200.0, 4.0);
+        let draw = |mesh: Arc<MeshGpu>, at: Vec3| Draw3 {
+            mesh: MeshSrc::Cached(mesh),
+            model: Mat4::from_translation(at),
+            material: MaterialParams { base_color: [0.8, 0.7, 0.6, 1.0], roughness: 0.7, ..Default::default() },
+            maps: Default::default(),
+            opacity: 1.0,
+            cast_shadow: true,
+            receive_shadow: true,
+            shadow_catcher: false,
+        };
+        let light = |kind: LightKind, softness: f32| Light3 {
+            kind,
+            pos: Vec3::new(40.0, 20.0, -60.0),
+            dir: Vec3::new(0.3, 0.4, 1.0).normalize(),
+            right: Vec3::X,
+            color: Vec3::splat(if kind == LightKind::Directional { 0.9 } else { 9000.0 }),
+            range: 0.0,
+            falloff: 2.0,
+            cos_outer: 0.5,
+            cos_inner: 0.9,
+            cast_shadow: true,
+            softness,
+            bias: 0.001,
+            map_size: 256,
+            size: [0.0; 3],
+            ies: None,
+            affects_diffuse: true,
+            affects_specular: true,
+            contact: 0.0,
+        };
+        let scene = |e: &ThreeEngine, lights: Vec<Light3>| Scene3 {
+            cam: sr_3d::camera::resolve(&sr_3d::camera::CameraParams::default(), 128.0, 96.0),
+            clip_fix: Mat4::IDENTITY,
+            size: [128, 96],
+            exposure: 0.83,
+            dof: None,
+            lens_k1: 0.0,
+            draws: vec![
+                draw(e.upload_mesh(&ball.vertices, &ball.indices), Vec3::new(56.0, 40.0, 0.0)),
+                draw(e.upload_mesh(&wall.vertices, &wall.indices), Vec3::new(64.0, 48.0, 40.0)),
+            ],
+            lights,
+            env: None,
+            splats: Vec::new(),
+            volumes: Vec::new(),
+            encode_srgb: false,
+            ao: None,
+            ssr: false,
+            path: None,
+            geodesic: None,
+        };
+        // taps one texel apart (softness up to 1): four gathers filter the same 4 x 4 texels with exact weights
+        for (kind, softness) in [(LightKind::Directional, 0.0), (LightKind::Spot, 1.0), (LightKind::Point, 0.6)] {
+            let (sa, sb) = (scene(&gathered, vec![light(kind, softness)]), scene(&tapped, vec![light(kind, softness)]));
+            let (a, b) = (gathered.render_now(&sa, None), tapped.render_now(&sb, None));
+            let lit = b.iter().map(|p| p[0]).fold(0.0f32, f32::max);
+            assert!(lit > 0.05, "{kind:?}: the wall is lit");
+            let shadowed = b.iter().filter(|p| p[3] > 0.99 && p[0] < 0.25 * lit).count();
+            assert!(shadowed > 20, "{kind:?}: the ball shadows the wall ({shadowed} pixels)");
+            let diff = a.iter().zip(&b).flat_map(|(p, q)| (0..3).map(move |c| (p[c] - q[c]).abs())).fold(0.0, f32::max);
+            assert!(diff <= 0.01 * lit, "{kind:?}: gathered and tapped filters differ by {diff} (lit {lit})");
+        }
+        // wider taps keep the nine filtered samples
+        let soft = |e: &mut ThreeEngine| {
+            let s = scene(e, vec![light(LightKind::Directional, 2.5)]);
+            e.render_now(&s, None)
+        };
+        assert_eq!(soft(&mut gathered), soft(&mut tapped));
     }
 
     #[test]

@@ -5,6 +5,9 @@ override LIGHT_SIGNATURE: u32 = 0xffffffffu;
 override ALPHA_MASK: bool = true;
 // Whether the prepass writes the reflectance, which only the screen-space reflections read.
 override PREPASS_REFLECTANCE: bool = true;
+// Whether a shadow filter whose taps lie one texel apart reads its 4 x 4 texels with four gathers (off in a test that
+// compares it with the nine filtered taps).
+override GATHER_SHADOW: bool = true;
 
 struct Material {
     base_color: vec4<f32>,
@@ -248,11 +251,33 @@ fn shadow_factor(li: Light, world: vec3<f32>, nrm: vec3<f32>) -> f32 {
     if (any(uv < vec2(0.0)) || any(uv > vec2(1.0)) || ndc.z > 1.0) { return 1.0; }
     let dim = vec2<f32>(textureDimensions(shadow_tex));
     let soft = max(li.spot.w, 1.0);
+    let depth_ref = ndc.z - li.flags.z;
+    if (GATHER_SHADOW && soft <= 1.0) {
+        // The nine bilinear taps one texel apart cover the 4 x 4 texels from base − 1 to base + 2, weighted
+        // (1 − f, 1, 1, f) / 3 along each axis. Four gathers at the centres of its 2 x 2 blocks read them all.
+        let tc = uv * dim - 0.5;
+        let base = floor(tc);
+        let f = tc - base;
+        let wx = array(vec2(1.0 - f.x, 1.0), vec2(1.0, f.x));
+        let wy = array(vec2(1.0 - f.y, 1.0), vec2(1.0, f.y));
+        var gsum = 0.0;
+        for (var j = 0; j < 2; j++) {
+            for (var i = 0; i < 2; i++) {
+                let at = (base + vec2(f32(2 * i), f32(2 * j))) / dim;
+                // (x, y, z, w) = texels (left, lower), (right, lower), (right, upper), (left, upper); lower is +v
+                let g = textureGatherCompare(shadow_tex, shadow_cmp, at, i32(view), depth_ref);
+                let x = wx[i];
+                let y = wy[j];
+                gsum += dot(g, vec4(x.x * y.y, x.y * y.y, x.y * y.x, x.x * y.x));
+            }
+        }
+        return gsum / 9.0;
+    }
     var sum = 0.0;
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {
             let o = vec2(f32(x), f32(y)) * soft / dim;
-            sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + o, i32(view), ndc.z - li.flags.z);
+            sum += textureSampleCompareLevel(shadow_tex, shadow_cmp, uv + o, i32(view), depth_ref);
         }
     }
     return sum / 9.0;
