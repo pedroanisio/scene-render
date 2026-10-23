@@ -47,3 +47,9 @@ This release renders 3D scenes with less GPU work and holds less memory while it
 The Linux archive contains the executable, source commit identifier, capability manifest, README, changelog, disclaimer, licence, notice, commercial-licence page and third-party notices. Its executable comes from the successful CI run for the release commit and is checksum-verified and smoke-tested before packaging.
 
 Verify the download with `sha256sum -c scene-render-v0.7.4-linux-x86_64.tar.gz.sha256`, extract it, then run `./scene-render --help`.
+
+## Unreleased
+
+### Path tracing
+
+- On a GPU adapter the path tracer keeps the scratch its tiles work in from one pass to the next: the sums and guides of each pixel, the stand-in buffer, and the denoiser's two halves with their bind groups, grown only when a tile needs more and dropped when the tile budget changes. Before, every pass created and released those buffers, four of 32 bytes per pixel, about 118 MB for a 1280x720 pass. A CPU adapter still makes them for each pass: they are host memory its allocator recycles, and keeping them only raised the peak. The numbers are under the next entry, which was measured with this one.

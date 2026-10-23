@@ -220,6 +220,8 @@ pub struct RenderTiming {
     pub atlas_texels: usize,
     /// Scenes the CPU tracer built for its tiles this pass: none when the GPU traced it.
     pub cpu_scenes: usize,
+    /// Tile scratch buffers created this pass: none when the ones the tracer keeps were large enough.
+    pub scratch_buffers: usize,
     /// CPU seconds packing and uploading the scene buffers before the first tile.
     pub pack_seconds: f64,
     /// Timestamps of the trace and denoise passes, when requested and supported.
@@ -1782,11 +1784,105 @@ pub struct PtGpu {
     output: wgpu::RenderPipeline,
     tile_bytes: u64,
     packed: std::sync::Mutex<packed::Cache>,
+    scratch: std::sync::Mutex<Option<Scratch>>,
     /// Whether the device is a CPU adapter (the renderer sets it): the trace workgroups are then permuted.
     pub cpu_adapter: bool,
 }
 
+/// The buffers every tile of a pass works in, kept from one pass to the next and grown when a tile needs more: the
+/// sums and the guides of each pixel, the denoiser's two halves (made when a pass first denoises) and the stand-in
+/// that passes reading the sums bind in their read-write slot. Passes are recorded and submitted in order, and every
+/// tile clears the sums and the guides before tracing, so one set serves them all. The bind groups over the halves go
+/// with the buffers: the denoiser's three pairs and the output's view of each buffer the last denoise pass can leave
+/// the picture in.
+#[derive(Clone)]
+struct Scratch {
+    /// Pixels each buffer holds.
+    pixels: u64,
+    accum: wgpu::Buffer,
+    guide: wgpu::Buffer,
+    stand_in: wgpu::Buffer,
+    halves: Option<ScratchHalves>,
+}
+/// The bind groups keep the halves alive.
+#[derive(Clone)]
+struct ScratchHalves {
+    /// sums → ping, ping → pong, pong → ping
+    pairs: [wgpu::BindGroup; 3],
+    /// the output's view of ping, then of pong
+    fin: [wgpu::BindGroup; 2],
+}
+impl Scratch {
+    fn buffer(d: &wgpu::Device, label: &str, len: u64) -> wgpu::Buffer {
+        d.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: len,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+    fn new(d: &wgpu::Device, pixels: u64) -> Self {
+        Self {
+            pixels,
+            accum: Self::buffer(d, "pt-accum", pixels * 32),
+            guide: Self::buffer(d, "pt-guides", pixels * 32),
+            stand_in: Self::buffer(d, "pt-stand-in", 16),
+            halves: None,
+        }
+    }
+    /// Adds the denoiser's halves and their bind groups.
+    fn with_halves(mut self, d: &wgpu::Device, pt: &PtGpu) -> Self {
+        let ping = Self::buffer(d, "pt-denoise-a", self.pixels * 32);
+        let pong = Self::buffer(d, "pt-denoise-b", self.pixels * 32);
+        let pair = |src: &wgpu::Buffer, dst: &wgpu::Buffer| {
+            d.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("pathtrace-denoise"),
+                layout: &pt.bgl_pair,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: dst.as_entire_binding() },
+                ],
+            })
+        };
+        let pairs = [pair(&self.accum, &ping), pair(&ping, &pong), pair(&pong, &ping)];
+        let fin = [pt.fin_group(d, &ping), pt.fin_group(d, &pong)];
+        self.halves = Some(ScratchHalves { pairs, fin });
+        self
+    }
+}
+
 impl PtGpu {
+    /// The scratch for tiles of `pixels` pixels, with the denoiser's halves when `denoise`, and how many buffers that
+    /// took making: none when the kept scratch already served. A GPU keeps it: its device allocations cost
+    /// milliseconds a pass. A CPU adapter's buffers are host memory the allocator recycles between passes, so it
+    /// makes them anew: keeping them would only raise the peak.
+    fn scratch(&self, d: &wgpu::Device, pixels: u64, denoise: bool) -> (Scratch, usize) {
+        let mut kept = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
+        let mut made = 0;
+        let mut scratch = match kept.take().filter(|_| !self.cpu_adapter) {
+            Some(s) if s.pixels >= pixels => s,
+            _ => {
+                made += 3;
+                Scratch::new(d, pixels)
+            }
+        };
+        if denoise && scratch.halves.is_none() {
+            made += 2;
+            scratch = scratch.with_halves(d, self);
+        }
+        if !self.cpu_adapter {
+            *kept = Some(scratch.clone());
+        }
+        (scratch, made)
+    }
+    /// The bind group the output pass reads the finished picture through.
+    fn fin_group(&self, d: &wgpu::Device, fin: &wgpu::Buffer) -> wgpu::BindGroup {
+        d.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("pathtrace-output"),
+            layout: &self.bgl_fin,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: fin.as_entire_binding() }],
+        })
+    }
     /// Keeps a `1 / workers` share of the default packed storage budget, for one of `workers` renderers in a process.
     pub fn share_budgets(&self, workers: usize) {
         let mut packed = self.packed.lock().unwrap_or_else(|e| e.into_inner());
@@ -1939,6 +2035,7 @@ impl PtGpu {
             output,
             tile_bytes: DEFAULT_TILE_BYTES,
             packed: Default::default(),
+            scratch: Default::default(),
             cpu_adapter: false,
         }
     }
@@ -2164,6 +2261,8 @@ impl PtGpu {
             return Err(format!("path tracing needs at least {MIN_TILE_BYTES} bytes per tile buffer"));
         }
         self.tile_bytes = bytes;
+        // the kept scratch was sized for the old budget
+        *self.scratch.lock().unwrap_or_else(|e| e.into_inner()) = None;
         Ok(())
     }
 }
@@ -2372,14 +2471,6 @@ pub(crate) fn render_cached(
             usage: wgpu::BufferUsages::STORAGE,
         })
     };
-    let zeroed = |label: &str, len: u64| {
-        d.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size: len,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
-    };
     let identity = identity.filter(|_| scene.volumes.is_empty());
     let packed_cache = || pt.packed.lock().unwrap_or_else(|e| e.into_inner());
     // the atlas is packed only when the cache holds no storage for its textures, and then still may match an
@@ -2449,21 +2540,17 @@ pub(crate) fn render_cached(
         }
     }
     let lights = storage("pt-lights", bytemuck::cast_slice(&lights));
-    // the sums, then the sample statistics of each pixel
-    let accum = zeroed("pt-accum", pixels * 32);
-    let guide = zeroed("pt-guides", pixels * 32);
-    let stand_in = zeroed("pt-stand-in", 16);
+    // the sums, then the sample statistics of each pixel, and the denoiser's halves (the colour, then its variance):
+    // kept from pass to pass, and reused by every tile in command order, which bounds peak memory independently of
+    // frame area. Clear sums and guides before tracing each tile.
+    let (scratch, scratch_buffers) = pt.scratch(d, pixels, opts.denoise);
+    let Scratch { accum, guide, stand_in, halves, .. } = &scratch;
     // parameter slots: trace dispatches, denoise passes, output
     let samples = opts.samples.max(1);
     let chunks = samples.div_ceil(PER_DISPATCH);
     const PASSES: u32 = DENOISE_PASSES;
     let ambient = scene.lights.iter().filter(|l| l.kind == LightKind::Ambient).fold(Vec3::ZERO, |a, l| a + l.color);
     let lens = scene.dof.map(|f| f.coc_scale / scene.cam.focal_px.max(1e-6) * 0.5).unwrap_or(0.0);
-    // These buffers are reused by every tile in command order, bounding peak memory
-    // independently of frame area. Clear sums and guides before tracing each tile.
-    // the colour, then its variance
-    let ping = opts.denoise.then(|| zeroed("pt-denoise-a", pixels * 32));
-    let pong = opts.denoise.then(|| zeroed("pt-denoise-b", pixels * 32));
     let noise = opts.noise_target();
     // the counter of traced samples, which only a pass with a noise target needs
     let counter = noise.map(|_| {
@@ -2506,14 +2593,7 @@ pub(crate) fn render_cached(
 
     // the grids are built once, before the tiles
     if let (Some(plan), Some(group)) = (&grid_plan, &grid_group) {
-        let buffers = GridInputs {
-            verts: &tverts,
-            mats: &mats,
-            nodes: &nodes,
-            lights: &lights,
-            guide: &guide,
-            stand_in: &stand_in,
-        };
+        let buffers = GridInputs { verts: &tverts, mats: &mats, nodes: &nodes, lights: &lights, guide, stand_in };
         build_light_grids(pt, d, enc, &mut timer, plan, group, make_base(&tiles[0]), &buffers, inputs);
     }
     // whether the CPU tracer takes the pass, which no tile's own position changes; the GPU trace alone reads the
@@ -2550,8 +2630,8 @@ pub(crate) fn render_cached(
     });
     let cpu_scenes = usize::from(cpu.is_some());
     for (tile_index, tile) in tiles.iter().enumerate() {
-        enc.clear_buffer(&accum, 0, None);
-        enc.clear_buffer(&guide, 0, None);
+        enc.clear_buffer(accum, 0, None);
+        enc.clear_buffer(guide, 0, None);
         let base = make_base(tile);
         let rp = radiance_params(&base, &data.lights);
         if let Some((dense, cpu_env)) = &cpu {
@@ -2563,7 +2643,7 @@ pub(crate) fn render_cached(
                 0,
                 samples,
             );
-            for (dst, src) in [(&accum, &acc), (&guide, &gd)] {
+            for (dst, src) in [(accum, &acc), (guide, &gd)] {
                 let bytes: &[u8] = bytemuck::cast_slice(src);
                 let staged = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("pt-cpu-trace"),
@@ -2627,9 +2707,9 @@ pub(crate) fn render_cached(
                 ],
             })
         };
-        let g_trace = group0(&accum);
+        let g_trace = group0(accum);
         // passes that read the accumulation bind a stand-in in its read-write slot
-        let g_read = group0(&stand_in);
+        let g_read = group0(stand_in);
         let groups = [tile.size[0].div_ceil(8), tile.size[1].div_ceil(8)];
         if !on_cpu {
             let stamp = timer.as_mut().and_then(|t| t.labelled_pair("pathtrace trace"));
@@ -2661,8 +2741,8 @@ pub(crate) fn render_cached(
                 cp.dispatch_workgroups(groups[0], groups[1], 1);
             }
         }
-        let mut fin = &accum;
-        if let (Some(ping), Some(pong)) = (&ping, &pong) {
+        let mut gfin = None;
+        if let Some(halves) = halves.as_ref().filter(|_| opts.denoise) {
             let stamp = timer.as_mut().and_then(|t| t.labelled_pair("pathtrace denoise"));
             let mut cp = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("pathtrace-denoise"),
@@ -2674,32 +2754,22 @@ pub(crate) fn render_cached(
             });
             cp.set_pipeline(&pt.atrous);
             for k in 0..PASSES {
-                let (src, dst) = if k == 0 {
-                    (&accum, ping)
-                } else if k % 2 == 1 {
-                    (ping, pong)
-                } else {
-                    (pong, ping)
-                };
-                let pair = d.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("pathtrace-denoise"),
-                    layout: &pt.bgl_pair,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: dst.as_entire_binding() },
-                    ],
-                });
+                // sums → ping, then ping → pong and back
+                let pair = if k == 0 { 0 } else { 1 + (k as usize + 1) % 2 };
                 cp.set_bind_group(0, &g_read, &[((chunks + k) as u64 * SLOT) as u32]);
-                cp.set_bind_group(1, &pair, &[]);
+                cp.set_bind_group(1, &halves.pairs[pair], &[]);
                 cp.dispatch_workgroups(groups[0], groups[1], 1);
-                fin = dst;
+                gfin = Some(&halves.fin[usize::from(pair == 1)]);
             }
         }
-        let gfin = d.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("pathtrace-output"),
-            layout: &pt.bgl_fin,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: fin.as_entire_binding() }],
-        });
+        let own_fin;
+        let gfin = match gfin {
+            Some(g) => g,
+            None => {
+                own_fin = pt.fin_group(d, accum);
+                &own_fin
+            }
+        };
         let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("pathtrace-output"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2723,7 +2793,7 @@ pub(crate) fn render_cached(
         rp.set_pipeline(&pt.output);
         rp.set_scissor_rect(tile.output_origin[0], tile.output_origin[1], tile.output_size[0], tile.output_size[1]);
         rp.set_bind_group(0, &g_read, &[((chunks + PASSES) as u64 * SLOT) as u32]);
-        rp.set_bind_group(1, &gfin, &[]);
+        rp.set_bind_group(1, gfin, &[]);
         rp.draw(0..3, 0..1);
     }
     if let Some(t) = &timer {
@@ -2739,6 +2809,7 @@ pub(crate) fn render_cached(
         geometry_uploads,
         atlas_texels,
         cpu_scenes,
+        scratch_buffers,
         samples: SampleCount { budget, counter, hardware_rays: rays.is_some() },
     }
 }

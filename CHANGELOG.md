@@ -5,6 +5,12 @@ at each tag; edit `RELEASE_NOTES.md`, not this file. Entries are kept as release
 been removed since: "the cinematic impact SREP" is sr-core SREP 40, whose working draft this repository removed after v0.3.2.
 Versions up to v0.4.1 were released under the MIT License from github.com/pedroanisio/rs-scene-render.
 
+## Unreleased
+
+### Path tracing
+
+- On a GPU adapter the path tracer keeps the scratch its tiles work in from one pass to the next: the sums and guides of each pixel, the stand-in buffer, and the denoiser's two halves with their bind groups, grown only when a tile needs more and dropped when the tile budget changes. Before, every pass created and released those buffers, four of 32 bytes per pixel, about 118 MB for a 1280x720 pass. A CPU adapter still makes them for each pass: they are host memory its allocator recycles, and keeping them only raised the peak. The numbers are under the next entry, which was measured with this one.
+
 ## v0.7.4 — 2026-10-23
 
 This release renders 3D scenes with less GPU work and holds less memory while it delivers. The 3D renderer unrolls point, spot and area lights, keeps its shadow map while the shadow casters hold still, filters one-texel shadows with four gathers, blurs ambient occlusion with one load per tap and skips passes nothing reads. Delivery extracts clay surfaces ahead of the renderer, reuses read-back frame buffers, closes idle video decoders, shares fonts, 3D assets and cache budgets across workers, and keeps one malloc arena. On lavapipe the 736-frame 1280x720 06-marx-engels-clay film encoded in 69.00 s and 68.72 s instead of 92.63 s and 92.11 s with v0.7.3 (user CPU 561 s and 560 s instead of 748 s and 739 s), with a peak RSS of 2.08 to 2.12 GiB instead of 3.65 to 3.75 GiB. Ambient occlusion now blurs at the depth target's precision, which moves frames on every adapter by at most one half-float step; the bounds are given below. The vendored schema is still sr-core 1.7.0.

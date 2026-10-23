@@ -20,6 +20,8 @@ mod pathtrace_instances;
 mod pathtrace_tiles;
 #[path = "path_tracer/ray_query.rs"]
 mod ray_query;
+#[path = "path_tracer/scratch_reuse.rs"]
+mod scratch_reuse;
 #[path = "path_tracer/specular_lobe.rs"]
 mod specular_lobe;
 #[path = "path_tracer/water_light.rs"]
