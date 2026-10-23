@@ -460,6 +460,8 @@ pub struct Renderer {
     three_assets: HashMap<String, Arc<Result<sr_3d::Asset, String>>>,
     volume_assets: HashMap<(std::path::PathBuf, String), CachedVolume>,
     volume_cache_bytes: usize,
+    /// Renderers in the process sharing the default cache budgets (parallel delivery workers): 1 alone.
+    budget_share: usize,
     baked_sequences: HashMap<(std::path::PathBuf, String), Arc<sr_volume::bake::BakedSequence>>,
     baked_frames: HashMap<(std::path::PathBuf, String), Arc<sr_volume::Volume>>,
     mtlx: HashMap<String, Arc<Result<sr_3d::mtlx::MtlxMaterial, String>>>,
@@ -1378,6 +1380,7 @@ impl Renderer {
             three_assets: HashMap::new(),
             volume_assets: HashMap::new(),
             volume_cache_bytes: 0,
+            budget_share: 1,
             baked_sequences: HashMap::new(),
             baked_frames: HashMap::new(),
             mtlx: HashMap::new(),
@@ -6023,5 +6026,36 @@ mod texel_copy_region_tests {
         skew[5].clip = to_clip([60.0, 32.0], TARGET);
         assert_eq!(texel_copy_region(&d, &skew, [64, 32], TARGET), None);
         assert_eq!(texel_copy_region(&d, &quad([0.0, 0.0, 64.0, 32.0])[..3], [64, 32], TARGET), None);
+    }
+}
+
+#[cfg(test)]
+mod budget_share_tests {
+    use super::*;
+
+    #[test]
+    fn workers_divide_the_cache_budgets_between_them() {
+        let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "workers_divide_the_cache_budgets_between_them");
+        let document = sr_model::load_str(
+            r#"<scene version="1.1"><project width="32" height="32" fps="10" duration="1"/><composition/></scene>"#,
+            &sr_model::LoadOptions::default(),
+        )
+        .unwrap();
+        let ev = sr_eval::Evaluator::new(&document, &Default::default()).unwrap();
+        let budgets = |r: &mut Renderer| {
+            let volumes = r.volume_cache_budget();
+            let e = r.three_engine();
+            (e.pt_geometry_budget(), e.pt_packed_budget(), volumes)
+        };
+        let mut alone = Renderer::new(gpu.clone(), ev.program());
+        assert_eq!(budgets(&mut alone), (256 << 20, 256 << 20, 256 << 20));
+        // shared before the 3D engine exists, and after
+        let mut early = Renderer::new(gpu.clone(), ev.program());
+        early.share_budgets(4);
+        assert_eq!(budgets(&mut early), (64 << 20, 64 << 20, 64 << 20));
+        alone.share_budgets(4);
+        assert_eq!(budgets(&mut alone), (64 << 20, 64 << 20, 64 << 20));
+        alone.share_budgets(0);
+        assert_eq!(budgets(&mut alone), (256 << 20, 256 << 20, 256 << 20));
     }
 }

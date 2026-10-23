@@ -752,6 +752,8 @@ pub struct ThreeEngine {
     /// Path-tracing pipelines, built on first use.
     pt: Option<crate::pathtrace::PtGpu>,
     pt_geometry: crate::pathtrace::BuildCache,
+    /// Renderers in the process sharing the default cache budgets (parallel delivery workers): 1 alone.
+    budget_share: usize,
     geodesic: Option<crate::geodesic::GeodesicGpu>,
     /// Depth and normal prepass pipelines, built on first use.
     pre_pipes: HashMap<PreKey, wgpu::RenderPipeline>,
@@ -1390,6 +1392,7 @@ impl ThreeEngine {
             bgl_ssr,
             pt: None,
             pt_geometry: Default::default(),
+            budget_share: 1,
             geodesic: None,
             pre_pipes: HashMap::new(),
             ssao_pipe,
@@ -1580,6 +1583,36 @@ impl ThreeEngine {
                 })
             }
         })
+    }
+
+    /// Keeps a `1 / workers` share of the default path tracer cache budgets, for one of `workers` renderers in a
+    /// process.
+    pub fn share_budgets(&mut self, workers: usize) {
+        self.budget_share = workers.max(1);
+        self.pt_geometry.set_budget(crate::pathtrace::GEOMETRY_BUDGET / self.budget_share);
+        if let Some(pt) = &self.pt {
+            pt.share_budgets(self.budget_share);
+        }
+    }
+
+    /// The path tracer, made on first use with this engine's share of the cache budgets.
+    fn path_tracer(&mut self) -> &mut crate::pathtrace::PtGpu {
+        let (device, share) = (&self.device, self.budget_share);
+        self.pt.get_or_insert_with(|| {
+            let pt = crate::pathtrace::PtGpu::new(device, FORMAT);
+            pt.share_budgets(share);
+            pt
+        })
+    }
+
+    /// Bytes of path traced geometry this engine retains at most.
+    pub fn pt_geometry_budget(&self) -> usize {
+        self.pt_geometry.budget()
+    }
+
+    /// Bytes of packed path tracer storage this engine keeps at most (making the path tracer).
+    pub fn pt_packed_budget(&mut self) -> u64 {
+        self.path_tracer().packed_budget()
     }
 
     /// Uploads an RGBA8 image with a CPU-built mip chain, reduced to the device's texture
@@ -2020,9 +2053,10 @@ impl ThreeEngine {
         // a scene too large for the tracer's buffers is rasterised (the caller reports `limit_note`)
         if let Some(opts) = path.filter(|_| note.is_none()) {
             let (data, ticket) = self.pt_geometry.build_for_render(scene);
-            let pt = self.pt.get_or_insert_with(|| crate::pathtrace::PtGpu::new(&self.device, FORMAT));
-            pt.set_hardware_rays(self.rays);
-            pt.cpu_adapter = self.software_adapter;
+            let (rays, software) = (self.rays, self.software_adapter);
+            let pt = self.path_tracer();
+            pt.set_hardware_rays(rays);
+            pt.cpu_adapter = software;
             let env_view = scene.env.as_ref().map(|e| &e.env.view).unwrap_or(&self.black_env);
             let inputs = crate::pathtrace::PtInputs {
                 env: env_view,

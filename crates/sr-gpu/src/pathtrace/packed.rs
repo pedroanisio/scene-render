@@ -19,12 +19,25 @@ pub(super) struct Cache {
     bytes: u64,
     budget: u64,
 }
+/// The storage a cache keeps when the renderer does not share its budget.
+pub(super) const BUDGET: u64 = 256 << 20;
 impl Default for Cache {
     fn default() -> Self {
-        Self { entries: VecDeque::new(), bytes: 0, budget: 256 << 20 }
+        Self { entries: VecDeque::new(), bytes: 0, budget: BUDGET }
     }
 }
 impl Cache {
+    /// Keeps at most `bytes` from now on, releasing the least recently used storage beyond it.
+    pub fn set_budget(&mut self, bytes: u64) {
+        self.budget = bytes;
+        while self.bytes > self.budget {
+            let Some(entry) = self.entries.pop_front() else { break };
+            self.bytes -= entry.bytes;
+        }
+    }
+    pub fn budget(&self) -> u64 {
+        self.budget
+    }
     /// The storage of geometry `id` with the atlas `key`.
     pub fn get(&mut self, id: u64, key: &[AtlasKey]) -> Option<Buffers> {
         self.take(|e| e.id == id && e.key == key)

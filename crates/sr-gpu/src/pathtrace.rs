@@ -22,7 +22,7 @@ mod cpu;
 mod instances;
 mod packed;
 mod rays;
-pub use cache::BuildCache;
+pub use cache::{BuildCache, GEOMETRY_BUDGET};
 
 /// Path-tracing options of a pass.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1782,6 +1782,19 @@ pub struct PtGpu {
     packed: std::sync::Mutex<packed::Cache>,
     /// Whether the device is a CPU adapter (the renderer sets it): the trace workgroups are then permuted.
     pub cpu_adapter: bool,
+}
+
+impl PtGpu {
+    /// Keeps a `1 / workers` share of the default packed storage budget, for one of `workers` renderers in a process.
+    pub fn share_budgets(&self, workers: usize) {
+        let mut packed = self.packed.lock().unwrap_or_else(|e| e.into_inner());
+        packed.set_budget(packed::BUDGET / workers.max(1) as u64);
+    }
+
+    /// Bytes of packed storage this tracer keeps at most.
+    pub fn packed_budget(&self) -> u64 {
+        self.packed.lock().unwrap_or_else(|e| e.into_inner()).budget()
+    }
 }
 
 impl PtGpu {

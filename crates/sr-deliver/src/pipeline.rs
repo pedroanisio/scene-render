@@ -701,16 +701,17 @@ const FRAME_QUEUE_MAX: usize = 48;
 
 /// How many frames of `frame_bytes` wait in front of an encoder. A hardware encoder opens its session on the first
 /// frame (FFmpeg takes about twenty frames and then stops reading for the 0.2 s that takes): the queue lets the render
-/// go on meanwhile, in a bounded amount of memory.
-fn frame_queue(frame_bytes: usize) -> usize {
-    (FRAME_QUEUE_BYTES / frame_bytes.max(1)).clamp(FRAME_QUEUE_MIN, FRAME_QUEUE_MAX)
+/// go on meanwhile, in a bounded amount of memory, which the encoders of `workers` parallel workers share.
+fn frame_queue(frame_bytes: usize, workers: usize) -> usize {
+    (FRAME_QUEUE_BYTES / workers.max(1) / frame_bytes.max(1)).clamp(FRAME_QUEUE_MIN, FRAME_QUEUE_MAX)
 }
 
 impl Feeder {
-    fn start(spec: &EncodeSpec) -> Result<Feeder, DeliverError> {
+    /// Starts the encoder of `spec` for one of `workers` parallel workers.
+    fn start(spec: &EncodeSpec, workers: usize) -> Result<Feeder, DeliverError> {
         use std::sync::atomic::Ordering::Relaxed;
         let mut enc = Encoder::start(spec)?;
-        let (tx, rx) = sync_channel::<Vec<u8>>(frame_queue(spec.input.frame_bytes(spec.width, spec.height)));
+        let (tx, rx) = sync_channel::<Vec<u8>>(frame_queue(spec.input.frame_bytes(spec.width, spec.height), workers));
         let complete = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let all_sent = complete.clone();
         let handle = std::thread::Builder::new().name("sr-encode".into()).spawn(move || {
@@ -1208,7 +1209,7 @@ fn start_encoder(
             *late = Some(done);
         }
     }
-    Feeder::start(spec)
+    Feeder::start(spec, 1)
 }
 
 fn run_delivery(
@@ -1769,7 +1770,7 @@ fn run_delivery(
                 bitrate: None,
                 ..spec.clone()
             };
-            let mut feeder = Feeder::start(&ispec)?;
+            let mut feeder = Feeder::start(&ispec, 1)?;
             let mut done = 0;
             let mut judge = Judge::new(checks.flash_on());
             video.stage.seek(spec.start_number as u32);
@@ -1907,6 +1908,7 @@ fn run_delivery(
                                     renderer.burn_captions = output.burn_captions.clone();
                                     renderer.audio = audio.clone();
                                     renderer.captions_off = map.is_some();
+                                    renderer.share_budgets(workers);
                                     let stage = OutputStage::new(gpu.device.clone(), gpu.queue.clone());
                                     let mut overlay = crate::overlay::Overlay::new(
                                         doc,
@@ -1949,7 +1951,7 @@ fn run_delivery(
                             // or to flush.
                             let mut closing = Closing::default();
                             let mut next = None;
-                            let started = |i: usize| Feeder::start(&part_spec(i));
+                            let started = |i: usize| Feeder::start(&part_spec(i), workers);
                             if let Some(&first) = mine.first() {
                                 match started(first) {
                                     Ok(f) => next = Some(f),
@@ -2932,6 +2934,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn workers_divide_the_frame_queue_bytes_and_keep_a_few_frames() {
+        assert_eq!(frame_queue(1_000_000, 1), 48);
+        assert_eq!(frame_queue(1_000_000, 4), 24);
+        assert_eq!(frame_queue(8_294_400, 1), 11);
+        assert_eq!(frame_queue(8_294_400, 2), 5);
+        assert_eq!(frame_queue(8_294_400, 8), FRAME_QUEUE_MIN);
+        assert_eq!(frame_queue(8_294_400, 0), 11);
+    }
+
+    #[test]
     fn shaders_take_over_only_the_mixed_channels_they_read() {
         let take = |read: Option<&[&str]>| {
             let mut master = vec![vec![1.0f32; 4]];
@@ -3206,12 +3218,12 @@ mod tests {
     #[test]
     fn the_encoder_queue_holds_a_fixed_amount_of_frames_in_bytes() {
         let frame = |w, h| InputFormat::Nv12.frame_bytes(w, h);
-        assert_eq!(frame_queue(frame(1920, 1080)), 30);
+        assert_eq!(frame_queue(frame(1920, 1080), 1), 30);
         // never more than the cap, never fewer than three
-        assert_eq!(frame_queue(frame(64, 36)), FRAME_QUEUE_MAX);
-        assert_eq!(frame_queue(frame(3840, 2160)), 7);
-        assert_eq!(frame_queue(InputFormat::Gbrapf32.frame_bytes(7680, 4320)), 3);
-        assert_eq!(frame_queue(0), FRAME_QUEUE_MAX);
+        assert_eq!(frame_queue(frame(64, 36), 1), FRAME_QUEUE_MAX);
+        assert_eq!(frame_queue(frame(3840, 2160), 1), 7);
+        assert_eq!(frame_queue(InputFormat::Gbrapf32.frame_bytes(7680, 4320), 1), 3);
+        assert_eq!(frame_queue(0, 1), FRAME_QUEUE_MAX);
     }
 
     fn feeder_finishing(result: Result<String, sr_media::MediaError>) -> Feeder {

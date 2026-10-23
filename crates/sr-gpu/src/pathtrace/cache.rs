@@ -114,12 +114,23 @@ pub struct BuildCache {
     geometry: VecDeque<(SceneKey, Geometry, usize)>,
     prototypes: HashMap<instances::Key, Entry>,
 }
+/// The geometry a cache retains when the renderer does not share its budget.
+pub const GEOMETRY_BUDGET: usize = 256 << 20;
 impl Default for BuildCache {
     fn default() -> Self {
-        Self::new(256 << 20)
+        Self::new(GEOMETRY_BUDGET)
     }
 }
 impl BuildCache {
+    /// Retains at most `bytes` from now on, releasing the oldest geometry beyond it.
+    pub fn set_budget(&mut self, bytes: usize) {
+        self.budget = bytes;
+        self.make_room(0);
+    }
+    /// The bytes of geometry this cache retains at most.
+    pub fn budget(&self) -> usize {
+        self.budget
+    }
     /// A cache with at most `bytes` of retained geometry payload; zero disables reuse.
     pub fn new(bytes: usize) -> Self {
         Self { budget: bytes, bytes: 0, geometry: VecDeque::new(), prototypes: HashMap::new() }

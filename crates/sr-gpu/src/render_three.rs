@@ -313,9 +313,23 @@ impl Renderer {
         Some(h(&words))
     }
 
+    /// Keeps a `1 / workers` share of the default budgets of the caches that grow with the scene (volumes, path
+    /// traced geometry and its storage), for one of `workers` renderers in a process: parallel delivery workers.
+    pub fn share_budgets(&mut self, workers: usize) {
+        self.budget_share = workers.max(1);
+        if let Some(e) = &mut self.three {
+            e.share_budgets(self.budget_share);
+        }
+    }
+
+    /// Bytes of decoded volumes and baked frames kept between frames, at most.
+    pub(super) fn volume_cache_budget(&self) -> usize {
+        VOLUME_CACHE_BUDGET / self.budget_share
+    }
+
     pub(super) fn three_engine(&mut self) -> &mut ThreeEngine {
         let g = &self.gpu;
-        let samples = self.raster_samples;
+        let (samples, share) = (self.raster_samples, self.budget_share);
         self.three.get_or_insert_with(|| {
             let mut engine = ThreeEngine::new_with_samples(
                 g.device.clone(),
@@ -325,6 +339,7 @@ impl Renderer {
                 samples,
             );
             engine.software_adapter = g.is_software();
+            engine.share_budgets(share);
             Box::new(engine)
         })
     }
@@ -1138,7 +1153,8 @@ impl Renderer {
                 .map_err(|e| sr_volume::Error::Io(std::io::Error::other(format!("{}: {e}", path.display()))))
         })();
         let bytes = loaded.as_ref().ok().and_then(|v| v.as_ref()).map_or(0, |v| v.bytes());
-        if self.volume_cache_bytes.saturating_add(bytes) > 256 << 20 || self.volume_assets.len() >= 64 {
+        if self.volume_cache_bytes.saturating_add(bytes) > self.volume_cache_budget() || self.volume_assets.len() >= 64
+        {
             self.volume_assets.clear();
             self.baked_frames.clear();
             self.volume_cache_bytes = 0;
@@ -1184,7 +1200,9 @@ impl Renderer {
             if bytes > 256 << 20 {
                 return Err(sr_volume::Error::Limit("baked frame resident bytes"));
             }
-            if self.volume_cache_bytes.saturating_add(bytes) > 256 << 20 || self.baked_frames.len() >= 64 {
+            if self.volume_cache_bytes.saturating_add(bytes) > self.volume_cache_budget()
+                || self.baked_frames.len() >= 64
+            {
                 self.volume_assets.clear();
                 self.baked_frames.clear();
                 self.volume_cache_bytes = 0;
@@ -3931,6 +3949,9 @@ mod scope_tests {
         }
     }
 }
+
+/// Decoded volumes and baked frames a renderer alone keeps between frames.
+const VOLUME_CACHE_BUDGET: usize = 256 << 20;
 
 /// What an imported asset was read from: each file's path with its length and modification time (`None` when missing).
 type AssetStamp = Vec<(std::path::PathBuf, Option<(u64, Option<std::time::SystemTime>)>)>;
