@@ -213,6 +213,12 @@ pub const ARENA_CHILD: &str = "SR_TESTKIT_ARENA_CHILD";
 /// When the child cannot run or fails, or reports no arena: a test that cannot see what it checks.
 #[doc(hidden)]
 pub fn child_arenas(module: &str, name: &str) -> usize {
+    child_arenas_with(module, name, &[])
+}
+
+/// [`child_arenas`], with the child's environment also holding `vars`.
+#[doc(hidden)]
+pub fn child_arenas_with(module: &str, name: &str, vars: &[(&str, &str)]) -> usize {
     let exact = match module.split_once("::") {
         Some((_, below)) => format!("{below}::{name}"),
         None => name.to_string(),
@@ -221,6 +227,7 @@ pub fn child_arenas(module: &str, name: &str) -> usize {
     let out = Command::new(&exe)
         .args(["--exact", &exact, "--test-threads=1"])
         .env(ARENA_CHILD, "1")
+        .envs(vars.iter().copied())
         .output()
         .unwrap_or_else(|e| panic!("cannot run {} --exact {exact}: {e}", exe.display()));
     let stderr = String::from_utf8_lossy(&out.stderr);

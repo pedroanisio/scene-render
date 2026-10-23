@@ -32,6 +32,12 @@ ALLOWED = {
         "the Blosc decompressor is reached only through its C API",
     ("crates/sr-gpu/src/gpu.rs", "fn experimental_features"):
         "wgpu asks for an unsafe acknowledgement before it enables ray queries, an experimental feature",
+    ("crates/scene-render/src/arena.rs", "fn cap"):
+        "glibc's mallopt is the only way to cap the arenas from inside the process",
+    ("crates/scene-render/src/arena.rs", "static CAP: extern fn() = cap"):
+        "an .init_array entry is the only code that runs before main, while glibc still applies the cap",
+    ("crates/scene-render/src/arena.rs", "fn report_arenas"):
+        "glibc's malloc_stats is the only report of how many arenas the process has (its test)",
     # test code: a #[global_allocator] that counts allocations and forwards them to System
     ("crates/sr-eval/tests/crater_memory.rs", "unsafe impl GlobalAlloc for ObservedSystem"): "allocation count",
     ("crates/sr-eval/tests/terrain_memory.rs", "unsafe impl GlobalAlloc for ObservedSystem"): "allocation count",

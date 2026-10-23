@@ -1,7 +1,7 @@
 //! `scene-render` — validate and inspect scene-render 1.1 documents.
 
-#![forbid(unsafe_code)]
-
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod arena;
 mod changes;
 mod mcp;
 mod output;
