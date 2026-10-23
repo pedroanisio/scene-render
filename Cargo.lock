@@ -3281,6 +3281,7 @@ version = "0.7.3"
 dependencies = [
  "image",
  "jxl-oxide",
+ "rustix",
  "serde",
  "serde_json",
  "sr-testkit",

@@ -1164,6 +1164,18 @@ fn publish_output(output: tempfile::TempPath, path: &Path) -> std::io::Result<()
     output.persist(path).map_err(|e| e.error)
 }
 
+/// The bytes an encoder's frame pipe holds, where the system allows it, rather than the default 64 KiB: a frame crosses
+/// in a few large writes, not hundreds that each wake FFmpeg.
+pub const PIPE_BYTES: usize = 1 << 20;
+
+/// Enlarges `stdin`'s pipe to [`PIPE_BYTES`], or the most `/proc/sys/fs/pipe-max-size` lets this process set. The pipe
+/// keeps its size where the kernel refuses (the user's pipe pages are spent): frames then cross in smaller writes.
+#[cfg(target_os = "linux")]
+fn enlarge_pipe(stdin: &ChildStdin) {
+    let max = std::fs::read_to_string("/proc/sys/fs/pipe-max-size").ok().and_then(|s| s.trim().parse().ok());
+    let _ = rustix::pipe::fcntl_setpipe_size(stdin, max.map_or(PIPE_BYTES, |m: usize| PIPE_BYTES.min(m)));
+}
+
 /// A running encoder fed through its standard input. Dropped before [`Encoder::finish`] succeeds, it stops
 /// FFmpeg and removes the unfinished file.
 pub struct Encoder {
@@ -1205,6 +1217,10 @@ impl Encoder {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| MediaError::Spawn { tool: crate::ffmpeg(), source: e })?;
+        #[cfg(target_os = "linux")]
+        if let Some(stdin) = &child.stdin {
+            enlarge_pipe(stdin);
+        }
         let mut err = child.stderr.take().expect("piped");
         let errors = std::thread::spawn(move || {
             let mut v = Vec::new();
@@ -1221,6 +1237,14 @@ impl Encoder {
             encoder,
             command: args,
         })
+    }
+
+    /// The bytes the frame pipe holds; `None` without frame input, or off Linux.
+    pub fn pipe_bytes(&self) -> Option<usize> {
+        #[cfg(target_os = "linux")]
+        return self.stdin.as_ref().and_then(|s| rustix::pipe::fcntl_getpipe_size(s).ok());
+        #[cfg(not(target_os = "linux"))]
+        None
     }
 
     fn said(&mut self) -> Vec<u8> {

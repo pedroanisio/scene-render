@@ -712,3 +712,23 @@ fn a1_pixel_aspect_reduces_without_silently_losing_extreme_values() {
     assert_eq!(StreamTags::sar_of(1.0), None);
     assert_eq!(StreamTags::sar_of(1e8), None);
 }
+
+/// A frame is megabytes and a pipe holds 64 KiB by default: each frame would cross in many small writes, each waking
+/// FFmpeg. The encoder's input pipe is enlarged to `PIPE_BYTES`, or the most the system lets a process have.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_encoders_frame_pipe_holds_a_large_share_of_a_frame() {
+    if !common::ffmpeg_available("the_encoders_frame_pipe_holds_a_large_share_of_a_frame") {
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let s = spec(&d.path().join("pipe.mp4"), Codec::H264, InputFormat::Nv12);
+    let max: usize = std::fs::read_to_string("/proc/sys/fs/pipe-max-size").unwrap().trim().parse().unwrap();
+    let mut e = Encoder::start(&s).unwrap();
+    assert_eq!(e.pipe_bytes(), Some(PIPE_BYTES.min(max)));
+    for k in 0..3 {
+        e.write(&frame(s.input, k, s.width as usize, s.height as usize)).unwrap();
+    }
+    e.finish().unwrap();
+    assert_eq!(probe(&s.path).unwrap().video.unwrap().codec, "h264");
+}
