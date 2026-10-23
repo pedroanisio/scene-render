@@ -528,7 +528,8 @@ fn advance(s: &Spec, state: &State, hi: f64, d: &mut dyn Driver, work: &mut u64)
             time: hi,
             emitted: state.frame.emitted,
             dropped: state.frame.dropped,
-            particles: Vec::with_capacity(s.max_particles),
+            // the particles carried in: births grow it, and the cap's worth is never reserved up front
+            particles: Vec::with_capacity(state.frame.particles.len()),
         },
         carry: state.carry,
         burst_cursor: state.burst_cursor.clone(),
@@ -584,10 +585,10 @@ fn advance(s: &Spec, state: &State, hi: f64, d: &mut dyn Driver, work: &mut u64)
         events.push(Event { time: b.time, count: 1, birth: Some(b) });
     }
     events.sort_by(|a, b| a.time.total_cmp(&b.time));
-    let mut deaths = BinaryHeap::new();
+    let mut deaths: BinaryHeap<_> =
+        state.frame.particles.iter().map(|particle| Reverse(Time(particle.birth + particle.lifetime))).collect();
     for particle in &state.frame.particles {
         let death = particle.birth + particle.lifetime;
-        deaths.push(Reverse(Time(death)));
         if death > hi {
             let mut p = particle.clone();
             match motion(s, &mut p, lo, hi - lo, d, work)? {

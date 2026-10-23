@@ -201,8 +201,8 @@ pub struct World {
     keep_solids: bool,
 }
 
-/// Shape and pose of the enabled, non-sensor colliders of one step.
-type Solids = Vec<(SharedShape, Pose)>;
+/// Shape, pose and bounding box of the enabled, non-sensor colliders of one step.
+type Solids = Vec<(SharedShape, Pose, Aabb)>;
 
 fn solid(c: &Collider) -> bool {
     !c.is_sensor() && c.is_enabled()
@@ -212,12 +212,24 @@ fn v(x: f64, y: f64) -> Vector {
     Vector::new(x, y)
 }
 
-/// The nearest surface point and outward normal (metres, y up) of the first solid containing `q`.
-fn surface<'a>(
-    solids: impl Iterator<Item = (&'a dyn rapier2d_f64::geometry::Shape, &'a Pose)>,
-    q: Vector,
-) -> Option<([f64; 2], [f64; 2])> {
-    for (shape, pose) in solids {
+#[cfg(test)]
+thread_local! {
+    /// Point projections onto solids made by `surface`.
+    static PROJECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A solid to test a point against: its shape and pose, and its bounding box when it is known.
+type SolidRef<'a> = (&'a dyn rapier2d_f64::geometry::Shape, &'a Pose, Option<&'a Aabb>);
+
+/// The nearest surface point and outward normal (metres, y up) of the first solid containing `q`. A solid whose
+/// bounding box does not hold `q` cannot contain it and is not projected onto.
+fn surface<'a>(solids: impl Iterator<Item = SolidRef<'a>>, q: Vector) -> Option<([f64; 2], [f64; 2])> {
+    for (shape, pose, aabb) in solids {
+        if aabb.is_some_and(|b| !b.contains_local_point(q)) {
+            continue;
+        }
+        #[cfg(test)]
+        PROJECTIONS.with(|c| c.set(c.get() + 1));
         let proj = shape.project_point(pose, q, false);
         if !proj.is_inside {
             continue;
@@ -627,7 +639,7 @@ impl World {
                 }
                 // inside a solid: move to the surface along the shortest way out
                 let (q, n) = surface(
-                    colliders.iter().filter(|(_, c)| solid(c)).map(|(_, c)| (c.shape(), c.position())),
+                    colliders.iter().filter(|(_, c)| solid(c)).map(|(_, c)| (c.shape(), c.position(), None)),
                     v(p[0], p[1]),
                 )?;
                 Some(([q[0] + n[0] * 1e-4, q[1] + n[1] * 1e-4], n))
@@ -658,7 +670,11 @@ impl World {
         if !self.keep_solids || self.solids.contains_key(&st.step) {
             return;
         }
-        let now = st.colliders.iter().filter(|(_, c)| solid(c)).map(|(_, c)| (c.shared_shape().clone(), *c.position()));
+        let now = st
+            .colliders
+            .iter()
+            .filter(|(_, c)| solid(c))
+            .map(|(_, c)| (c.shared_shape().clone(), *c.position(), c.shape().compute_aabb(c.position())));
         self.solids.insert(st.step, now.collect());
         if self.solids.len() > ((1 << 18) / st.colliders.len().max(1)).clamp(8, 1024) {
             match self.solids.first_key_value() {
@@ -722,15 +738,12 @@ impl World {
     /// Whether a pixel point lies inside a (non-sensor) collider at the current state, with the
     /// outward normal and the nearest surface point (pixels) when it does.
     pub fn hit(&self, p: [f64; 2]) -> Option<([f64; 2], [f64; 2])> {
-        let solids = self.state.colliders.iter().filter(|(_, c)| solid(c)).map(|(_, c)| (c.shape(), c.position()));
+        let solids =
+            self.state.colliders.iter().filter(|(_, c)| solid(c)).map(|(_, c)| (c.shape(), c.position(), None));
         self.hit_in(solids, p)
     }
 
-    fn hit_in<'a>(
-        &self,
-        solids: impl Iterator<Item = (&'a dyn rapier2d_f64::geometry::Shape, &'a Pose)>,
-        p: [f64; 2],
-    ) -> Option<([f64; 2], [f64; 2])> {
+    fn hit_in<'a>(&self, solids: impl Iterator<Item = SolidRef<'a>>, p: [f64; 2]) -> Option<([f64; 2], [f64; 2])> {
         let ppm = self.spec.pixels_per_meter.max(1e-9);
         let (q, n) = surface(solids, v(p[0] / ppm, -p[1] / ppm))?;
         Some(([q[0] * ppm, -q[1] * ppm], [n[0], -n[1]]))
@@ -752,11 +765,72 @@ impl World {
     /// (nothing unless `prepare_hits(t)` came first).
     pub fn hit_at(&self, t: f64, p: [f64; 2]) -> Option<([f64; 2], [f64; 2])> {
         let solids = self.solids.get(&self.step_index(t))?;
-        self.hit_in(solids.iter().map(|(s, m)| (&**s as &dyn rapier2d_f64::geometry::Shape, m)), p)
+        self.hit_in(solids.iter().map(|(s, m, b)| (&**s as &dyn rapier2d_f64::geometry::Shape, m, Some(b))), p)
     }
 
     /// Steps simulated so far and checkpoints held (tests, statistics).
     pub fn progress(&self) -> (u64, usize) {
         (self.state.step, self.checkpoints.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Still;
+
+    impl Driver for Still {
+        fn kinematic(&mut self, _t: f64, which: &[usize]) -> Vec<PxPose> {
+            which.iter().map(|_| PxPose::default()).collect()
+        }
+        fn fields(&mut self, _t: f64) -> Vec<crate::fields::Field> {
+            Vec::new()
+        }
+    }
+
+    fn wall(x: f64) -> BodySpec {
+        BodySpec {
+            kind: BodyKind::Static,
+            shape: Shape::Box { w: 100.0, h: 100.0 },
+            mass: 1.0,
+            friction: 0.5,
+            restitution: 0.0,
+            linear_damping: 0.0,
+            angular_damping: 0.0,
+            velocity: [0.0, 0.0],
+            angular_velocity: 0.0,
+            group: 0,
+            collides_with: None,
+            sensor: false,
+            fixed_rotation: false,
+            bullet: false,
+            activate_at: 0.0,
+            start: PxPose { x, y: 300.0, angle: 0.0 },
+        }
+    }
+
+    #[test]
+    fn a_hit_projects_only_onto_the_solids_whose_bounds_hold_the_point() {
+        let mut w = World::new(WorldSpec {
+            start: 0.0,
+            step: 1.0 / 120.0,
+            gravity: [0.0, -9.80665],
+            pixels_per_meter: 100.0,
+            iterations: 8,
+            bounds: Bounds::None,
+            bodies: (0..6).map(|k| wall(100.0 + 200.0 * k as f64)).collect(),
+            joints: Vec::new(),
+            softs: Vec::new(),
+        });
+        w.prepare_hits(0.0, &mut Still);
+        PROJECTIONS.with(|c| c.set(0));
+        let hit = w.hit_at(0.0, [1110.0, 300.0]).expect("inside the last wall");
+        assert_eq!(PROJECTIONS.with(|c| c.get()), 1, "only the wall round the point is projected onto");
+        assert_eq!(Some(hit), w.hit([1110.0, 300.0]), "the same answer as the colliders of the current state");
+        assert_eq!(hit, ([1150.0, 300.0], [1.0, 0.0]), "out through the nearest side");
+        PROJECTIONS.with(|c| c.set(0));
+        assert!(w.hit_at(0.0, [200.0, 300.0]).is_none(), "between two walls");
+        assert_eq!(PROJECTIONS.with(|c| c.get()), 0);
     }
 }

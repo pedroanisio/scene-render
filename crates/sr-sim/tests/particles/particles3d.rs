@@ -640,3 +640,12 @@ fn resolvable_rebounds_keep_their_authored_restitution() {
         assert!((p.position[1] - expected_y).abs() < 1e-6, "{restitution}: {:?}", p.position);
     }
 }
+
+#[test]
+fn a_frame_holds_room_for_its_particles_not_for_the_cap() {
+    // a cap of a hundred thousand particles reserves nothing until they are born
+    let mut e = Emitter::new(Spec { max_particles: 100_000, max_bytes: usize::MAX, ..spec() }).unwrap();
+    let f = e.at(1.0, &mut Scene { rate: 20., ..Default::default() }).unwrap();
+    assert_eq!(f.particles.len(), 20);
+    assert!(f.particles.capacity() <= 64, "capacity {} for {} particles", f.particles.capacity(), f.particles.len());
+}

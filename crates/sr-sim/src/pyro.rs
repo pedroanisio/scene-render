@@ -710,16 +710,24 @@ fn voxelize(
 ) -> Result<(Vec<bool>, Vec<SolidFaces>), Error> {
     let count = cells.iter().product();
     let mut solid = vec![false; count];
-    let centre = |k: usize| world_point(origin, h, coords(k, cells).map(|v| v as f64 + 0.5));
-    // the mask first, so that the list of faces is allocated once, at the size it is charged for
-    let mut solid_cells = 0usize;
-    for (k, is_solid) in solid.iter_mut().enumerate() {
-        let p = centre(k);
-        if obstacles.iter().any(|o| o.shape.contains(p)) {
-            *is_solid = true;
-            solid_cells += 1;
-        }
+    if obstacles.is_empty() {
+        return Ok((solid, Vec::new()));
     }
+    let centre = |k: usize| world_point(origin, h, coords(k, cells).map(|v| v as f64 + 0.5));
+    // the mask first, so that the list of faces is allocated once, at the size it is charged for; each cell is its
+    // own test, so the cells are tested on every core
+    let solid_cells: usize = solid
+        .par_chunks_mut(LIGHT)
+        .enumerate()
+        .map(|(chunk, mask)| {
+            let mut n = 0;
+            for (i, is_solid) in mask.iter_mut().enumerate() {
+                *is_solid = obstacles.iter().any(|o| o.shape.contains(centre(chunk * LIGHT + i)));
+                n += usize::from(*is_solid);
+            }
+            n
+        })
+        .sum();
     let mut faces = Vec::with_capacity(solid_cells);
     for (k, _) in solid.iter().enumerate().filter(|(_, s)| **s) {
         let p = centre(k);
@@ -2438,4 +2446,41 @@ fn lattice_count(center: [f64; 3], origin: [f64; 3], h: f64, reach: f64) -> usiz
         }
     }
     total
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn obstacle(shape: Shape, velocity: [f64; 3]) -> Obstacle {
+        Obstacle { shape, velocity, velocity_origin: [0.0; 3], velocity_gradient: [[0.0; 3]; 3] }
+    }
+
+    #[test]
+    fn voxelization_marks_the_cells_inside_any_collider_and_takes_the_first_ones_velocity() {
+        let (cells, origin, h) = ([40, 33, 37], [-10.0, -8.0, -9.0], 0.5);
+        let obstacles = [
+            obstacle(Shape::Box { min: [-4.0, -3.0, -5.0], max: [3.0, 2.0, 1.0] }, [1.0, 0.0, 0.0]),
+            obstacle(Shape::Sphere { center: [2.0, 1.0, 0.0], radius: 3.5 }, [0.0, -2.0, 0.0]),
+        ];
+        let (solid, faces) = voxelize(cells, origin, h, &obstacles).unwrap();
+        let count: usize = cells.iter().product();
+        assert_eq!(solid.len(), count);
+        let mut expected = Vec::new();
+        for (k, &is_solid) in solid.iter().enumerate() {
+            let p = world_point(origin, h, coords(k, cells).map(|v| v as f64 + 0.5));
+            let inside = obstacles.iter().position(|o| o.shape.contains(p));
+            assert_eq!(is_solid, inside.is_some(), "cell {k}");
+            if let Some(o) = inside {
+                expected.push((k, obstacles[o].velocity));
+            }
+        }
+        assert!(expected.iter().any(|e| e.1[0] == 1.0) && expected.iter().any(|e| e.1[1] == -2.0), "both colliders");
+        let got: Vec<(usize, [f64; 3])> = faces.iter().map(|f| (f.cell, f.low)).collect();
+        assert_eq!(got, expected, "the faces of the solid cells in cell order, at the first collider's velocity");
+        assert!(faces.iter().all(|f| f.low == f.high), "a uniform velocity on both faces");
+
+        let (solid, faces) = voxelize(cells, origin, h, &[]).unwrap();
+        assert!(solid.len() == count && solid.iter().all(|s| !s) && faces.is_empty(), "no colliders, no solid cells");
+    }
 }
