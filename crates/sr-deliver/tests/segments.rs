@@ -403,6 +403,38 @@ fn composition_captions_burn_once_in_output_time() {
 }
 
 #[test]
+fn composition_captions_burn_once_without_segments() {
+    if gpu().is_none() {
+        return;
+    }
+    // with no time map the output's caption layer and the composition could both burn the track:
+    // it must look exactly like the same cue as the output's own track, which only the layer burns
+    let out = r#"<output path="DIR/f_%03d.png" codec="png-sequence" start="0" end="1">OWN</output>"#;
+    let style = r#"language="en" preset="boxed-line""#;
+    let (da, db) = (dir("cap-plain-a"), dir("cap-plain-b"));
+    let a = captioned(
+        &da,
+        &out.replace("OWN", ""),
+        &format!(
+            r#"<captions><captionTrack id="cc" {style}><cue start="0.2" end="0.8" text="HELLO"/></captionTrack></captions>"#
+        ),
+    );
+    let b = captioned(
+        &db,
+        &out.replace(
+            "OWN",
+            &format!(r#"<captionTrack id="own" {style}><cue start="0.2" end="0.8" text="HELLO"/></captionTrack>"#),
+        ),
+        "",
+    );
+    let ((fa, _), (fb, _)) = (render(&da, &a), render(&db, &b));
+    assert_eq!(fa.len(), 10);
+    for k in 0..10 {
+        assert!(same(&fa[k], &fb[k]), "frame {k}");
+    }
+}
+
+#[test]
 fn stills_sidecars_and_chapters_are_in_output_time() {
     if gpu().is_none() {
         return;
