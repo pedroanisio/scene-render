@@ -38,3 +38,20 @@ fn three_frames_under_f32_precision_reuse_their_f16_target_and_buffers() {
     let made: Vec<usize> = shots.iter().map(|s| s.stats.buffers_created).collect();
     assert_eq!(&made[1..], &[0, 0, 0], "warm frames write the kept 3D buffers: {made:?}");
 }
+
+#[test]
+fn vector_frames_write_the_job_buffers_the_raster_stage_keeps() {
+    let d = doc(
+        r##"background="#101820""##,
+        "",
+        r##"<shape id="bar" shape="ellipse" x="10" y="8" width="30" height="16" fill="#FF8000">
+              <animate property="x"><key time="0" value="10"/><key time="2" value="30"/></animate></shape>
+            <shape id="box" shape="rect" x="40" y="4" width="12" height="20" fill="#2080FF" stroke="#FFFFFF" strokeWidth="2"/>"##,
+    );
+    let times: Vec<f64> = (0..4).map(|k| 0.2 + k as f64 / 10.0).collect();
+    let Some(shots) = render_sub_frames(&d, &times) else { return };
+    let made: Vec<usize> = shots.iter().map(|s| s.stats.buffers_created).collect();
+    // the first job makes the arenas of its parameters, commands, ranges, pieces and backdrops; the second is
+    // the first over a target with pixels, so it lists the tiles that changed and makes that arena too
+    assert_eq!(made, [5, 1, 0, 0], "vector: warm frames write the arenas the first jobs made");
+}

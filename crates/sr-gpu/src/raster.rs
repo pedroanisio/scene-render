@@ -301,21 +301,77 @@ pub struct Raster {
     layout: wgpu::PipelineLayout,
     pipelines: [std::sync::OnceLock<wgpu::ComputePipeline>; 4],
     bgl: wgpu::BindGroupLayout,
+    /// The jobs' parameters, commands, ranges, pieces, backdrops and active tiles since the last submit.
+    arenas: [Arena; 6],
+    /// Buffers made so far for jobs (a job that fits the arenas makes none).
+    pub buffers_made: usize,
 }
 
-fn storage<T: Pod>(d: &wgpu::Device, data: &[T], label: &str) -> wgpu::Buffer {
-    use wgpu::util::DeviceExt;
-    let bytes: &[u8] = bytemuck::cast_slice(data);
-    let mut v = bytes.to_vec();
-    // an empty scene still binds one zeroed element of every record type
-    if v.len() < 64 {
-        v.resize(64, 0);
+/// Where the jobs' records of one kind live: a buffer the jobs since the last submit append to at aligned offsets,
+/// replaced by a larger one when a job does not fit (the bind groups of the jobs before keep the old one alive),
+/// and rewound when the queue takes the jobs. A `queue.write_buffer` lands before the next submit's first command,
+/// so two jobs between submits never share bytes.
+struct Arena {
+    buf: Option<wgpu::Buffer>,
+    cap: u64,
+    cursor: u64,
+    usage: wgpu::BufferUsages,
+    label: &'static str,
+}
+
+/// Storage and uniform offsets within an arena are multiples of this (what the device limits ask at most).
+const ARENA_ALIGN: u64 = 256;
+
+impl Arena {
+    fn new(usage: wgpu::BufferUsages, label: &'static str) -> Arena {
+        Arena { buf: None, cap: 0, cursor: 0, usage, label }
     }
-    d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(label),
-        contents: &v,
-        usage: wgpu::BufferUsages::STORAGE,
-    })
+
+    /// Writes `bytes` after the jobs before and returns where they are bound: at least 64 bytes, zero-padded, as
+    /// an empty scene still binds one zeroed element of every record type. `made` counts the buffers this makes.
+    fn place(&mut self, d: &wgpu::Device, q: &wgpu::Queue, bytes: &[u8], made: &mut usize) -> Place {
+        let size = (bytes.len() as u64).max(64).div_ceil(4) * 4;
+        if self.buf.is_none() || self.cursor + size > self.cap {
+            let cap = size.max(self.cap * 2).max(64 << 10).div_ceil(ARENA_ALIGN) * ARENA_ALIGN;
+            self.buf = Some(d.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(self.label),
+                size: cap,
+                usage: self.usage | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.cap = cap;
+            self.cursor = 0;
+            *made += 1;
+        }
+        let buf = self.buf.clone().expect("made");
+        let at = self.cursor;
+        if (bytes.len() as u64) < size {
+            let mut padded = bytes.to_vec();
+            padded.resize(size as usize, 0);
+            q.write_buffer(&buf, at, &padded);
+        } else {
+            q.write_buffer(&buf, at, bytes);
+        }
+        self.cursor = (at + size).div_ceil(ARENA_ALIGN) * ARENA_ALIGN;
+        Place { buf, at, size }
+    }
+}
+
+/// A job's records of one kind: where an arena placed them.
+struct Place {
+    buf: wgpu::Buffer,
+    at: u64,
+    size: u64,
+}
+
+impl Place {
+    fn binding(&self) -> wgpu::BindingResource<'_> {
+        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            buffer: &self.buf,
+            offset: self.at,
+            size: std::num::NonZeroU64::new(self.size),
+        })
+    }
 }
 
 impl Raster {
@@ -387,7 +443,16 @@ impl Raster {
             bind_group_layouts: &[Some(&bgl)],
             immediate_size: 0,
         });
-        Raster { device: d.clone(), module, layout, pipelines: Default::default(), bgl }
+        let (uniform, storage) = (wgpu::BufferUsages::UNIFORM, wgpu::BufferUsages::STORAGE);
+        let arenas = [
+            Arena::new(uniform, "raster params"),
+            Arena::new(storage, "rcmds"),
+            Arena::new(storage, "ranges"),
+            Arena::new(storage, "pieces"),
+            Arena::new(storage, "backdrops"),
+            Arena::new(storage, "active tiles"),
+        ];
+        Raster { device: d.clone(), module, layout, pipelines: Default::default(), bgl, arenas, buffers_made: 0 }
     }
 
     /// The pipeline for variant `i` (bit 0 `SOLID_FILLS`, bit 1 `SPARSE_TILES`).
@@ -409,16 +474,23 @@ impl Raster {
     }
 
     /// Records a job into `enc`, reading the frame's paint buffers.
+    /// The queue took every job recorded so far: the arenas serve the jobs recorded next from their start.
+    pub fn submitted(&mut self) {
+        for arena in &mut self.arenas {
+            arena.cursor = 0;
+        }
+    }
+
     pub fn record(
-        &self,
-        d: &wgpu::Device,
+        &mut self,
+        q: &wgpu::Queue,
         enc: &mut wgpu::CommandEncoder,
         job: &RasterJob,
         paints: &wgpu::Buffer,
         stops: &wgpu::Buffer,
         globals: &wgpu::Buffer,
     ) {
-        use wgpu::util::DeviceExt;
+        let d = &self.device;
         let view =
             job.target.tex.create_view(&wgpu::TextureViewDescriptor { mip_level_count: Some(1), ..Default::default() });
         if let Some(active) = &job.active_tiles {
@@ -459,32 +531,30 @@ impl Raster {
             active_count: job.active_tiles.as_ref().map_or(0, |a| a.len() as u32),
             pad: [0; 3],
         };
-        let pb = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("raster params"),
-            contents: bytemuck::bytes_of(&params),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let made = &mut self.buffers_made;
+        let [pa, ca, ra, pia, ba, aa] = &mut self.arenas;
+        let pb = pa.place(d, q, bytemuck::bytes_of(&params), made);
         let (c, r, p, b) = (
-            storage(d, &job.cmds, "rcmds"),
-            storage(d, &job.ranges, "ranges"),
-            storage(d, &job.pieces, "pieces"),
-            storage(d, &job.backdrops, "backdrops"),
+            ca.place(d, q, bytemuck::cast_slice(&job.cmds), made),
+            ra.place(d, q, bytemuck::cast_slice(&job.ranges), made),
+            pia.place(d, q, bytemuck::cast_slice(&job.pieces), made),
+            ba.place(d, q, bytemuck::cast_slice(&job.backdrops), made),
         );
-        let active = job.active_tiles.as_ref().map(|tiles| storage(d, tiles, "active tiles"));
+        let active = job.active_tiles.as_ref().map(|tiles| aa.place(d, q, bytemuck::cast_slice(tiles), made));
         let bind = d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("raster"),
             layout: &self.bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: c.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: r.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: p.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: b.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: c.binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: r.binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: p.binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: b.binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: paints.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: stops.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 6, resource: globals.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: pb.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: pb.binding() },
                 wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 9, resource: active.as_ref().unwrap_or(&r).as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 9, resource: active.as_ref().unwrap_or(&r).binding() },
             ],
         });
         let mut pass =
@@ -503,6 +573,16 @@ impl Raster {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A storage buffer of `data` for a hand-made job's paints and stops.
+    fn storage<T: Pod>(d: &wgpu::Device, data: &[T], label: &str) -> wgpu::Buffer {
+        use wgpu::util::DeviceExt;
+        d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents: bytemuck::cast_slice(data),
+            usage: wgpu::BufferUsages::STORAGE,
+        })
+    }
 
     #[test]
     fn solid_fill_specialization_matches_general_rasterization_exactly() {
@@ -560,11 +640,12 @@ mod tests {
         .unwrap();
         let evaluator = sr_eval::Evaluator::new(&document, &sr_eval::EvalOptions::default()).unwrap();
         let reader = crate::Renderer::new(gpu.clone(), evaluator.program());
-        let raster = Raster::new(d);
-        let render = |job: &RasterJob| {
+        let mut raster = Raster::new(d);
+        let mut render = |job: &RasterJob| {
             let mut encoder = d.create_command_encoder(&Default::default());
-            raster.record(d, &mut encoder, job, &paints, &stops, &globals);
+            raster.record(&gpu.queue, &mut encoder, job, &paints, &stops, &globals);
             gpu.queue.submit([encoder.finish()]);
+            raster.submitted();
             reader.read(&job.target)
         };
         let general = render(&job);
@@ -611,7 +692,7 @@ mod tests {
         }
 
         /// Records and submits `job`, with the paints `table` holds, and reads its target.
-        fn render(&self, job: &RasterJob, table: &PaintTable) -> Vec<[f32; 4]> {
+        fn render(&mut self, job: &RasterJob, table: &PaintTable) -> Vec<[f32; 4]> {
             let d = &self.gpu.device;
             let (paints, stops) = (storage(d, &table.paints, "paints"), storage(d, &table.stops, "stops"));
             let globals = d.create_buffer(&wgpu::BufferDescriptor {
@@ -621,8 +702,9 @@ mod tests {
                 mapped_at_creation: false,
             });
             let mut encoder = d.create_command_encoder(&Default::default());
-            self.raster.record(d, &mut encoder, job, &paints, &stops, &globals);
+            self.raster.record(&self.gpu.queue, &mut encoder, job, &paints, &stops, &globals);
             self.gpu.queue.submit([encoder.finish()]);
+            self.raster.submitted();
             self.reader.read(&job.target)
         }
     }
@@ -662,7 +744,7 @@ mod tests {
     ];
 
     /// A full raster of `e` into a fresh target: the oracle of a partial one.
-    fn full(rig: &Rig, e: Encoded) -> Vec<[f32; 4]> {
+    fn full(rig: &mut Rig, e: Encoded) -> Vec<[f32; 4]> {
         let mut table = PaintTable::default();
         let size = e.size;
         let job = RasterJob::new_cached(e, rig.target(size), &mut table, &working(), None);
@@ -672,7 +754,7 @@ mod tests {
 
     #[test]
     fn changing_one_tile_rasterises_only_that_tile_and_matches_a_full_raster() {
-        let Some(rig) = Rig::new("changing_one_tile_rasterises_only_that_tile_and_matches_a_full_raster") else {
+        let Some(mut rig) = Rig::new("changing_one_tile_rasterises_only_that_tile_and_matches_a_full_raster") else {
             return;
         };
         let target = rig.target([48, 32]);
@@ -689,14 +771,14 @@ mod tests {
         assert!(second.is_partial());
         assert_eq!(second.dispatched_tiles(), 1);
         let partial = rig.render(&second, &table);
-        let oracle = full(&rig, six_tiles(COLORS, cover));
+        let oracle = full(&mut rig, six_tiles(COLORS, cover));
         assert_ne!(partial, rig.render(&first, &table), "the frames differ");
         assert_eq!(partial, oracle, "a partial raster is bit-identical to a full one");
     }
 
     #[test]
     fn an_unchanged_frame_dispatches_nothing_and_keeps_the_pixels() {
-        let Some(rig) = Rig::new("an_unchanged_frame_dispatches_nothing_and_keeps_the_pixels") else {
+        let Some(mut rig) = Rig::new("an_unchanged_frame_dispatches_nothing_and_keeps_the_pixels") else {
             return;
         };
         let target = rig.target([48, 32]);
@@ -719,7 +801,7 @@ mod tests {
 
     #[test]
     fn a_colour_change_with_identical_geometry_invalidates_the_tile() {
-        let Some(rig) = Rig::new("a_colour_change_with_identical_geometry_invalidates_the_tile") else {
+        let Some(mut rig) = Rig::new("a_colour_change_with_identical_geometry_invalidates_the_tile") else {
             return;
         };
         let target = rig.target([48, 32]);
@@ -739,12 +821,12 @@ mod tests {
         );
         assert!(second.is_partial());
         assert_eq!(second.dispatched_tiles(), 1);
-        assert_eq!(rig.render(&second, &table), full(&rig, six_tiles(colors, [1.0; 6])));
+        assert_eq!(rig.render(&second, &table), full(&mut rig, six_tiles(colors, [1.0; 6])));
     }
 
     #[test]
     fn the_same_colours_at_other_paint_indices_keep_their_tiles() {
-        let Some(rig) = Rig::new("the_same_colours_at_other_paint_indices_keep_their_tiles") else {
+        let Some(mut rig) = Rig::new("the_same_colours_at_other_paint_indices_keep_their_tiles") else {
             return;
         };
         let target = rig.target([48, 32]);

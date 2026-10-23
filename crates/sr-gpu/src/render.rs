@@ -129,7 +129,8 @@ pub struct RenderStats {
     pub textures_created: usize,
     /// Offscreen and cached textures destroyed this frame.
     pub textures_released: usize,
-    /// Buffers made this frame for 3D passes and particle batches: none when the ones the engines keep hold them.
+    /// Buffers made this frame for 3D passes, particle batches and vector raster jobs: none when the ones the
+    /// engines keep hold them.
     pub buffers_created: usize,
     /// CPU seconds evaluating the scene at other times (sub-frames for motion blur and time effects).
     pub subframe_seconds: f64,
@@ -4876,6 +4877,7 @@ impl Renderer {
         if let Some(particles) = self.particles.as_mut() {
             particles.submitted();
         }
+        self.raster.submitted();
     }
 
     /// The queue submission of the last frame, to wait on without draining later work.
@@ -5137,7 +5139,9 @@ impl Renderer {
             })
         }
         for rj in &plan.rasters {
-            self.raster.record(&d, &mut enc, rj, &paints, &stops, &self.globals);
+            let made = self.raster.buffers_made;
+            self.raster.record(&self.gpu.queue, &mut enc, rj, &paints, &stops, &self.globals);
+            plan.stats.buffers_created += self.raster.buffers_made - made;
             plan.stats.targets += 1;
         }
         for gj in &plan.gens {
@@ -5293,7 +5297,9 @@ impl Renderer {
                         unsubmitted += bytes;
                     }
                     rj.target = t.clone();
-                    self.raster.record(&d, &mut enc, rj, &paints, &stops, &self.globals);
+                    let made = self.raster.buffers_made;
+                    self.raster.record(&self.gpu.queue, &mut enc, rj, &paints, &stops, &self.globals);
+                    plan.stats.buffers_created += self.raster.buffers_made - made;
                     unsubmitted += rj.buffer_bytes();
                     rj.target = self.dummy.clone();
                     plan.stats.targets += 1;
