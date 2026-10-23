@@ -1088,11 +1088,7 @@ impl Renderer {
         };
         let key = path.display().to_string();
         let fmt = if selected.is_some() { None } else { ma.format.map(|f| f.to_string()) };
-        let asset = self
-            .three_assets
-            .entry(key.clone())
-            .or_insert_with(|| Arc::new(sr_3d::import::load(&path, fmt.as_deref())))
-            .clone();
+        let asset = self.three_assets.entry(key.clone()).or_insert_with(|| shared_asset(&path, fmt.as_deref())).clone();
         match &*asset {
             Ok(Asset::Model(m)) => {
                 for w in &m.warnings {
@@ -1937,7 +1933,7 @@ impl Renderer {
                         if let Some(material) = imported {
                             material.apply_texture_coordinates(prim, &mut vertices);
                         }
-                        let m = self.three_engine().upload_mesh(&vertices, &prim.indices);
+                        let m = self.three_engine().upload_mesh_owned(vertices, prim.indices.clone());
                         self.three_engine().meshes.insert(mkey, m.clone());
                         m
                     }
@@ -3936,6 +3932,29 @@ mod scope_tests {
     }
 }
 
+/// What an imported asset was read from: each file's path with its length and modification time (`None` when missing).
+type AssetStamp = Vec<(std::path::PathBuf, Option<(u64, Option<std::time::SystemTime>)>)>;
+type SharedAssets = HashMap<(std::path::PathBuf, Option<String>, AssetStamp), std::sync::Weak<Result<Asset, String>>>;
+static SHARED_ASSETS: std::sync::Mutex<Option<SharedAssets>> = std::sync::Mutex::new(None);
+
+/// The 3D asset at `path` imported as `fmt`, shared by every renderer in the process (each delivery worker has its
+/// own) while any holds it: imported anew once it or a file it reads changes length or modification time.
+fn shared_asset(path: &std::path::Path, fmt: Option<&str>) -> Arc<Result<Asset, String>> {
+    let stamp = |p: &std::path::Path| std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok()));
+    let mut files = vec![path.to_path_buf()];
+    files.extend(sr_3d::import::dependencies(path).unwrap_or_default());
+    let key = (path.to_path_buf(), fmt.map(str::to_string), files.iter().map(|f| (f.clone(), stamp(f))).collect());
+    let mut shared = SHARED_ASSETS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let shared = shared.get_or_insert_with(HashMap::new);
+    if let Some(asset) = shared.get(&key).and_then(std::sync::Weak::upgrade) {
+        return asset;
+    }
+    let asset = Arc::new(sr_3d::import::load(path, fmt));
+    shared.retain(|_, w| w.strong_count() > 0);
+    shared.insert(key, Arc::downgrade(&asset));
+    asset
+}
+
 #[cfg(test)]
 mod wgsl_layout_tests {
     //! The Rust structs bound to WGSL structs have their layout (`crate::wgsl_layout`).
@@ -3945,5 +3964,30 @@ mod wgsl_layout_tests {
     fn sphere_u_matches_wgsl_params() {
         let fields = rust_fields!(super::SphereU; faces, mode, region);
         assert_agree(include_str!("sphere.wgsl"), "Params", std::mem::size_of::<super::SphereU>(), &fields);
+    }
+}
+
+#[cfg(test)]
+mod shared_asset_tests {
+    use super::shared_asset;
+    use std::sync::Arc;
+
+    #[test]
+    fn renderers_share_an_imported_asset_until_a_file_it_reads_changes() {
+        let d = std::env::temp_dir().join(format!("sr-gpu-shared-asset-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let obj = d.join("tri.obj");
+        std::fs::write(&obj, "mtllib tri.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl red\nf 1 2 3\n").unwrap();
+        std::fs::write(d.join("tri.mtl"), "newmtl red\nKd 1 0 0\n").unwrap();
+        let a = shared_asset(&obj, None);
+        assert!(matches!(&*a, Ok(sr_3d::Asset::Model(_))), "{:?}", a.as_ref().as_ref().err());
+        assert!(Arc::ptr_eq(&a, &shared_asset(&obj, None)), "each delivery worker's renderer holds the same asset");
+        assert!(!Arc::ptr_eq(&a, &shared_asset(&obj, Some("obj"))), "another format is another import");
+        // a material file the model reads changes: imported anew
+        std::fs::write(d.join("tri.mtl"), "newmtl red\nKd 0 1 0\n# longer\n").unwrap();
+        let b = shared_asset(&obj, None);
+        assert!(!Arc::ptr_eq(&a, &b));
+        drop((a, b));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
