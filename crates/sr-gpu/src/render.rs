@@ -1631,7 +1631,7 @@ impl Renderer {
                         [(c[0] * a) as f32, (c[1] * a) as f32, (c[2] * a) as f32, a as f32]
                     })
                     .collect();
-                let d = resources::Decoded { levels: resources::mips(img.width, img.height, px), note: None };
+                let d = resources::Decoded::mipmapped(img.width, img.height, px);
                 let t = Arc::new(resources::upload(&self.gpu.device, &self.gpu.queue, &self.bgl1, &d, "simulation"));
                 self.sim_textures.insert(n.id.clone(), (img.key, t.clone()));
                 t
@@ -1755,7 +1755,7 @@ impl Renderer {
                         [(s[0] * a) as f32, (s[1] * a) as f32, (s[2] * a) as f32, a as f32]
                     })
                     .collect();
-                let d = resources::Decoded { levels: resources::mips(job.width, job.height, px), note: None };
+                let d = resources::Decoded::mipmapped(job.width, job.height, px);
                 let t = Arc::new(resources::upload(&self.gpu.device, &self.gpu.queue, &self.bgl1, &d, "compute"));
                 self.compute_textures.insert(n.id.clone(), (key, t.clone()));
                 t
@@ -1792,7 +1792,7 @@ impl Renderer {
         if let Some(Some(t)) = self.images.get(&key) {
             return t.clone();
         }
-        let d = resources::Decoded { levels: vec![(1, 1, vec![rgba])], note: None };
+        let d = resources::Decoded::single(1, 1, vec![rgba]);
         let t = Arc::new(resources::upload(&self.gpu.device, &self.gpu.queue, &self.bgl1, &d, "solid"));
         self.images.insert(key, Some(t.clone()));
         t
@@ -2337,7 +2337,7 @@ impl Renderer {
                 [(c[0] * c[3]) as f32, (c[1] * c[3]) as f32, (c[2] * c[3]) as f32, c[3] as f32]
             })
             .collect();
-        let d = resources::Decoded { levels: vec![(w, hgt, px)], note: None };
+        let d = resources::Decoded::single(w, hgt, px);
         let t = Arc::new(resources::upload(&self.gpu.device, &self.gpu.queue, &self.bgl1, &d, "fractal"));
         self.fractals.insert(hash, t.clone());
         Some(t)

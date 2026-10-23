@@ -158,13 +158,7 @@ fn dis_optical_flow_recovers_a_translation() {
     };
     let layout = sr_gpu::resources::source_layout(&gpu.device);
     let up = |px: Vec<[f32; 4]>| {
-        sr_gpu::resources::upload(
-            &gpu.device,
-            &gpu.queue,
-            &layout,
-            &sr_gpu::resources::Decoded { levels: vec![(w, h, px)], note: None },
-            "t",
-        )
+        sr_gpu::resources::upload(&gpu.device, &gpu.queue, &layout, &sr_gpu::resources::Decoded::single(w, h, px), "t")
     };
     let (a, b, mid) = (up(img(0.0, 0.0)), up(img(6.0, 4.0)), img(3.0, 2.0));
     let engine = sr_gpu::video::VideoEngine::new(gpu.device.clone(), gpu.queue.clone());

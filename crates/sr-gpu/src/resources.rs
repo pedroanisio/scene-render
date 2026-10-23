@@ -198,12 +198,27 @@ impl Pool {
     }
 }
 
-/// Decoded, working-space, premultiplied RGBA with its mip chain.
+/// Decoded, working-space, premultiplied RGBA, with its mip chain when it is mipmapped.
 pub struct Decoded {
-    /// Levels, largest first: (width, height, RGBA f32 premultiplied).
+    /// Levels, largest first: (width, height, RGBA f32 premultiplied). A mipmapped image holds its base level only.
     pub levels: Vec<(u32, u32, Vec<[f32; 4]>)>,
+    /// Whether [`upload`] completes the box-filtered chain below the last level, filtering each level from the one
+    /// before as it uploads it rather than holding the whole chain at once.
+    pub mipmapped: bool,
     /// Why an embedded colour profile could not be honoured, when it could not.
     pub note: Option<String>,
+}
+
+impl Decoded {
+    /// A `w`×`h` image whose upload carries its full mip chain.
+    pub fn mipmapped(w: u32, h: u32, base: Vec<[f32; 4]>) -> Decoded {
+        Decoded { levels: vec![(w, h, base)], mipmapped: true, note: None }
+    }
+
+    /// A `w`×`h` image of one level.
+    pub fn single(w: u32, h: u32, px: Vec<[f32; 4]>) -> Decoded {
+        Decoded { levels: vec![(w, h, px)], mipmapped: false, note: None }
+    }
 }
 
 /// How the values of a file become light: the colour space and transfer the document declares,
@@ -368,40 +383,64 @@ fn decode_dynamic(
             [(stored[0] * a) as f32, (stored[1] * a) as f32, (stored[2] * a) as f32, a as f32]
         })
         .collect();
-    Ok(Decoded { levels: mips(w, h, px), note: None })
+    Ok(Decoded::mipmapped(w, h, px))
 }
 
 /// Box-filtered mip chain.
 pub fn mips(w: u32, h: u32, base: Vec<[f32; 4]>) -> Vec<(u32, u32, Vec<[f32; 4]>)> {
     let mut levels = vec![(w, h, base)];
-    loop {
-        let (pw, ph, prev) = levels.last().unwrap();
-        let (pw, ph) = (*pw, *ph);
-        if pw == 1 && ph == 1 {
-            break;
-        }
-        let (nw, nh) = ((pw / 2).max(1), (ph / 2).max(1));
-        let mut next = Vec::with_capacity((nw * nh) as usize);
-        for y in 0..nh {
-            for x in 0..nw {
-                let mut acc = [0f32; 4];
-                let mut n = 0.0;
-                for dy in 0..2 {
-                    for dx in 0..2 {
-                        let (sx, sy) = ((x * 2 + dx).min(pw - 1), (y * 2 + dy).min(ph - 1));
-                        let p = prev[(sy * pw + sx) as usize];
-                        for k in 0..4 {
-                            acc[k] += p[k];
-                        }
-                        n += 1.0;
-                    }
-                }
-                next.push(acc.map(|v| v / n));
-            }
-        }
-        levels.push((nw, nh, next));
+    while let Some(next) = levels.last().and_then(|(pw, ph, prev)| next_level(*pw, *ph, prev)) {
+        levels.push(next);
     }
     levels
+}
+
+/// Levels in the full mip chain of a `w`×`h` image, down to 1×1.
+pub fn level_count(w: u32, h: u32) -> u32 {
+    32 - w.max(h).max(1).leading_zeros()
+}
+
+/// The box-filtered level below a `pw`×`ph` level, or `None` below 1×1.
+fn next_level(pw: u32, ph: u32, prev: &[[f32; 4]]) -> Option<(u32, u32, Vec<[f32; 4]>)> {
+    if pw == 1 && ph == 1 {
+        return None;
+    }
+    let (nw, nh) = ((pw / 2).max(1), (ph / 2).max(1));
+    let mut next = Vec::with_capacity((nw * nh) as usize);
+    for y in 0..nh {
+        for x in 0..nw {
+            let mut acc = [0f32; 4];
+            let mut n = 0.0;
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let (sx, sy) = ((x * 2 + dx).min(pw - 1), (y * 2 + dy).min(ph - 1));
+                    let p = prev[(sy * pw + sx) as usize];
+                    for k in 0..4 {
+                        acc[k] += p[k];
+                    }
+                    n += 1.0;
+                }
+            }
+            next.push(acc.map(|v| v / n));
+        }
+    }
+    Some((nw, nh, next))
+}
+
+/// Calls `f` with each level of `d` (index, width, height, texels), largest first: its own levels, then for a
+/// mipmapped image each level of the chain below, filtered from the one before and dropped once the next is made.
+fn each_level(d: &Decoded, mut f: impl FnMut(u32, u32, u32, &[[f32; 4]])) {
+    for (k, (w, h, px)) in d.levels.iter().enumerate() {
+        f(k as u32, *w, *h, px);
+    }
+    let Some((w, h, last)) = d.levels.last().filter(|_| d.mipmapped) else { return };
+    let mut level = d.levels.len() as u32;
+    let mut prev = next_level(*w, *h, last);
+    while let Some((w, h, px)) = prev {
+        f(level, w, h, &px);
+        level += 1;
+        prev = next_level(w, h, &px);
+    }
 }
 
 /// Uploads decoded levels into a new texture.
@@ -413,22 +452,24 @@ pub fn upload(
     label: &str,
 ) -> Tex {
     let (w, h, _) = d.levels[0];
-    let t = create(device, layout, [w, h], d.levels.len() as u32, label);
-    for (level, (lw, lh, px)) in d.levels.iter().enumerate() {
+    let (lw, lh, _) = d.levels[d.levels.len() - 1];
+    let below = if d.mipmapped { level_count(lw, lh) - 1 } else { 0 };
+    let t = create(device, layout, [w, h], d.levels.len() as u32 + below, label);
+    each_level(d, |level, lw, lh, px| {
         let bytes: Vec<u8> =
             px.iter().flat_map(|p| p.iter().flat_map(|v| half::f16::from_f32(*v).to_le_bytes())).collect();
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &t.tex,
-                mip_level: level as u32,
+                mip_level: level,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             &bytes,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(lw * 8), rows_per_image: Some(*lh) },
-            wgpu::Extent3d { width: *lw, height: *lh, depth_or_array_layers: 1 },
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(lw * 8), rows_per_image: Some(lh) },
+            wgpu::Extent3d { width: lw, height: lh, depth_or_array_layers: 1 },
         );
-    }
+    });
     t
 }
 
@@ -446,5 +487,20 @@ mod tests {
             mips(5, 3, vec![[0.0; 4]; 15]).iter().map(|l| (l.0, l.1)).collect::<Vec<_>>(),
             vec![(5, 3), (2, 1), (1, 1)]
         );
+    }
+
+    #[test]
+    fn a_mipmapped_image_filters_each_level_as_it_is_uploaded() {
+        let base: Vec<[f32; 4]> = (0..35).map(|i| [i as f32, (i * 7 % 11) as f32, 0.5, 1.0]).collect();
+        let mut seen = Vec::new();
+        each_level(&Decoded::mipmapped(7, 5, base.clone()), |level, w, h, px| seen.push((level, w, h, px.to_vec())));
+        let eager: Vec<_> =
+            mips(7, 5, base.clone()).into_iter().enumerate().map(|(k, (w, h, px))| (k as u32, w, h, px)).collect();
+        assert_eq!(seen, eager);
+        assert_eq!(level_count(7, 5), eager.len() as u32);
+        // an image given as levels uploads those levels and no more
+        let mut single = Vec::new();
+        each_level(&Decoded::single(7, 5, base), |level, w, h, _| single.push((level, w, h)));
+        assert_eq!(single, [(0, 7, 5)]);
     }
 }

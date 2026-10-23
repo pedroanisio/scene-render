@@ -2578,7 +2578,7 @@ impl Renderer {
                 px.push([st[0] as f32, st[1] as f32, st[2] as f32, 1.0]);
             }
         }
-        let decoded = resources::Decoded { levels: vec![(w, hgt, px)], note: None };
+        let decoded = resources::Decoded::single(w, hgt, px);
         let t = Arc::new(resources::upload(&self.gpu.device, &self.gpu.queue, &self.bgl1, &decoded, "sky"));
         self.sky_bg = Some((key, t.clone()));
         Some((t, key))
