@@ -4,8 +4,9 @@ use std::collections::VecDeque;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::probe::{probe, VideoInfo};
 use crate::MediaError;
@@ -135,6 +136,18 @@ impl Drop for Reader {
     }
 }
 
+/// Frames whose buffers wait for the reader to decode into them again.
+const RECYCLED_FRAMES: usize = 4;
+
+/// Bytes of decoded frames a decoder's reader may queue ahead of the last request.
+pub const LOOKAHEAD_BYTES: usize = 64 << 20;
+
+/// Frames queued ahead for a requested lookahead of frames of `frame_bytes`: at least one, and no more than
+/// [`LOOKAHEAD_BYTES`] hold (a 4K clip queues 5 frames rather than 160 MB of them).
+pub fn lookahead_for(frame_bytes: usize, requested: usize) -> usize {
+    requested.min(LOOKAHEAD_BYTES / frame_bytes.max(1)).max(1)
+}
+
 /// Decodes one video file by frame index at a fixed rate.
 ///
 /// Frame `n` is the source image displayed at time `n / fps`. A background
@@ -157,6 +170,10 @@ pub struct VideoDecoder {
     duration: f64,
     /// Decoder restarts (seeks) so far.
     pub seeks: usize,
+    /// Frame buffers the reader allocated so far.
+    allocated: Arc<AtomicUsize>,
+    /// Planes of frames that left the ring with no other holder, for the reader to decode into again.
+    free: Arc<Mutex<Vec<Vec<Plane>>>>,
     /// Decoding that stopped or complained before the end of the stream (damaged or truncated media): later
     /// frames hold the last good one. Each is also printed once on standard error.
     pub warnings: Vec<String>,
@@ -169,17 +186,21 @@ impl VideoDecoder {
         let duration = info.duration;
         let v = info.video.ok_or_else(|| MediaError::NoStream(path.display().to_string(), "video"))?;
         let fps = fps.filter(|f| *f > 0.0).unwrap_or(if v.fps > 0.0 { v.fps } else { 25.0 });
+        let layout = PixelLayout::for_stream(&v);
+        let lookahead = lookahead_for(layout.frame_bytes(v.width, v.height), lookahead);
         Ok(VideoDecoder {
             path: path.to_path_buf(),
-            layout: PixelLayout::for_stream(&v),
+            layout,
             info: v,
             fps,
-            lookahead: lookahead.max(1),
+            lookahead,
             reader: None,
             ring: VecDeque::new(),
             end: None,
             duration,
             seeks: 0,
+            allocated: Arc::default(),
+            free: Arc::default(),
             warnings: Vec::new(),
         })
     }
@@ -220,18 +241,26 @@ impl VideoDecoder {
         let (tx, rx) = sync_channel(self.lookahead);
         let layout = self.layout;
         let sizes = layout.planes(w, h);
+        let (allocated, free) = (self.allocated.clone(), self.free.clone());
         std::thread::Builder::new()
             .name("sr-video-decode".into())
             .spawn(move || {
                 let mut k = index;
                 loop {
-                    let mut planes = Vec::with_capacity(sizes.len());
-                    for &(pw, ph, bpp) in &sizes {
-                        let mut data = vec![0u8; (pw * ph * bpp) as usize];
-                        if out.read_exact(&mut data).is_err() {
+                    let reused = free.lock().ok().and_then(|mut f| f.pop());
+                    let mut planes = reused.unwrap_or_else(|| {
+                        allocated.fetch_add(1, Ordering::Relaxed);
+                        let plane = |&(pw, ph, bpp): &(u32, u32, u32)| Plane {
+                            width: pw,
+                            height: ph,
+                            data: vec![0u8; (pw * ph * bpp) as usize],
+                        };
+                        sizes.iter().map(plane).collect()
+                    });
+                    for p in &mut planes {
+                        if out.read_exact(&mut p.data).is_err() {
                             return;
                         }
-                        planes.push(Plane { width: pw, height: ph, data });
                     }
                     if tx.send(Arc::new(VideoFrame { index: k, width: w, height: h, layout, planes })).is_err() {
                         return;
@@ -244,9 +273,29 @@ impl VideoDecoder {
         Ok(())
     }
 
+    /// Frame buffers the reader allocated so far: frames it decodes into recycled buffers are not counted.
+    pub fn buffers_allocated(&self) -> usize {
+        self.allocated.load(Ordering::Relaxed)
+    }
+
+    /// Hands `frame`'s planes back to the reader when nothing else holds the frame.
+    fn recycle(&self, frame: Arc<VideoFrame>) {
+        if let (Ok(f), Ok(mut free)) = (Arc::try_unwrap(frame), self.free.lock()) {
+            if free.len() < RECYCLED_FRAMES {
+                free.push(f.planes);
+            }
+        }
+    }
+
+    fn clear_ring(&mut self) {
+        while let Some(f) = self.ring.pop_front() {
+            self.recycle(f);
+        }
+    }
+
     /// Whether a decoder started at `index` delivers a frame.
     fn has_frame(&mut self, index: i64) -> Result<bool, MediaError> {
-        self.ring.clear();
+        self.clear_ring();
         self.start(index)?;
         let got = self.reader.as_ref().expect("started").rx.recv().is_ok();
         self.reader = None;
@@ -288,7 +337,7 @@ impl VideoDecoder {
             Some(r) => index < r.next || index > r.next + (self.lookahead as i64).max(8) * 2,
         };
         if restart {
-            self.ring.clear();
+            self.clear_ring();
             self.start(index)?;
         }
         loop {
@@ -298,7 +347,8 @@ impl VideoDecoder {
                     r.next = f.index + 1;
                     self.ring.push_back(f.clone());
                     while self.ring.len() > 4 {
-                        self.ring.pop_front();
+                        let old = self.ring.pop_front().expect("ring is not empty");
+                        self.recycle(old);
                     }
                     if f.index == index {
                         return Ok(f);

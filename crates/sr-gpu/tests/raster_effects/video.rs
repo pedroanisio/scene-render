@@ -242,3 +242,22 @@ fn video_cache_separates_input_transfer_and_decoder_frame_rate() {
         assert!(r.stats.errors.is_empty(), "{:?}", r.stats.errors);
     }
 }
+
+/// A clip's decoder closes once no layer has drawn it for a few frames, like the frames it decoded; drawn again, the
+/// clip opens anew and renders the frames a fresh renderer renders.
+#[test]
+fn idle_video_decoders_close_and_reopen_unchanged() {
+    if videos().is_none() {
+        return;
+    }
+    let d = video_doc(r#"<layer id="a" asset="counter" end="0.2"/><layer id="b" asset="counter" start="1"/>"#);
+    let ts = [0.0, 0.04, 0.08, 0.3, 0.34, 0.38, 0.42, 0.46, 0.5, 1.0, 1.04, 1.08];
+    let Some(shots) = render_sub_frames(&d, &ts) else { return };
+    let open: Vec<usize> = shots.iter().map(|s| s.stats.video_decoders).collect();
+    assert_eq!(open, [1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1], "decoders open after each frame");
+    for (k, t) in ts.iter().enumerate().skip(9) {
+        let Some(fresh) = render_times(&d, &[*t]) else { return };
+        assert_eq!(shots[k].px, fresh.px, "t = {t}");
+        assert!(shots[k].stats.errors.is_empty(), "{:?}", shots[k].stats.errors);
+    }
+}

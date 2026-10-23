@@ -117,6 +117,8 @@ pub struct RenderStats {
     pub video_frames: usize,
     /// Seconds spent waiting for decoded video frames.
     pub decode_wait: f64,
+    /// Video decoders open after this frame: a clip no layer drew for a few frames closes its decoder.
+    pub video_decoders: usize,
     /// CPU seconds spent building vector geometry and encoding it into tiles.
     pub vector_seconds: f64,
     /// Effect, transition and finishing passes recorded.
@@ -1926,6 +1928,7 @@ impl Renderer {
         let pkey = format!("{path:?}/{:016x}", fps.to_bits());
         let vkey = format!("{pkey}/{space:?}/{transfer:?}/{alpha:?}/{rotation:?}");
         self.used.insert(format!("video-previous:{vkey}"));
+        self.used.insert(format!("decoder:{pkey}"));
         if !self.decoders.contains_key(&pkey) {
             let d = sr_media::VideoDecoder::open(path, Some(fps), 8).map_err(|e| e.to_string());
             self.decoders.insert(pkey.clone(), d);
@@ -4782,6 +4785,9 @@ impl Renderer {
         self.images.retain(|k, _| live.contains_key(&format!("image:{k}")));
         self.video_frames.retain(|k, _| live.contains_key(&format!("video:{k}")));
         self.video_previous.retain(|k, _| live.contains_key(&format!("video-previous:{k}")));
+        // an idle decoder holds its reader thread and lookahead frames; drawn again, the clip reopens at the time
+        // it is drawn: one probe more than a resume more than two lookaheads away, which restarts the reader anyway
+        self.decoders.retain(|k, _| live.contains_key(&format!("decoder:{k}")));
         // colour glyphs and raster map tiles: a map that pans or zooms shows new tiles every frame
         self.glyph_tex.retain(|k, _| live.contains_key(&format!("glyph:{k}")));
         for t in evicted {
@@ -4791,6 +4797,7 @@ impl Renderer {
         stats.textures_created = self.pool.created - created_before;
         stats.textures_released = self.pool.released - released_before;
         stats.voxel_states = self.voxel_surfaces.len();
+        stats.video_decoders = self.decoders.len();
         Frame { texture: shown.unwrap_or(frame), stats }
     }
 

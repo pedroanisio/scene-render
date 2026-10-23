@@ -30,7 +30,9 @@ pub mod scopes;
 pub mod spherical;
 pub mod still;
 
-pub use decode::{decode_audio, AudioData, PixelLayout, Plane, VideoDecoder, VideoFrame};
+pub use decode::{
+    decode_audio, lookahead_for, AudioData, PixelLayout, Plane, VideoDecoder, VideoFrame, LOOKAHEAD_BYTES,
+};
 pub use probe::{probe, MediaInfo};
 
 /// Errors from media operations.

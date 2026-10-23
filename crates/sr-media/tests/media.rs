@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
 
-use sr_media::{decode_audio, probe, PixelLayout, VideoDecoder};
+use sr_media::{decode_audio, lookahead_for, probe, PixelLayout, VideoDecoder, LOOKAHEAD_BYTES};
 
 /// Frame k of the counter videos has luma (k * 4) % 256.
 fn fixtures() -> Option<PathBuf> {
@@ -123,6 +123,30 @@ fn random_access_is_frame_accurate() {
         }
         assert!(dec.seeks <= before + 1, "{file}: {} seeks", dec.seeks - before);
     }
+}
+
+#[test]
+fn sequential_decoding_recycles_frame_buffers_it_no_longer_lends() {
+    let Some(d) = fixtures() else { return };
+    let mut dec = VideoDecoder::open(&d.join("counter.mkv"), None, 4).unwrap();
+    let kept = dec.frame(5).unwrap();
+    for k in 6..90 {
+        let f = dec.frame(k).unwrap();
+        assert_eq!(f.planes[0].data[64 * 16 + 32], ((k * 4) % 256) as u8, "frame {k}");
+    }
+    // a frame still held keeps its samples; the rest are decoded into a bounded set of buffers
+    assert_eq!(kept.planes[0].data[64 * 16 + 32], 20);
+    assert!(dec.buffers_allocated() <= 16, "{} frame buffers for 85 frames", dec.buffers_allocated());
+}
+
+#[test]
+fn lookahead_is_capped_by_bytes() {
+    assert_eq!(lookahead_for(PixelLayout::Yuv8(1, 1).frame_bytes(64, 32), 8), 8);
+    let uhd = PixelLayout::Yuv8(1, 1).frame_bytes(3840, 2160);
+    assert_eq!(lookahead_for(uhd, 8), LOOKAHEAD_BYTES / uhd);
+    assert!(lookahead_for(uhd, 8) < 8);
+    assert_eq!(lookahead_for(PixelLayout::Rgba16.frame_bytes(7680, 4320), 8), 1);
+    assert_eq!(lookahead_for(1, 0), 1);
 }
 
 #[test]
