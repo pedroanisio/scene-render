@@ -636,3 +636,47 @@ fn parallel_delivery_reports_the_contrast_findings_of_serial_delivery() {
         assert_eq!(findings[0], findings[1], "group {group:?}: the parallel render reports other findings");
     }
 }
+
+#[test]
+fn overlay_text_shares_the_contrast_budget_and_is_measured_at_scheduled_frames() {
+    if gpu().is_none() {
+        return;
+    }
+    // 100 frames of nine low-contrast overlay texts: they share the check's budget of 256 probes (28 each, under
+    // the 32 a text alone gets) and the report says so, instead of the output layer being probed on every frame
+    for workers in [1u32, 2] {
+        let Some(dir) = fixtures() else { return };
+        let layers: String =
+            (0..9).map(|i| format!(r#"<layer id="low{i}" asset="label" x="4" y="{}"/>"#, i * 3)).collect();
+        let xml = format!(
+            r##"<scene version="1.2"><project width="64" height="36" fps="10" duration="10" background="#000000"/>
+          <metadata><accessibility contrastCheck="warn" flashCheck="off"/></metadata>
+          <output path="out/budget.mkv" codec="ffv1" audio="false" overlay="tag"/>
+          <assets><text id="label" text="AB" width="56" height="28" size="24" color="#303030" font="DejaVu Sans"/></assets>
+          <symbols><symbol id="tag">{layers}</symbol></symbols><composition/></scene>"##
+        );
+        let path = dir.join("budget.xml");
+        std::fs::write(&path, xml).unwrap();
+        let doc = sr_model::load_file(path, &Default::default()).unwrap();
+        let opts = sr_deliver::Options {
+            hardware: sr_media::encode::Hardware::Software,
+            parallel: sr_deliver::Parallel::Count(workers),
+            ..Default::default()
+        };
+        let report = sr_deliver::deliver(&doc, &doc.scene.outputs[0], gpu().as_ref(), &opts, &mut |_, _| {}).unwrap();
+        assert!(
+            report.accessibility.iter().any(|m| m.contains("contrastCheck") && m.contains("output layer: low")),
+            "workers={workers}: {:?}",
+            report.accessibility
+        );
+        let sampled: Vec<_> =
+            report.findings.iter().filter(|f| f.message.contains("share the check's budget")).collect();
+        assert!(
+            sampled.iter().any(|f| f.message.contains("9 texts share")
+                && f.message.contains("output layer: low")
+                && f.message.contains("at 28 of 100")),
+            "workers={workers}: {:?}",
+            sampled.iter().map(|f| &f.message).collect::<Vec<_>>()
+        );
+    }
+}

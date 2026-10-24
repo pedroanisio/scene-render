@@ -24,6 +24,17 @@ use crate::DeliverError;
 /// What an output layer's render errors and unrendered features start with, before the frame's own messages.
 pub const OUTPUT_LAYER: &str = "output layer: ";
 
+/// One frame of the output layer, drawn.
+pub struct Drawn<'a> {
+    /// The output-sized texture the layer was fitted into.
+    pub tex: &'a Tex,
+    /// What could not be drawn, prefixed as the layer's.
+    pub problems: Vec<String>,
+    /// The texts the contrast check measures in this frame of the layer (id and opacity), for
+    /// [`Overlay::contrast`] to measure at the frames the check schedules.
+    pub texts: Vec<(String, f64)>,
+}
+
 pub(crate) fn failure_message(stats: &sr_gpu::RenderStats) -> String {
     let mut message = stats.errors.join("; ");
     if !stats.unsupported.is_empty() {
@@ -139,16 +150,7 @@ impl Overlay {
     ) -> Result<Vec<(String, f64, f64)>, DeliverError> {
         let p = self.ev.program();
         let g = self.ev.evaluate(t.clamp(0.0, p.duration));
-        let mut targets: Vec<_> = g
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| n.kind == "layer" && n.text.is_some() && n.draw && n.world_opacity > 0.0)
-            .map(|(i, n)| (Some(i), n.id.to_string(), n.world_opacity))
-            .collect();
-        if p.scene.captions.is_some() {
-            targets.push((None, "captions".into(), 1.0));
-        }
+        let targets = Self::texts_of(p, &g);
         if targets.is_empty() {
             return Ok(Vec::new());
         }
@@ -213,9 +215,24 @@ impl Overlay {
         Ok(ratios)
     }
 
-    /// Renders the layer at output time `t` and fits it to the output's frame; returns the
-    /// output-sized texture and what could not be drawn.
-    pub fn draw(&mut self, stage: &mut OutputStage, t: f64) -> Result<(&Tex, Vec<String>), DeliverError> {
+    /// The texts the contrast check measures in the layer's graph `g`: each visible text layer (its node index, id
+    /// and opacity), and the burned captions when the layer has a caption track.
+    fn texts_of(p: &sr_eval::Program, g: &sr_eval::FrameGraph) -> Vec<(Option<usize>, String, f64)> {
+        let mut targets: Vec<_> = g
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.kind == "layer" && n.text.is_some() && n.draw && n.world_opacity > 0.0)
+            .map(|(i, n)| (Some(i), n.id.to_string(), n.world_opacity))
+            .collect();
+        if p.scene.captions.is_some() {
+            targets.push((None, "captions".into(), 1.0));
+        }
+        targets
+    }
+
+    /// Renders the layer at output time `t` and fits it to the output's frame.
+    pub fn draw(&mut self, stage: &mut OutputStage, t: f64) -> Result<Drawn<'_>, DeliverError> {
         let p = self.ev.program();
         let g = self.ev.evaluate(t.clamp(0.0, p.duration));
         let ev = &self.ev;
@@ -228,6 +245,10 @@ impl Overlay {
             });
         }
         stage.place(&frame.texture, &self.renderer.working(), &self.tex, Placement::default());
-        Ok((&self.tex, frame.stats.unsupported.iter().map(|m| format!("{OUTPUT_LAYER}{m}")).collect()))
+        Ok(Drawn {
+            tex: &self.tex,
+            problems: frame.stats.unsupported.iter().map(|m| format!("{OUTPUT_LAYER}{m}")).collect(),
+            texts: Self::texts_of(p, &g).into_iter().map(|(_, id, opacity)| (id, opacity)).collect(),
+        })
     }
 }

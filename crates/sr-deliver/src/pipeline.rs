@@ -511,18 +511,17 @@ impl Video<'_> {
                     stateful(report, &frame.stats);
                     seen_in_3d(report, &frame.stats, t);
                     let (picture, placement) = self.picture(&frame, ft.as_ref(), &mut unsupported)?;
-                    if checks.contrast_on() {
-                        if let Some(o) = self.overlay.as_mut() {
-                            for (id, opacity, ratio) in o.contrast(&mut self.stage, out_t, &picture, placement)? {
-                                let id = sr_gpu::ContrastTarget::Node(format!("output layer: {id}"));
-                                seen.contrast(&id, opacity, ratio, out_t);
-                            }
-                        }
-                    }
                     let over = match self.overlay.as_mut() {
                         Some(o) => {
-                            let (tex, problems) = o.draw(&mut self.stage, out_t)?;
+                            let crate::overlay::Drawn { tex, problems, texts } = o.draw(&mut self.stage, out_t)?;
                             unsupported.extend(problems);
+                            // the layer's texts are measured against the delivered picture in `judge`, at the
+                            // frames the check's budget schedules, like the composition's own texts
+                            if checks.contrast_on() {
+                                for (id, opacity) in texts {
+                                    seen.unprobed(&overlay_target(&id), k, opacity);
+                                }
+                            }
                             Some(tex)
                         }
                         None => None,
@@ -599,6 +598,25 @@ impl Video<'_> {
         let thinned = thinned_contrasts(&judge.unprobed);
         for (k, targets) in contrast_schedule(std::mem::take(&mut judge.unprobed)) {
             let t = times[k];
+            // the output layer's texts are measured over the delivered picture of the frame, all of them at once
+            let (layer, targets): (Vec<_>, Vec<_>) = targets.into_iter().partition(|(id, _)| is_overlay_target(id));
+            if !layer.is_empty() {
+                let ft = self.segments.as_ref().map(|(_, frames)| frames[k]);
+                let out_t = ft.map_or(t - self.origin, |f| f.output);
+                let g = self.ev.evaluate(t);
+                let frame = self.render_side(&g, t, ft.as_ref())?;
+                let mut unsupported = std::collections::BTreeSet::new();
+                let (picture, placement) = self.picture(&frame, ft.as_ref(), &mut unsupported)?;
+                if let Some(o) = self.overlay.as_mut() {
+                    for (id, opacity, ratio) in o.contrast(&mut self.stage, out_t, &picture, placement)? {
+                        judge.contrast(&overlay_target(&id), opacity, ratio, out_t);
+                    }
+                }
+                self.renderer.gpu().take_error()?;
+            }
+            if targets.is_empty() {
+                continue;
+            }
             let ev = self.ev;
             let renderer = &mut self.renderer;
             let ids: Vec<_> = targets.iter().map(|(id, _)| id.clone()).collect();
@@ -656,6 +674,16 @@ impl Video<'_> {
         }
         Ok(())
     }
+}
+
+/// The contrast target of a text of the output layer: its id behind the layer's prefix.
+fn overlay_target(id: &str) -> sr_gpu::ContrastTarget {
+    sr_gpu::ContrastTarget::Node(format!("{}{id}", crate::overlay::OUTPUT_LAYER))
+}
+
+/// Whether a contrast target is a text of the output layer.
+fn is_overlay_target(target: &sr_gpu::ContrastTarget) -> bool {
+    matches!(target, sr_gpu::ContrastTarget::Node(id) if id.starts_with(crate::overlay::OUTPUT_LAYER))
 }
 
 /// The accessibility checks a document asks for on its rendered frames.
@@ -2232,7 +2260,7 @@ fn run_delivery(
             let (picture, placement) = video.picture(&frame, f.as_ref(), &mut unsupported)?;
             let over = match video.overlay.as_mut() {
                 Some(o) => {
-                    let (tex, problems) = o.draw(&mut video.stage, output_time)?;
+                    let crate::overlay::Drawn { tex, problems, .. } = o.draw(&mut video.stage, output_time)?;
                     unsupported.extend(problems);
                     Some(tex)
                 }
