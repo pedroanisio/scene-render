@@ -569,7 +569,7 @@ impl VideoEngine {
 /// entries in order, making one when none is left, so two uses of a key in one frame share nothing the queue has
 /// not taken yet. Once the queue took the frame's work the entries are taken from the first again, and the entries
 /// of a key no frame used for a while are dropped.
-struct Ring<K, T> {
+pub(crate) struct Ring<K, T> {
     entries: HashMap<K, RingEntry<T>>,
     /// Frames ended so far.
     frame: u64,
@@ -587,12 +587,12 @@ struct RingEntry<T> {
 const RING_KEEP: u64 = 8;
 
 impl<K: Copy + Eq + std::hash::Hash, T> Ring<K, T> {
-    fn new() -> Ring<K, T> {
+    pub(crate) fn new() -> Ring<K, T> {
         Ring { entries: HashMap::new(), frame: 0 }
     }
 
     /// The next entry of `key`, made by `make` when the frame used every one there is.
-    fn take(&mut self, key: K, make: impl FnOnce() -> T) -> Arc<T> {
+    pub(crate) fn take(&mut self, key: K, make: impl FnOnce() -> T) -> Arc<T> {
         let e = self.entries.entry(key).or_insert_with(|| RingEntry { items: Vec::new(), used: 0, wanted: 0 });
         e.wanted = self.frame;
         if e.used == e.items.len() {
@@ -602,13 +602,13 @@ impl<K: Copy + Eq + std::hash::Hash, T> Ring<K, T> {
         e.items[e.used - 1].clone()
     }
 
-    fn rewind(&mut self) {
+    pub(crate) fn rewind(&mut self) {
         for e in self.entries.values_mut() {
             e.used = 0;
         }
     }
 
-    fn trim(&mut self) {
+    pub(crate) fn trim(&mut self) {
         self.frame += 1;
         let now = self.frame;
         self.entries.retain(|_, e| now - e.wanted <= RING_KEEP);

@@ -159,8 +159,8 @@ pub struct RenderStats {
     pub textures_created: usize,
     /// Offscreen and cached textures destroyed this frame.
     pub textures_released: usize,
-    /// Buffers made this frame for 3D passes, particle batches and vector raster jobs: none when the ones the
-    /// engines keep hold them.
+    /// Buffers made this frame for 3D passes, particle batches, vector raster jobs and effect passes: none when
+    /// the ones the engines keep hold them.
     pub buffers_created: usize,
     /// Meshes and textures the 3D engine dropped after this frame: ones no pass of the frame used, least recently
     /// used first, beyond its idle budget.
@@ -4608,7 +4608,7 @@ impl Renderer {
         }
         self.tier = Tier::of(self.quality.unwrap_or(p.scene.project.quality));
         self.tier.scale *= ss as f64;
-        let created_before = self.pool.created;
+        let created_before = self.pool.created + self.fx.textures_made;
         let released_before = self.pool.released;
         let subs = provider.map(|pv| SubFrames {
             provider: std::cell::RefCell::new(pv),
@@ -4878,10 +4878,11 @@ impl Renderer {
         }
         self.pool.trim();
         self.video.trim();
+        self.fx.trim();
         if let Some(e) = &mut self.three {
             stats.assets_evicted = e.end_frame();
         }
-        stats.textures_created = self.pool.created - created_before;
+        stats.textures_created = self.pool.created + self.fx.textures_made - created_before;
         stats.textures_released = self.pool.released - released_before;
         stats.voxel_states = self.voxel_surfaces.len();
         stats.video_decoders = self.decoders.len();
@@ -4960,6 +4961,7 @@ impl Renderer {
         }
         self.raster.submitted();
         self.video.submitted();
+        self.fx.submitted();
     }
 
     /// The queue submission of the last frame, to wait on without draining later work.
@@ -5293,7 +5295,9 @@ impl Renderer {
                 let _ = slot.set(f.create_view(&Default::default()));
             }
             if !job.fx.is_empty() {
+                let made = self.fx.buffers_made;
                 plan.stats.fx_passes += self.fx.record(&mut enc, &job.fx);
+                plan.stats.buffers_created += self.fx.buffers_made - made;
             }
             if let Some(pj) = &job.parts {
                 let g = &self.gpu;
@@ -5345,7 +5349,9 @@ impl Renderer {
                         Self::copy(&mut enc, &job.target, snapshot, [0, 0, job.target.size[0], job.target.size[1]]);
                         plan.stats.three_backdrops += usize::from(pre.three.is_some());
                     }
+                    let made = self.fx.buffers_made;
                     plan.stats.fx_passes += self.fx.record(&mut enc, &pre.passes);
+                    plan.stats.buffers_created += self.fx.buffers_made - made;
                     if let (Some(three), Some(eng)) = (&pre.three, self.three.as_mut()) {
                         eng.stats = Default::default();
                         let key = self.contrast_three_cache.as_ref().and_then(|_| three.0.contrast_cache_key());
@@ -5566,7 +5572,9 @@ impl Renderer {
             }
         }
         if !plan.post.is_empty() {
+            let made = self.fx.buffers_made;
             plan.stats.fx_passes += self.fx.record(&mut enc, &plan.post);
+            plan.stats.buffers_created += self.fx.buffers_made - made;
             let into = plan.post_into.as_ref().or_else(|| jobs.iter().find(|j| j.root).map(|j| &j.target));
             if let (Some(out), Some(into)) = (&plan.post_out, into) {
                 Self::copy(&mut enc, out, into, [0, 0, into.size[0], into.size[1]]);

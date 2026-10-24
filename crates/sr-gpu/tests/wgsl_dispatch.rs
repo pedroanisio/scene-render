@@ -111,6 +111,12 @@ const SITES: &[Site] = &[
         entries: &[("src/flow.wgsl", "cs_patch")],
     },
     Site {
+        rust: "src/fx.rs",
+        anchor: "dispatch_workgroups(size[0].div_ceil(16), size[1].div_ceil(16), 1)",
+        lines: 1,
+        entries: &[("src/converge.wgsl", "main")],
+    },
+    Site {
         rust: "src/three.rs",
         anchor: "let blocks = n.div_ceil(256)",
         lines: 1,
@@ -125,7 +131,7 @@ const SITES: &[Site] = &[
 
 /// How many `.dispatch_workgroups(` calls each source file makes, so that one added or removed fails until the table
 /// above, or the reason it needs none, is brought up to date:
-/// - `compute.rs`, `output.rs`, `video.rs`, `pathtrace.rs`: every call is sized by a `SITES` row (pathtrace's trace,
+/// - `compute.rs`, `output.rs`, `video.rs`, `fx.rs`, `pathtrace.rs`: every call is sized by a `SITES` row (pathtrace's trace,
 ///   sample-count and a-trous passes share one `groups`; its light and dome calls have their own rows);
 /// - `raster.rs`: one group per 16×16 tile, `job.tiles` counts tiles (`raster_group_is_one_tile`), or one per listed
 ///   active tile;
@@ -133,6 +139,7 @@ const SITES: &[Site] = &[
 ///   the aperture kernel is (1, 4, 1) groups of 32 (`aperture_groups_fill_the_array`).
 const DISPATCH_CALLS: &[(&str, usize)] = &[
     ("src/compute.rs", 1),
+    ("src/fx.rs", 1),
     ("src/output.rs", 3),
     ("src/pathtrace.rs", 5),
     ("src/raster.rs", 2),
@@ -143,6 +150,7 @@ const DISPATCH_CALLS: &[(&str, usize)] = &[
 /// Every compute entry point of the crate, with the sites above that check it or the reason none does.
 const ENTRIES: &[(&str, &str)] = &[
     ("src/compute.rs", "sr_main"),
+    ("src/converge.wgsl", "main"),
     ("src/flow.wgsl", "cs_reduce"),
     ("src/flow.wgsl", "cs_patch"),
     ("src/flow.wgsl", "cs_densify"),

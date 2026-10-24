@@ -534,6 +534,114 @@ pub struct FxEngine {
     pub(crate) images: HashMap<std::path::PathBuf, Arc<Tex>>,
     /// The format of the textures the passes draw into (SREP 72 working format); set before the first pass.
     pub format: wgpu::TextureFormat,
+    /// The uniform blocks of the frame's passes, in a buffer kept between frames.
+    pub(crate) uniforms: Uniforms,
+    /// The convergence reduction (SREP 67 `until="converged"`), built when a loop first checks.
+    converge: Option<Converge>,
+    /// Copies of persistent buffers at a loop's last convergence check, kept by size and format.
+    copies: crate::video::Ring<([u32; 2], wgpu::TextureFormat), Copied>,
+    /// Buffers made so far: the uniform buffers and the reduction's.
+    pub(crate) buffers_made: usize,
+    /// Textures made so far for the copies.
+    pub(crate) textures_made: usize,
+}
+
+/// Where the uniform blocks of the frame's passes go: one after another in one buffer, each pass bound at its own
+/// offset (the dynamic offset of its bind group), so a frame of thousands of passes writes one buffer the engine
+/// keeps instead of making one per pass. The buffer grows to the longest frame; once the queue took the frame's work
+/// the next frame starts from the front again.
+pub(crate) struct Uniforms {
+    buf: Option<wgpu::Buffer>,
+    cap: u64,
+    cursor: u64,
+    /// Counts the buffers made: bind groups of an earlier one are stale.
+    generation: u64,
+}
+
+/// Where a run of blocks was placed: the buffer, its generation, and the offset of the first block.
+pub(crate) struct Placed {
+    pub(crate) buf: wgpu::Buffer,
+    pub(crate) generation: u64,
+    pub(crate) offset: u32,
+}
+
+/// A point of the uniform buffer to return to once the queue took the work placed after it.
+#[derive(Clone, Copy)]
+struct Mark {
+    generation: u64,
+    cursor: u64,
+}
+
+/// Blocks start at a multiple of this: the largest offset alignment a device may ask for.
+const UNIFORM_ALIGN: u64 = 256;
+
+impl Uniforms {
+    fn new() -> Uniforms {
+        Uniforms { buf: None, cap: 0, cursor: 0, generation: 0 }
+    }
+
+    /// Writes `bytes` after the blocks before (at least 16 bytes, zero-padded) and returns where they are.
+    /// `made` counts the buffers this makes.
+    pub(crate) fn place(&mut self, d: &wgpu::Device, q: &wgpu::Queue, bytes: &[u8], made: &mut usize) -> Placed {
+        let size = (bytes.len() as u64).max(16);
+        if self.buf.is_none() || self.cursor + size > self.cap {
+            let cap = size.max(self.cap * 2).max(64 << 10).div_ceil(UNIFORM_ALIGN) * UNIFORM_ALIGN;
+            self.buf = Some(d.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("fx uniforms"),
+                size: cap,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.cap = cap;
+            self.cursor = 0;
+            self.generation += 1;
+            *made += 1;
+        }
+        let buf = self.buf.clone().expect("made");
+        let at = self.cursor;
+        if (bytes.len() as u64) < size {
+            let mut padded = bytes.to_vec();
+            padded.resize(size as usize, 0);
+            q.write_buffer(&buf, at, &padded);
+        } else {
+            q.write_buffer(&buf, at, bytes);
+        }
+        self.cursor = (at + size).div_ceil(UNIFORM_ALIGN) * UNIFORM_ALIGN;
+        Placed { buf, generation: self.generation, offset: at as u32 }
+    }
+
+    fn mark(&self) -> Mark {
+        Mark { generation: self.generation, cursor: self.cursor }
+    }
+
+    /// Back to `mark`, the work placed since having been submitted; to the front of a buffer made since, which
+    /// holds nothing but that work.
+    fn rewind_to(&mut self, mark: Mark) {
+        self.cursor = if mark.generation == self.generation { mark.cursor } else { 0 };
+    }
+
+    fn rewind(&mut self) {
+        self.cursor = 0;
+    }
+}
+
+/// The convergence reduction of SREP 67 `until="converged"`: a compute pass per persistent buffer writes the largest
+/// change since the last check into its slot of `peaks`, copied to `staging` for the CPU to read.
+struct Converge {
+    pipe: wgpu::ComputePipeline,
+    bgl: wgpu::BindGroupLayout,
+    peaks: wgpu::Buffer,
+    staging: wgpu::Buffer,
+    slots: usize,
+}
+
+/// Bytes between the slots of the peaks: the largest offset alignment a device may ask of a storage binding.
+const PEAK_STRIDE: u64 = 256;
+
+/// A persistent buffer as it was at a loop's last convergence check.
+struct Copied {
+    tex: wgpu::Texture,
+    view: wgpu::TextureView,
 }
 
 impl FxEngine {
@@ -637,7 +745,163 @@ impl FxEngine {
             checkpoints: std::collections::BTreeMap::new(),
             images: HashMap::new(),
             format: FORMAT,
+            uniforms: Uniforms::new(),
+            converge: None,
+            copies: crate::video::Ring::new(),
+            buffers_made: 0,
+            textures_made: 0,
         }
+    }
+
+    /// Once the queue took the frame's work: the next frame's uniform blocks start at the front of their buffer and
+    /// the copies of persistent buffers are taken from the first again.
+    pub fn submitted(&mut self) {
+        self.uniforms.rewind();
+        self.copies.rewind();
+    }
+
+    /// Ends a frame: drops the copies of the sizes no loop checked for a while.
+    pub fn trim(&mut self) {
+        self.copies.trim();
+    }
+
+    /// Builds the reduction, or grows it to at least `slots` slots.
+    fn converge(&mut self, slots: usize) {
+        if self.converge.as_ref().is_none_or(|c| c.slots < slots) {
+            let d = &self.device;
+            let (pipe, bgl) = match self.converge.take() {
+                Some(c) => (c.pipe, c.bgl),
+                None => {
+                    let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("converge"),
+                        source: wgpu::ShaderSource::Wgsl(include_str!("converge.wgsl").into()),
+                    });
+                    let tex = |binding: u32| wgpu::BindGroupLayoutEntry {
+                        binding,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    };
+                    let bgl = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: Some("converge"),
+                        entries: &[
+                            tex(0),
+                            tex(1),
+                            wgpu::BindGroupLayoutEntry {
+                                binding: 2,
+                                visibility: wgpu::ShaderStages::COMPUTE,
+                                ty: wgpu::BindingType::Buffer {
+                                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: None,
+                            },
+                        ],
+                    });
+                    let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("converge"),
+                        bind_group_layouts: &[Some(&bgl)],
+                        immediate_size: 0,
+                    });
+                    let _creation = crate::gpu::creation_lock();
+                    let pipe = d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                        label: Some("converge"),
+                        layout: Some(&layout),
+                        module: &module,
+                        entry_point: Some("main"),
+                        compilation_options: Default::default(),
+                        cache: None,
+                    });
+                    (pipe, bgl)
+                }
+            };
+            let size = slots as u64 * PEAK_STRIDE;
+            let peaks = d.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("converge peaks"),
+                size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            let staging = d.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("converge readback"),
+                size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            self.buffers_made += 2;
+            self.converge = Some(Converge { pipe, bgl, peaks, staging, slots });
+        }
+    }
+
+    /// The largest change between the textures of each pair (|a − b| over every channel of every texel; a NaN
+    /// counts as no change), after a submission of its own. `groups` keeps the bind groups between calls over the
+    /// same textures.
+    fn differences(
+        &mut self,
+        pairs: &[(&wgpu::TextureView, &wgpu::TextureView, [u32; 2])],
+        groups: &mut HashMap<[usize; 3], wgpu::BindGroup>,
+    ) -> Vec<f32> {
+        let n = pairs.len();
+        self.converge(n);
+        let c = self.converge.as_ref().expect("built");
+        let bytes = n as u64 * PEAK_STRIDE;
+        self.queue.write_buffer(&c.peaks, 0, &vec![0u8; bytes as usize]);
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("converge") });
+        {
+            let mut cp = enc
+                .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("converge"), timestamp_writes: None });
+            cp.set_pipeline(&c.pipe);
+            for (k, (a, b, size)) in pairs.iter().enumerate() {
+                let key = [*a as *const _ as usize, *b as *const _ as usize, k];
+                let bg = groups.entry(key).or_insert_with(|| {
+                    self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("converge"),
+                        layout: &c.bgl,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(a) },
+                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(b) },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                    buffer: &c.peaks,
+                                    offset: k as u64 * PEAK_STRIDE,
+                                    size: wgpu::BufferSize::new(4),
+                                }),
+                            },
+                        ],
+                    })
+                });
+                cp.set_bind_group(0, &*bg, &[]);
+                cp.dispatch_workgroups(size[0].div_ceil(16), size[1].div_ceil(16), 1);
+            }
+        }
+        enc.copy_buffer_to_buffer(&c.peaks, 0, &c.staging, 0, bytes);
+        self.queue.submit([enc.finish()]);
+        let slice = c.staging.slice(..bytes);
+        crate::gpu::map_read(&self.device, slice).unwrap_or_else(|e| panic!("reading a convergence check: {e}"));
+        let out = {
+            let data = slice.get_mapped_range().expect("mapped");
+            (0..n)
+                .map(|k| {
+                    let at = k * PEAK_STRIDE as usize;
+                    f32::from_bits(u32::from_le_bytes(data[at..at + 4].try_into().expect("4 bytes")))
+                })
+                .collect()
+        };
+        c.staging.unmap();
+        out
+    }
+
+    /// The largest change between two textures of one size: |a − b| over every channel of every texel, a NaN
+    /// counting as no change.
+    #[cfg(test)]
+    pub(crate) fn max_difference(&mut self, a: &Tex, b: &Tex) -> f32 {
+        self.differences(&[(&a.view, &b.view, a.size)], &mut HashMap::new())[0]
     }
 
     fn pipeline(&mut self, key: PipelineKey) -> Option<&wgpu::RenderPipeline> {
@@ -767,50 +1031,121 @@ impl FxEngine {
 
     /// Runs a looped stateful shader (SREP 67, Semantics 4; SREP 68): `spec.steps` steps from its inputs, fewer when it
     /// converges, then copies the last output into `out`. Returns the passes recorded.
+    ///
+    /// The steps are recorded in chunks of up to 64: the uniform blocks of a chunk's passes go into the uniform buffer
+    /// in one write, each pass drawn at its block's offset with one of a few bind groups (a pass reads the same
+    /// textures at every step of one parity), and the chunk's command buffer is submitted, after which the next chunk
+    /// takes the same place in the buffer. A convergence check compares each persistent buffer with a copy kept
+    /// from the last check, reduced on the GPU to one number per buffer.
     fn run_loop(&mut self, enc: &mut wgpu::CommandEncoder, l: &LoopRun, out: &Tex) -> usize {
         let mut cur = l.inputs.clone();
         let mut last: Option<Arc<Tex>> = None;
-        let mut previous: Option<Vec<Vec<[f32; 4]>>> = None;
         let (mut taken, mut n) = (0u64, 0usize);
         let frame_index = l.program.uniform("FRAMEINDEX").cloned();
-        for step in 0..l.spec.steps {
-            for p in &l.passes {
-                let target = p.out[(step % 2) as usize].clone();
-                let mut block = p.block.clone();
-                if let Some(u) = &frame_index {
-                    l.program.write(&mut block, u, &[(l.first + step) as f64]);
-                }
-                let textures =
-                    l.program.samplers.iter().map(|s| cur.get(s).cloned().unwrap_or_else(|| l.empty.clone())).collect();
-                self.record_custom(enc, &crate::shader::CustomBind { pipe: l.pipe.clone(), block, textures }, &target);
-                n += 1;
-                if let Some(t) = &p.target {
-                    cur.insert(t.clone(), target.clone());
-                }
-                last = Some(target);
+        let align = self.device.limits().min_uniform_buffer_offset_alignment as usize;
+        let block = l.passes.iter().map(|p| p.block.len()).max().unwrap_or(0).max(16);
+        let stride = block.div_ceil(align) * align;
+        let passes = l.passes.len().max(1);
+        let mark = self.uniforms.mark();
+        let mut groups: HashMap<(usize, u64, Vec<usize>), wgpu::BindGroup> = HashMap::new();
+        let mut compare_groups = HashMap::new();
+        let mut copies: HashMap<&str, Arc<Copied>> = HashMap::new();
+        let mut checked = false;
+        let check_every = l.spec.check_every.max(1);
+        let mut step = 0u64;
+        while step < l.spec.steps {
+            let mut end = (step + 64).min(l.spec.steps);
+            if l.spec.converged {
+                end = end.min((step / check_every + 1) * check_every);
             }
-            taken = step + 1;
-            let check = l.spec.converged && taken % l.spec.check_every.max(1) == 0;
+            let count = (end - step) as usize;
+            let mut bytes = vec![0u8; count * passes * stride];
+            for (i, s) in (step..end).enumerate() {
+                for (j, p) in l.passes.iter().enumerate() {
+                    let at = (i * passes + j) * stride;
+                    let b = &mut bytes[at..at + p.block.len()];
+                    b.copy_from_slice(&p.block);
+                    if let Some(u) = &frame_index {
+                        l.program.write(b, u, &[(l.first + s) as f64]);
+                    }
+                }
+            }
+            let placed = self.uniforms.place(&self.device, &self.queue, &bytes, &mut self.buffers_made);
+            for (i, s) in (step..end).enumerate() {
+                for (j, p) in l.passes.iter().enumerate() {
+                    let target = p.out[(s % 2) as usize].clone();
+                    let textures: Vec<Arc<Tex>> = l
+                        .program
+                        .samplers
+                        .iter()
+                        .map(|s| cur.get(s).cloned().unwrap_or_else(|| l.empty.clone()))
+                        .collect();
+                    let key = (j, placed.generation, textures.iter().map(|t| &t.view as *const _ as usize).collect());
+                    let bg = groups
+                        .entry(key)
+                        .or_insert_with(|| self.custom_bind_group(&l.pipe, &placed.buf, block, &textures));
+                    let offset = placed.offset + ((i * passes + j) * stride) as u32;
+                    Self::draw_custom(enc, &l.pipe, bg, offset, &target);
+                    n += 1;
+                    if let Some(t) = &p.target {
+                        cur.insert(t.clone(), target.clone());
+                    }
+                    last = Some(target);
+                }
+            }
+            taken = end;
+            step = end;
+            let check = l.spec.converged && taken % check_every == 0;
             // bounded command buffers: submit every 64 steps, and before a convergence check
             if taken % 64 == 0 || check {
                 let done = std::mem::replace(enc, self.device.create_command_encoder(&Default::default()));
                 self.queue.submit([done.finish()]);
+                self.uniforms.rewind_to(mark);
             }
             if check {
-                let now: Vec<Vec<[f32; 4]>> =
-                    l.persistent.iter().filter_map(|t| cur.get(t)).map(|t| self.read_texels(t)).collect();
-                if let Some(before) = &previous {
-                    let diff = before
+                let names: Vec<&str> =
+                    l.persistent.iter().map(String::as_str).filter(|t| cur.contains_key(*t)).collect();
+                if checked {
+                    let pairs: Vec<_> = names
                         .iter()
-                        .zip(&now)
-                        .flat_map(|(a, b)| a.iter().zip(b))
-                        .flat_map(|(a, b)| (0..4).map(move |c| (a[c] - b[c]).abs()))
-                        .fold(0.0f32, f32::max);
+                        .map(|t| {
+                            let c = &cur[*t];
+                            (&c.view, &copies[t].view, c.size)
+                        })
+                        .collect();
+                    let diff = self.differences(&pairs, &mut compare_groups).into_iter().fold(0.0f32, f32::max);
                     if diff as f64 <= l.spec.tolerance {
                         break;
                     }
                 }
-                previous = Some(now);
+                // this state, for the next check to compare with
+                for t in names {
+                    let c = &cur[t];
+                    let copy = copies.entry(t).or_insert_with(|| {
+                        let (d, made) = (&self.device, &mut self.textures_made);
+                        self.copies.take((c.size, c.tex.format()), || {
+                            *made += 1;
+                            let tex = d.create_texture(&wgpu::TextureDescriptor {
+                                label: Some("converge copy"),
+                                size: wgpu::Extent3d { width: c.size[0], height: c.size[1], depth_or_array_layers: 1 },
+                                mip_level_count: 1,
+                                sample_count: 1,
+                                dimension: wgpu::TextureDimension::D2,
+                                format: c.tex.format(),
+                                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                                view_formats: &[],
+                            });
+                            let view = tex.create_view(&Default::default());
+                            Copied { tex, view }
+                        })
+                    });
+                    enc.copy_texture_to_texture(
+                        c.tex.as_image_copy(),
+                        copy.tex.as_image_copy(),
+                        wgpu::Extent3d { width: c.size[0], height: c.size[1], depth_or_array_layers: 1 },
+                    );
+                }
+                checked = true;
             }
         }
         l.taken.store(taken, std::sync::atomic::Ordering::Relaxed);
@@ -830,7 +1165,6 @@ impl FxEngine {
     }
 
     fn record_scissored(&mut self, enc: &mut wgpu::CommandEncoder, passes: &[Pass], scissor: bool) -> usize {
-        use wgpu::util::DeviceExt;
         let mut n = 0;
         let stride = {
             let align = self.device.limits().min_uniform_buffer_offset_alignment as usize;
@@ -845,11 +1179,7 @@ impl FxEngine {
                 let b = bytemuck::bytes_of(&passes[i].params);
                 bytes[slot * stride..slot * stride + b.len()].copy_from_slice(b);
             }
-            self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("fx params"),
-                contents: &bytes,
-                usage: wgpu::BufferUsages::UNIFORM,
-            })
+            self.uniforms.place(&self.device, &self.queue, &bytes, &mut self.buffers_made)
         });
         let mut slot = 0u32;
         let mut groups: HashMap<[usize; 5], wgpu::BindGroup> = HashMap::new();
@@ -899,8 +1229,8 @@ impl FxEngine {
                         wgpu::BindGroupEntry {
                             binding: 0,
                             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                buffer: ub,
-                                offset: 0,
+                                buffer: &ub.buf,
+                                offset: ub.offset as u64,
                                 size: wgpu::BufferSize::new(std::mem::size_of::<Params>() as u64),
                             }),
                         },
@@ -3388,6 +3718,37 @@ mod tests {
         let p = dir.join(name);
         std::fs::write(&p, text).unwrap();
         p
+    }
+
+    #[test]
+    fn the_largest_difference_between_two_textures_is_reduced_on_the_gpu() {
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "the_largest_difference_between_two_textures_is_reduced_on_the_gpu"
+        );
+        let d = &gpu.device;
+        let layout = crate::resources::source_layout(d);
+        let mut engine = FxEngine::new(gpu.device.clone(), gpu.queue.clone());
+        for format in [FORMAT, crate::resources::FORMAT_F32] {
+            let size = [37u32, 21];
+            let a = crate::resources::create_as(d, &layout, format, size, 1, "difference a");
+            let b = crate::resources::create_as(d, &layout, format, size, 1, "difference b");
+            let mut px = vec![[0.5f32, 0.25, 0.0, 1.0]; (size[0] * size[1]) as usize];
+            engine.write_texels(&a, &px);
+            engine.write_texels(&b, &px);
+            assert_eq!(engine.max_difference(&a, &b), 0.0, "{format:?}: identical");
+            let made = engine.buffers_made;
+            // the last texel differs most, in its second channel; an earlier one less
+            px[(size[0] * size[1] - 1) as usize][1] = 0.5;
+            px[3][2] = 0.125;
+            engine.write_texels(&b, &px);
+            assert_eq!(engine.max_difference(&a, &b), 0.25, "{format:?}: one texel");
+            // a NaN is no change, as the CPU fold with `f32::max` had it
+            px[7][0] = f32::NAN;
+            engine.write_texels(&b, &px);
+            assert_eq!(engine.max_difference(&a, &b), 0.25, "{format:?}: NaN");
+            assert_eq!(engine.buffers_made, made, "{format:?}: the reduction keeps its buffers");
+        }
     }
 
     #[test]

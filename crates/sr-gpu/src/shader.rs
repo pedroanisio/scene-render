@@ -74,7 +74,8 @@ impl FxEngine {
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
+                    // the pass's block lies at an offset of the engine's uniform buffer
+                    has_dynamic_offset: true,
                     min_binding_size: None,
                 },
                 count: None,
@@ -138,29 +139,54 @@ impl FxEngine {
         CustomPipe { program: program.clone(), bgl, pipe }
     }
 
-    /// Records one custom pass.
-    pub(crate) fn record_custom(&self, enc: &mut wgpu::CommandEncoder, bind: &CustomBind, out: &Tex) {
-        use wgpu::util::DeviceExt;
-        let ub = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("custom uniforms"),
-            contents: &bind.block,
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+    /// Records one custom pass: its block goes into the uniform buffer, bound at its offset.
+    pub(crate) fn record_custom(&mut self, enc: &mut wgpu::CommandEncoder, bind: &CustomBind, out: &Tex) {
+        let placed = self.uniforms.place(&self.device, &self.queue, &bind.block, &mut self.buffers_made);
+        let bg = self.custom_bind_group(&bind.pipe, &placed.buf, bind.block.len(), &bind.textures);
+        Self::draw_custom(enc, &bind.pipe, &bg, placed.offset, out);
+    }
+
+    /// The bindings of a custom pass: `block` bytes of `uniforms` at the dynamic offset of the draw, the sampler,
+    /// and the program's textures in sampler order.
+    pub(crate) fn custom_bind_group(
+        &self,
+        pipe: &CustomPipe,
+        uniforms: &wgpu::Buffer,
+        block: usize,
+        textures: &[Arc<Tex>],
+    ) -> wgpu::BindGroup {
         let mut entries = vec![
-            wgpu::BindGroupEntry { binding: 0, resource: ub.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: uniforms,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(block.max(16) as u64),
+                }),
+            },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.samp) },
         ];
-        for (k, t) in bind.textures.iter().enumerate() {
+        for (k, t) in textures.iter().enumerate() {
             entries.push(wgpu::BindGroupEntry {
                 binding: 2 + k as u32,
                 resource: wgpu::BindingResource::TextureView(&t.view),
             });
         }
-        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("custom shader"),
-            layout: &bind.pipe.bgl,
+            layout: &pipe.bgl,
             entries: &entries,
-        });
+        })
+    }
+
+    /// Draws one custom pass into `out` with `bg`, its block at `offset` of the uniform buffer.
+    pub(crate) fn draw_custom(
+        enc: &mut wgpu::CommandEncoder,
+        pipe: &CustomPipe,
+        bg: &wgpu::BindGroup,
+        offset: u32,
+        out: &Tex,
+    ) {
         let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("custom shader"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -177,8 +203,8 @@ impl FxEngine {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        rp.set_pipeline(&bind.pipe.pipe);
-        rp.set_bind_group(0, &bg, &[]);
+        rp.set_pipeline(&pipe.pipe);
+        rp.set_bind_group(0, bg, &[offset]);
         rp.draw(0..3, 0..1);
     }
 

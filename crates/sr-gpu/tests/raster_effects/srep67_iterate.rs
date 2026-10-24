@@ -94,6 +94,26 @@ fn until_converged_stops_early_and_never_passes_the_ceiling() {
 }
 
 #[test]
+fn a_loop_makes_its_buffers_once_and_keeps_them_between_frames() {
+    // 300 steps span several of the loop's own command buffers (one every 64 steps): the uniform blocks of every
+    // step go into buffers the engine keeps, made at the first frame and reused by the next ones
+    let d = doc(r#"steps="300""#, COUNTER, "srep67-counter.fs");
+    let Some(one) = render_seq(&d, &[0.0]) else { return };
+    assert!(one.stats.buffers_created >= 1, "first frame: {} buffers", one.stats.buffers_created);
+    let three = render_seq(&d, &[0.0, 0.1, 0.2]).unwrap();
+    assert_eq!(three.stats.buffers_created, 0, "third frame");
+    assert_eq!(three.px, one.px);
+    assert!((three.at(16, 16)[0] * 64.0 - 300.0).abs() < 0.01, "{}", three.at(16, 16)[0] * 64.0);
+    // so do the buffers a convergence check reads its result through
+    let d = doc(r#"steps="1000" until="converged" tolerance="0.001" checkEvery="4""#, HALVING, "srep67-halving.fs");
+    let one = render_seq(&d, &[0.0]).unwrap();
+    let three = render_seq(&d, &[0.0, 0.1, 0.2]).unwrap();
+    assert_eq!(three.stats.buffers_created, 0, "third converging frame");
+    assert_eq!(three.stats.iterate_steps, one.stats.iterate_steps);
+    assert_eq!(three.px, one.px);
+}
+
+#[test]
 fn a_node_outside_the_iterate_keeps_its_state_from_frame_to_frame() {
     write_fixture("srep67-counter.fs", COUNTER);
     let xml = format!(
