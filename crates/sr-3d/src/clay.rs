@@ -129,7 +129,14 @@ fn hash3(seed: u64, x: i64, y: i64, z: i64) -> f32 {
 }
 
 /// Trilinear value noise in [0, 1].
+#[cfg(test)]
 fn noise(seed: u64, p: Vec3) -> f32 {
+    noise_with(p, |x, y, z| hash3(seed, x, y, z))
+}
+
+/// Trilinear value noise in [0, 1] over the lattice values `hash` gives.
+#[inline(always)]
+fn noise_with(p: Vec3, hash: impl Fn(i64, i64, i64) -> f32) -> f32 {
     let f = p.floor();
     let t = p - f;
     let s = t * t * (Vec3::splat(3.0) - 2.0 * t);
@@ -141,14 +148,87 @@ fn noise(seed: u64, p: Vec3) -> f32 {
                 let w = (if dx == 1 { s.x } else { 1.0 - s.x })
                     * (if dy == 1 { s.y } else { 1.0 - s.y })
                     * (if dz == 1 { s.z } else { 1.0 - s.z });
-                v += w * hash3(seed, x + dx, y + dy, z + dz);
+                v += w * hash(x + dx, y + dy, z + dz);
             }
         }
     }
     v
 }
 
+/// The hashes of one noise octave's lattice over a box, which noise reads in place of `hash3` (they are its values);
+/// corners outside the box are hashed. A box of more than `MAX_POINTS` lattice points is not tabled.
+struct Lattice {
+    seed: u64,
+    origin: [i64; 3],
+    dims: [usize; 3],
+    values: Vec<f32>,
+}
+
+impl Lattice {
+    const MAX_POINTS: usize = 1 << 22;
+
+    /// The lattice corners that noise at `p / scale` reads for every `p` in `lo..=hi`.
+    fn new(seed: u64, lo: Vec3, hi: Vec3, scale: f32) -> Self {
+        let (a, b) = ((lo / scale).floor(), (hi / scale).floor() + Vec3::ONE);
+        let empty = Lattice { seed, origin: [0; 3], dims: [0; 3], values: Vec::new() };
+        if !a.is_finite() || !b.is_finite() || (b - a + Vec3::ONE).element_product() > Self::MAX_POINTS as f32 {
+            return empty;
+        }
+        let origin = [a.x as i64, a.y as i64, a.z as i64];
+        let dims = [b.x - a.x, b.y - a.y, b.z - a.z].map(|n| n as usize + 1);
+        let mut values = Vec::with_capacity(dims[0] * dims[1] * dims[2]);
+        for z in 0..dims[2] as i64 {
+            for y in 0..dims[1] as i64 {
+                for x in 0..dims[0] as i64 {
+                    values.push(hash3(seed, origin[0] + x, origin[1] + y, origin[2] + z));
+                }
+            }
+        }
+        Lattice { seed, origin, dims, values }
+    }
+
+    #[inline(always)]
+    fn hash(&self, x: i64, y: i64, z: i64) -> f32 {
+        let (i, j, k) = ((x - self.origin[0]) as usize, (y - self.origin[1]) as usize, (z - self.origin[2]) as usize);
+        if i < self.dims[0] && j < self.dims[1] && k < self.dims[2] {
+            self.values[(k * self.dims[1] + j) * self.dims[0] + i]
+        } else {
+            hash3(self.seed, x, y, z)
+        }
+    }
+}
+
+/// `roughness` for one extraction: its two octaves' lattices tabled over the box the extraction samples.
+struct Roughness {
+    amount: f32,
+    broad: Lattice,
+    ridges: Lattice,
+}
+
+impl Roughness {
+    fn new(f: &Finish, seed: u64, lo: Vec3, hi: Vec3) -> Self {
+        let (broad, ridges) = if f.amount > 0.0 {
+            (Lattice::new(seed, lo, hi, 14.0), Lattice::new(seed ^ 0x51, lo, hi, 3.0))
+        } else {
+            (Lattice::new(seed, Vec3::NAN, Vec3::NAN, 1.0), Lattice::new(seed ^ 0x51, Vec3::NAN, Vec3::NAN, 1.0))
+        };
+        Roughness { amount: f.amount, broad, ridges }
+    }
+
+    /// `roughness(f, seed, p)`, to the bit.
+    #[inline]
+    fn at(&self, p: Vec3) -> f32 {
+        if self.amount <= 0.0 {
+            return 0.0;
+        }
+        let broad = noise_with(p / 14.0, |x, y, z| self.broad.hash(x, y, z)) - 0.5;
+        let ridges = 1.0 - (2.0 * noise_with(p / 3.0, |x, y, z| self.ridges.hash(x, y, z)) - 1.0).abs();
+        self.amount * (2.5 * broad + 0.6 * ridges)
+    }
+}
+
 /// Displacement of the surface at `p` (scene units): smudges with ridges like fingerprints.
+#[cfg(test)]
 fn roughness(f: &Finish, seed: u64, p: Vec3) -> f32 {
     if f.amount <= 0.0 {
         return 0.0;
@@ -265,7 +345,10 @@ fn extract(
     } else {
         finish.seed
     };
-    let sample = |p: Vec3| field(blobs, p) - roughness(finish, seed, p);
+    // every point sampled lies within a cell of the grid
+    let grid_hi = lo + (dims.as_vec3() - Vec3::ONE) * cell;
+    let rough_at = Roughness::new(finish, seed, lo - Vec3::splat(cell), grid_hi + Vec3::splat(cell));
+    let sample = |p: Vec3| field(blobs, p) - rough_at.at(p);
     // field at the grid points
     let at = |i: usize, j: usize, k: usize| lo + Vec3::new(i as f32, j as f32, k as f32) * cell;
     // Every pass below works on independent z slabs in parallel and joins them in slab order, so
@@ -308,7 +391,7 @@ fn extract(
                                 sampled += 1;
                                 *out = if smooth.abs() <= reach {
                                     roughened += usize::from(rough);
-                                    smooth - roughness(finish, seed, p)
+                                    smooth - rough_at.at(p)
                                 } else {
                                     smooth
                                 };
@@ -468,6 +551,27 @@ mod tests {
     }
 
     const SMOOTH: Finish = Finish { amount: 0.0, seed: 1, boil: 0.0 };
+
+    /// The table holds the lattice's hashes, so noise read from it is the hashed noise to the bit, inside the box it
+    /// covers and (hashed again) outside it.
+    #[test]
+    fn noise_from_the_lattice_table_is_the_hashed_noise_bit_for_bit() {
+        let (lo, hi) = (Vec3::new(-41.0, -7.5, 3.0), Vec3::new(37.0, 52.0, 19.25));
+        let finish = Finish { amount: 0.55, seed: 9, boil: 0.0 };
+        let table = Roughness::new(&finish, 0x5eed, lo, hi);
+        let mut state = 1u64;
+        let mut r = move |a: f32, b: f32| {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            a + (b - a) * ((state >> 40) as f32 / (1u64 << 24) as f32)
+        };
+        for _ in 0..20_000 {
+            // a margin beyond the box reaches the hashed fallback
+            let p = Vec3::new(r(lo.x - 20.0, hi.x + 20.0), r(lo.y - 20.0, hi.y + 20.0), r(lo.z - 20.0, hi.z + 20.0));
+            assert_eq!(table.at(p).to_bits(), roughness(&finish, 0x5eed, p).to_bits(), "at {p}");
+        }
+        let lattice_points = table.broad.values.len() + table.ridges.values.len();
+        assert!(lattice_points > 0 && lattice_points < 10_000, "{lattice_points} lattice points cover the box");
+    }
 
     #[test]
     fn bounded_meshing_rejects_grid_allocation_before_building() {
