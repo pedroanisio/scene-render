@@ -370,6 +370,9 @@ enum Command {
         /// Quality tier overriding the document's project@quality (draft renders at half size).
         #[arg(long, value_enum)]
         quality: Option<QualityArg>,
+        /// Adaptive sampling for path-traced cameras, as render --path-noise: the preview samples as the render will.
+        #[arg(long, value_name = "REL", value_parser = parse_path_noise)]
+        path_noise: Option<f32>,
         /// Milliseconds between checks for changes.
         #[arg(long, default_value_t = 250)]
         interval: u64,
@@ -1850,11 +1853,13 @@ fn watched_stamps(file: &Path) -> std::io::Result<Vec<(PathBuf, Option<changes::
     Ok(files.into_iter().map(|f| (f.clone(), changes::stamp(&f))).collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn watch(
     file: &Path,
     frames: Option<(u64, u64)>,
     output: PathBuf,
     quality: Option<sr_model::model::ProjectQuality>,
+    path_noise: Option<f32>,
     interval: u64,
     max_runs: Option<u32>,
     out: &mut Out,
@@ -1883,7 +1888,7 @@ fn watch(
             false,
             false,
             quality,
-            None,
+            path_noise,
             Incremental { changed_only: true, keep: Some(&mut keep) },
             out,
         )?;
@@ -2492,8 +2497,8 @@ fn dispatch(command: Command, out: &mut Out) -> std::io::Result<u8> {
                 out,
             )
         }
-        Command::Watch { file, frames, output, quality, interval, max_runs } => {
-            watch(&file, frames, output, quality.map(QualityArg::model), interval, max_runs, out)
+        Command::Watch { file, frames, output, quality, path_noise, interval, max_runs } => {
+            watch(&file, frames, output, quality.map(QualityArg::model), path_noise, interval, max_runs, out)
         }
         Command::Encode {
             file,

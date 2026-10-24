@@ -647,6 +647,44 @@ fn render_path_noise_traces_fewer_samples_and_reports_them() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `watch --path-noise` previews with the sampling the render will use: the same pixels as `render --path-noise`,
+/// and frames rendered under another noise target are not up to date.
+#[test]
+fn watch_path_noise_previews_what_render_path_noise_renders() {
+    let dir = std::env::temp_dir().join(format!("sr-cli-watch-path-noise-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let xml = r#"<scene version="1.7"><project width="64" height="48" fps="1" duration="1"/><composition>
+<camera id="eye" z="-10" renderer="pathtrace" pathSamples="64" maxBounces="2" denoise="false"/>
+<object3D id="ball" primitive="sphere" radius="1"/></composition></scene>"#;
+    let scene = dir.join("p.scene.xml");
+    std::fs::write(&scene, xml).unwrap();
+    let scene = scene.display().to_string();
+    let file = |name: &str| dir.join(name).display().to_string();
+    let o = run(&["render", &scene, "-o", &file("r.png"), "--path-noise", "0.05"]);
+    if no_gpu(&o) {
+        return;
+    }
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    let watch = |png: &str, extra: &[&str]| {
+        let o = run(&[&["watch", &scene, "-o", png, "--max-runs", "1"][..], extra].concat());
+        assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+        o
+    };
+    let pixels = |png: &str| std::fs::read(png).unwrap();
+    watch(&file("w.png"), &["--path-noise", "0.05"]);
+    assert_eq!(pixels(&file("w.png")), pixels(&file("r.png")), "the preview samples as the render does");
+    watch(&file("full.png"), &[]);
+    assert_ne!(pixels(&file("full.png")), pixels(&file("r.png")), "every sample traced is another image");
+    // watch keeps the render --changed-only fingerprints, which include the noise target
+    let png = file("c.png");
+    assert_eq!(rendered(&watch(&png, &["--path-noise", "0.05"])), (1, 1));
+    assert_eq!(rendered(&watch(&png, &["--path-noise", "0.05"])), (0, 1), "nothing changed");
+    assert_eq!(rendered(&watch(&png, &[])), (1, 1), "another noise target");
+    let o = run(&["watch", &scene, "-o", &png, "--max-runs", "1", "--path-noise", "0"]);
+    assert_eq!(o.status.code(), Some(2), "watch checks --path-noise");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `--stats` says whether the path-traced passes found their hits with the adapter's ray queries, and
 /// `SR_GPU_RAY_QUERY=0` keeps them to the tracer's own BVH walk.
 #[test]
