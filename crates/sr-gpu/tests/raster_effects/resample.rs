@@ -101,3 +101,35 @@ fn a_minified_layer_keeps_trilinear_whatever_resample_says() {
     assert_eq!(a.px, b.px);
     assert_eq!(a.px, c.px);
 }
+
+/// The SREP 32 conformance strip: eight greys drawn four times wider with a half-pixel offset, so every fourth pixel
+/// centre lands on a texel centre (t = 0).
+const STRIP: [u8; 8] = [0, 192, 128, 0, 0, 128, 128, 255];
+
+#[test]
+fn mitchell_at_texel_centres_clamps_to_the_texel_and_its_right_neighbour_within_1_512() {
+    let img = image::RgbaImage::from_fn(8, 1, |x, _| {
+        let v = STRIP[x as usize];
+        image::Rgba([v, v, v, 255])
+    });
+    write_fixture_png("strip8.png", &img);
+    let assets = ASSETS.replace("</assets>", r#"<image id="strip8" src="strip8.png" width="8" height="1"/></assets>"#);
+    let xml = format!(
+        r##"<scene version="1.2"><project width="64" height="32" fps="10" duration="2" background="#000000"/>{assets}<composition><layer id="l" asset="strip8" fit="fill" boxWidth="32" boxHeight="4" x="20.5" y="20.5" resample="mitchell"/></composition></scene>"##
+    );
+    let opts = sr_model::LoadOptions { verify_assets: true, base_dir: Some(fixtures()) };
+    let d = sr_model::load_str(&xml, &opts).unwrap_or_else(|e| panic!("{e:?}\n{xml}"));
+    let Some(r) = render(&d) else { return };
+    let third = 1.0 / 3.0;
+    let texel = |j: i64| lin8(STRIP[j.clamp(0, 7) as usize]) as f64;
+    for x in 21..52u32 {
+        let pos = (x as f64 + 0.5 - 20.5) / 4.0;
+        let i = (pos - 0.5).floor();
+        let w = weights(pos - 0.5 - i, third, third);
+        let i = i as i64;
+        let v: f64 = (0..4).map(|k| w[k] * texel(i + k as i64 - 1)).sum();
+        let want = v.clamp(texel(i).min(texel(i + 1)), texel(i).max(texel(i + 1))) as f32;
+        let got = r.at(x, 22)[0];
+        assert!((got - want).abs() <= 1.0 / 512.0, "x {x} (texel-space {pos}): got {got} want {want}");
+    }
+}
