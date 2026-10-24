@@ -5,7 +5,9 @@ at each tag; edit `RELEASE_NOTES.md`, not this file. Entries are kept as release
 been removed since: "the cinematic impact SREP" is sr-core SREP 40, whose working draft this repository removed after v0.3.2.
 Versions up to v0.4.1 were released under the MIT License from github.com/pedroanisio/rs-scene-render.
 
-## Unreleased
+## v0.7.5 — 2026-10-24
+
+This release keeps what renderers make from one frame to the next and shares it between them, bounds what simulations and caches hold over a long run, and moves delivery work off the render thread. 3D passes, vector raster jobs, particle batches, video layers, looped shaders and the path tracer keep their buffers and bind groups between submits; renderers on one GPU device share their pipelines; the compositor batches its draws by dependency. The 2D physics world and emitter keep a bounded set of checkpoints, the 3D engine and the volume cache drop their least recently used entries, and audio sources, mesh sequences and the geo caches hold one copy of their data. Delivery reads the flash check one frame late, evaluates motion blur samples in parallel, packs planar YUV on the GPU and reads two-pass intermediates in FFmpeg, and `render` writes PNG files on a writer thread. A path traced scene with water and media compiles one march through the media, which cuts the NVIDIA OpenGL link time of its scattering variants by about 40 %. Each change is measured below. The 736-frame 1280x720 06-marx-engels-clay film, whose time is the 3D passes and x264 on the CPU, encodes on lavapipe to the same frames as with v0.7.4 in 69.64 s and 70.97 s instead of 69.80 s and 76.75 s (user CPU 573 s and 575 s instead of 570 s and 573 s, peak RSS 2.02 to 2.10 GiB instead of 2.02 to 2.04 GiB). The changes that can alter output are listed at the end. The CLI output schema is 1.3.0, and the vendored schema is still sr-core 1.7.0.
 
 ### Path tracing
 
@@ -76,10 +78,23 @@ Versions up to v0.4.1 were released under the MIT License from github.com/pedroa
 - DNxHR outputs are found where FFmpeg builds the encoder (probed with the `dnxhr_lb` profile), and MXF outputs take frame rates outside the muxer's broadcast list (`-strict unofficial`, which leaves a file at a listed rate byte-identical).
 - A vector frame with a layer (a mask or a matte) and no backdrop rows no longer panics with `range end index 16 out of range for slice of length 0` in the raster stage. The layer's push and pop commands named backdrop row 0 instead of none, and hashing a tile for partial redraws read 16 rows there. A traced geo outline that stops short of the tiles to its right, such as sr-core's `srep-0036-geo-outline-p125`, was such a frame. It now draws as scene-render 0.5.0 drew it. The pixels of other frames are unchanged: the shader reads a command's backdrop only for coverage.
 
-### Changes that can alter output
+### Changes that can alter output from v0.7.4
 
 - At an exact vertex of a motion path, an auto-oriented node takes the direction of the segment that leaves the vertex, skipping segments of zero length, as SREP 58 states; at a jump its point is the next subpath's start. Before, constant-speed progress took the direction of the segment that arrives there, so a bar on `M200 100 L300 100 L300 200` at progress 0.5 lay horizontal where it now stands vertical. Spatial keyframe paths and 3D follow-path cameras sample the same paths. Progress between vertices, and the end of a path, are unchanged.
 - The PNG frames `render` writes come from the output stage's 16-bit conversion (the sRGB transfer in 32-bit float, rounded to 16 bits, with the 8-bit frame the 16-bit one rounded) instead of the CPU's conversion in 64-bit float, so a sample can differ by one code at either depth; the 16-bit pack and its 8-bit rounding are held to within one code of the CPU conversion in sr-gpu's tests.
+- The first frame of a node motion-blurred with a shutter that opens before time 0 (the default `shutterPhase` of −90°) now blurs over the samples before time 0, so a node moving at time 0 draws blurred where it drew sharp.
+- Outputs whose encoder reads planar YUV at 4:2:2 or 4:4:4 (ProRes, DNxHR, FFV1 with alpha) take planes packed on the GPU, whose codes match the RGB path's within one level. The 4:2:0 planes of x265, SVT-AV1, libaom, rav1e and VP9 are the NV12 and P010 planes deinterleaved.
+- A vector frame with a mask or matte layer and no backdrop rows renders instead of panicking in the raster stage.
+- The contrast ratios the report gives for an output layer's texts are the minimum over the frames the check's budget measured rather than over every frame.
+- Every other change keeps frames and audio packets as in v0.7.4.
+
+### Licence
+
+- scene-render is licensed under the PolyForm Noncommercial License 1.0.0, as from 0.5.0 (`LICENSE`, `NOTICE`). Commercial use needs a separate licence (`COMMERCIAL.md`).
+
+The Linux archive contains the executable, source commit identifier, capability manifest, README, changelog, disclaimer, licence, notice, commercial-licence page and third-party notices. Its executable comes from the successful CI run for the release commit and is checksum-verified and smoke-tested before packaging.
+
+Verify the download with `sha256sum -c scene-render-v0.7.5-linux-x86_64.tar.gz.sha256`, extract it, then run `./scene-render --help`.
 
 ## v0.7.4 — 2026-10-23
 
