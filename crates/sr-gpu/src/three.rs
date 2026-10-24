@@ -694,7 +694,7 @@ fn material_u(m: &MaterialParams, maps: &Maps) -> MaterialU {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct PipeKey {
     cull: bool,
     blend: bool,
@@ -705,7 +705,7 @@ struct PipeKey {
 }
 
 /// A prepass pipeline: the opaque pass's culling and material specializations, and whether the reflectance is written.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct PreKey {
     cull: bool,
     plain: bool,
@@ -814,7 +814,8 @@ pub struct ThreeEngine {
     samples: u32,
     targets: Arc<std::sync::Mutex<TargetPool>>,
     queue: Arc<wgpu::Queue>,
-    main_mod: wgpu::ShaderModule,
+    /// The device's shaders, layouts and pipelines for these formats and sample count, which the ones below are of.
+    kit: Arc<crate::gpu::OfDevice<Kit>>,
     #[cfg(test)]
     specialize_plain: bool,
     #[cfg(test)]
@@ -869,7 +870,6 @@ pub struct ThreeEngine {
     bgl_post: wgpu::BindGroupLayout,
     bgl_depth: wgpu::BindGroupLayout,
     bgl_sort: wgpu::BindGroupLayout,
-    main_layout: wgpu::PipelineLayout,
     pipes: HashMap<PipeKey, wgpu::RenderPipeline>,
     shadow_pipe: wgpu::RenderPipeline,
     dome_pipe: wgpu::RenderPipeline,
@@ -1077,33 +1077,53 @@ fn half4(v: [f32; 4]) -> [u16; 4] {
     v.map(|x| half::f16::from_f32(x).to_bits())
 }
 
-impl ThreeEngine {
-    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> ThreeEngine {
-        ThreeEngine::new_with(device, queue, wgpu::TextureFormat::Rgba32Float, wgpu::TextureFormat::R32Float)
-    }
+/// The shaders, layouts and pipelines of the engines of one device, target formats and sample count. They are
+/// immutable objects of the device, so the engines on it share one set while any of them is alive ([`KITS`]): on a
+/// software adapter a set holds hundreds of megabytes, which engines running at once each compiled and held again.
+#[derive(Debug)]
+struct Kit {
+    main_mod: wgpu::ShaderModule,
+    main_layout: wgpu::PipelineLayout,
+    bgl_frame: wgpu::BindGroupLayout,
+    bgl_mat: wgpu::BindGroupLayout,
+    bgl_obj: wgpu::BindGroupLayout,
+    bgl_splat: wgpu::BindGroupLayout,
+    bgl_ssr: wgpu::BindGroupLayout,
+    bgl_post: wgpu::BindGroupLayout,
+    bgl_depth: wgpu::BindGroupLayout,
+    bgl_sort: wgpu::BindGroupLayout,
+    shadow_pipe: wgpu::RenderPipeline,
+    dome_pipe: wgpu::RenderPipeline,
+    splat_pipe: wgpu::RenderPipeline,
+    blit_pipe: wgpu::RenderPipeline,
+    ssao_pipe: wgpu::RenderPipeline,
+    ao_blur_pipe: wgpu::RenderPipeline,
+    ssr_pipe: wgpu::RenderPipeline,
+    under_pipe: wgpu::RenderPipeline,
+    dof_pipe: wgpu::RenderPipeline,
+    tile_max_pipe: wgpu::RenderPipeline,
+    tile_dilate_pipe: wgpu::RenderPipeline,
+    depth_pipe: wgpu::RenderPipeline,
+    depth_coc_pipe: wgpu::RenderPipeline,
+    sort_pipes: [wgpu::ComputePipeline; 4],
+    /// The occlusion passes writing four channels and reading depth apart, the reference of the packed ones.
+    #[cfg(test)]
+    ao_separate: (wgpu::RenderPipeline, wgpu::RenderPipeline),
+    gbuffer: wgpu::TextureFormat,
+    samples: u32,
+    /// The material pipelines by key and shadow gathering, the prepass pipelines, the depth-of-field aperture kernel
+    /// and the software splat scatter: built by the first engine whose scene needs one.
+    pipes: std::sync::Mutex<HashMap<(PipeKey, bool), wgpu::RenderPipeline>>,
+    pre_pipes: std::sync::Mutex<HashMap<PreKey, wgpu::RenderPipeline>>,
+    dof_kernel: std::sync::OnceLock<wgpu::ComputePipeline>,
+    software_scatter: std::sync::OnceLock<wgpu::ComputePipeline>,
+}
 
-    /// An engine whose float targets use formats the device renders to: view depth and
-    /// reflectance in `gbuffer`, resolved depth and depth-of-field tiles in `scalar` (see
-    /// `Gpu::gbuffer_depth` and `Gpu::scalar_target`: 32-bit float where the device can).
-    pub fn new_with(
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
-        gbuffer: wgpu::TextureFormat,
-        scalar: wgpu::TextureFormat,
-    ) -> ThreeEngine {
-        Self::new_with_samples(device, queue, gbuffer, scalar, 1)
-    }
+/// The kits of the engines alive, by device and (view-depth format, scalar format, samples).
+static KITS: crate::gpu::PerDevice<(wgpu::TextureFormat, wgpu::TextureFormat, u32), Kit> = crate::gpu::PerDevice::new();
 
-    /// Builds the raster pipelines for an adapter-supported count of 1, 2 or 4 samples.
-    pub fn new_with_samples(
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
-        gbuffer: wgpu::TextureFormat,
-        scalar: wgpu::TextureFormat,
-        samples: u32,
-    ) -> ThreeEngine {
-        assert!(matches!(samples, 1 | 2 | 4));
-        let d = &*device;
+impl Kit {
+    fn new(d: &wgpu::Device, gbuffer: wgpu::TextureFormat, scalar: wgpu::TextureFormat, samples: u32) -> Kit {
         let module = |src: String, label: &str| {
             d.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(label),
@@ -1441,6 +1461,246 @@ impl ThreeEngine {
                 cache: None,
             })
         });
+        Kit {
+            main_mod,
+            main_layout,
+            bgl_frame,
+            bgl_mat,
+            bgl_obj,
+            bgl_splat,
+            bgl_ssr,
+            bgl_post,
+            bgl_depth,
+            bgl_sort,
+            shadow_pipe,
+            dome_pipe,
+            splat_pipe,
+            blit_pipe,
+            ssao_pipe,
+            ao_blur_pipe,
+            ssr_pipe,
+            under_pipe,
+            dof_pipe,
+            tile_max_pipe,
+            tile_dilate_pipe,
+            depth_pipe,
+            depth_coc_pipe,
+            sort_pipes,
+            #[cfg(test)]
+            ao_separate,
+            gbuffer,
+            samples,
+            pipes: Default::default(),
+            pre_pipes: Default::default(),
+            dof_kernel: Default::default(),
+            software_scatter: Default::default(),
+        }
+    }
+
+    /// The prepass pipeline of `key`, compiled the first time an engine on the device asks for it.
+    fn pre_pipe(&self, d: &wgpu::Device, key: PreKey) -> wgpu::RenderPipeline {
+        let mut pipes = self.pre_pipes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (m, l, gbuffer) = (&self.main_mod, &self.main_layout, self.gbuffer);
+        pipes
+            .entry(key)
+            .or_insert_with(|| {
+                let _creation = crate::gpu::creation_lock();
+                d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("three-prepass"),
+                    layout: Some(l),
+                    vertex: wgpu::VertexState {
+                        module: m,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[Some(vertex_layout())],
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: if key.cull { Some(wgpu::Face::Back) } else { None },
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: m,
+                        entry_point: Some("fs_prepass"),
+                        compilation_options: wgpu::PipelineCompilationOptions {
+                            constants: &[
+                                ("PLAIN_MATERIAL", key.plain as u32 as f64),
+                                ("ALPHA_MASK", key.alpha_mask as u32 as f64),
+                                ("PREPASS_REFLECTANCE", key.reflectance as u32 as f64),
+                            ],
+                            ..Default::default()
+                        },
+                        targets: &[Some(FORMAT.into()), Some(gbuffer.into())],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            })
+            .clone()
+    }
+
+    /// The material pipeline of `key`, gathering its shadow taps or not, compiled the first time an engine on the
+    /// device asks for it.
+    fn pipe(&self, d: &wgpu::Device, key: PipeKey, gather: bool) -> wgpu::RenderPipeline {
+        let mut pipes = self.pipes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (m, l, samples) = (&self.main_mod, &self.main_layout, self.samples);
+        pipes
+            .entry((key, gather))
+            .or_insert_with(|| {
+                let _creation = crate::gpu::creation_lock();
+                d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("three-main"),
+                    layout: Some(l),
+                    vertex: wgpu::VertexState {
+                        module: m,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[Some(vertex_layout())],
+                    },
+                    // (b − a) × (c − a) points outward; after the projection's y flip those triangles wind counter-clockwise in NDC
+                    primitive: wgpu::PrimitiveState {
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: if key.cull { Some(wgpu::Face::Back) } else { None },
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(!key.blend),
+                        depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
+                    fragment: Some(wgpu::FragmentState {
+                        module: m,
+                        entry_point: Some("fs_main"),
+                        compilation_options: wgpu::PipelineCompilationOptions {
+                            constants: &[
+                                ("PLAIN_MATERIAL", key.plain as u32 as f64),
+                                ("ALL_GLOBAL_LIGHTS", key.global_lights as u32 as f64),
+                                ("LIGHT_SIGNATURE", key.light_signature as f64),
+                                ("ALPHA_MASK", key.alpha_mask as u32 as f64),
+                                ("GATHER_SHADOW", gather as u32 as f64),
+                            ],
+                            ..Default::default()
+                        },
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: FORMAT,
+                            blend: if key.blend { Some(PREMUL) } else { None },
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            })
+            .clone()
+    }
+
+    /// The kernel that rasterises the depth-of-field aperture, compiled on first use.
+    fn dof_kernel(&self, d: &wgpu::Device) -> &wgpu::ComputePipeline {
+        self.dof_kernel.get_or_init(|| {
+            let shader = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("three-dof-aperture"),
+                source: wgpu::ShaderSource::Wgsl(format!("{TYPES}\n{}", include_str!("three_dof_kernel.wgsl")).into()),
+            });
+            let _creation = crate::gpu::creation_lock();
+            d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("three-dof-aperture"),
+                layout: None,
+                module: &shader,
+                entry_point: Some("cs_aperture"),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        })
+    }
+
+    /// The linear-work splat scatter of software adapters, compiled on first use.
+    fn software_scatter(&self, d: &wgpu::Device) -> &wgpu::ComputePipeline {
+        self.software_scatter.get_or_init(|| {
+            let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("three-sort-cpu"),
+                source: wgpu::ShaderSource::Wgsl(sort_src().into()),
+            });
+            let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[Some(&self.bgl_sort)],
+                immediate_size: 0,
+            });
+            let _creation = crate::gpu::creation_lock();
+            d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("cs_scatter_cpu"),
+                layout: Some(&layout),
+                module: &module,
+                entry_point: Some("cs_scatter_cpu"),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        })
+    }
+}
+
+impl ThreeEngine {
+    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> ThreeEngine {
+        ThreeEngine::new_with(device, queue, wgpu::TextureFormat::Rgba32Float, wgpu::TextureFormat::R32Float)
+    }
+
+    /// An engine whose float targets use formats the device renders to: view depth and
+    /// reflectance in `gbuffer`, resolved depth and depth-of-field tiles in `scalar` (see
+    /// `Gpu::gbuffer_depth` and `Gpu::scalar_target`: 32-bit float where the device can).
+    pub fn new_with(
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        gbuffer: wgpu::TextureFormat,
+        scalar: wgpu::TextureFormat,
+    ) -> ThreeEngine {
+        Self::new_with_samples(device, queue, gbuffer, scalar, 1)
+    }
+
+    /// Builds the raster pipelines for an adapter-supported count of 1, 2 or 4 samples.
+    pub fn new_with_samples(
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        gbuffer: wgpu::TextureFormat,
+        scalar: wgpu::TextureFormat,
+        samples: u32,
+    ) -> ThreeEngine {
+        assert!(matches!(samples, 1 | 2 | 4));
+        let d = &*device;
+        let kit = KITS.get(&device, (gbuffer, scalar, samples), || Kit::new(d, gbuffer, scalar, samples));
+        let bgl_frame = kit.bgl_frame.clone();
+        let bgl_mat = kit.bgl_mat.clone();
+        let bgl_obj = kit.bgl_obj.clone();
+        let bgl_splat = kit.bgl_splat.clone();
+        let bgl_ssr = kit.bgl_ssr.clone();
+        let bgl_post = kit.bgl_post.clone();
+        let bgl_depth = kit.bgl_depth.clone();
+        let bgl_sort = kit.bgl_sort.clone();
+        let shadow_pipe = kit.shadow_pipe.clone();
+        let dome_pipe = kit.dome_pipe.clone();
+        let splat_pipe = kit.splat_pipe.clone();
+        let blit_pipe = kit.blit_pipe.clone();
+        let ssao_pipe = kit.ssao_pipe.clone();
+        let ao_blur_pipe = kit.ao_blur_pipe.clone();
+        let ssr_pipe = kit.ssr_pipe.clone();
+        let under_pipe = kit.under_pipe.clone();
+        let dof_pipe = kit.dof_pipe.clone();
+        let tile_max_pipe = kit.tile_max_pipe.clone();
+        let tile_dilate_pipe = kit.tile_dilate_pipe.clone();
+        let depth_pipe = kit.depth_pipe.clone();
+        let depth_coc_pipe = kit.depth_coc_pipe.clone();
+        let sort_pipes = kit.sort_pipes.clone();
+        #[cfg(test)]
+        let ao_separate = kit.ao_separate.clone();
         let repeat_smp = d.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
@@ -1485,7 +1745,7 @@ impl ThreeEngine {
             }),
             device: device.clone(),
             queue,
-            main_mod,
+            kit,
             #[cfg(test)]
             specialize_plain: true,
             #[cfg(test)]
@@ -1514,7 +1774,6 @@ impl ThreeEngine {
             bgl_post,
             bgl_depth,
             bgl_sort,
-            main_layout,
             pipes: HashMap::new(),
             shadow_pipe,
             dome_pipe,
@@ -1597,109 +1856,22 @@ impl ThreeEngine {
     }
 
     /// The depth and normal prepass for the screen-space effects (view normal + roughness, view depth +
-    /// reflectance), specialized as `key` says.
+    /// reflectance), specialized as `key` says: from the device's kit (see [`Kit::pre_pipe`]); the engine keeps the keys
+    /// its scenes used.
     fn pre_pipe(&mut self, key: PreKey) {
-        let (d, m, l, gbuffer) = (&self.device, &self.main_mod, &self.main_layout, self.gbuffer);
-        self.pre_pipes.entry(key).or_insert_with(|| {
-            let _creation = crate::gpu::creation_lock();
-            d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("three-prepass"),
-                layout: Some(l),
-                vertex: wgpu::VertexState {
-                    module: m,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(vertex_layout())],
-                },
-                primitive: wgpu::PrimitiveState {
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: if key.cull { Some(wgpu::Face::Back) } else { None },
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: m,
-                    entry_point: Some("fs_prepass"),
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: &[
-                            ("PLAIN_MATERIAL", key.plain as u32 as f64),
-                            ("ALPHA_MASK", key.alpha_mask as u32 as f64),
-                            ("PREPASS_REFLECTANCE", key.reflectance as u32 as f64),
-                        ],
-                        ..Default::default()
-                    },
-                    targets: &[Some(FORMAT.into()), Some(gbuffer.into())],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        });
+        let (kit, d) = (&self.kit, &self.device);
+        self.pre_pipes.entry(key).or_insert_with(|| kit.pre_pipe(d, key));
     }
 
+    /// The material pipeline of `key`, from the device's kit (see [`Kit::pipe`]); the engine keeps the keys its scenes
+    /// used.
     fn pipe(&mut self, key: PipeKey) -> &wgpu::RenderPipeline {
-        let samples = self.samples;
         #[cfg(test)]
         let gather = self.gather_shadows;
         #[cfg(not(test))]
         let gather = true;
-        let (d, m, l) = (&self.device, &self.main_mod, &self.main_layout);
-        self.pipes.entry(key).or_insert_with(|| {
-            {
-                let _creation = crate::gpu::creation_lock();
-                d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("three-main"),
-                    layout: Some(l),
-                    vertex: wgpu::VertexState {
-                        module: m,
-                        entry_point: Some("vs_main"),
-                        compilation_options: Default::default(),
-                        buffers: &[Some(vertex_layout())],
-                    },
-                    // (b − a) × (c − a) points outward; after the projection's y flip those triangles wind counter-clockwise in NDC
-                    primitive: wgpu::PrimitiveState {
-                        front_face: wgpu::FrontFace::Ccw,
-                        cull_mode: if key.cull { Some(wgpu::Face::Back) } else { None },
-                        ..Default::default()
-                    },
-                    depth_stencil: Some(wgpu::DepthStencilState {
-                        format: wgpu::TextureFormat::Depth32Float,
-                        depth_write_enabled: Some(!key.blend),
-                        depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                        stencil: Default::default(),
-                        bias: Default::default(),
-                    }),
-                    multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
-                    fragment: Some(wgpu::FragmentState {
-                        module: m,
-                        entry_point: Some("fs_main"),
-                        compilation_options: wgpu::PipelineCompilationOptions {
-                            constants: &[
-                                ("PLAIN_MATERIAL", key.plain as u32 as f64),
-                                ("ALL_GLOBAL_LIGHTS", key.global_lights as u32 as f64),
-                                ("LIGHT_SIGNATURE", key.light_signature as f64),
-                                ("ALPHA_MASK", key.alpha_mask as u32 as f64),
-                                ("GATHER_SHADOW", gather as u32 as f64),
-                            ],
-                            ..Default::default()
-                        },
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: FORMAT,
-                            blend: if key.blend { Some(PREMUL) } else { None },
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                    }),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            }
-        })
+        let (kit, d) = (&self.kit, &self.device);
+        self.pipes.entry(key).or_insert_with(|| kit.pipe(d, key, gather))
     }
 
     /// Keeps a `1 / workers` share of the default path tracer cache budgets, for one of `workers` renderers in a
@@ -2867,23 +3039,8 @@ impl ThreeEngine {
             self.no_aperture.clone()
         };
         if scene.dof.is_some() {
-            let pipe = self.dof_kernel_pipe.get_or_insert_with(|| {
-                let shader = d.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("three-dof-aperture"),
-                    source: wgpu::ShaderSource::Wgsl(
-                        format!("{TYPES}\n{}", include_str!("three_dof_kernel.wgsl")).into(),
-                    ),
-                });
-                let _creation = crate::gpu::creation_lock();
-                d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("three-dof-aperture"),
-                    layout: None,
-                    module: &shader,
-                    entry_point: Some("cs_aperture"),
-                    compilation_options: Default::default(),
-                    cache: None,
-                })
-            });
+            let kit = &self.kit;
+            let pipe = self.dof_kernel_pipe.get_or_insert_with(|| kit.dof_kernel(&d).clone());
             let bind = d.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("three-dof-aperture"),
                 layout: &pipe.get_bind_group_layout(0),
@@ -3186,24 +3343,7 @@ impl ThreeEngine {
         }
         // ------------------------------------------------ splat sort
         if self.software_adapter && !scene.splats.is_empty() && self.software_scatter.is_none() {
-            let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("three-sort-cpu"),
-                source: wgpu::ShaderSource::Wgsl(sort_src().into()),
-            });
-            let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[Some(&self.bgl_sort)],
-                immediate_size: 0,
-            });
-            let _creation = crate::gpu::creation_lock();
-            self.software_scatter = Some(d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("cs_scatter_cpu"),
-                layout: Some(&layout),
-                module: &module,
-                entry_point: Some("cs_scatter_cpu"),
-                compilation_options: Default::default(),
-                cache: None,
-            }));
+            self.software_scatter = Some(self.kit.software_scatter(&d).clone());
         }
         let mut splat_binds = Vec::new();
         let mut sorts = 0;
@@ -5088,6 +5228,82 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
         scene.draws.clear();
         engine.render_now(&scene, None);
         assert!(engine.pipes.is_empty(), "an empty scene needs no material pipeline");
+    }
+
+    #[test]
+    // That the pipelines go with the last engine holding them is asserted by the registry's own test: the other tests of this binary
+    // run engines on the same device at the same time, so the last holder here is not known.
+    fn engines_on_one_device_share_its_pipelines() {
+        use super::*;
+        let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "engines_on_one_device_share_its_pipelines");
+        let engine = || {
+            let mut e =
+                ThreeEngine::new_with(gpu.device.clone(), gpu.queue.clone(), gpu.gbuffer_depth, gpu.scalar_target);
+            e.software_adapter = true;
+            e
+        };
+        let (mut a, mut b) = (engine(), engine());
+        assert!(Arc::ptr_eq(&a.kit, &b.kit), "one set of pipelines per device and target formats");
+        assert_eq!(
+            (&a.ssao_pipe, &a.dof_pipe, &a.dome_pipe, &a.sort_pipes),
+            (&b.ssao_pipe, &b.dof_pipe, &b.dome_pipe, &b.sort_pipes)
+        );
+        let mesh = sr_3d::prim::plane(16.0, 16.0, 1);
+        let mut points = sr_3d::Splats { basis: Mat4::IDENTITY, ..Default::default() };
+        for i in 0..16 {
+            points.pos.push([8.0 + i as f32, 16.0, 40.0 + i as f32]);
+            points.scale.push([2.0; 3]);
+            points.rot.push([0.0, 0.0, 0.0, 1.0]);
+            points.color.push([0.8, 0.4, 0.2, 0.5]);
+        }
+        let scene = |e: &mut ThreeEngine| Scene3 {
+            cam: sr_3d::camera::resolve(&sr_3d::camera::CameraParams::default(), 32.0, 32.0),
+            clip_fix: Mat4::IDENTITY,
+            size: [32, 32],
+            exposure: 1.0,
+            dof: Some(Dof { coc_scale: 24000.0, focus: 100.0, max_coc: 4.0, blades: 6 }),
+            lens_k1: 0.0,
+            draws: vec![Draw3 {
+                mesh: MeshSrc::Cached(e.upload_mesh(&mesh.vertices, &mesh.indices)),
+                model: Mat4::from_translation(Vec3::new(16.0, 16.0, 0.0)),
+                material: MaterialParams::default(),
+                maps: Default::default(),
+                opacity: 1.0,
+                cast_shadow: false,
+                receive_shadow: false,
+                shadow_catcher: false,
+            }],
+            lights: Vec::new(),
+            env: None,
+            splats: vec![SplatDraw { gpu: e.upload_splats(&points), model: Mat4::IDENTITY, opacity: 1.0 }],
+            volumes: Vec::new(),
+            encode_srgb: false,
+            ao: Some([4.0, 1.0]),
+            ssr: true,
+            path: None,
+            geodesic: None,
+        };
+        let (sa, sb) = (scene(&mut a), scene(&mut b));
+        let first = a.render_now(&sa, None);
+        assert_eq!(b.render_now(&sb, None), first, "an engine using pipelines another built renders the same");
+        assert_eq!(a.pipes.len(), 1);
+        assert_eq!(a.pipes, b.pipes, "a material pipeline is compiled once for the device");
+        assert!(!a.pre_pipes.is_empty(), "the screen-space effects draw the prepass");
+        assert_eq!(a.pre_pipes, b.pre_pipes, "a prepass pipeline is compiled once for the device");
+        assert_eq!(a.dof_kernel_pipe, b.dof_kernel_pipe);
+        assert!(a.software_scatter.is_some());
+        assert_eq!(a.software_scatter, b.software_scatter);
+        if gpu.raster_sample_counts.sample_count_supported(4) {
+            let c = ThreeEngine::new_with_samples(
+                gpu.device.clone(),
+                gpu.queue.clone(),
+                gpu.gbuffer_depth,
+                gpu.scalar_target,
+                4,
+            );
+            assert!(!Arc::ptr_eq(&a.kit, &c.kit), "another sample count has pipelines of its own");
+            assert_ne!(a.dome_pipe, c.dome_pipe);
+        }
     }
 
     #[test]

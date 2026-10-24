@@ -294,18 +294,29 @@ impl RasterJob {
     }
 }
 
-/// The fine-stage pipelines, each compiled the first time a job needs it.
+/// The fine stage of a renderer: the device's pipelines for its target format, and the renderer's own arenas.
 pub struct Raster {
     device: wgpu::Device,
-    module: wgpu::ShaderModule,
-    layout: wgpu::PipelineLayout,
-    pipelines: [std::sync::OnceLock<wgpu::ComputePipeline>; 4],
-    bgl: wgpu::BindGroupLayout,
+    kit: Arc<crate::gpu::OfDevice<Kit>>,
     /// The jobs' parameters, commands, ranges, pieces, backdrops and active tiles since the last submit.
     arenas: [Arena; 6],
     /// Buffers made so far for jobs (a job that fits the arenas makes none).
     pub buffers_made: usize,
 }
+
+/// The fine-stage shader, layouts and pipelines of one device and target format, each pipeline compiled the first time
+/// a job needs it. Immutable objects of the device, so the raster stages on it share one set while any of them is alive
+/// ([`KITS`]).
+#[derive(Debug)]
+struct Kit {
+    module: wgpu::ShaderModule,
+    layout: wgpu::PipelineLayout,
+    pipelines: [std::sync::OnceLock<wgpu::ComputePipeline>; 4],
+    bgl: wgpu::BindGroupLayout,
+}
+
+/// The kits of the raster stages alive, by device and target format.
+static KITS: crate::gpu::PerDevice<wgpu::TextureFormat, Kit> = crate::gpu::PerDevice::new();
 
 /// Where the jobs' records of one kind live: a buffer the jobs since the last submit append to at aligned offsets,
 /// replaced by a larger one when a job does not fit (the bind groups of the jobs before keep the old one alive),
@@ -374,14 +385,8 @@ impl Place {
     }
 }
 
-impl Raster {
-    /// Builds the raster stage for [`crate::resources::FORMAT`] targets.
-    pub fn new(d: &wgpu::Device) -> Raster {
-        Self::new_as(d, crate::resources::FORMAT)
-    }
-
-    /// Builds the raster stage for targets of `format` (a working format of SREP 72).
-    pub fn new_as(d: &wgpu::Device, format: wgpu::TextureFormat) -> Raster {
+impl Kit {
+    fn new(d: &wgpu::Device, format: wgpu::TextureFormat) -> Kit {
         let st = |b: u32| wgpu::BindGroupLayoutEntry {
             binding: b,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -443,6 +448,19 @@ impl Raster {
             bind_group_layouts: &[Some(&bgl)],
             immediate_size: 0,
         });
+        Kit { module, layout, pipelines: Default::default(), bgl }
+    }
+}
+
+impl Raster {
+    /// Builds the raster stage for [`crate::resources::FORMAT`] targets.
+    pub fn new(d: &Arc<wgpu::Device>) -> Raster {
+        Self::new_as(d, crate::resources::FORMAT)
+    }
+
+    /// Builds the raster stage for targets of `format` (a working format of SREP 72), with the pipelines of any other
+    /// raster stage on the device for that format.
+    pub fn new_as(d: &Arc<wgpu::Device>, format: wgpu::TextureFormat) -> Raster {
         let (uniform, storage) = (wgpu::BufferUsages::UNIFORM, wgpu::BufferUsages::STORAGE);
         let arenas = [
             Arena::new(uniform, "raster params"),
@@ -452,17 +470,19 @@ impl Raster {
             Arena::new(storage, "backdrops"),
             Arena::new(storage, "active tiles"),
         ];
-        Raster { device: d.clone(), module, layout, pipelines: Default::default(), bgl, arenas, buffers_made: 0 }
+        let kit = KITS.get(d, format, || Kit::new(d, format));
+        Raster { device: (**d).clone(), kit, arenas, buffers_made: 0 }
     }
 
     /// The pipeline for variant `i` (bit 0 `SOLID_FILLS`, bit 1 `SPARSE_TILES`).
     fn pipeline(&self, i: usize) -> &wgpu::ComputePipeline {
-        self.pipelines[i].get_or_init(|| {
+        let kit = &self.kit;
+        kit.pipelines[i].get_or_init(|| {
             let _creation = crate::gpu::creation_lock();
             self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("raster"),
-                layout: Some(&self.layout),
-                module: &self.module,
+                layout: Some(&kit.layout),
+                module: &kit.module,
                 entry_point: Some("raster_main"),
                 compilation_options: wgpu::PipelineCompilationOptions {
                     constants: &[("SOLID_FILLS", (i & 1) as f64), ("SPARSE_TILES", (i >> 1) as f64)],
@@ -543,7 +563,7 @@ impl Raster {
         let active = job.active_tiles.as_ref().map(|tiles| aa.place(d, q, bytemuck::cast_slice(tiles), made));
         let bind = d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("raster"),
-            layout: &self.bgl,
+            layout: &self.kit.bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: c.binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: r.binding() },
@@ -582,6 +602,16 @@ mod tests {
             contents: bytemuck::cast_slice(data),
             usage: wgpu::BufferUsages::STORAGE,
         })
+    }
+
+    #[test]
+    fn raster_stages_on_one_device_share_its_pipelines() {
+        let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "raster_stages_on_one_device_share_its_pipelines");
+        let (a, b) = (Raster::new(&gpu.device), Raster::new(&gpu.device));
+        assert!(Arc::ptr_eq(&a.kit, &b.kit), "one set per device and target format");
+        assert_eq!(a.pipeline(3), b.pipeline(3), "a variant is compiled once for the device");
+        let wide = Raster::new_as(&gpu.device, crate::resources::FORMAT_F32);
+        assert!(!Arc::ptr_eq(&a.kit, &wide.kit), "another target format has its own");
     }
 
     #[test]

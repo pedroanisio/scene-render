@@ -461,6 +461,62 @@ pub fn creation_lock() -> std::sync::MutexGuard<'static, ()> {
     CREATION.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Objects built once for a device and key and shared by every user on that device while any of them holds one: users
+/// that run at once (the workers of a parallel delivery, the threads of a test binary) hold a single copy, not one each.
+/// The registry holds its objects weakly, so it keeps neither them nor their device alive; an object nobody holds is
+/// built again by the next user that asks.
+///
+/// A device is the `Arc` that a [`Gpu`] and its clones share, not `wgpu::Device` equality: wgpu compares devices by
+/// their id within their instance, so devices of two instances (OpenGL and Vulkan in one process) can compare equal.
+/// The entry keeps the `Arc`'s allocation (not the device) with a weak reference, so its address is not reused while
+/// the entry exists.
+pub(crate) struct PerDevice<K, T> {
+    slots: std::sync::Mutex<Vec<Slot<K, T>>>,
+}
+
+/// An entry of a [`PerDevice`] registry: the key, the device and the object.
+type Slot<K, T> = (K, std::sync::Weak<wgpu::Device>, std::sync::Weak<OfDevice<T>>);
+
+/// An object of a [`PerDevice`] registry, which dereferences to the object.
+#[derive(Debug)]
+pub(crate) struct OfDevice<T> {
+    value: std::sync::OnceLock<T>,
+}
+
+impl<T> std::ops::Deref for OfDevice<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.value.get().expect("a registry hands an object out only once it is built")
+    }
+}
+
+impl<K: PartialEq, T> PerDevice<K, T> {
+    pub(crate) const fn new() -> Self {
+        PerDevice { slots: std::sync::Mutex::new(Vec::new()) }
+    }
+
+    /// The object of `key` on `device`, built by `build` when no user holds one. Users asking at once for one key wait for
+    /// a single build; other keys build alongside it.
+    pub(crate) fn get(&self, device: &Arc<wgpu::Device>, key: K, build: impl FnOnce() -> T) -> Arc<OfDevice<T>> {
+        let slot = {
+            let mut slots = self.slots.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            slots.retain(|(_, _, slot)| slot.strong_count() > 0);
+            let held = slots
+                .iter()
+                .filter(|(k, d, _)| *k == key && std::ptr::eq(d.as_ptr(), Arc::as_ptr(device)))
+                .find_map(|(_, _, slot)| slot.upgrade());
+            held.unwrap_or_else(|| {
+                let slot = Arc::new(OfDevice { value: std::sync::OnceLock::new() });
+                slots.push((key, Arc::downgrade(device), Arc::downgrade(&slot)));
+                slot
+            })
+        };
+        slot.value.get_or_init(build);
+        slot
+    }
+}
+
 /// The adapters of a new instance. The caller holds [`creation_lock`], and still holds it when the adapters it does not
 /// keep are dropped (the last one drops the instance).
 fn enumerate(backends: wgpu::Backends, _creation: &std::sync::MutexGuard<'static, ()>) -> Vec<wgpu::Adapter> {
@@ -558,7 +614,12 @@ pub struct Gpu {
     uncaptured: Arc<std::sync::Mutex<Option<String>>>,
     /// Sample counts supported by both the raster colour and depth targets, with colour resolve available.
     pub raster_sample_counts: wgpu::TextureFormatFeatureFlags,
+    /// The compositor of each working format, built by the first renderer on this device that needs it and shared by
+    /// every other (see [`Gpu::compositor`]).
+    compositors: Arc<std::sync::Mutex<CompositorSlots>>,
 }
+
+type CompositorSlots = Vec<(wgpu::TextureFormat, Arc<std::sync::OnceLock<Arc<crate::render::Compositor>>>)>;
 
 /// What the renderer's shaders need of a device, tried on a minimal pipeline: a fragment shader that reads a runtime-sized
 /// storage buffer. An OpenGL adapter older than 4.3 (the one a WSL2 host without a D3D12 driver falls back to) opens a
@@ -740,7 +801,25 @@ impl Gpu {
             scalar_target,
             uncaptured,
             raster_sample_counts,
+            compositors: Default::default(),
         })
+    }
+
+    /// The compositor of `format` on this device: built on first use, and the same for every renderer after. Two
+    /// renderers asking at once for one format wait for a single build; other formats build alongside it.
+    pub(crate) fn compositor(&self, format: wgpu::TextureFormat) -> Arc<crate::render::Compositor> {
+        let slot = {
+            let mut slots = self.compositors.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match slots.iter().find(|(f, _)| *f == format) {
+                Some((_, slot)) => slot.clone(),
+                None => {
+                    let slot = Arc::<std::sync::OnceLock<_>>::default();
+                    slots.push((format, slot.clone()));
+                    slot
+                }
+            }
+        };
+        slot.get_or_init(|| Arc::new(crate::render::Compositor::new(&self.device, format))).clone()
     }
 
     /// The error the device reported outside an error scope since the last call, if any, and clears it. A renderer
@@ -871,5 +950,73 @@ mod raster_sample_tests {
                 assert_eq!(super::select_raster_samples(requested, flags), (wanted, selected));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod per_device_tests {
+    use super::PerDevice;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn users_asking_at_once_share_one_build_that_the_registry_does_not_keep_alive() {
+        let gpu = sr_testkit::require_gpu!(
+            super::test_gpu(),
+            "users_asking_at_once_share_one_build_that_the_registry_does_not_keep_alive"
+        );
+        let registry = PerDevice::<u32, usize>::new();
+        let builds = AtomicUsize::new(0);
+        let start = Barrier::new(8);
+        let shared: Vec<_> = std::thread::scope(|s| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    s.spawn(|| {
+                        start.wait();
+                        registry.get(&gpu.device, 1, || {
+                            builds.fetch_add(1, Ordering::SeqCst);
+                            7
+                        })
+                    })
+                })
+                .collect();
+            threads.into_iter().map(|t| t.join().unwrap()).collect()
+        });
+        assert_eq!(builds.load(Ordering::SeqCst), 1, "eight users asking at once wait for one build");
+        assert!(shared.iter().all(|s| Arc::ptr_eq(s, &shared[0]) && ***s == 7));
+        let other = registry.get(&gpu.device, 2, || {
+            builds.fetch_add(1, Ordering::SeqCst);
+            9
+        });
+        assert_eq!((builds.load(Ordering::SeqCst), **other), (2, 9), "another key builds its own");
+        let gone = Arc::downgrade(&shared[0]);
+        drop(shared);
+        assert!(gone.upgrade().is_none(), "the registry holds no user's object alive");
+        assert_eq!(
+            **registry.get(&gpu.device, 1, || {
+                builds.fetch_add(1, Ordering::SeqCst);
+                7
+            }),
+            7
+        );
+        assert_eq!(builds.load(Ordering::SeqCst), 3, "a key nobody holds builds again");
+        assert_eq!(registry.slots.lock().unwrap().len(), 2, "released entries are pruned, not accumulated");
+    }
+
+    /// wgpu compares devices by their id within their instance, so the first devices of two instances (the OpenGL and
+    /// the Vulkan device of one process) compare equal; the registry tells devices apart by the `Arc` their `Gpu` shares.
+    /// A unit test opens one device, so two `Arc`s over it stand for two devices that compare equal.
+    #[test]
+    fn devices_that_compare_equal_have_objects_of_their_own() {
+        let gpu = sr_testkit::require_gpu!(super::test_gpu(), "devices_that_compare_equal_have_objects_of_their_own");
+        let other = Arc::new((*gpu.device).clone());
+        assert!(*other == *gpu.device);
+        let registry = PerDevice::<u32, usize>::new();
+        let builds = AtomicUsize::new(0);
+        let build = || builds.fetch_add(1, Ordering::SeqCst);
+        let (a, b) = (registry.get(&gpu.device, 1, build), registry.get(&other, 1, build));
+        assert!(!Arc::ptr_eq(&a, &b), "each device gets its own object");
+        assert_eq!(builds.load(Ordering::SeqCst), 2);
+        assert!(Arc::ptr_eq(&a, &registry.get(&gpu.device.clone(), 1, build)), "a clone of the Arc is the same device");
     }
 }

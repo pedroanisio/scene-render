@@ -87,15 +87,16 @@ struct FlowParams {
     iterations: u32,
 }
 
+#[derive(Debug)]
 struct ConvPipe {
     bgl: wgpu::BindGroupLayout,
     pipe: wgpu::RenderPipeline,
 }
 
-/// Pipelines for video processing, and the resources its passes reuse between frames.
-pub struct VideoEngine {
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
+/// The shaders, layouts and pipelines of video processing on one device. Immutable objects of the device, so the
+/// engines on it share one set while any of them holds it ([`KITS`]).
+#[derive(Debug)]
+struct Kit {
     conv_f: ConvPipe,
     conv_u: ConvPipe,
     mix: wgpu::RenderPipeline,
@@ -107,6 +108,17 @@ pub struct VideoEngine {
     bgl1: wgpu::BindGroupLayout,
     bgl2: wgpu::BindGroupLayout,
     bgl3: wgpu::BindGroupLayout,
+}
+
+/// The kits of the video engines alive, by device.
+static KITS: crate::gpu::PerDevice<(), Kit> = crate::gpu::PerDevice::new();
+
+/// Pipelines for video processing, and the resources its passes reuse between frames.
+pub struct VideoEngine {
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    /// The device's kit, taken when the engine first converts, mixes or interpolates a frame.
+    kit: std::sync::OnceLock<Arc<crate::gpu::OfDevice<Kit>>>,
     samp: wgpu::Sampler,
     /// A 1×1 flow of zeros: what a frame mix warps by.
     no_flow: wgpu::TextureView,
@@ -151,10 +163,8 @@ const C: wgpu::ShaderStages = wgpu::ShaderStages::COMPUTE;
 const UNFILTERED: wgpu::TextureSampleType = wgpu::TextureSampleType::Float { filterable: false };
 const FILTERED: wgpu::TextureSampleType = wgpu::TextureSampleType::Float { filterable: true };
 
-impl VideoEngine {
-    /// Builds the pipelines.
-    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> VideoEngine {
-        let d = &*device;
+impl Kit {
+    fn new(d: &wgpu::Device) -> Kit {
         let transfer = include_str!("transfer.wgsl");
         let conv = |tex_t: &str, scale: &str, sample: wgpu::TextureSampleType| {
             let src = format!(
@@ -256,6 +266,14 @@ impl VideoEngine {
         });
         let mix = full_pipeline(d, &module, &frag_layout, "fs_mix");
         let warp = full_pipeline(d, &module, &frag_layout, "fs_warp");
+        Kit { conv_f, conv_u, mix, warp, reduce, patch, densify, bgl0, bgl1, bgl2, bgl3 }
+    }
+}
+
+impl VideoEngine {
+    /// An engine whose pipelines are those of every other engine on the device, built when one first needs them.
+    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> VideoEngine {
+        let d = &*device;
         let samp = d.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -265,23 +283,18 @@ impl VideoEngine {
         VideoEngine {
             device,
             queue,
-            conv_f,
-            conv_u,
-            mix,
-            warp,
-            reduce,
-            patch,
-            densify,
-            bgl0,
-            bgl1,
-            bgl2,
-            bgl3,
+            kit: std::sync::OnceLock::new(),
             samp,
             no_flow,
             planes: Ring::new(),
             flows: Ring::new(),
             blends: Ring::new(),
         }
+    }
+
+    /// The device's video pipelines.
+    fn kit(&self) -> Arc<crate::gpu::OfDevice<Kit>> {
+        self.kit.get_or_init(|| KITS.get(&self.device, (), || Kit::new(&self.device))).clone()
     }
 
     /// Records `f` into a command encoder of its own and submits it: for work outside a frame, like tests and
@@ -320,6 +333,7 @@ impl VideoEngine {
         working: &Working,
         src_layout: &wgpu::BindGroupLayout,
     ) -> Arc<Tex> {
+        let kit = self.kit();
         let d = self.device.clone();
         let deep = matches!(frame.layout, PixelLayout::Yuv16(..) | PixelLayout::Rgba16);
         let rgba = matches!(frame.layout, PixelLayout::Rgba8 | PixelLayout::Rgba16);
@@ -329,7 +343,7 @@ impl VideoEngine {
             (true, false) => wgpu::TextureFormat::Rgba8Unorm,
             (true, true) => wgpu::TextureFormat::Rgba16Uint,
         };
-        let cp = if deep { &self.conv_u } else { &self.conv_f };
+        let cp = if deep { &kit.conv_u } else { &kit.conv_f };
         let set = self.planes.take((frame.width, frame.height, frame.layout), || {
             let planes: Vec<wgpu::Texture> = frame
                 .planes
@@ -429,18 +443,19 @@ impl VideoEngine {
         t: f32,
         src_layout: &wgpu::BindGroupLayout,
     ) -> Arc<Tex> {
+        let kit = self.kit();
         let d = self.device.clone();
         let [a, b] = frames;
         let warp = flow.is_some();
         let flow = flow.unwrap_or(&self.no_flow);
         let out = pool.get_as(&d, src_layout, resources::FORMAT, a.size);
-        let bgl0 = &self.bgl0;
+        let bgl0 = &kit.bgl0;
         let params = self.blends.take((), || Params::new(&d, bgl0));
         let p = FlowParams { size: a.size, grid: [0; 2], coarse: [0; 2], t, iterations: 0 };
         self.queue.write_buffer(&params.buf, 0, bytemuck::bytes_of(&p));
         let g3 = d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("video blend"),
-            layout: &self.bgl3,
+            layout: &kit.bgl3,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&a.view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&b.view) },
@@ -450,7 +465,7 @@ impl VideoEngine {
         });
         {
             let mut pass = begin(enc, &out.view);
-            pass.set_pipeline(if warp { &self.warp } else { &self.mix });
+            pass.set_pipeline(if warp { &kit.warp } else { &kit.mix });
             pass.set_bind_group(0, &params.bind, &[]);
             pass.set_bind_group(3, &g3, &[]);
             pass.draw(0..3, 0..1);
@@ -489,8 +504,9 @@ impl VideoEngine {
     /// returned belongs to a set kept by frame size: it holds its flow until the queue takes the frame and a later
     /// frame records into it again.
     pub fn flow(&mut self, enc: &mut wgpu::CommandEncoder, a: &Tex, b: &Tex) -> wgpu::Texture {
+        let kit = self.kit();
         let d = self.device.clone();
-        let (queue, bgl0, bgl1, bgl2) = (&self.queue, &self.bgl0, &self.bgl1, &self.bgl2);
+        let (queue, bgl0, bgl1, bgl2) = (&self.queue, &kit.bgl0, &kit.bgl1, &kit.bgl2);
         let set = self.flows.take(a.size, || FlowSet::new(&d, queue, bgl0, bgl1, bgl2, a.size));
         // level 0 reduces the frames themselves; the levels below reduce the level above
         let g1 = d.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -505,7 +521,7 @@ impl VideoEngine {
         });
         for (l, &size) in set.sizes.iter().enumerate() {
             let mut pass = enc.begin_compute_pass(&Default::default());
-            pass.set_pipeline(&self.reduce);
+            pass.set_pipeline(&kit.reduce);
             pass.set_bind_group(0, &set.reduce_params[l].bind, &[]);
             pass.set_bind_group(1, if l == 0 { &g1 } else { &set.reduce_binds[l - 1] }, &[]);
             pass.dispatch_workgroups(size[0].div_ceil(8), size[1].div_ceil(8), 1);
@@ -517,9 +533,9 @@ impl VideoEngine {
             let mut pass = enc.begin_compute_pass(&Default::default());
             pass.set_bind_group(0, &set.patch_params[l].bind, &[]);
             pass.set_bind_group(2, &set.patch_binds[l], &[]);
-            pass.set_pipeline(&self.patch);
+            pass.set_pipeline(&kit.patch);
             pass.dispatch_workgroups(gs[0].div_ceil(8), gs[1].div_ceil(8), 1);
-            pass.set_pipeline(&self.densify);
+            pass.set_pipeline(&kit.densify);
             pass.dispatch_workgroups(size[0].div_ceil(8), size[1].div_ceil(8), 1);
         }
         set.flows[0].clone()
@@ -836,6 +852,24 @@ fn begin<'e>(enc: &'e mut wgpu::CommandEncoder, view: &'e wgpu::TextureView) -> 
         occlusion_query_set: None,
         multiview_mask: None,
     })
+}
+
+#[cfg(test)]
+mod shared_pipeline_tests {
+    use super::*;
+
+    #[test]
+    fn video_engines_on_one_device_share_pipelines_built_on_first_use() {
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "video_engines_on_one_device_share_pipelines_built_on_first_use"
+        );
+        let a = VideoEngine::new(gpu.device.clone(), gpu.queue.clone());
+        let b = VideoEngine::new(gpu.device.clone(), gpu.queue.clone());
+        assert!(a.kit.get().is_none(), "an engine that converts nothing compiles nothing");
+        assert!(Arc::ptr_eq(&a.kit(), &b.kit()), "one set per device");
+        assert_eq!(a.kit().mix, b.kit().mix);
+    }
 }
 
 #[cfg(test)]

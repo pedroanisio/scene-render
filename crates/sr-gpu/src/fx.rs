@@ -503,6 +503,19 @@ impl PipelineKey {
     }
 }
 
+/// The bind group layout, pipeline layout, module and built-in pass pipelines of the effect engines of one device, each
+/// pipeline compiled the first time an engine draws with it. Immutable objects of the device, so the engines on it share
+/// one set while any of them is alive ([`KITS`]).
+struct Kit {
+    bgl: wgpu::BindGroupLayout,
+    layout: wgpu::PipelineLayout,
+    module: wgpu::ShaderModule,
+    pipes: std::sync::Mutex<HashMap<PipelineKey, wgpu::RenderPipeline>>,
+}
+
+/// The kits of the effect engines alive, by device.
+static KITS: crate::gpu::PerDevice<(), Kit> = crate::gpu::PerDevice::new();
+
 /// Pipelines, samplers and caches.
 pub struct FxEngine {
     pub(crate) device: Arc<wgpu::Device>,
@@ -510,6 +523,9 @@ pub struct FxEngine {
     bgl: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
     pub(crate) module: wgpu::ShaderModule,
+    /// The device's effect layouts, module and built-in pass pipelines, which the three above are of.
+    kit: Arc<crate::gpu::OfDevice<Kit>>,
+    /// The pipelines this engine has drawn with: the built-in ones from the kit, and those of custom passes.
     pipes: HashMap<PipelineKey, wgpu::RenderPipeline>,
     custom: HashMap<u64, Result<wgpu::ShaderModule, String>>,
     pub(crate) samp: wgpu::Sampler,
@@ -644,8 +660,8 @@ struct Copied {
     view: wgpu::TextureView,
 }
 
-impl FxEngine {
-    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> FxEngine {
+impl Kit {
+    fn new(device: &wgpu::Device) -> Kit {
         let tex = |binding: u32, dim: wgpu::TextureViewDimension| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -700,6 +716,70 @@ impl FxEngine {
             label: Some("effects"),
             source: wgpu::ShaderSource::Wgsl(WGSL.into()),
         });
+        Kit { bgl, layout, module, pipes: Default::default() }
+    }
+}
+
+/// The pipeline of a pass of `key`: the vertex stage of `module`, the fragment stage of `frag_module`.
+fn create_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    frag_module: &wgpu::ShaderModule,
+    key: PipelineKey,
+) -> wgpu::RenderPipeline {
+    let PipelineKey { entry, additive, .. } = key;
+    let blend = additive.then_some(wgpu::BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        },
+    });
+    let constants = [
+        ("FX_OP", key.operation as f64),
+        ("FX_TRANSFER", key.transfer as f64),
+        ("FUSED_0", key.fused[0] as f64),
+        ("FUSED_1", key.fused[1] as f64),
+        ("FUSED_2", key.fused[2] as f64),
+        ("FUSED_3", key.fused[3] as f64),
+    ];
+    let _creation = crate::gpu::creation_lock();
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(entry.name()),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: frag_module,
+            entry_point: Some(entry.name()),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: if matches!(entry, Entry::Custom(_)) { &[] } else { &constants },
+                ..Default::default()
+            },
+            targets: &[Some(wgpu::ColorTargetState { format: key.format, blend, write_mask: wgpu::ColorWrites::ALL })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+impl FxEngine {
+    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> FxEngine {
+        let kit = KITS.get(&device, (), || Kit::new(&device));
+        let (bgl, layout, module) = (kit.bgl.clone(), kit.layout.clone(), kit.module.clone());
         let samp = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("fx"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -730,6 +810,7 @@ impl FxEngine {
             bgl,
             layout,
             module,
+            kit,
             pipes: HashMap::new(),
             custom: HashMap::new(),
             samp,
@@ -905,62 +986,21 @@ impl FxEngine {
     }
 
     fn pipeline(&mut self, key: PipelineKey) -> Option<&wgpu::RenderPipeline> {
-        let PipelineKey { entry, additive, .. } = key;
         if !self.pipes.contains_key(&key) {
-            let frag_module = match entry {
-                Entry::Custom(h) => self.custom.get(&h)?.as_ref().ok()?,
-                _ => &self.module,
-            };
-            let blend = additive.then_some(wgpu::BlendState {
-                color: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::One,
-                    dst_factor: wgpu::BlendFactor::One,
-                    operation: wgpu::BlendOperation::Add,
-                },
-                alpha: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::One,
-                    dst_factor: wgpu::BlendFactor::One,
-                    operation: wgpu::BlendOperation::Add,
-                },
-            });
-            let constants = [
-                ("FX_OP", key.operation as f64),
-                ("FX_TRANSFER", key.transfer as f64),
-                ("FUSED_0", key.fused[0] as f64),
-                ("FUSED_1", key.fused[1] as f64),
-                ("FUSED_2", key.fused[2] as f64),
-                ("FUSED_3", key.fused[3] as f64),
-            ];
-            let p = {
-                let _creation = crate::gpu::creation_lock();
-                self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(entry.name()),
-                    layout: Some(&self.layout),
-                    vertex: wgpu::VertexState {
-                        module: &self.module,
-                        entry_point: Some("vs_main"),
-                        compilation_options: Default::default(),
-                        buffers: &[],
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: frag_module,
-                        entry_point: Some(entry.name()),
-                        compilation_options: wgpu::PipelineCompilationOptions {
-                            constants: if matches!(entry, Entry::Custom(_)) { &[] } else { &constants },
-                            ..Default::default()
-                        },
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: key.format,
-                            blend,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                    }),
-                    primitive: wgpu::PrimitiveState::default(),
-                    depth_stencil: None,
-                    multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
-                    cache: None,
-                })
+            let p = match key.entry {
+                Entry::Custom(h) => {
+                    let frag_module = self.custom.get(&h)?.as_ref().ok()?;
+                    create_pipeline(&self.device, &self.layout, &self.module, frag_module, key)
+                }
+                // the built-in passes: compiled once for the device, by the first engine that draws with one
+                _ => self
+                    .kit
+                    .pipes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .entry(key)
+                    .or_insert_with(|| create_pipeline(&self.device, &self.layout, &self.module, &self.module, key))
+                    .clone(),
             };
             self.pipes.insert(key, p);
         }
@@ -3704,6 +3744,32 @@ fn serial_sort(
         for (&i, p) in idx.iter().zip(line) {
             px[i] = p.1;
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_pipeline_tests {
+    use super::*;
+
+    #[test]
+    fn effect_engines_on_one_device_share_their_built_in_pipelines() {
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "effect_engines_on_one_device_share_their_built_in_pipelines"
+        );
+        let mut a = FxEngine::new(gpu.device.clone(), gpu.queue.clone());
+        let mut b = FxEngine::new(gpu.device.clone(), gpu.queue.clone());
+        assert!(Arc::ptr_eq(&a.kit, &b.kit), "one set per device");
+        let key = PipelineKey {
+            entry: Entry::Copy,
+            format: FORMAT,
+            additive: true,
+            operation: u32::MAX,
+            transfer: u32::MAX,
+            fused: [u32::MAX; 4],
+        };
+        let built = a.pipeline(key).unwrap().clone();
+        assert_eq!(b.pipeline(key), Some(&built), "a built-in pass is compiled once for the device");
     }
 }
 

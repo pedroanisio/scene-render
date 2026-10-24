@@ -415,8 +415,8 @@ pub struct Renderer {
     gpu: Gpu,
     raster_samples: u32,
     raster_warning: Option<String>,
-    /// The compositor's pipelines, each compiled the first time a draw uses it.
-    pipelines: Pipelines,
+    /// The device's compositor, whose pipelines are each compiled the first time a renderer on it draws with one.
+    pipelines: CompositorUse,
     mask_coverage: HashMap<Vec<u8>, MaskCoverage>,
     mask_coverage_budget: u64,
     bgl0: wgpu::BindGroupLayout,
@@ -1012,25 +1012,33 @@ fn compositor_pipeline(
     }
 }
 
-/// The compositor's render pipelines. A pipeline is compiled by the driver (hundreds of milliseconds each on llvmpipe)
-/// and a chapter draws with a few of them, so each is created on first use and kept.
-struct Pipelines {
+/// The slots of [`Pipelines`]: the five `over`, `under` and `additive` variants (see [`VARIANTS`]), then the rest.
+mod slot {
+    /// General shading, plain/antialiased texture, and solid colour variants. The simple variants avoid the
+    /// mask/gradient machinery for common full-frame draws.
+    pub const OVER: usize = 0;
+    /// Premultiplied destination-over: the project background, drawn last beneath everything.
+    pub const UNDER: usize = 5;
+    /// Add and linear-dodge through the blender (see `fixed_function_blend`).
+    pub const ADDITIVE: usize = 10;
+    /// `fs_blend`, without and with the ellipse constant.
+    pub const BLEND: usize = 15;
+    pub const GENERATOR: usize = 17;
+    pub const MASK_COVERAGE: usize = 18;
+    pub const CACHED_MASK: usize = 19;
+    pub const COUNT: usize = 20;
+}
+
+/// The compositor's render pipelines. A pipeline is compiled by the driver (hundreds of milliseconds each on llvmpipe,
+/// where each also keeps about 35 MiB of heap) and a chapter draws with a few of them, so each is created on first use
+/// and kept, once per device and working format (see [`Gpu::compositor`]).
+#[derive(Debug)]
+pub(crate) struct Pipelines {
     device: wgpu::Device,
     module: wgpu::ShaderModule,
     layout: wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
-    /// General shading, plain/antialiased texture, and solid colour variants. The simple variants avoid the
-    /// mask/gradient machinery for common full-frame draws.
-    over: [std::sync::OnceLock<wgpu::RenderPipeline>; 5],
-    /// Premultiplied destination-over: the project background, drawn last beneath everything.
-    under: [std::sync::OnceLock<wgpu::RenderPipeline>; 5],
-    /// Add and linear-dodge through the blender (see `fixed_function_blend`).
-    additive: [std::sync::OnceLock<wgpu::RenderPipeline>; 5],
-    blend: [std::sync::OnceLock<wgpu::RenderPipeline>; 2],
-    generator: std::sync::OnceLock<wgpu::RenderPipeline>,
-    /// `fs_mask_coverage`, then `fs_cached_mask`.
-    mask_coverage: [std::sync::OnceLock<wgpu::RenderPipeline>; 2],
-    created: std::sync::atomic::AtomicUsize,
+    slots: [std::sync::OnceLock<wgpu::RenderPipeline>; slot::COUNT],
 }
 
 /// The fragment entry point and ellipse constant of each `over`/`under`/`additive` variant.
@@ -1050,31 +1058,40 @@ impl Pipelines {
             bind_group_layouts: &layouts.map(Some),
             immediate_size: 0,
         });
-        Pipelines {
-            device: device.clone(),
-            module,
-            layout,
-            format,
-            over: Default::default(),
-            under: Default::default(),
-            additive: Default::default(),
-            blend: Default::default(),
-            generator: Default::default(),
-            mask_coverage: Default::default(),
-            created: Default::default(),
-        }
+        Pipelines { device: device.clone(), module, layout, format, slots: Default::default() }
     }
 
-    fn get<'a>(
-        &self,
-        slot: &'a std::sync::OnceLock<wgpu::RenderPipeline>,
-        fragment: &str,
-        blend: Option<wgpu::BlendState>,
-        full_screen: bool,
-        ellipse: bool,
-    ) -> &'a wgpu::RenderPipeline {
-        slot.get_or_init(|| {
-            self.created.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    /// The pipeline of slot `at` (see [`slot`]), compiled the first time any renderer asks for it.
+    fn get(&self, at: usize) -> &wgpu::RenderPipeline {
+        self.slots[at].get_or_init(|| {
+            let component = |src_factor, dst_factor| wgpu::BlendComponent {
+                src_factor,
+                dst_factor,
+                operation: wgpu::BlendOperation::Add,
+            };
+            let (fragment, blend, full_screen, ellipse) = match at {
+                slot::OVER..slot::UNDER => {
+                    let (fs, ellipse) = VARIANTS[at - slot::OVER];
+                    (fs, Some(PREMUL), false, ellipse)
+                }
+                slot::UNDER..slot::ADDITIVE => {
+                    let (fs, ellipse) = VARIANTS[at - slot::UNDER];
+                    let dst_over = component(wgpu::BlendFactor::OneMinusDstAlpha, wgpu::BlendFactor::One);
+                    (fs, Some(wgpu::BlendState { color: dst_over, alpha: dst_over }), false, ellipse)
+                }
+                slot::ADDITIVE..slot::BLEND => {
+                    let (fs, ellipse) = VARIANTS[at - slot::ADDITIVE];
+                    let add = component(wgpu::BlendFactor::One, wgpu::BlendFactor::One);
+                    (fs, Some(wgpu::BlendState { color: add, alpha: PREMUL.alpha }), false, ellipse)
+                }
+                slot::BLEND..slot::GENERATOR => ("fs_blend", None, false, at == slot::BLEND + 1),
+                slot::GENERATOR => ("fs_generator", None, true, false),
+                slot::MASK_COVERAGE => ("fs_mask_coverage", None, false, true),
+                slot::CACHED_MASK => {
+                    ("fs_cached_mask", Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), false, false)
+                }
+                _ => unreachable!("compositor pipeline slot {at}"),
+            };
             compositor_pipeline(
                 &self.device,
                 &self.module,
@@ -1088,143 +1105,26 @@ impl Pipelines {
         })
     }
 
-    fn over(&self, variant: usize) -> &wgpu::RenderPipeline {
-        let (fs, ellipse) = VARIANTS[variant];
-        self.get(&self.over[variant], fs, Some(PREMUL), false, ellipse)
-    }
-
-    fn under(&self, variant: usize) -> &wgpu::RenderPipeline {
-        let (fs, ellipse) = VARIANTS[variant];
-        let dst_over = wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
-            dst_factor: wgpu::BlendFactor::One,
-            operation: wgpu::BlendOperation::Add,
-        };
-        self.get(&self.under[variant], fs, Some(wgpu::BlendState { color: dst_over, alpha: dst_over }), false, ellipse)
-    }
-
-    fn additive(&self, variant: usize) -> &wgpu::RenderPipeline {
-        let (fs, ellipse) = VARIANTS[variant];
-        let add = wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::One,
-            dst_factor: wgpu::BlendFactor::One,
-            operation: wgpu::BlendOperation::Add,
-        };
-        self.get(
-            &self.additive[variant],
-            fs,
-            Some(wgpu::BlendState { color: add, alpha: PREMUL.alpha }),
-            false,
-            ellipse,
-        )
-    }
-
-    fn blend(&self, ellipse: bool) -> &wgpu::RenderPipeline {
-        self.get(&self.blend[ellipse as usize], "fs_blend", None, false, ellipse)
-    }
-
-    fn generator(&self) -> &wgpu::RenderPipeline {
-        self.get(&self.generator, "fs_generator", None, true, false)
-    }
-
-    fn mask_coverage(&self) -> &wgpu::RenderPipeline {
-        self.get(&self.mask_coverage[0], "fs_mask_coverage", None, false, true)
-    }
-
-    fn cached_mask(&self) -> &wgpu::RenderPipeline {
-        self.get(
-            &self.mask_coverage[1],
-            "fs_cached_mask",
-            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-            false,
-            false,
-        )
-    }
-
-    /// How many pipelines have been compiled.
-    fn created(&self) -> usize {
-        self.created.load(std::sync::atomic::Ordering::Relaxed)
+    /// The slots compiled so far, one bit each.
+    #[cfg(test)]
+    fn compiled(&self) -> u32 {
+        self.slots.iter().enumerate().filter(|(_, s)| s.get().is_some()).fold(0, |m, (i, _)| m | 1 << i)
     }
 }
 
-/// Premultiplied source-over.
-const PREMUL: wgpu::BlendState = wgpu::BlendState {
-    color: wgpu::BlendComponent {
-        src_factor: wgpu::BlendFactor::One,
-        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-        operation: wgpu::BlendOperation::Add,
-    },
-    alpha: wgpu::BlendComponent {
-        src_factor: wgpu::BlendFactor::One,
-        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-        operation: wgpu::BlendOperation::Add,
-    },
-};
-
-/// `project/@precision="f32"` asked of a device that cannot blend into or filter 32-bit float textures: SREP 72's
-/// error PREC10, which its message starts with.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrecisionError {
-    /// The adapter.
-    pub adapter: String,
-    /// The features it lacks, by name.
-    pub missing: Vec<&'static str>,
+/// The compositor of one device and working format: its bind group layouts and the pipelines made from them. Immutable
+/// objects of the device, so every renderer on it shares one (see [`Gpu::compositor`]).
+#[derive(Debug)]
+pub(crate) struct Compositor {
+    bgl0: wgpu::BindGroupLayout,
+    bgl1: wgpu::BindGroupLayout,
+    bgl2: wgpu::BindGroupLayout,
+    bgl3: wgpu::BindGroupLayout,
+    pipelines: Pipelines,
 }
 
-impl std::fmt::Display for PrecisionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "PREC10: precision=\"f32\" needs 32-bit float working textures that the compositor can blend into and \
-             filter; the adapter {} lacks {}; this is an error, not a silent fallback to f16",
-            self.adapter,
-            self.missing.join(" and ")
-        )
-    }
-}
-
-impl std::error::Error for PrecisionError {}
-
-/// The working format for `precision` on `gpu`, and the error when f32 is asked of a device without the features it
-/// needs (the format is then f16, and every frame reports the error).
-pub fn working_format(gpu: &Gpu, precision: m::Precision) -> (wgpu::TextureFormat, Option<PrecisionError>) {
-    if precision != m::Precision::F32 {
-        return (resources::FORMAT, None);
-    }
-    let have = gpu.device.features();
-    let missing: Vec<&'static str> = [
-        (wgpu::Features::FLOAT32_BLENDABLE, "FLOAT32_BLENDABLE"),
-        (wgpu::Features::FLOAT32_FILTERABLE, "FLOAT32_FILTERABLE"),
-    ]
-    .into_iter()
-    .filter(|(f, _)| !have.contains(*f))
-    .map(|(_, n)| n)
-    .collect();
-    if missing.is_empty() {
-        (resources::FORMAT_F32, None)
-    } else {
-        (resources::FORMAT, Some(PrecisionError { adapter: gpu.info.name.clone(), missing }))
-    }
-}
-
-impl Renderer {
-    /// The working format of this renderer's offscreens and frames (SREP 72 `project/@precision`).
-    pub fn format(&self) -> wgpu::TextureFormat {
-        self.format
-    }
-
-    /// How many compositor pipelines this renderer has compiled so far: one per variant drawn, not one per variant
-    /// there is.
-    pub fn pipelines_created(&self) -> usize {
-        self.pipelines.created()
-    }
-
-    /// Builds the resources for `program`; the compositor's pipelines are compiled as draws first need them.
-    pub fn new(gpu: Gpu, program: &Program) -> Renderer {
-        let (raster_samples, raster_warning) = gpu.raster_samples(program.scene.project.antialias3d);
-        let d = &gpu.device;
-        // SREP 72: the working format of every offscreen, effect pass and the frame
-        let (format, precision_error) = working_format(&gpu, program.scene.project.precision);
+impl Compositor {
+    pub(crate) fn new(d: &wgpu::Device, format: wgpu::TextureFormat) -> Compositor {
         let storage = |b: u32| wgpu::BindGroupLayoutEntry {
             binding: b,
             visibility: wgpu::ShaderStages::FRAGMENT,
@@ -1305,6 +1205,111 @@ impl Renderer {
             }],
         });
         let pipelines = Pipelines::new(d, [&bgl0, &bgl1, &bgl2, &bgl3], format);
+        Compositor { bgl0, bgl1, bgl2, bgl3, pipelines }
+    }
+}
+
+/// A renderer's handle on its device's compositor, which records the pipelines this renderer draws with.
+struct CompositorUse {
+    compositor: Arc<Compositor>,
+    used: std::sync::atomic::AtomicU32,
+}
+
+impl CompositorUse {
+    /// The pipeline of slot `at` (see [`slot`]).
+    fn get(&self, at: usize) -> &wgpu::RenderPipeline {
+        self.used.fetch_or(1 << at, std::sync::atomic::Ordering::Relaxed);
+        self.compositor.pipelines.get(at)
+    }
+
+    /// The slots this renderer has drawn with, one bit each.
+    fn used(&self) -> u32 {
+        self.used.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Premultiplied source-over.
+const PREMUL: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
+/// `project/@precision="f32"` asked of a device that cannot blend into or filter 32-bit float textures: SREP 72's
+/// error PREC10, which its message starts with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrecisionError {
+    /// The adapter.
+    pub adapter: String,
+    /// The features it lacks, by name.
+    pub missing: Vec<&'static str>,
+}
+
+impl std::fmt::Display for PrecisionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PREC10: precision=\"f32\" needs 32-bit float working textures that the compositor can blend into and \
+             filter; the adapter {} lacks {}; this is an error, not a silent fallback to f16",
+            self.adapter,
+            self.missing.join(" and ")
+        )
+    }
+}
+
+impl std::error::Error for PrecisionError {}
+
+/// The working format for `precision` on `gpu`, and the error when f32 is asked of a device without the features it
+/// needs (the format is then f16, and every frame reports the error).
+pub fn working_format(gpu: &Gpu, precision: m::Precision) -> (wgpu::TextureFormat, Option<PrecisionError>) {
+    if precision != m::Precision::F32 {
+        return (resources::FORMAT, None);
+    }
+    let have = gpu.device.features();
+    let missing: Vec<&'static str> = [
+        (wgpu::Features::FLOAT32_BLENDABLE, "FLOAT32_BLENDABLE"),
+        (wgpu::Features::FLOAT32_FILTERABLE, "FLOAT32_FILTERABLE"),
+    ]
+    .into_iter()
+    .filter(|(f, _)| !have.contains(*f))
+    .map(|(_, n)| n)
+    .collect();
+    if missing.is_empty() {
+        (resources::FORMAT_F32, None)
+    } else {
+        (resources::FORMAT, Some(PrecisionError { adapter: gpu.info.name.clone(), missing }))
+    }
+}
+
+impl Renderer {
+    /// The working format of this renderer's offscreens and frames (SREP 72 `project/@precision`).
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+
+    /// How many compositor pipelines this renderer has drawn with so far: one per variant drawn, not one per variant
+    /// there is. Each is compiled the first time a renderer on the device draws with it.
+    pub fn pipelines_created(&self) -> usize {
+        self.pipelines.used().count_ones() as usize
+    }
+
+    /// Builds the resources for `program`; the compositor's pipelines are compiled as draws first need them.
+    pub fn new(gpu: Gpu, program: &Program) -> Renderer {
+        let (raster_samples, raster_warning) = gpu.raster_samples(program.scene.project.antialias3d);
+        let d = &gpu.device;
+        // SREP 72: the working format of every offscreen, effect pass and the frame
+        let (format, precision_error) = working_format(&gpu, program.scene.project.precision);
+        let compositor = gpu.compositor(format);
+        let (bgl0, bgl1, bgl2, bgl3) =
+            (compositor.bgl0.clone(), compositor.bgl1.clone(), compositor.bgl2.clone(), compositor.bgl3.clone());
+        let pipelines = CompositorUse { compositor, used: Default::default() };
         let dummy_gen = d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("no-generator"),
             layout: &bgl3,
@@ -2173,7 +2178,7 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(self.pipelines.generator());
+            pass.set_pipeline(self.pipelines.get(slot::GENERATOR));
             pass.set_bind_group(0, &bg0, &[0]);
             pass.set_bind_group(1, &self.dummy.bind, &[]);
             pass.set_bind_group(2, &pair, &[]);
@@ -5236,7 +5241,7 @@ impl Renderer {
         }
         for gj in &plan.gens {
             let mut pass = clear_pass(&mut enc, &gj.target, true);
-            pass.set_pipeline(self.pipelines.generator());
+            pass.set_pipeline(self.pipelines.get(slot::GENERATOR));
             pass.set_bind_group(0, &bg0, &[0]);
             pass.set_bind_group(1, &self.dummy.bind, &[]);
             pass.set_bind_group(2, &dummy_pair, &[]);
@@ -5277,7 +5282,7 @@ impl Renderer {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                pass.set_pipeline(self.pipelines.mask_coverage());
+                pass.set_pipeline(self.pipelines.get(slot::MASK_COVERAGE));
                 pass.set_vertex_buffer(0, verts.slice(..));
                 pass.set_bind_group(0, &bg0, &[c.draw * draw_stride]);
                 pass.set_bind_group(1, &self.dummy.bind, &[]);
@@ -5521,15 +5526,15 @@ impl Renderer {
                             0
                         };
                         pass.set_pipeline(if coverage.contains_key(&c.draw) {
-                            self.pipelines.cached_mask()
+                            self.pipelines.get(slot::CACHED_MASK)
                         } else if c.backdrop.is_some() {
-                            self.pipelines.blend(ellipse)
+                            self.pipelines.get(slot::BLEND + ellipse as usize)
                         } else if draw.blend == BLEND_UNDER {
-                            self.pipelines.under(variant)
+                            self.pipelines.get(slot::UNDER + variant)
                         } else if fixed_function_blend(draw.blend) {
-                            self.pipelines.additive(variant)
+                            self.pipelines.get(slot::ADDITIVE + variant)
                         } else {
-                            self.pipelines.over(variant)
+                            self.pipelines.get(slot::OVER + variant)
                         });
                         pass.set_bind_group(0, &bg0, &[c.draw * draw_stride]);
                         pass.set_bind_group(1, &c.src.bind, &[]);
@@ -6382,5 +6387,55 @@ mod budget_share_tests {
         assert_eq!(budgets(&mut alone), (64 << 20, 64 << 20, 64 << 20));
         alone.share_budgets(0);
         assert_eq!(budgets(&mut alone), (256 << 20, 256 << 20, 256 << 20));
+    }
+}
+
+#[cfg(test)]
+mod shared_compositor_tests {
+    use super::*;
+
+    fn renderer(gpu: &Gpu, project: &str, body: &str) -> (Renderer, sr_eval::Evaluator) {
+        let xml = format!(
+            r##"<scene version="1.2"><project width="32" height="32" fps="10" duration="1" {project}/><composition>{body}</composition></scene>"##
+        );
+        let document = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
+        let evaluator = sr_eval::Evaluator::new(&document, &sr_eval::EvalOptions::default()).unwrap();
+        (Renderer::new(gpu.clone(), evaluator.program()), evaluator)
+    }
+
+    #[test]
+    fn renderers_on_one_device_share_its_compositor_pipelines() {
+        let gpu =
+            sr_testkit::require_gpu!(crate::gpu::test_gpu(), "renderers_on_one_device_share_its_compositor_pipelines");
+        let (a, _) = renderer(&gpu, "", "");
+        let (b, _) = renderer(&gpu, "", "");
+        assert!(Arc::ptr_eq(&a.pipelines.compositor, &b.pipelines.compositor));
+        let (wide, _) = renderer(&gpu, r#"precision="f32""#, "");
+        if wide.format() != a.format() {
+            assert!(!Arc::ptr_eq(&a.pipelines.compositor, &wide.pipelines.compositor), "one compositor per format");
+        }
+    }
+
+    /// Other tests share the device and may compile more meanwhile, so what is checked is that every pipeline the second
+    /// renderer drew with was compiled before it drew.
+    #[test]
+    fn a_pipeline_one_renderer_compiled_is_not_compiled_again_for_another() {
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "a_pipeline_one_renderer_compiled_is_not_compiled_again_for_another"
+        );
+        let rect = r##"<shape id="r" shape="rect" x="4" y="4" width="16" height="16" fill="#FF0000FF" blend="add"/>"##;
+        let draw = |(mut r, ev): (Renderer, sr_eval::Evaluator)| {
+            let f = r.render(&ev.evaluate(0.0), ev.program());
+            (r.read(&f.texture), r)
+        };
+        let (first, a) = draw(renderer(&gpu, "", rect));
+        let compiled = a.pipelines.compositor.pipelines.compiled();
+        let (second, b) = draw(renderer(&gpu, "", rect));
+        let drew = b.pipelines.used();
+        assert!(drew != 0, "the second renderer drew");
+        assert_eq!(drew, a.pipelines.used(), "both renderers drew with the same pipelines");
+        assert_eq!(drew & !compiled, 0, "the second renderer compiled {:#b} again", drew & !compiled);
+        assert_eq!(first, second);
     }
 }
