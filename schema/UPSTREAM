@@ -1,8 +1,12 @@
-Scene-render schema vendored from sr-core release 1.7.0 (tag schema-1.7.0, commit 95cf9b0a676415a0e7eb2e86505db512576d4e2d).
+Scene-render schema vendored from sr-core release 1.7.0 (tag schema-1.7.0, commit 95cf9b0a676415a0e7eb2e86505db512576d4e2d),
+unreleased: + the diff of sr-core srep/srep-0000-random-streams.md (draft, Schema-Version 1.8), applied by hand on
+this branch: the value 1.8 of scene/@version, its only schema change (no element, attribute or Schematron rule).
+The branch merges when that SREP is accepted; this file then names the schema-1.8.0 tag.
 Source: https://github.com/pedroanisio/sr-core
 
-Canonical upstream files (SHA-256; the first two as in sr-core's schema/SHA256SUMS at that tag):
-  scene-render.xsd: 5ef91e6ca9a6d860047f2a5347c59fa17423cb99ef7535b7ceaca16619f8ce2c
+Canonical upstream files (SHA-256; the .sch as in sr-core's schema/SHA256SUMS at that tag, the .xsd with the 1.8
+value; at the tag it is 5ef91e6ca9a6d860047f2a5347c59fa17423cb99ef7535b7ceaca16619f8ce2c):
+  scene-render.xsd: 3462adf49c1dfe776cefeae850097ccf19e206e3b2e892d15a0a7d9200848af7
   scene-render.sch: 868863e9ea4caf04e7f0bd9873c23ce5f723205714178349a4f385c4778fd368
   capabilities-1.schema.json: 6cb35c8ec6d37df32c9a0ad12eb33332d2abe4f11ac6000a9311d9891ec2e8b3
 
@@ -16,7 +20,9 @@ native OCN7 refuses an animated tracking on an ocean collider, as P3D6 and PYRO8
 document (corpus case ocn7-text-tracking, a native-only rule case). It is an erratum of sr-core's OCN7 for an SREP to
 settle. The warnings W05, W11 and W12 (SREP 76) and the program diagnostics are native only, as the SREPs define them.
 
-Document version 1.7 (sr_model::SCHEMA_VERSION is "1.7") is schema 1.7.0's. It adds no syntax and has no version
+Document version 1.8 (sr_model::SCHEMA_VERSION is "1.8") is the random-streams draft's, a local addition on this branch:
+a 1.8 document is a 1.7 document whose simulations draw from the D24 streams of the draft's section 5
+(crates/sr-model/tests/version_1_8.rs). Document version 1.7 is schema 1.7.0's. It adds no syntax and has no version
 gate: SREP 87's scoping applies to documents of every version, and a 1.7 document validates and renders as the same
 document at 1.6 (crates/sr-model/tests/version_1_7.rs). Document version 1.6 is schema 1.6.0's. A 1.6 document holding
 1.5 content

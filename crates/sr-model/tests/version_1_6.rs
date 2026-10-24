@@ -15,8 +15,8 @@ fn version_1_6_is_accepted_and_reported() {
 }
 
 #[test]
-fn a_version_after_1_7_is_not() {
-    for v in ["1.8", "2.0", "1.60"] {
+fn a_version_after_1_8_is_not() {
+    for v in ["1.9", "2.0", "1.60"] {
         assert!(load(v).is_err(), "{v} is accepted");
     }
 }
