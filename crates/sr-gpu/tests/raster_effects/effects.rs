@@ -724,8 +724,10 @@ fn a5_softness_default_scales_with_the_node() {
     }
 }
 
+/// SREP 29 and the schema's `effectType/@amount`: for matte-choke a positive amount erodes and a negative one dilates,
+/// whatever the position; `center` places the band on both sides of the edge at the amount's size.
 #[test]
-fn a5_matte_choke_position_places_the_edge_band() {
+fn a5_matte_choke_erodes_by_a_positive_amount_and_grows_by_a_negative_one_at_any_side() {
     let choke = |position: &str, amount: f64| {
         render(&fx_doc(
             r##"background="#00000000""##,
@@ -734,21 +736,24 @@ fn a5_matte_choke_position_places_the_edge_band() {
         ))
     };
     for radius in [3.0, 6.0] {
-        let Some(outside) = choke(r#" position="outside""#, radius) else { return };
-        let inside = choke(r#" position="inside""#, radius).unwrap();
+        let Some(eroded) = choke("", radius) else { return };
+        let grown = choke("", -radius).unwrap();
         let center = choke(r#" position="center""#, radius).unwrap();
-        assert!(problems(&outside).is_empty(), "{:?}", problems(&outside));
-        assert!(problems(&inside).is_empty(), "{:?}", problems(&inside));
-        assert!(problems(&center).is_empty(), "{:?}", problems(&center));
-        assert!(outside.px == choke("", radius).unwrap().px, "default is outside");
-        assert!(inside.px == choke(r#" position="outside""#, -radius).unwrap().px);
-        assert!(outside.px == choke(r#" position="inside""#, -radius).unwrap().px);
+        for r in [&eroded, &grown, &center] {
+            assert!(problems(r).is_empty(), "{:?}", problems(r));
+        }
+        for position in [r#" position="outside""#, r#" position="inside""#] {
+            assert!(eroded.px == choke(position, radius).unwrap().px, "{position}: a positive amount erodes");
+            assert!(grown.px == choke(position, -radius).unwrap().px, "{position}: a negative amount grows");
+        }
+        assert!(center.px == choke(r#" position="center""#, -radius).unwrap().px, "center is the same band");
         for x in [23, 24] {
-            assert_px(&outside, x, 16, [1.0, lin8(128), 0.0, 1.0], 0.01);
-            assert_px(&inside, x, 16, [0.0; 4], 0.01);
+            assert_px(&grown, x, 16, [1.0, lin8(128), 0.0, 1.0], 0.01);
+            assert_px(&eroded, x, 16, [0.0; 4], 0.01);
             assert_px(&center, x, 16, [0.5, lin8(128) * 0.5, 0.0, 0.5], 0.01);
         }
         assert_px(&center, 32, 16, [1.0, lin8(128), 0.0, 1.0], 0.01);
+        assert_px(&eroded, 32, 16, [1.0, lin8(128), 0.0, 1.0], 0.01);
     }
 }
 
