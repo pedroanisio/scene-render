@@ -34,6 +34,37 @@ pub fn pack(i: i64, j: i64, k: i64) -> u64 {
     (i as u64 & M) | (j as u64 & M) << 21 | (k as u64 & M) << 42
 }
 
+/// The (i, j, k) that [`pack`] packed: each 21-bit field read as two's complement, in [−2²⁰, 2²⁰).
+#[inline]
+pub fn unpack(index: u64) -> (i64, i64, i64) {
+    let field = |shift: u32| ((index >> shift) as i64) << 43 >> 43;
+    (field(0), field(21), field(42))
+}
+
+/// The simulation stream draw S(e, p, t, i) = U(e, p + t · 2³², i) of the random-streams SREP (section 5): element
+/// seed `e`, purpose `p`, step `t` and index `i`. Purpose and step are below 2³² by their type.
+#[inline]
+pub fn stream(e: u64, purpose: u32, step: u32, i: u64) -> f64 {
+    d24_unit(e, stream_channel(purpose, step), i)
+}
+
+/// S_signed = 2 S − 1, in [−1, 1).
+#[inline]
+pub fn stream_signed(e: u64, purpose: u32, step: u32, i: u64) -> f64 {
+    stream(e, purpose, step, i) * 2.0 - 1.0
+}
+
+/// S_normal = G(e, p + t · 2³², i), the [`gaussian`] at the stream's address.
+#[inline]
+pub fn stream_normal(e: u64, purpose: u32, step: u32, i: u64) -> f64 {
+    gaussian(e, stream_channel(purpose, step), i)
+}
+
+#[inline]
+fn stream_channel(purpose: u32, step: u32) -> u64 {
+    purpose as u64 | (step as u64) << 32
+}
+
 /// A standard normal draw from one hash (Box–Muller): u1 = (high 32 bits + ½) / 2³² and
 /// u2 = low 32 bits / 2³² of [`d24_hash`].
 pub fn gaussian(seed: u64, channel: u64, i: u64) -> f64 {
