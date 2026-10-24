@@ -58,7 +58,7 @@ pub struct Options {
 pub enum Parallel {
     /// The output is split by its duration alone (one chunk per 10 s, at most 12; one stream under 20 s), so the
     /// file is the same on any machine; 3 chunks render at once with a hardware encoder, otherwise half the cores
-    /// (at most 4), one on a software adapter, and at most one per 20 s.
+    /// (at most 4), two on a software adapter with at least 8 cores (one with fewer), and at most one per 20 s.
     #[default]
     Auto,
     /// Exactly this many (1 renders serially).
@@ -1817,11 +1817,14 @@ fn run_delivery(
         let checks = Checks::of(p);
         let t_video = Instant::now();
         report.segments = 1;
-        // llvmpipe already spreads one device over every core, so automatic parallelism would only add
-        // devices competing for them; an explicit worker count is still honoured
         let can_split = splittable(output, codec, &ev);
         let auto = matches!(opts.parallel, Parallel::Auto);
-        let host = if can_split && auto && !gpu.is_software() { host_workers(codec, opts) } else { 1 };
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let host = match (can_split && auto, gpu.is_software()) {
+            (false, _) => 1,
+            (true, true) => software_workers(cores),
+            (true, false) => host_workers(codec, opts),
+        };
         let observe = checks.flash_on() || checks.contrast_on();
         let mut plan = segment_plan(opts.parallel, can_split, host, end - start, n, observe);
         // the debug layers name every object through the Vulkan loader, which is not safe from several devices at
@@ -2424,6 +2427,17 @@ fn host_workers(codec: Codec, opts: &Options) -> usize {
         3
     } else {
         (cores / 2).clamp(1, 4)
+    }
+}
+
+/// Chunks a software adapter renders at once under `auto` on `cores` cores. llvmpipe spreads one device over every
+/// core, yet a second device still fills the cores while the first waits on its single-threaded stages; with fewer
+/// than 8 cores the two would only compete.
+fn software_workers(cores: usize) -> usize {
+    if cores >= 8 {
+        2
+    } else {
+        1
     }
 }
 
@@ -3245,6 +3259,19 @@ mod tests {
         assert_eq!(panic_message(&"literal"), "literal");
         assert_eq!(panic_message(&String::from("formatted")), "formatted");
         assert_eq!(panic_message(&7_u8), "no message");
+    }
+
+    /// A software adapter renders two automatic segments at once when there are cores for two devices; the split is
+    /// the scene's either way, so the file does not change.
+    #[test]
+    fn a_software_adapter_renders_two_automatic_segments_at_once_from_eight_cores() {
+        assert_eq!([1, 2, 4, 7, 8, 12, 64].map(software_workers), [1, 1, 1, 1, 2, 2, 2]);
+        let (one, two) = (
+            segment_plan(Parallel::Auto, true, software_workers(4), 120.0, 3600, false),
+            segment_plan(Parallel::Auto, true, software_workers(12), 120.0, 3600, false),
+        );
+        assert_eq!((one.workers, two.workers), (1, 2));
+        assert_eq!(one.bounds(3600), two.bounds(3600));
     }
 
     /// `--parallel auto` splits an output by the scene alone, so the file is the same on every machine (v0.2.1
