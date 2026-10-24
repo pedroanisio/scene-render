@@ -108,4 +108,5 @@ Verify the download with `sha256sum -c scene-render-v0.7.4-linux-x86_64.tar.gz.s
 
 ### Changes that can alter output
 
+- At an exact vertex of a motion path, an auto-oriented node takes the direction of the segment that leaves the vertex, skipping segments of zero length, as SREP 58 states; at a jump its point is the next subpath's start. Before, constant-speed progress took the direction of the segment that arrives there, so a bar on `M200 100 L300 100 L300 200` at progress 0.5 lay horizontal where it now stands vertical. Spatial keyframe paths and 3D follow-path cameras sample the same paths. Progress between vertices, and the end of a path, are unchanged.
 - The PNG frames `render` writes come from the output stage's 16-bit conversion (the sRGB transfer in 32-bit float, rounded to 16 bits, with the 8-bit frame the 16-bit one rounded) instead of the CPU's conversion in 64-bit float, so a sample can differ by one code at either depth; the 16-bit pack and its 8-bit rounding are held to within one code of the CPU conversion in sr-gpu's tests.

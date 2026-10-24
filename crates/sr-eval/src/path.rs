@@ -541,7 +541,19 @@ impl MotionPath {
             let i = (libm::floor(x) as usize).min(self.segs.len() - 1);
             (i, x - i as f64)
         };
-        let s = s.clamp(0.0, 1.0);
+        let (mut seg, mut s) = (seg, s.clamp(0.0, 1.0));
+        // at a vertex (a jump included) the point takes the outgoing segment of non-zero length (SREP 58): its
+        // start and its direction; the path's end keeps the last segment's
+        let dir = |k: usize| self.segs[k].tangent(0.0) != [0.0, 0.0];
+        if s >= 1.0 {
+            if let Some(k) = (seg + 1..self.segs.len()).find(|&k| dir(k)) {
+                (seg, s) = (k, 0.0);
+            }
+        } else if s == 0.0 && !dir(seg) {
+            if let Some(k) = (seg + 1..self.segs.len()).find(|&k| dir(k)) {
+                seg = k;
+            }
+        }
         let pt = self.segs[seg].at(s);
         let tg = self.segs[seg].tangent(s);
         (pt, libm::atan2(tg[1], tg[0]).to_degrees())
@@ -565,6 +577,23 @@ mod tests {
         assert!((p.sample(0.3, true).1 - 90.0).abs() < 1e-9, "heading down");
         let q = MotionPath::parse("m10,10 l10-10").unwrap();
         assert!(close(q.sample(1.0, true).0, [20.0, 0.0]));
+    }
+
+    /// SREP 58: at an exact vertex the direction is the outgoing segment's, in either progress mode, skipping
+    /// segments of zero length; the end of the path keeps the last segment's direction.
+    #[test]
+    fn a_vertex_takes_the_outgoing_direction() {
+        let p = MotionPath::parse("M0 0 L100 0 L100 100").unwrap();
+        for cs in [true, false] {
+            let (pt, a) = p.sample(0.5, cs);
+            assert!(close(pt, [100.0, 0.0]) && (a - 90.0).abs() < 1e-9, "constant speed {cs}: {pt:?} {a}");
+        }
+        assert!((p.sample(1.0, true).1 - 90.0).abs() < 1e-9);
+        let z = MotionPath::parse("M0 0 L100 0 L100 0 L100 100").unwrap();
+        let (pt, a) = z.sample(0.5, true);
+        assert!(close(pt, [100.0, 0.0]) && (a - 90.0).abs() < 1e-9, "{pt:?} {a}");
+        let (_, a) = z.sample(1.0 / 3.0, false);
+        assert!((a - 90.0).abs() < 1e-9, "the zero-length segment is skipped: {a}");
     }
 
     #[test]
