@@ -144,6 +144,23 @@ fn routes_advance_by_ground_distance() {
     assert_px(&r, x, y, [0.0, 0.0, 0.0, 1.0], 1e-3);
 }
 
+/// A traced outline whose frame has a layer and no backdrop rows (the strokes stop short of every tile they would
+/// cover to their right) draws: the encoder's layer commands name no backdrop rows, so no lookup runs past them.
+#[test]
+fn a_traced_outline_draws_where_no_tile_has_backdrop_rows() {
+    let d = map_doc(
+        640,
+        360,
+        r##"<geo id="sq" src="traced-squares.geojson"/>
+            <map id="m" width="640" height="360" projection="equirectangular" fit="sq" fitPadding="20">
+              <geoLayer geo="sq" fill="#00000000" stroke="#00FF00" strokeWidth="4" progress="0.125"/></map>"##,
+    );
+    let Some(r) = render(&d) else { return };
+    // 10 px a degree: square a's first edge runs up x = 20 from y = 280, and 0.125 of it is traced to y = 180
+    assert_px(&r, 20, 230, rgb(0x00FF00), 1e-3);
+    assert_px(&r, 20, 150, [0.0, 0.0, 0.0, 1.0], 1e-3);
+}
+
 #[test]
 fn kml_and_gpx_sources_draw() {
     let d = map_doc(

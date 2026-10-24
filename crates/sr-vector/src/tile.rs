@@ -36,7 +36,7 @@ pub mod kind {
 
 /// A fine-stage command (8 words, matching `raster.wgsl`).
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GpuCmd {
     pub kind: u32,
     pub piece_off: u32,
@@ -49,6 +49,22 @@ pub struct GpuCmd {
     pub flags: u32,
     /// Opacity, or the initial mask value of a push.
     pub param: f32,
+}
+
+impl Default for GpuCmd {
+    /// A command over no backdrop rows: 0 would name the first 16 rows of `Encoded::backdrops`.
+    fn default() -> Self {
+        GpuCmd {
+            kind: 0,
+            piece_off: 0,
+            piece_count: 0,
+            backdrop: u32::MAX,
+            backdrop_val: 0.0,
+            paint: 0,
+            flags: 0,
+            param: 0.0,
+        }
+    }
 }
 
 /// Encoder output.
@@ -387,7 +403,7 @@ impl Enc {
 
     /// A path command over arena tile `src` (if any), claiming its pieces and backdrop.
     fn path_cmd(&mut self, kind: u32, src: Option<u32>, flags: u32, paint: u32, param: f64) -> GpuCmd {
-        let mut c = GpuCmd { kind, paint, flags, param: param as f32, backdrop: u32::MAX, ..Default::default() };
+        let mut c = GpuCmd { kind, paint, flags, param: param as f32, ..Default::default() };
         if let Some(k) = src {
             let pt = self.arena.tiles[k as usize];
             c.piece_off = self.piece_len;
@@ -1090,6 +1106,45 @@ mod tests {
         assert_eq!(format!("{a:?}"), format!("{b:?}"));
         assert_eq!(pre.iter().flatten().count(), 64);
         assert!(!arena.tiles.is_empty());
+    }
+
+    /// A command names 16 backdrop rows, or `u32::MAX` for none: a layer's push and pop name none, so a frame
+    /// whose paths have no backdrop rows (here a masked dot inside one tile) encodes no reference past `backdrops`.
+    #[test]
+    fn a_command_without_backdrop_rows_names_none() {
+        let dot = crate::Poly {
+            pts: vec![crate::geom::p(4.0, 4.0), crate::geom::p(8.0, 4.0), crate::geom::p(8.0, 8.0)],
+            closed: true,
+        };
+        let scene = crate::Scene {
+            cmds: vec![
+                crate::Cmd::Push { mask_init: 0.0 },
+                crate::Cmd::Fill {
+                    polys: vec![dot.clone()],
+                    rule: crate::FillRule::NonZero,
+                    paint: crate::Paint::Solid { rgba: [0.0, 1.0, 0.0, 1.0], srgb: false },
+                    opacity: 1.0,
+                },
+                crate::Cmd::Mask {
+                    polys: vec![dot],
+                    rule: crate::FillRule::NonZero,
+                    op: crate::MaskOp::Add,
+                    opacity: 1.0,
+                    invert: false,
+                },
+                crate::Cmd::Pop { opacity: 1.0 },
+            ],
+        };
+        let e = super::encode(&scene, [64, 64]);
+        assert!(e.cmds.iter().any(|c| c.kind == super::kind::PUSH), "{:?}", e.cmds);
+        for c in &e.cmds {
+            assert!(
+                c.backdrop == u32::MAX || c.backdrop as usize + 16 <= e.backdrops.len(),
+                "{c:?} of {}",
+                e.backdrops.len()
+            );
+        }
+        assert_eq!(super::GpuCmd::default().backdrop, u32::MAX);
     }
 
     /// `floor_i64` and `ceil_i64` agree with `floor() as i64` and `ceil() as i64`
