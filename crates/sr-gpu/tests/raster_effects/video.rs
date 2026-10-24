@@ -161,8 +161,8 @@ fn dis_optical_flow_recovers_a_translation() {
         sr_gpu::resources::upload(&gpu.device, &gpu.queue, &layout, &sr_gpu::resources::Decoded::single(w, h, px), "t")
     };
     let (a, b, mid) = (up(img(0.0, 0.0)), up(img(6.0, 4.0)), img(3.0, 2.0));
-    let engine = sr_gpu::video::VideoEngine::new(gpu.device.clone(), gpu.queue.clone());
-    let flow = engine.flow(&a, &b);
+    let mut engine = sr_gpu::video::VideoEngine::new(gpu.device.clone(), gpu.queue.clone());
+    let flow = engine.run(|e, enc| e.flow(enc, &a, &b));
     let (fw, fh, f) = engine.read_flow(&flow);
     let mut xs: Vec<f32> = Vec::new();
     let mut ys: Vec<f32> = Vec::new();
@@ -180,8 +180,9 @@ fn dis_optical_flow_recovers_a_translation() {
     // the warped midpoint is closer to the true midpoint than a plain mix
     let ev = sr_eval::Evaluator::new(&doc("", "", ""), &Default::default()).unwrap();
     let r = sr_gpu::Renderer::new(gpu.clone(), ev.program());
-    let warped = r.read(&engine.interpolate(&a, &b, 0.5, &layout));
-    let mixed = r.read(&engine.mix(&a, &b, 0.5, &layout));
+    let mut pool = sr_gpu::resources::Pool::default();
+    let warped = r.read(&engine.run(|e, enc| e.interpolate(enc, &mut pool, &a, &b, 0.5, &layout)));
+    let mixed = r.read(&engine.run(|e, enc| e.mix(enc, &mut pool, &a, &b, 0.5, &layout)));
     let err = |img: &[[f32; 4]]| -> f64 {
         let mut s = 0.0;
         for y in 16..h - 16 {
@@ -253,5 +254,56 @@ fn idle_video_decoders_close_and_reopen_unchanged() {
         let Some(fresh) = render_times(&d, &[*t]) else { return };
         assert_eq!(shots[k].px, fresh.px, "t = {t}");
         assert!(shots[k].stats.errors.is_empty(), "{:?}", shots[k].stats.errors);
+    }
+}
+
+/// A playing clip converts one decoded frame a frame into a texture the renderer's pool hands out and takes back
+/// when the frame leaves the cache: the clip's first frames take textures, the frames after the cache's span none.
+#[test]
+fn video_playback_reuses_its_frame_textures() {
+    if videos().is_none() {
+        return;
+    }
+    let d = video_doc(r#"<layer id="v" asset="counter" start="0.12"/>"#);
+    let ts: Vec<f64> = (0..14).map(|k| k as f64 * 0.04).collect();
+    let Some(f) = render_sub_frames(&d, &ts) else { return };
+    let converted: Vec<usize> = f.iter().map(|s| s.stats.video_frames).collect();
+    assert_eq!(converted, [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], "frames converted");
+    let created: Vec<usize> = f.iter().map(|s| s.stats.textures_created).collect();
+    assert_eq!(created[1..3], [0, 0], "nothing to make before the clip starts: {created:?}");
+    assert!(created[3] >= 1, "the clip's first frame takes a texture: {created:?}");
+    assert!(created[8..].iter().all(|&c| c == 0), "textures created per frame: {created:?}");
+    for (k, shot) in f.iter().enumerate().skip(3) {
+        // source frame k − 3 has luma code 4(k − 3)
+        let want = y_to_linear(4.0 * (k - 3) as f32);
+        let got = shot.at(4, 4)[0];
+        assert!((got - want).abs() < 4e-3, "t = {}: {got} vs {want}", ts[k]);
+    }
+    assert!(f.iter().all(|s| s.stats.errors.is_empty()), "{:?}", f.last().unwrap().stats.errors);
+}
+
+/// Two layers of one clip at different source times in one frame each show their own decoded frame: the
+/// conversions of a frame share no plane textures or uniforms.
+#[test]
+fn two_layers_of_one_clip_each_show_their_own_frame() {
+    if videos().is_none() {
+        return;
+    }
+    let xml = format!(
+        r##"<scene version="1.1"><project width="64" height="32" fps="25" duration="2" background="#000000"/>
+        <assets>{VIDEOS}<video id="other" src="counter.mp4" width="32" height="16" fps="50" duration="4" colorSpace="rec709"/></assets>
+        <composition><layer id="left" asset="counter"/><layer id="right" asset="other" x="32" start="0.2"/></composition></scene>"##
+    );
+    let opts = sr_model::LoadOptions { verify_assets: true, base_dir: Some(fixtures()) };
+    let d = sr_model::load_str(&xml, &opts).unwrap();
+    let ts = [0.4, 0.44, 0.48];
+    let Some(f) = render_sub_frames(&d, &ts) else { return };
+    for (k, shot) in f.iter().enumerate() {
+        // left: frame 10 + k (luma 40 + 4k); right: source 0.2 s + k frames, frame 5 + k (luma 20 + 4k)
+        let (left, right) = (shot.at(4, 4)[0], shot.at(36, 4)[0]);
+        let (wl, wr) = (y_to_linear(40.0 + 4.0 * k as f32), y_to_linear(20.0 + 4.0 * k as f32));
+        assert!((left - wl).abs() < 4e-3, "t = {}: left {left} vs {wl}", ts[k]);
+        assert!((right - wr).abs() < 4e-3, "t = {}: right {right} vs {wr}", ts[k]);
+        assert_eq!(shot.stats.video_frames, 2, "t = {}: both layers convert a frame", ts[k]);
     }
 }

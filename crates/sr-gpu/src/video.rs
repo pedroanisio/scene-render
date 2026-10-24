@@ -11,7 +11,7 @@ use sr_media::{PixelLayout, VideoFrame};
 use sr_model::model::{AlphaMode, ColorSpace, Transfer};
 
 use crate::color::{self, Working};
-use crate::resources::{self, Tex};
+use crate::resources::{self, Pool, Tex};
 use crate::types;
 
 /// How to interpret a decoded stream.
@@ -92,7 +92,7 @@ struct ConvPipe {
     pipe: wgpu::RenderPipeline,
 }
 
-/// Pipelines and plane textures for video processing.
+/// Pipelines for video processing, and the resources its passes reuse between frames.
 pub struct VideoEngine {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
@@ -108,7 +108,14 @@ pub struct VideoEngine {
     bgl2: wgpu::BindGroupLayout,
     bgl3: wgpu::BindGroupLayout,
     samp: wgpu::Sampler,
-    planes: HashMap<(u32, u32, PixelLayout), Vec<wgpu::Texture>>,
+    /// A 1×1 flow of zeros: what a frame mix warps by.
+    no_flow: wgpu::TextureView,
+    /// Plane textures and conversion bindings by decoded size and layout.
+    planes: Ring<(u32, u32, PixelLayout), PlaneSet>,
+    /// Luma pyramids, flow levels and patch bindings by frame size.
+    flows: Ring<[u32; 2], FlowSet>,
+    /// The parameters of the frame's blend passes.
+    blends: Ring<(), Params>,
 }
 
 fn entry(binding: u32, vis: wgpu::ShaderStages, ty: wgpu::BindingType) -> wgpu::BindGroupLayoutEntry {
@@ -254,6 +261,7 @@ impl VideoEngine {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let no_flow = flow_texture(d, [1, 1]).create_view(&Default::default());
         VideoEngine {
             device,
             queue,
@@ -269,18 +277,49 @@ impl VideoEngine {
             bgl2,
             bgl3,
             samp,
-            planes: HashMap::new(),
+            no_flow,
+            planes: Ring::new(),
+            flows: Ring::new(),
+            blends: Ring::new(),
         }
     }
 
-    /// Uploads `frame` and converts it to a premultiplied working-space texture.
+    /// Records `f` into a command encoder of its own and submits it: for work outside a frame, like tests and
+    /// diagnostics. A frame records into its own encoder and calls [`VideoEngine::submitted`] after submitting it.
+    pub fn run<R>(&mut self, f: impl FnOnce(&mut VideoEngine, &mut wgpu::CommandEncoder) -> R) -> R {
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        let r = f(self, &mut enc);
+        self.queue.submit([enc.finish()]);
+        self.submitted();
+        r
+    }
+
+    /// The queue took every pass recorded so far: the next frame takes the plane sets, flow sets and blend
+    /// parameters from the first again.
+    pub fn submitted(&mut self) {
+        self.planes.rewind();
+        self.flows.rewind();
+        self.blends.rewind();
+    }
+
+    /// Ends a frame: drops the resources of sizes and layouts no frame used for a while.
+    pub fn trim(&mut self) {
+        self.planes.trim();
+        self.flows.trim();
+        self.blends.trim();
+    }
+
+    /// Uploads `frame` and records its conversion to a premultiplied working-space texture from `pool`, into `enc`.
+    /// The planes go to textures kept by size and layout; the uniforms and bind group with them.
     pub fn convert(
         &mut self,
+        enc: &mut wgpu::CommandEncoder,
+        pool: &mut Pool,
         frame: &VideoFrame,
         it: &Interpretation,
         working: &Working,
         src_layout: &wgpu::BindGroupLayout,
-    ) -> Tex {
+    ) -> Arc<Tex> {
         let d = self.device.clone();
         let deep = matches!(frame.layout, PixelLayout::Yuv16(..) | PixelLayout::Rgba16);
         let rgba = matches!(frame.layout, PixelLayout::Rgba8 | PixelLayout::Rgba16);
@@ -290,9 +329,9 @@ impl VideoEngine {
             (true, false) => wgpu::TextureFormat::Rgba8Unorm,
             (true, true) => wgpu::TextureFormat::Rgba16Uint,
         };
-        let key = (frame.width, frame.height, frame.layout);
-        let planes = self.planes.entry(key).or_insert_with(|| {
-            frame
+        let cp = if deep { &self.conv_u } else { &self.conv_f };
+        let set = self.planes.take((frame.width, frame.height, frame.layout), || {
+            let planes: Vec<wgpu::Texture> = frame
                 .planes
                 .iter()
                 .map(|p| {
@@ -307,10 +346,24 @@ impl VideoEngine {
                         view_formats: &[],
                     })
                 })
-                .collect()
+                .collect();
+            let views: Vec<wgpu::TextureView> = planes.iter().map(|t| t.create_view(&Default::default())).collect();
+            let uniforms = uniform_buffer(&d, std::mem::size_of::<Conv>(), "video conversion");
+            let view = |i: usize| &views[i.min(views.len() - 1)];
+            let bind = d.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("video planes"),
+                layout: &cp.bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: uniforms.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view(0)) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(view(1)) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(view(2)) },
+                ],
+            });
+            PlaneSet { planes, uniforms, bind }
         });
         let bpt = fmt.block_copy_size(None).unwrap_or(1);
-        for (t, p) in planes.iter().zip(&frame.planes) {
+        for (t, p) in set.planes.iter().zip(&frame.planes) {
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: t,
@@ -327,7 +380,6 @@ impl VideoEngine {
                 wgpu::Extent3d { width: p.width, height: p.height, depth_or_array_layers: 1 },
             );
         }
-        let views: Vec<wgpu::TextureView> = planes.iter().map(|t| t.create_view(&Default::default())).collect();
         let (w, h) = if it.quarter_turns % 2 == 1 { (frame.height, frame.width) } else { (frame.width, frame.height) };
         let shift = match frame.layout {
             PixelLayout::Yuv8(x, y) | PixelLayout::Yuv16(x, y) => [x, y],
@@ -355,54 +407,39 @@ impl VideoEngine {
             kb: it.matrix.1,
             pad: [0; 4],
         };
-        let ubuf = uniform_buffer(&d, &self.queue, bytemuck::bytes_of(&u));
-        let cp = if deep { &self.conv_u } else { &self.conv_f };
-        let view = |i: usize| &views[i.min(views.len() - 1)];
-        let bg = d.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &cp.bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: ubuf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view(0)) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(view(1)) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(view(2)) },
-            ],
-        });
-        let out = resources::create(&d, src_layout, [w, h], 1, "video frame");
-        let mut enc = d.create_command_encoder(&Default::default());
+        self.queue.write_buffer(&set.uniforms, 0, bytemuck::bytes_of(&u));
+        let out = pool.get_as(&d, src_layout, resources::FORMAT, [w, h]);
         {
-            let mut pass = begin(&mut enc, &out.view);
+            let mut pass = begin(enc, &out.view);
             pass.set_pipeline(&cp.pipe);
-            pass.set_bind_group(0, &bg, &[]);
+            pass.set_bind_group(0, &set.bind, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.queue.submit([enc.finish()]);
         out
     }
 
-    fn params(&self, p: FlowParams) -> wgpu::BindGroup {
-        let b = uniform_buffer(&self.device, &self.queue, bytemuck::bytes_of(&p));
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &self.bgl0,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: b.as_entire_binding() }],
-        })
-    }
-
+    /// Records a blend of the two `frames` at phase `t` into a texture from `pool`: a warp along `flow`, or a mix
+    /// without one.
     fn blend_pass(
-        &self,
-        pipe: &wgpu::RenderPipeline,
-        a: &Tex,
-        b: &Tex,
-        flow: &wgpu::TextureView,
+        &mut self,
+        enc: &mut wgpu::CommandEncoder,
+        pool: &mut Pool,
+        frames: [&Tex; 2],
+        flow: Option<&wgpu::TextureView>,
         t: f32,
         src_layout: &wgpu::BindGroupLayout,
-    ) -> Tex {
-        let d = &self.device;
-        let out = resources::create(d, src_layout, a.size, 1, "interpolated frame");
-        let p0 = self.params(FlowParams { size: a.size, grid: [0; 2], coarse: [0; 2], t, iterations: 0 });
+    ) -> Arc<Tex> {
+        let d = self.device.clone();
+        let [a, b] = frames;
+        let warp = flow.is_some();
+        let flow = flow.unwrap_or(&self.no_flow);
+        let out = pool.get_as(&d, src_layout, resources::FORMAT, a.size);
+        let bgl0 = &self.bgl0;
+        let params = self.blends.take((), || Params::new(&d, bgl0));
+        let p = FlowParams { size: a.size, grid: [0; 2], coarse: [0; 2], t, iterations: 0 };
+        self.queue.write_buffer(&params.buf, 0, bytemuck::bytes_of(&p));
         let g3 = d.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
+            label: Some("video blend"),
             layout: &self.bgl3,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&a.view) },
@@ -411,131 +448,84 @@ impl VideoEngine {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.samp) },
             ],
         });
-        let mut enc = d.create_command_encoder(&Default::default());
         {
-            let mut pass = begin(&mut enc, &out.view);
-            pass.set_pipeline(pipe);
-            pass.set_bind_group(0, &p0, &[]);
+            let mut pass = begin(enc, &out.view);
+            pass.set_pipeline(if warp { &self.warp } else { &self.mix });
+            pass.set_bind_group(0, &params.bind, &[]);
             pass.set_bind_group(3, &g3, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.queue.submit([enc.finish()]);
         out
     }
 
-    /// Linear blend of two frames: `(1 − t)·a + t·b`.
-    pub fn mix(&self, a: &Tex, b: &Tex, t: f32, src_layout: &wgpu::BindGroupLayout) -> Tex {
-        let dummy = self.flow_texture([1, 1]).create_view(&Default::default());
-        self.blend_pass(&self.mix, a, b, &dummy, t, src_layout)
+    /// Linear blend of two frames: `(1 − t)·a + t·b`, recorded into `enc`.
+    pub fn mix(
+        &mut self,
+        enc: &mut wgpu::CommandEncoder,
+        pool: &mut Pool,
+        a: &Tex,
+        b: &Tex,
+        t: f32,
+        src_layout: &wgpu::BindGroupLayout,
+    ) -> Arc<Tex> {
+        self.blend_pass(enc, pool, [a, b], None, t, src_layout)
     }
 
-    fn flow_texture(&self, size: [u32; 2]) -> wgpu::Texture {
-        self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("flow"),
-            size: wgpu::Extent3d { width: size[0].max(1), height: size[1].max(1), depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::STORAGE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        })
+    /// Frame at phase `t` between `a` and `b`, warped along the optical flow, recorded into `enc`.
+    pub fn interpolate(
+        &mut self,
+        enc: &mut wgpu::CommandEncoder,
+        pool: &mut Pool,
+        a: &Tex,
+        b: &Tex,
+        t: f32,
+        src_layout: &wgpu::BindGroupLayout,
+    ) -> Arc<Tex> {
+        let flow = self.flow(enc, a, b).create_view(&Default::default());
+        self.blend_pass(enc, pool, [a, b], Some(&flow), t, src_layout)
     }
 
-    fn luma_texture(&self, size: [u32; 2]) -> wgpu::Texture {
-        self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("luma"),
-            size: wgpu::Extent3d { width: size[0].max(1), height: size[1].max(1), depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R32Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
-            view_formats: &[],
-        })
-    }
-
-    /// Dense flow from `a` to `b` at half resolution (pixels of that level).
-    pub fn flow(&self, a: &Tex, b: &Tex) -> wgpu::Texture {
-        let d = &self.device;
-        // luma pyramid, level 0 at half resolution
-        let mut sizes = vec![[a.size[0].div_ceil(2), a.size[1].div_ceil(2)]];
-        while sizes.len() < 6 && sizes.last().unwrap().iter().all(|&s| s >= 32) {
-            let l = *sizes.last().unwrap();
-            sizes.push([l[0].div_ceil(2), l[1].div_ceil(2)]);
-        }
-        let la: Vec<wgpu::Texture> = sizes.iter().map(|s| self.luma_texture(*s)).collect();
-        let lb: Vec<wgpu::Texture> = sizes.iter().map(|s| self.luma_texture(*s)).collect();
-        let v = |t: &wgpu::Texture| t.create_view(&Default::default());
-        let mut enc = d.create_command_encoder(&Default::default());
-        for (l, &size) in sizes.iter().enumerate() {
-            let (sa, sb) = if l == 0 { (a.view.clone(), b.view.clone()) } else { (v(&la[l - 1]), v(&lb[l - 1])) };
-            let g1 = d.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &self.bgl1,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&sa) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&sb) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&v(&la[l])) },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&v(&lb[l])) },
-                ],
-            });
-            let p = self.params(FlowParams { size, grid: [0; 2], coarse: [0; 2], t: 0.0, iterations: 0 });
+    /// Records the dense flow from `a` to `b` at half resolution (pixels of that level) into `enc`. The texture
+    /// returned belongs to a set kept by frame size: it holds its flow until the queue takes the frame and a later
+    /// frame records into it again.
+    pub fn flow(&mut self, enc: &mut wgpu::CommandEncoder, a: &Tex, b: &Tex) -> wgpu::Texture {
+        let d = self.device.clone();
+        let (queue, bgl0, bgl1, bgl2) = (&self.queue, &self.bgl0, &self.bgl1, &self.bgl2);
+        let set = self.flows.take(a.size, || FlowSet::new(&d, queue, bgl0, bgl1, bgl2, a.size));
+        // level 0 reduces the frames themselves; the levels below reduce the level above
+        let g1 = d.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("reduce"),
+            layout: bgl1,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&a.view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&b.view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&set.la[0]) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&set.lb[0]) },
+            ],
+        });
+        for (l, &size) in set.sizes.iter().enumerate() {
             let mut pass = enc.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.reduce);
-            pass.set_bind_group(0, &p, &[]);
-            pass.set_bind_group(1, &g1, &[]);
+            pass.set_bind_group(0, &set.reduce_params[l].bind, &[]);
+            pass.set_bind_group(1, if l == 0 { &g1 } else { &set.reduce_binds[l - 1] }, &[]);
             pass.dispatch_workgroups(size[0].div_ceil(8), size[1].div_ceil(8), 1);
         }
         // coarse to fine
-        let grid = |s: [u32; 2]| [(s[0].saturating_sub(8) / 4 + 1).max(1), (s[1].saturating_sub(8) / 4 + 1).max(1)];
-        let g0 = grid(sizes[0]);
-        let patches = d.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("patches"),
-            size: (g0[0] * g0[1] * 8) as u64,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
-        let flows: Vec<wgpu::Texture> = sizes.iter().map(|s| self.flow_texture(*s)).collect();
-        let none = self.flow_texture([1, 1]);
-        for l in (0..sizes.len()).rev() {
-            let size = sizes[l];
-            let coarse = if l + 1 < sizes.len() { &flows[l + 1] } else { &none };
-            let coarse_size = if l + 1 < sizes.len() { sizes[l + 1] } else { [0, 0] };
-            let g2 = d.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &self.bgl2,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&v(&la[l])) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&v(&lb[l])) },
-                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&v(coarse)) },
-                    wgpu::BindGroupEntry { binding: 3, resource: patches.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&v(&flows[l])) },
-                ],
-            });
-            let gs = grid(size);
-            let p = self.params(FlowParams { size, grid: gs, coarse: coarse_size, t: 0.0, iterations: 12 });
+        for l in (0..set.sizes.len()).rev() {
+            let size = set.sizes[l];
+            let gs = flow_grid(size);
             let mut pass = enc.begin_compute_pass(&Default::default());
-            pass.set_bind_group(0, &p, &[]);
-            pass.set_bind_group(2, &g2, &[]);
+            pass.set_bind_group(0, &set.patch_params[l].bind, &[]);
+            pass.set_bind_group(2, &set.patch_binds[l], &[]);
             pass.set_pipeline(&self.patch);
             pass.dispatch_workgroups(gs[0].div_ceil(8), gs[1].div_ceil(8), 1);
             pass.set_pipeline(&self.densify);
             pass.dispatch_workgroups(size[0].div_ceil(8), size[1].div_ceil(8), 1);
         }
-        self.queue.submit([enc.finish()]);
-        flows.into_iter().next().unwrap()
+        set.flows[0].clone()
     }
 
-    /// Frame at phase `t` between `a` and `b`, warped along the optical flow.
-    pub fn interpolate(&self, a: &Tex, b: &Tex, t: f32, src_layout: &wgpu::BindGroupLayout) -> Tex {
-        let flow = self.flow(a, b);
-        self.blend_pass(&self.warp, a, b, &flow.create_view(&Default::default()), t, src_layout)
-    }
-
-    /// Reads a flow texture back (x, y per pixel), for tests and diagnostics.
+    /// Reads a flow texture back (x, y per pixel), for tests and diagnostics; the work that wrote it is submitted.
     pub fn read_flow(&self, t: &wgpu::Texture) -> (u32, u32, Vec<[f32; 2]>) {
         let (w, h) = (t.width(), t.height());
         let row = (w * 16).div_ceil(256) * 256;
@@ -575,15 +565,225 @@ impl VideoEngine {
     }
 }
 
-fn uniform_buffer(d: &wgpu::Device, q: &wgpu::Queue, bytes: &[u8]) -> wgpu::Buffer {
-    let b = d.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: bytes.len() as u64,
+/// Resources of one kind kept between frames by a key (a size, or a size and layout): a frame takes a key's
+/// entries in order, making one when none is left, so two uses of a key in one frame share nothing the queue has
+/// not taken yet. Once the queue took the frame's work the entries are taken from the first again, and the entries
+/// of a key no frame used for a while are dropped.
+struct Ring<K, T> {
+    entries: HashMap<K, RingEntry<T>>,
+    /// Frames ended so far.
+    frame: u64,
+}
+
+struct RingEntry<T> {
+    items: Vec<Arc<T>>,
+    /// Entries taken since the queue last took the work.
+    used: usize,
+    /// The frame the key was last taken in.
+    wanted: u64,
+}
+
+/// Frames a ring keeps a key's entries after the key was last taken (the texture pool's span).
+const RING_KEEP: u64 = 8;
+
+impl<K: Copy + Eq + std::hash::Hash, T> Ring<K, T> {
+    fn new() -> Ring<K, T> {
+        Ring { entries: HashMap::new(), frame: 0 }
+    }
+
+    /// The next entry of `key`, made by `make` when the frame used every one there is.
+    fn take(&mut self, key: K, make: impl FnOnce() -> T) -> Arc<T> {
+        let e = self.entries.entry(key).or_insert_with(|| RingEntry { items: Vec::new(), used: 0, wanted: 0 });
+        e.wanted = self.frame;
+        if e.used == e.items.len() {
+            e.items.push(Arc::new(make()));
+        }
+        e.used += 1;
+        e.items[e.used - 1].clone()
+    }
+
+    fn rewind(&mut self) {
+        for e in self.entries.values_mut() {
+            e.used = 0;
+        }
+    }
+
+    fn trim(&mut self) {
+        self.frame += 1;
+        let now = self.frame;
+        self.entries.retain(|_, e| now - e.wanted <= RING_KEEP);
+    }
+}
+
+/// The plane textures of one decoded size and layout, and the conversion's uniforms and bindings.
+struct PlaneSet {
+    planes: Vec<wgpu::Texture>,
+    uniforms: wgpu::Buffer,
+    bind: wgpu::BindGroup,
+}
+
+/// A [`FlowParams`] uniform buffer and its bind group.
+struct Params {
+    buf: wgpu::Buffer,
+    bind: wgpu::BindGroup,
+}
+
+impl Params {
+    fn new(d: &wgpu::Device, bgl0: &wgpu::BindGroupLayout) -> Params {
+        let buf = uniform_buffer(d, std::mem::size_of::<FlowParams>(), "flow params");
+        let bind = d.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("flow params"),
+            layout: bgl0,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],
+        });
+        Params { buf, bind }
+    }
+
+    fn of(d: &wgpu::Device, q: &wgpu::Queue, bgl0: &wgpu::BindGroupLayout, p: FlowParams) -> Params {
+        let params = Params::new(d, bgl0);
+        q.write_buffer(&params.buf, 0, bytemuck::bytes_of(&p));
+        params
+    }
+}
+
+/// The patch grid of a flow level.
+fn flow_grid(s: [u32; 2]) -> [u32; 2] {
+    [(s[0].saturating_sub(8) / 4 + 1).max(1), (s[1].saturating_sub(8) / 4 + 1).max(1)]
+}
+
+/// The luma pyramids, flow levels, patch buffer and bindings of flows between frames of one size. Level 0 is at
+/// half resolution; the bindings of level 0's reduction, which reads the frames, are made per flow.
+struct FlowSet {
+    sizes: Vec<[u32; 2]>,
+    /// Luma of frame `a` and `b` per level.
+    la: Vec<wgpu::TextureView>,
+    lb: Vec<wgpu::TextureView>,
+    /// Flow per level; the texture of level 0 is the result.
+    flows: Vec<wgpu::Texture>,
+    reduce_params: Vec<Params>,
+    /// The reduction of level `l + 1` from level `l`.
+    reduce_binds: Vec<wgpu::BindGroup>,
+    patch_params: Vec<Params>,
+    patch_binds: Vec<wgpu::BindGroup>,
+}
+
+impl FlowSet {
+    fn new(
+        d: &wgpu::Device,
+        q: &wgpu::Queue,
+        bgl0: &wgpu::BindGroupLayout,
+        bgl1: &wgpu::BindGroupLayout,
+        bgl2: &wgpu::BindGroupLayout,
+        size: [u32; 2],
+    ) -> FlowSet {
+        let mut sizes = vec![[size[0].div_ceil(2), size[1].div_ceil(2)]];
+        while sizes.len() < 6 && sizes.last().unwrap().iter().all(|&s| s >= 32) {
+            let l = *sizes.last().unwrap();
+            sizes.push([l[0].div_ceil(2), l[1].div_ceil(2)]);
+        }
+        let v = |t: &wgpu::Texture| t.create_view(&Default::default());
+        let la: Vec<wgpu::TextureView> = sizes.iter().map(|s| v(&luma_texture(d, *s))).collect();
+        let lb: Vec<wgpu::TextureView> = sizes.iter().map(|s| v(&luma_texture(d, *s))).collect();
+        let flows: Vec<wgpu::Texture> = sizes.iter().map(|s| flow_texture(d, *s)).collect();
+        let none = v(&flow_texture(d, [1, 1]));
+        let g0 = flow_grid(sizes[0]);
+        let patches = d.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("patches"),
+            size: (g0[0] * g0[1] * 8) as u64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let reduce_params = sizes
+            .iter()
+            .map(|&size| {
+                Params::of(d, q, bgl0, FlowParams { size, grid: [0; 2], coarse: [0; 2], t: 0.0, iterations: 0 })
+            })
+            .collect();
+        let reduce_binds = (1..sizes.len())
+            .map(|l| {
+                d.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("reduce"),
+                    layout: bgl1,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&la[l - 1]) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&lb[l - 1]) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&la[l]) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&lb[l]) },
+                    ],
+                })
+            })
+            .collect();
+        let patch_params = (0..sizes.len())
+            .map(|l| {
+                let coarse = if l + 1 < sizes.len() { sizes[l + 1] } else { [0, 0] };
+                Params::of(
+                    d,
+                    q,
+                    bgl0,
+                    FlowParams { size: sizes[l], grid: flow_grid(sizes[l]), coarse, t: 0.0, iterations: 12 },
+                )
+            })
+            .collect();
+        let flow_views: Vec<wgpu::TextureView> = flows.iter().map(v).collect();
+        let patch_binds = (0..sizes.len())
+            .map(|l| {
+                let coarse = if l + 1 < sizes.len() { &flow_views[l + 1] } else { &none };
+                d.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("patches"),
+                    layout: bgl2,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&la[l]) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&lb[l]) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(coarse) },
+                        wgpu::BindGroupEntry { binding: 3, resource: patches.as_entire_binding() },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: wgpu::BindingResource::TextureView(&flow_views[l]),
+                        },
+                    ],
+                })
+            })
+            .collect();
+        FlowSet { sizes, la, lb, flows, reduce_params, reduce_binds, patch_params, patch_binds }
+    }
+}
+
+fn flow_texture(d: &wgpu::Device, size: [u32; 2]) -> wgpu::Texture {
+    d.create_texture(&wgpu::TextureDescriptor {
+        label: Some("flow"),
+        size: wgpu::Extent3d { width: size[0].max(1), height: size[1].max(1), depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba32Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    })
+}
+
+fn luma_texture(d: &wgpu::Device, size: [u32; 2]) -> wgpu::Texture {
+    d.create_texture(&wgpu::TextureDescriptor {
+        label: Some("luma"),
+        size: wgpu::Extent3d { width: size[0].max(1), height: size[1].max(1), depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R32Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+        view_formats: &[],
+    })
+}
+
+/// A uniform buffer of `size` bytes the queue writes into.
+fn uniform_buffer(d: &wgpu::Device, size: usize, label: &str) -> wgpu::Buffer {
+    d.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: size as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
-    });
-    q.write_buffer(&b, 0, bytes);
-    b
+    })
 }
 
 fn full_pipeline(

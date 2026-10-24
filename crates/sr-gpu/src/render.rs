@@ -155,7 +155,7 @@ pub struct RenderStats {
     pub fx_passes: usize,
     /// Pixels of the effect targets whose chains ran this frame (a measure of effect work).
     pub effect_pixels: u64,
-    /// Offscreen textures allocated this frame for effects, motion blur and time effects.
+    /// Offscreen textures allocated this frame for effects, motion blur, time effects and decoded video frames.
     pub textures_created: usize,
     /// Offscreen and cached textures destroyed this frame.
     pub textures_released: usize,
@@ -458,6 +458,9 @@ pub struct Renderer {
     /// The frame filtered down from a supersampled render (SREP 72), reused while its size holds.
     ss_frame: Option<Arc<Tex>>,
     video: crate::video::VideoEngine,
+    /// Passes recorded while the frame is planned, before its own: the conversions and blends of the video frames
+    /// it draws. They are submitted ahead of the frame's command buffer, as it is being recorded.
+    pre: Option<wgpu::CommandEncoder>,
     decoders: HashMap<String, Result<sr_media::VideoDecoder, String>>,
     video_frames: HashMap<String, Arc<Tex>>,
     // One previous decoded image per interpretation, evicted with the frame cache.
@@ -1442,6 +1445,7 @@ impl Renderer {
             flash_buffers: 0,
             pending_blur: Vec::new(),
             video: crate::video::VideoEngine::new(gpu_device, gpu_queue),
+            pre: None,
             decoders: HashMap::new(),
             video_frames: HashMap::new(),
             video_previous: HashMap::new(),
@@ -2044,9 +2048,12 @@ impl Renderer {
                 full_range: info.full_range || info.rgb,
             };
             let working = this.working;
-            let t = Arc::new(this.video.convert(&frame, &it, &working, &this.bgl1));
+            let enc = pre_encoder(&mut this.pre, &this.gpu.device);
+            let t = this.video.convert(enc, &mut this.pool, &frame, &it, &working, &this.bgl1);
             plan.stats.video_frames += 1;
-            this.video_previous.insert(vkey.clone(), (frame, t.clone()));
+            if let Some((_, old)) = this.video_previous.insert(vkey.clone(), (frame, t.clone())) {
+                this.pool.put(old);
+            }
             if !failed {
                 this.video_frames.insert(fkey, t.clone());
             }
@@ -2062,11 +2069,12 @@ impl Renderer {
         if let Some(t) = self.video_frames.get(&bkey) {
             return Some(t.clone());
         }
-        let t = Arc::new(if blend == 1 {
-            self.video.mix(&a, &b, f as f32, &self.bgl1)
+        let enc = pre_encoder(&mut self.pre, &self.gpu.device);
+        let t = if blend == 1 {
+            self.video.mix(enc, &mut self.pool, &a, &b, f as f32, &self.bgl1)
         } else {
-            self.video.interpolate(&a, &b, f as f32, &self.bgl1)
-        });
+            self.video.interpolate(enc, &mut self.pool, &a, &b, f as f32, &self.bgl1)
+        };
         self.video_frames.insert(bkey, t.clone());
         Some(t)
     }
@@ -4845,8 +4853,21 @@ impl Renderer {
         self.fractals.retain(|k, _| live.contains_key(&format!("fractal:{k}")));
         // decoded images (with their mip levels) and remembered failures, like every other picture cache
         self.images.retain(|k, _| live.contains_key(&format!("image:{k}")));
-        self.video_frames.retain(|k, _| live.contains_key(&format!("video:{k}")));
-        self.video_previous.retain(|k, _| live.contains_key(&format!("video-previous:{k}")));
+        // video frames come from the pool and go back to it once nothing holds them
+        self.video_frames.retain(|k, t| {
+            let keep = live.contains_key(&format!("video:{k}"));
+            if !keep {
+                evicted.push(t.clone());
+            }
+            keep
+        });
+        self.video_previous.retain(|k, (_, t)| {
+            let keep = live.contains_key(&format!("video-previous:{k}"));
+            if !keep {
+                evicted.push(t.clone());
+            }
+            keep
+        });
         // an idle decoder holds its reader thread and lookahead frames; drawn again, the clip reopens at the time
         // it is drawn: one probe more than a resume more than two lookaheads away, which restarts the reader anyway
         self.decoders.retain(|k, _| live.contains_key(&format!("decoder:{k}")));
@@ -4856,6 +4877,7 @@ impl Renderer {
             self.pool.put(t);
         }
         self.pool.trim();
+        self.video.trim();
         if let Some(e) = &mut self.three {
             stats.assets_evicted = e.end_frame();
         }
@@ -4937,6 +4959,7 @@ impl Renderer {
             particles.submitted();
         }
         self.raster.submitted();
+        self.video.submitted();
     }
 
     /// The queue submission of the last frame, to wait on without draining later work.
@@ -5151,6 +5174,12 @@ impl Renderer {
         // one bind group per (backdrop, matte) texture pair per frame, not one per draw
         let mut pairs: HashMap<(usize, usize), wgpu::BindGroup> = HashMap::new();
         let dummy_gen = self.dummy_gen.clone();
+        // the video frames' conversions go first, in a submission of their own: the GPU converts them while the
+        // frame's draws are uploaded and recorded, and the draws read them
+        if let Some(pre) = self.pre.take() {
+            self.gpu.queue.submit([pre.finish()]);
+            self.submitted();
+        }
         let mut enc = d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         // GPU time: a begin/end pair per effect pass, and for the frame when the device can
         // write timestamps between passes
@@ -5260,14 +5289,7 @@ impl Renderer {
         let mut scratch: HashMap<[u32; 2], Arc<Tex>> = HashMap::new();
         for job in &mut jobs {
             if let Some((a, b, slot)) = &job.flow {
-                // the flow engine submits its own work: flush what is recorded so far first
-                let done = std::mem::replace(
-                    &mut enc,
-                    d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") }),
-                );
-                self.gpu.queue.submit([done.finish()]);
-                self.submitted();
-                let f = self.video.flow(a, b);
+                let f = self.video.flow(&mut enc, a, b);
                 let _ = slot.set(f.create_view(&Default::default()));
             }
             if !job.fx.is_empty() {
@@ -5914,6 +5936,11 @@ fn dependency_levels(run: &[BatchInfo]) -> Vec<u32> {
 
 // Frame indices intentionally differ: reuse is based on complete decoded content,
 // never a hash that could alias different samples.
+/// The encoder of the passes recorded before a frame's own (`Renderer::pre`), opened on first use.
+fn pre_encoder<'a>(pre: &'a mut Option<wgpu::CommandEncoder>, d: &wgpu::Device) -> &'a mut wgpu::CommandEncoder {
+    pre.get_or_insert_with(|| d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") }))
+}
+
 fn same_video_pixels(a: &sr_media::VideoFrame, b: &sr_media::VideoFrame) -> bool {
     a.width == b.width
         && a.height == b.height
