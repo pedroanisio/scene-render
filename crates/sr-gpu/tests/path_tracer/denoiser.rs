@@ -150,8 +150,13 @@ fn the_denoiser_keeps_texture_the_light_does_not_vary_across() {
     println!("8 samples: error noisy {noisy_error:.4}, denoised {denoised_error:.4}; detail kept {kept:.3}");
     assert!(detail(&reference, &reference) > 0.999);
     assert!(kept > 0.8, "the stripes of the albedo are blurred: {kept:.3} of their contrast is left");
+    // The ratio of the two errors depends on the random numbers, not on the backend: NVIDIA Vulkan and OpenGL and
+    // llvmpipe give 0.0525 / 0.1081 = 0.486. Over 32 random streams (the constant of the sample seed varied, NVIDIA
+    // Vulkan, 2026-10-24) it was 0.468 on average, with a standard deviation of 0.020 and at most 0.502, so a limit of
+    // 0.5 fails about one change of the random numbers in 32; 0.55 is the mean plus four deviations, and an image the
+    // denoiser leaves alone gives 1.
     assert!(
-        denoised_error < 0.5 * noisy_error,
+        denoised_error < 0.55 * noisy_error,
         "error {denoised_error:.4} against {noisy_error:.4} without the denoiser"
     );
 }
