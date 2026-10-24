@@ -470,7 +470,8 @@ mod tests {
         let opts = sr_model::LoadOptions { verify_assets: false, base_dir: Some(d.0.clone()) };
         let doc = sr_model::load_str(xml, &opts).unwrap_or_else(|e| panic!("{e:?}"));
         let mut xs = Vec::new();
-        for east in [40, 80, 120] {
+        // each revision a different size: two writes in a row can share a modification time (on Windows, often)
+        for east in [9, 80, 120] {
             let f = format!(
                 r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{}},"geometry":{{"type":"Polygon","coordinates":[[[0,0],[{east},0],[{east},20],[0,20],[0,0]]]}}}}]}}"#
             );
