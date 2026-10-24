@@ -2760,7 +2760,7 @@ impl Renderer {
     /// Hash of a node and its subtree (and mattes) in a target space.
     fn subtree_hash(ctx: &Ctx, i: usize, to_space: &Affine) -> u64 {
         let key = (i, affine_hash(to_space));
-        if let Some(hash) = ctx.memo.subtrees.lock().expect("memo").get(&key) {
+        if let Some(hash) = ctx.memo.subtrees.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key) {
             return *hash;
         }
         let n = &ctx.g.nodes[i];
@@ -2774,7 +2774,7 @@ impl Renderer {
             words.push(Self::subtree_hash(ctx, c, to_space));
         }
         let hash = h(&words);
-        ctx.memo.subtrees.lock().expect("memo").insert(key, hash);
+        ctx.memo.subtrees.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, hash);
         hash
     }
 
@@ -2823,7 +2823,7 @@ impl Renderer {
 
     /// Hash of an element's animated descendants (`id/…` keys) and intrinsic time dependence.
     fn element_state(ctx: &Ctx, id: &str) -> u64 {
-        if let Some(hash) = ctx.memo.elements.lock().expect("memo").get(id) {
+        if let Some(hash) = ctx.memo.elements.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(id) {
             return *hash;
         }
         let mut words: Vec<u64> = ctx
@@ -2844,7 +2844,7 @@ impl Renderer {
         }
         words.sort_unstable();
         let hash = h(&words);
-        ctx.memo.elements.lock().expect("memo").insert(id.to_string(), hash);
+        ctx.memo.elements.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id.to_string(), hash);
         hash
     }
 
