@@ -6,6 +6,7 @@ mod changes;
 mod frames;
 mod mcp;
 mod output;
+mod schedule;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -486,6 +487,20 @@ enum Command {
     },
     /// List the GPU adapters found and mark the one renders use (see SR_GPU_ADAPTER, SR_GPU_BACKEND).
     Gpus,
+    /// Assign a path-traced document's frames to the GPU adapters, by each frame's path cost and each adapter's rate.
+    ///
+    /// Without --rate every frame goes to the best adapter: hardware with ray queries, then other hardware, then
+    /// software. With rates, each frame goes to the adapter that would finish it first, as contiguous ranges, so the
+    /// render ends as early as it can; an adapter without a rate then gets none. Render each range with SR_GPU_BACKEND and SR_GPU_ADAPTER set to its adapter.
+    Schedule {
+        /// Scene document.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// An adapter's measured rate in path segments per second (repeatable): part of its name, ignoring case, then
+        /// `=` and the rate, such as `rtx=2.6e9`. An encode report's `paths.traced` over its render time measures it.
+        #[arg(long, value_name = "NAME=RATE")]
+        rate: Vec<String>,
+    },
     /// Print this engine's capability manifest (scene-render-capabilities/1, SREP 22): the constructs of the scene
     /// format it does not draw exactly.
     Capabilities,
@@ -525,6 +540,7 @@ impl Command {
             Command::Resolve { .. } => "resolve",
             Command::Scopes { .. } => "scopes",
             Command::Gpus => "gpus",
+            Command::Schedule { .. } => "schedule",
             Command::Capabilities => "capabilities",
             Command::Explain { .. } => "explain",
             Command::Mcp => "mcp",
@@ -1100,10 +1116,13 @@ fn inspect(file: &Path, no_assets: bool, out: &mut Out) -> std::io::Result<u8> {
     Ok(0)
 }
 
-fn gpus(out: &mut Out) -> std::io::Result<u8> {
+/// The adapters of the enabled backends, the ranked choice among them, and whether a device opened on each traverses
+/// with ray queries (SR_GPU_RAY_QUERY=0 turns them off).
+type Adapters = (Vec<sr_gpu::AdapterInfo>, Result<usize, sr_gpu::GpuError>, Vec<bool>);
+
+fn list_adapters() -> Adapters {
     let opts = sr_gpu::gpu::GpuOptions::from_env();
     let (found, chosen) = sr_gpu::gpu::adapters(&opts);
-    // whether a device opened on each adapter traverses with ray queries (SR_GPU_RAY_QUERY=0 turns them off)
     let setting = std::env::var("SR_GPU_RAY_QUERY").ok();
     let features = sr_gpu::gpu::adapter_features(&opts);
     let ray_query: Vec<bool> = found
@@ -1114,6 +1133,109 @@ fn gpus(out: &mut Out) -> std::io::Result<u8> {
                 .any(|(info, f)| info == a && !sr_gpu::gpu::ray_query_features(*f, setting.as_deref()).is_empty())
         })
         .collect();
+    (found, chosen, ray_query)
+}
+
+fn schedule(file: &Path, rates: &[String], out: &mut Out) -> std::io::Result<u8> {
+    let doc = match sr_model::load_file(file, &LoadOptions::default()) {
+        Ok(d) => d,
+        Err(LoadError::Io { path, source }) => {
+            return Ok(out.fail(ErrorKind::Io, format!("cannot read {}: {source}", path.display())))
+        }
+        Err(LoadError::Invalid(report)) => {
+            let text = sr_model::read_document(file).unwrap_or_default();
+            return out.report_invalid(file, &LineIndex::new(&text), &report);
+        }
+    };
+    // the document loaded, so it parses
+    let costs =
+        sr_model::read_document(file).ok().and_then(|text| sr_model::rules::path_costs(&text).ok()).unwrap_or_default();
+    let segments = costs.iter().fold(0u64, |sum, c| sum.saturating_add(c.segments));
+    let frames = doc.frame_count();
+    let (found, _, ray_query) = list_adapters();
+    if found.is_empty() {
+        let e = sr_gpu::GpuError::NoAdapter("no adapter was found".into());
+        return Ok(out.fail(ErrorKind::Unavailable, e.to_string()));
+    }
+    let mut list: Vec<schedule::Adapter> = found
+        .iter()
+        .zip(&ray_query)
+        .map(|(a, &rq)| schedule::Adapter {
+            name: a.name.clone(),
+            backend: format!("{:?}", a.backend),
+            software: sr_gpu::gpu::is_software(a),
+            ray_query: rq,
+            rate: None,
+        })
+        .collect();
+    let names = list.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ");
+    for given in rates {
+        let Some((part, value)) = given.split_once('=') else {
+            return Ok(out.fail(ErrorKind::Usage, format!("--rate {given}: expected NAME=RATE")));
+        };
+        let rate = value.trim().parse::<f64>().ok().filter(|r| r.is_finite() && *r > 0.0);
+        let Some(rate) = rate else {
+            return Ok(out.fail(
+                ErrorKind::Usage,
+                format!("--rate {given}: the rate must be a positive number of path segments per second"),
+            ));
+        };
+        let part = part.trim().to_lowercase();
+        let hit: Vec<usize> =
+            (0..list.len()).filter(|&i| !part.is_empty() && list[i].name.to_lowercase().contains(&part)).collect();
+        let devices =
+            hit.iter().filter(|&&i| !hit.iter().any(|&k| k < i && schedule::same_device(&list[k].name, &list[i].name)));
+        let devices = devices.count();
+        if devices != 1 {
+            let why = if devices == 0 { "names no adapter" } else { "names more than one adapter" };
+            return Ok(out.fail(ErrorKind::Usage, format!("--rate {given} {why}; the adapters are: {names}")));
+        }
+        for i in hit {
+            list[i].rate = Some(rate);
+        }
+    }
+    let shares = match schedule::schedule(&list, frames, segments) {
+        Ok(s) => s,
+        Err(e) => return Ok(out.fail(ErrorKind::Usage, e.to_string())),
+    };
+    out.set_result(json!({
+        "file": file.display().to_string(),
+        "frames": frames,
+        "segments_per_frame": segments,
+        "adapters": list.iter().map(|a| json!({
+            "name": a.name,
+            "backend": a.backend,
+            "software": a.software,
+            "ray_query": a.ray_query,
+            "rate": a.rate,
+        })).collect::<Vec<_>>(),
+        "shares": shares.iter().map(|s| json!({
+            "adapter": list[s.adapter].name,
+            "backend": list[s.adapter].backend,
+            "start": s.frames.start,
+            "end": s.frames.end,
+            "seconds": s.seconds,
+        })).collect::<Vec<_>>(),
+    }));
+    for s in &shares {
+        let a = &list[s.adapter];
+        let n = s.frames.end - s.frames.start;
+        let predicted = s.seconds.map(|t| format!(", predicted {t:.1} s")).unwrap_or_default();
+        writeln!(
+            out.w,
+            "{} ({}): frames {}..{} ({n} frame{}){predicted}",
+            a.name,
+            a.backend,
+            s.frames.start,
+            s.frames.end,
+            if n == 1 { "" } else { "s" }
+        )?;
+    }
+    Ok(0)
+}
+
+fn gpus(out: &mut Out) -> std::io::Result<u8> {
+    let (found, chosen, ray_query) = list_adapters();
     if found.is_empty() {
         let e = sr_gpu::GpuError::NoAdapter("no adapter was found".into());
         out.set_result(json!({ "adapters": [] }));
@@ -2554,6 +2676,7 @@ fn dispatch(command: Command, out: &mut Out) -> std::io::Result<u8> {
         }
         Command::Scopes { file, step, chroma_limit } => scopes(&file, step, chroma_limit, out),
         Command::Gpus => gpus(out),
+        Command::Schedule { file, rate } => schedule(&file, &rate, out),
         Command::Capabilities => {
             let manifest = sr_deliver::capabilities::MANIFEST;
             if out.json() {

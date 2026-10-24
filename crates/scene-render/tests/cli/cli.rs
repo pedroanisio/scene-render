@@ -300,6 +300,46 @@ fn gpus_lists_adapters_and_marks_the_one_chosen() {
     assert!(off["adapters"].as_array().unwrap().iter().all(|a| a["ray_query"] == false), "{off}");
 }
 
+/// `schedule` routes a path-traced document's frames to the adapters `gpus` lists, from its `path_costs`.
+#[test]
+fn schedule_assigns_every_frame_once_and_splits_by_measured_rates() {
+    let file = path("valid/w15-path-cost.scene.xml");
+    let o = run(&["schedule", &file, "--json"]);
+    if no_gpu(&o) {
+        return;
+    }
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    let r = json_result(&o);
+    assert_eq!((r["frames"].as_u64(), r["segments_per_frame"].as_u64()), (Some(24), Some(1920 * 1080 * 320 * 20)));
+    let shares = r["shares"].as_array().unwrap_or_else(|| panic!("{r}"));
+    assert_eq!(shares.len(), 1, "without rates one adapter renders every frame: {r}");
+    assert_eq!((shares[0]["start"].as_u64(), shares[0]["end"].as_u64()), (Some(0), Some(24)), "{r}");
+    assert_eq!(shares[0]["seconds"], serde_json::Value::Null, "no rate, no prediction: {r}");
+    let adapters = r["adapters"].as_array().unwrap();
+    assert!(adapters.iter().any(|a| a["name"] == shares[0]["adapter"]), "{r}");
+    assert!(adapters.iter().all(|a| a["ray_query"].is_boolean() && a["rate"].is_null()), "{r}");
+
+    // a measured rate on one adapter gives it the frames and predicts their trace time
+    let name = shares[0]["adapter"].as_str().unwrap().to_string();
+    let rate = format!("{}=2.5e9", name.to_lowercase());
+    let r = json_result(&run(&["schedule", &file, "--rate", &rate, "--json"]));
+    let shares = r["shares"].as_array().unwrap_or_else(|| panic!("{r}"));
+    assert_eq!(shares.len(), 1, "{r}");
+    assert_eq!(shares[0]["adapter"], name.as_str());
+    let seconds = shares[0]["seconds"].as_f64().unwrap();
+    assert!((seconds - 24.0 * (1920.0 * 1080.0 * 320.0 * 20.0) / 2.5e9).abs() < 1e-6, "{r}");
+    let text = String::from_utf8_lossy(&run(&["schedule", &file, "--rate", &rate]).stdout).to_string();
+    assert!(text.contains("frames 0..24 (24 frames), predicted 127.4 s"), "{text}");
+
+    // a rate that names no adapter, or is not a positive number, is a usage error
+    for bad in ["no-such-gpu-xyz=1e9", &format!("{name}=0"), &format!("{name}=fast"), "missing-equals"] {
+        let o = run(&["schedule", &file, "--rate", bad, "--json"]);
+        assert_eq!(o.status.code(), Some(2), "{bad}: {}", String::from_utf8_lossy(&o.stdout));
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["error"]["kind"], "usage", "{bad}: {v}");
+    }
+}
+
 #[test]
 fn an_unknown_adapter_name_is_an_error_that_lists_the_adapters() {
     let dir = render_fixture("adapter-name");

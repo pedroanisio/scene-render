@@ -38,7 +38,7 @@ pub use gpu::{begin_map_read, map_read, map_read_within, Gpu, GpuError, MapReadE
 pub use render::{
     ContrastTarget, FlashPending, Frame, PathCounts, PathSamples, RenderStats, Renderer, Tier, VoxelSurfaceStat,
 };
-pub use wgpu::SubmissionIndex;
+pub use wgpu::{AdapterInfo, SubmissionIndex};
 
 /// The FrameGraph value of a document paint.
 pub(crate) fn value_of_paint(p: &sr_model::values::Paint) -> sr_eval::Value {

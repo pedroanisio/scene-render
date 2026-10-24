@@ -72,7 +72,7 @@ fn validate_reports_each_file_and_a_typed_failure() {
     let v = envelope(&o, Some("validate"));
     assert_eq!(v["ok"], true);
     assert_eq!(v["error"], Value::Null);
-    assert_eq!(v["schema_version"], "1.3.0");
+    assert_eq!(v["schema_version"], "1.4.0");
 
     let o = run(&["validate", "--format=json", "/nonexistent/scene.xml"]);
     assert_eq!(o.status.code(), Some(2));
@@ -471,7 +471,7 @@ fn the_schema_refuses_inconsistent_envelopes() {
         let mut o = output.clone();
         o["paths"] = paths;
         serde_json::json!({
-            "format": "scene-render-cli/1", "schema_version": "1.3.0", "command": "encode", "ok": true, "exit_code": 0,
+            "format": "scene-render-cli/1", "schema_version": "1.4.0", "command": "encode", "ok": true, "exit_code": 0,
             "result": {"outputs": [o]}, "diagnostics": [], "error": null
         })
     };

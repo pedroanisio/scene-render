@@ -107,6 +107,7 @@ Verify the download with `sha256sum -c scene-render-v0.7.4-linux-x86_64.tar.gz.s
 
 - `watch` takes `--path-noise REL`, as `render` and `encode` do, so a preview stops tracing a path-traced pixel at the noise level the final render will use.
 - The encode report carries each output's path samples: `outputs[].paths` holds the sample budget, the samples traced and those traced with hardware rays (null for an output with no path-traced pass), and the text summary prints `paths: T of B samples traced (x%)`. The CLI output schema is 1.3.0. At 64x48 with 64 path samples on lavapipe, two frames traced 393,216 of 393,216 samples without `--path-noise`, 321,232 (81.7 %) at 0.02 and 150,240 (38.2 %) at 0.05.
+- `schedule FILE [--rate NAME=RATE]...` assigns a path-traced document's frames to the GPU adapters `gpus` lists, from each frame's path cost and each adapter's measured rate in path segments per second: each frame goes to the adapter that would finish it first, as one contiguous range per adapter. Without rates every frame goes to the best adapter (hardware with ray queries, then other hardware, then software), and a device listed on two backends counts once. The JSON envelope's `schema_version` is 1.4.0.
 
 ### Fixes
 

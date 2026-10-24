@@ -11,7 +11,7 @@
     "schema_version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"},
     "command": {
       "description": "the subcommand that ran; null when the command line names none that could be understood",
-      "enum": [null, "validate", "inspect", "params", "eval", "captions", "render", "watch", "encode", "simulate", "bake-volume", "resolve", "scopes", "gpus", "capabilities", "explain", "completions"]
+      "enum": [null, "validate", "inspect", "params", "eval", "captions", "render", "watch", "encode", "simulate", "bake-volume", "resolve", "scopes", "gpus", "schedule", "capabilities", "explain", "completions"]
     },
     "ok": {"type": "boolean", "description": "true exactly when exit_code is 0"},
     "exit_code": {"enum": [0, 1, 2], "description": "the process exit status: 0 success, 1 invalid or failed, 2 usage, I/O, unavailable or internal error"},
@@ -50,6 +50,7 @@
     {"if": {"properties": {"command": {"const": "resolve"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/resolve"}]}}}},
     {"if": {"properties": {"command": {"const": "scopes"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/scopes"}]}}}},
     {"if": {"properties": {"command": {"const": "gpus"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/gpus"}]}}}},
+    {"if": {"properties": {"command": {"const": "schedule"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/schedule"}]}}}},
     {"if": {"properties": {"command": {"const": "capabilities"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/capabilities"}]}}}},
     {"if": {"properties": {"command": {"const": "explain"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/explain"}]}}}},
     {"if": {"properties": {"command": {"const": "completions"}}}, "then": {"properties": {"result": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/completions"}]}}}},
@@ -335,6 +336,47 @@
               "software": {"type": "boolean"},
               "ray_query": {"description": "whether a device opened on this adapter finds path-traced hits with hardware ray queries; false when SR_GPU_RAY_QUERY=0", "type": "boolean"},
               "chosen": {"type": "boolean"}
+            }
+          }
+        }
+      }
+    },
+    "schedule": {
+      "description": "Since 1.4.0: which adapter renders which frames; shares cover 0..frames once, in rendering order",
+      "type": "object",
+      "required": ["file", "frames", "segments_per_frame", "adapters", "shares"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {"type": "string"},
+        "frames": {"$ref": "#/$defs/count"},
+        "segments_per_frame": {"description": "path segments of every path-traced camera per frame; 0 without one", "$ref": "#/$defs/count"},
+        "adapters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "backend", "software", "ray_query", "rate"],
+            "additionalProperties": false,
+            "properties": {
+              "name": {"type": "string"},
+              "backend": {"type": "string"},
+              "software": {"type": "boolean"},
+              "ray_query": {"type": "boolean"},
+              "rate": {"description": "the --rate given for it, in path segments per second", "type": ["number", "null"], "exclusiveMinimum": 0}
+            }
+          }
+        },
+        "shares": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["adapter", "backend", "start", "end", "seconds"],
+            "additionalProperties": false,
+            "properties": {
+              "adapter": {"type": "string"},
+              "backend": {"type": "string"},
+              "start": {"$ref": "#/$defs/count"},
+              "end": {"description": "exclusive", "$ref": "#/$defs/count"},
+              "seconds": {"description": "predicted trace time from the rate; null without a rate or a path-traced camera", "type": ["number", "null"], "minimum": 0}
             }
           }
         }
