@@ -88,3 +88,7 @@ This release keeps what renderers make from one frame to the next and shares it 
 The Linux archive contains the executable, source commit identifier, capability manifest, README, changelog, disclaimer, licence, notice, commercial-licence page and third-party notices. Its executable comes from the successful CI run for the release commit and is checksum-verified and smoke-tested before packaging.
 
 Verify the download with `sha256sum -c scene-render-v0.7.5-linux-x86_64.tar.gz.sha256`, extract it, then run `./scene-render --help`.
+
+## Unreleased
+
+- The path tracer's denoiser divides each pixel's colour, albedo and normal sums by their counts once, in a preparation pass, instead of in every à-trous tap that reads the pixel. On lavapipe, the denoiser's time on 02-fracture frames 80-84 fell from 290-308 ms to 238 ms per frame (alternated rounds, measured in one binary with the CPU tracer changes below). Frames are the same on lavapipe; on an NVIDIA GPU, one of five frames differs by one 8-bit code in the blue channel (PSNR 107.8 dB), from the driver's float arithmetic (two runs of the code before this change give the same frames there).

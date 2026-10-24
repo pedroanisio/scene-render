@@ -24,8 +24,9 @@ struct Params {
     ambient: vec4<f32>,
     // backdrop present, total samples, denoise step, exposure
     misc: vec4<f32>,
-    // encode sRGB, `fin` holds means (denoised), first denoise pass (reads sums), and in the trace passes the noise
-    // target of adaptive sampling (0 traces every sample), in the denoise passes 1 on the last (it remodulates)
+    // encode sRGB, `fin` holds means (denoised), first denoise pass (smooths the variance), and in the trace passes
+    // the noise target of adaptive sampling (0 traces every sample), in the denoise passes 1 on the last (it
+    // remodulates)
     out: vec4<f32>,
     // Global origin (xy) and extent (zw) of this tile's working buffers.
     tile: vec4<u32>,
@@ -890,12 +891,13 @@ fn cs_count(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invoca
 }
 
 // ---------------------------------------------------------------- à-trous denoising
-// One pass of the edge-aware à-trous filter at `misc.z` pixels between taps: src → dst, each two halves of w × h rows,
-// the colour, then its variance (x) and the pixel's coverage (y). The first pass (out.z set) reads the sample sums and
-// statistics of `accum` and divides the colour by the coverage and the albedo at the first hit, so the passes smooth
-// the light and not the surface or its silhouette; the last (out.w set) multiplies it back by the pixel's own. How
-// far a tap may differ in luminance follows the standard deviation of the pixel's mean, so a clean pixel is barely
-// smoothed and a noisy one is smoothed more.
+// The prep pass (cs_denoise_prep) turns each pixel's sums into what the filter reads, once: in `accum`, the colour as
+// the mean over the samples that hit divided by the albedo at the first hit, so the passes smooth the light and not
+// the surface or its silhouette, then its variance (x) and the pixel's coverage (y); in `guide`, the mean albedo (rgb)
+// beside the hit count (a), and the mean normal (xyz). One pass of the edge-aware à-trous filter (cs_atrous) at
+// `misc.z` pixels between taps then reads src → dst, each those two halves of w × h rows; the last (out.w set)
+// multiplies the colour back by the pixel's own albedo and coverage. How far a tap may differ in luminance follows the
+// standard deviation of the pixel's mean, so a clean pixel is barely smoothed and a noisy one is smoothed more.
 
 @group(1) @binding(0) var<storage, read> src: array<vec4<f32>>;
 @group(1) @binding(1) var<storage, read_write> dst: array<vec4<f32>>;
@@ -906,32 +908,37 @@ const ALBEDO_FLOOR: f32 = 0.01;
 // standard deviations of a pixel's mean luminance a tap may differ by before its weight falls to 1/e
 const SIGMA_LUMINANCE: f32 = 4.0;
 
-fn albedo_at(i: i32) -> vec3<f32> {
+// Rewrites pixel i's sums in place, reading no other pixel: its colour, variance and coverage in `accum`, its mean
+// albedo and normal in `guide`. A pixel nothing hit keeps its count of 0 and its colour becomes the mean. The variance
+// of the mean luminance comes from the sum of squares of the samples (a pixel of one sample counts as varying by its
+// whole mean), divided by the coverage and the albedo like the colour.
+@compute @workgroup_size(8, 8)
+fn cs_denoise_prep(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let w = i32(pp.tile.z);
+    let h = i32(pp.tile.w);
+    if (i32(gid.x) >= w || i32(gid.y) >= h) { return; }
+    let wh = w * h;
+    let i = i32(gid.y) * w + i32(gid.x);
+    let c = accum[i] / max(pp.misc.y, 1.0);
     let g = guide[i * 2];
-    return max(g.rgb / max(g.w, 1e-6), vec3(ALBEDO_FLOOR));
-}
-
-// the light at pixel i as the passes filter it: the mean over the samples that hit, divided by the albedo it was
-// reflected by
-fn denoise_colour(i: i32, first: bool) -> vec3<f32> {
-    if (!first) { return src[i].rgb; }
-    let c = src[i] / max(pp.misc.y, 1.0);
-    return c.rgb / (albedo_at(i) * max(c.a, 1e-6));
-}
-
-// the variance of pixel i's mean luminance, divided by the coverage and the albedo like its colour: in the first pass
-// from the sum of squares of its samples (a pixel of one sample counts as varying by its whole mean), after it what
-// the last pass left
-fn denoise_variance(i: i32, first: bool) -> f32 {
-    let wh = i32(pp.tile.z * pp.tile.w);
-    if (!first) { return src[wh + i].x; }
-    let st = src[wh + i];
+    if (g.w <= 0.0) {
+        accum[i] = c;
+        return;
+    }
+    // the count is a whole number of samples, at least 1
+    let albedo = g.rgb / g.w;
+    let floored = max(albedo, vec3(ALBEDO_FLOOR));
+    let coverage = max(c.a, 1e-6);
+    let st = accum[wh + i];
     let n = st.z;
-    let c = src[i] / max(pp.misc.y, 1.0);
     let mean = dot(c.rgb, LUMA);
-    let a = max(dot(albedo_at(i), LUMA), ALBEDO_FLOOR) * max(c.a, 1e-6);
-    if (n < 2.0) { return mean * mean / (a * a); }
-    return max(st.x - n * mean * mean, 0.0) / (n * (n - 1.0)) / (a * a);
+    let a = max(dot(floored, LUMA), ALBEDO_FLOOR) * coverage;
+    var v = mean * mean / (a * a);
+    if (n >= 2.0) { v = max(st.x - n * mean * mean, 0.0) / (n * (n - 1.0)) / (a * a); }
+    accum[i] = vec4(c.rgb / (floored * coverage), c.a);
+    accum[wh + i] = vec4(v, c.a, 0.0, 0.0);
+    guide[i * 2] = vec4(albedo, g.w);
+    guide[i * 2 + 1] = vec4(guide[i * 2 + 1].xyz / g.w, 0.0);
 }
 
 @compute @workgroup_size(8, 8)
@@ -947,14 +954,14 @@ fn cs_atrous(@builtin(global_invocation_id) gid: vec3<u32>) {
     let gp = guide[pi * 2];
     if (gp.w <= 0.0) {
         // nothing was hit: no albedo to divide by and nothing to filter
-        dst[pi] = select(src[pi], src[pi] / max(pp.misc.y, 1.0), first);
+        dst[pi] = src[pi];
         dst[wh + pi] = vec4(0.0);
         return;
     }
-    let cp = denoise_colour(pi, first);
-    let coverage = select(src[wh + pi].y, src[pi].a / max(pp.misc.y, 1.0), first);
-    let ap = gp.rgb / gp.w;
-    let np = guide[pi * 2 + 1].xyz / gp.w;
+    let cp = src[pi].rgb;
+    let coverage = src[wh + pi].y;
+    let ap = gp.rgb;
+    let np = guide[pi * 2 + 1].xyz;
     // a few samples estimate their own variance poorly: the first pass takes the 3 × 3 neighbourhood's
     var vp = 0.0;
     if (first) {
@@ -966,7 +973,7 @@ fn cs_atrous(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let qi = q.y * w + q.x;
                 if (guide[qi * 2].w <= 0.0) { continue; }
                 let k = f32((2 - abs(dx)) * (2 - abs(dy)));
-                vp += k * denoise_variance(qi, true);
+                vp += k * src[wh + qi].x;
                 weights += k;
             }
         }
@@ -985,20 +992,19 @@ fn cs_atrous(@builtin(global_invocation_id) gid: vec3<u32>) {
             let q = vec2(i32(gid.x) + dx * step, i32(gid.y) + dy * step);
             if (q.x < 0 || q.y < 0 || q.x >= w || q.y >= h) { continue; }
             let qi = q.y * w + q.x;
-            let gq = guide[qi * 2].w;
-            if (gq <= 0.0) { continue; }
-            let cq = denoise_colour(qi, first);
-            let aq = guide[qi * 2].rgb / gq;
-            let nq = guide[qi * 2 + 1].xyz / gq;
+            let gq = guide[qi * 2];
+            if (gq.w <= 0.0) { continue; }
+            let cq = src[qi].rgb;
+            let nq = guide[qi * 2 + 1].xyz;
             let k = kern[abs(dx)] * kern[abs(dy)];
             let wl = exp(-abs(dot(cq, LUMA) - lp) / sigma);
             let wn = pow(max(dot(np, nq), 0.0), 64.0);
-            let da = aq - ap;
+            let da = gq.rgb - ap;
             let wa = exp(-dot(da, da) / 0.02);
             let wt = k * wl * wn * wa;
             sum += cq * wt;
             wsum += wt;
-            vsum += wt * wt * denoise_variance(qi, first);
+            vsum += wt * wt * src[wh + qi].x;
         }
     }
     var c = cp;
@@ -1007,7 +1013,7 @@ fn cs_atrous(@builtin(global_invocation_id) gid: vec3<u32>) {
         c = sum / wsum;
         v = vsum / (wsum * wsum);
     }
-    dst[pi] = vec4(select(c, c * albedo_at(pi) * coverage, last), coverage);
+    dst[pi] = vec4(select(c, c * max(ap, vec3(ALBEDO_FLOOR)) * coverage, last), coverage);
     dst[wh + pi] = vec4(v, coverage, 0.0, 0.0);
 }
 
