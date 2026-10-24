@@ -1042,6 +1042,71 @@ mod tests {
 }
 
 #[cfg(test)]
+mod rgba16_tests {
+    use super::*;
+
+    /// The 16-bit RGBA pack with its alpha kept is the CPU's display-sRGB conversion of the frame
+    /// (unpremultiplied, converted in f64, rounded to 16 bits), within one code, and its 8-bit
+    /// rounding is the CPU's 8-bit conversion within one code: a PNG written from the stage is
+    /// the PNG the CPU wrote.
+    #[test]
+    fn rgba16_pack_matches_the_cpu_display_srgb_conversion() {
+        let gpu =
+            sr_testkit::require_gpu!(crate::gpu::test_gpu(), "rgba16_pack_matches_the_cpu_display_srgb_conversion");
+        let layout = crate::resources::source_layout(&gpu.device);
+        let (w, h) = (16usize, 8usize);
+        let frame = crate::resources::create(&gpu.device, &layout, [w as u32, h as u32], 1, "rgba16 oracle");
+        let texels: Vec<[f32; 4]> = (0..w * h)
+            .map(|i| {
+                let a = half::f16::from_f32(if i % 11 == 0 { 0.0 } else { (i % 7) as f32 / 6.0 }).to_f32();
+                let c = [(i % 17) as f32 / 16.0, (i % 5) as f32 / 4.0, (i % 3) as f32 / 2.0];
+                [c[0] * a, c[1] * a, c[2] * a, a].map(|v| half::f16::from_f32(v).to_f32())
+            })
+            .collect();
+        let bytes: Vec<u8> =
+            texels.iter().flat_map(|p| p.iter().flat_map(|v| half::f16::from_f32(*v).to_le_bytes())).collect();
+        gpu.queue.write_texture(
+            frame.tex.as_image_copy(),
+            &bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w as u32 * 8),
+                rows_per_image: Some(h as u32),
+            },
+            wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+        );
+        let mut stage = OutputStage::new(gpu.device.clone(), gpu.queue.clone());
+        let out = OutputColor::new(ColorSpace::Srgb, Transfer::Srgb, true);
+        for working in [
+            Working { space: ColorSpace::Srgb, linear: false },
+            Working { space: ColorSpace::LinearSrgb, linear: true },
+            Working { space: ColorSpace::DisplayP3, linear: false },
+        ] {
+            let p = stage.submit(&frame, &working, &out, InputFormat::Rgba16, [w as u32, h as u32], true);
+            let got: Vec<u16> =
+                stage.wait(p).into_vec().as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b)).collect();
+            assert_eq!(got.len(), w * h * 4);
+            for (i, p) in texels.iter().enumerate() {
+                let a = p[3].clamp(0.0, 1.0) as f64;
+                let c = if a > 0.0 { [p[0] as f64 / a, p[1] as f64 / a, p[2] as f64 / a] } else { [0.0; 3] };
+                let d = working.to_display_srgb(c);
+                let want = [d[0], d[1], d[2], a].map(|v| (v * 65535.0).round() as u16);
+                let want8 = [d[0], d[1], d[2], a].map(|v| (v * 255.0).round() as u8);
+                let g = &got[i * 4..i * 4 + 4];
+                for k in 0..4 {
+                    assert!(g[k].abs_diff(want[k]) <= 1, "{working:?} texel {i} channel {k}: {g:?} against {want:?}");
+                    let eight = ((g[k] as u32 + 128) / 257) as u8;
+                    assert!(
+                        eight.abs_diff(want8[k]) <= 1,
+                        "{working:?} texel {i} channel {k}: {eight} against {want8:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod planar_tests {
     use super::*;
 

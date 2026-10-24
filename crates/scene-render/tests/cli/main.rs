@@ -10,5 +10,6 @@ mod json_format;
 mod loudness_report;
 mod mcp;
 mod program_findings;
+mod render_output;
 mod scopes;
 mod solver_failures;

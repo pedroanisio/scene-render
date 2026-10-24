@@ -3,6 +3,7 @@
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod arena;
 mod changes;
+mod frames;
 mod mcp;
 mod output;
 
@@ -15,6 +16,7 @@ use anstyle::{AnsiColor, Style};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use output::{style, ErrorKind, Out};
 use serde_json::{json, Value};
+use sr_media::encode::InputFormat;
 use sr_model::diag::LineIndex;
 use sr_model::{codes, Diagnostic, LoadError, LoadOptions, Report, Severity};
 
@@ -1406,6 +1408,73 @@ fn frame_path(pattern: &Path, frame: u64, several: bool) -> Result<PathBuf, Stri
     }
 }
 
+/// What a `render` has written so far, and the seconds its stages took: evaluation, render, the wait for a frame's
+/// readback, and writing the files (on the writer thread), as an encode reports them.
+struct Progress {
+    written: Vec<Value>,
+    rendered: usize,
+    /// When the fingerprint sidecar was last saved.
+    recorded: std::time::Instant,
+    stage_seconds: [f64; 4],
+}
+
+/// Saves the fingerprint sidecar of the frames written into `dir`, or warns.
+fn record(side: &mut changes::Sidecar, dir: &Path) {
+    if let Err(e) = side.save() {
+        eprintln!("warning: cannot record frame fingerprints in {}: {e}", dir.display());
+    }
+}
+
+/// Reports the frames the writer finished, in order: the `wrote` line and the report entry of each, and its
+/// fingerprint recorded now that the file is there. The first failure's message, if a frame could not be written.
+fn report_written(
+    done: Vec<frames::Written>,
+    out: &mut Out,
+    progress: &mut Progress,
+    sidecar: &mut changes::Sidecar,
+    dir: &Path,
+) -> std::io::Result<Option<String>> {
+    for w in done {
+        progress.stage_seconds[3] += w.seconds;
+        if let Some(e) = w.error {
+            return Ok(Some(e));
+        }
+        let f = w.frame;
+        writeln!(out.w, "wrote {} (t = {:.4} s, {} draws)", f.path.display(), f.time, f.draws)?;
+        progress.written.push(json!({ "path": f.path.display().to_string(), "time": f.time, "draws": f.draws }));
+        progress.rendered += 1;
+        if let Some(print) = f.print {
+            sidecar.frames.insert(f.name, print);
+            // now and then, so a run that is killed keeps most of what it rendered
+            if progress.recorded.elapsed().as_secs() >= 2 {
+                record(sidecar, dir);
+                progress.recorded = std::time::Instant::now();
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Writes out the frame in flight and every frame queued at the writer, and reports them: what a run leaves
+/// complete, whether it ends or stops. The first failure's message, if a frame could not be written.
+fn drain(
+    stage: &mut sr_gpu::output::OutputStage,
+    in_flight: Option<(sr_gpu::output::Pending, frames::Frame)>,
+    writer: frames::Writer,
+    out: &mut Out,
+    progress: &mut Progress,
+    sidecar: &mut changes::Sidecar,
+    dir: &Path,
+) -> std::io::Result<Option<String>> {
+    if let Some((pending, frame)) = in_flight {
+        let waited = std::time::Instant::now();
+        let bytes = stage.wait(pending);
+        progress.stage_seconds[2] += waited.elapsed().as_secs_f64();
+        writer.send(frame, bytes);
+    }
+    report_written(writer.finish(), out, progress, sidecar, dir)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render(
     file: &Path,
@@ -1634,15 +1703,19 @@ fn render(
         // every render keeps them true: a frame written anew loses the fingerprint recorded for the old one
         // before it is written, so a run that stops half way leaves none that its files do not match
         let mut sidecar = changes::Sidecar::load(&dir);
-        let record = |side: &mut changes::Sidecar| {
-            if let Err(e) = side.save() {
-                eprintln!("warning: cannot record frame fingerprints in {}: {e}", dir.display());
-            }
-        };
-        let mut recorded = std::time::Instant::now();
-        let mut rendered = 0usize;
-        let mut written = Vec::new();
+        let mut progress =
+            Progress { written: Vec::new(), rendered: 0, recorded: std::time::Instant::now(), stage_seconds: [0.0; 4] };
+        // frames are converted to 16-bit display sRGB with their alpha on the output stage, one read back while the
+        // next renders, and written on a writer thread
+        let gpu = r.gpu();
+        let mut stage = sr_gpu::output::OutputStage::new(gpu.device.clone(), gpu.queue.clone());
+        let srgb =
+            sr_gpu::output::OutputColor::new(sr_model::model::ColorSpace::Srgb, sr_model::model::Transfer::Srgb, true);
+        let working = r.working();
+        let writer = frames::Writer::start(bit_depth);
+        let mut in_flight: Option<(sr_gpu::output::Pending, frames::Frame)> = None;
         for (f, t) in list {
+            let t0 = std::time::Instant::now();
             let path = match frame_path(&output, f.unwrap_or(0), several) {
                 Ok(p) => p,
                 Err(e) => return Ok(out.fail(ErrorKind::Usage, e)),
@@ -1654,15 +1727,26 @@ fn render(
                 continue;
             }
             let mut sub = |st: f64| ev.evaluate(st);
+            let t1 = std::time::Instant::now();
             let frame = r.render_with(&g, ev.program(), Some(&mut sub));
             unsupported.extend(frame.stats.unsupported.iter().cloned());
             if !frame.stats.errors.is_empty() {
+                // the frames before it are written out: a run that stops leaves what it rendered
+                if let Some(e) = drain(&mut stage, in_flight.take(), writer, out, &mut progress, &mut sidecar, &dir)? {
+                    return Ok(out.fail(ErrorKind::Io, e));
+                }
                 return Ok(report_frame_errors(out, &format!("frame at {:.3} s", g.time), &frame.stats));
             }
-            let px = r.read(&frame.texture);
+            let size = frame.texture.size;
+            let pending = stage.submit(&frame.texture, &working, &srgb, InputFormat::Rgba16, size, true);
             if let Err(e) = r.gpu().take_error() {
+                if let Some(e) = drain(&mut stage, in_flight.take(), writer, out, &mut progress, &mut sidecar, &dir)? {
+                    return Ok(out.fail(ErrorKind::Io, e));
+                }
                 return Ok(out.fail(ErrorKind::Failed, format!("frame at {:.3} s: {e}", g.time)));
             }
+            progress.stage_seconds[0] += (t1 - t0).as_secs_f64();
+            progress.stage_seconds[1] += t1.elapsed().as_secs_f64();
             if stats {
                 let gpu = r.gpu_times();
                 let paths = r.path_samples();
@@ -1671,43 +1755,29 @@ fn render(
                     serde_json::json!({ "frame": g.frame, "stats": &frame.stats, "gpu": gpu, "paths": paths })
                 );
             }
-            let [w, h] = frame.texture.size;
             if sidecar.frames.remove(&name).is_some() {
-                record(&mut sidecar);
+                record(&mut sidecar, &dir);
             }
-            let res = if bit_depth == 16 {
-                let working = r.working();
-                let data: Vec<u16> = px
-                    .iter()
-                    .flat_map(|p| {
-                        let a = p[3].clamp(0.0, 1.0) as f64;
-                        let c = if a > 0.0 { [p[0] as f64 / a, p[1] as f64 / a, p[2] as f64 / a] } else { [0.0; 3] };
-                        let d = working.to_display_srgb(c);
-                        [d[0], d[1], d[2], a].map(|v| (v * 65535.0).round() as u16)
-                    })
-                    .collect();
-                image::ImageBuffer::<image::Rgba<u16>, _>::from_raw(w, h, data).expect("sized").save(&path)
-            } else {
-                image::RgbaImage::from_raw(w, h, r.to_srgb8(&px)).expect("sized").save(&path)
-            };
-            if let Err(e) = res {
-                return Ok(out.fail(ErrorKind::Io, format!("cannot write {}: {e}", path.display())));
-            }
-            writeln!(out.w, "wrote {} (t = {:.4} s, {} draws)", path.display(), g.time, frame.stats.draws)?;
-            written.push(json!({ "path": path.display().to_string(), "time": g.time, "draws": frame.stats.draws }));
-            rendered += 1;
             // Unsupported output must be rendered again so --strict cannot lose diagnostics,
             // including when a prior invocation did not request strict validation.
-            if let Some(p) = print.filter(|_| frame.stats.unsupported.is_empty()) {
-                sidecar.frames.insert(name, p);
-                // now and then, so a run that is killed keeps most of what it rendered
-                if recorded.elapsed().as_secs() >= 2 {
-                    record(&mut sidecar);
-                    recorded = std::time::Instant::now();
-                }
+            let print = print.filter(|_| frame.stats.unsupported.is_empty());
+            let next = frames::Frame { path, name, size, time: g.time, draws: frame.stats.draws, print };
+            if let Some((pending, frame)) = in_flight.replace((pending, next)) {
+                let waited = std::time::Instant::now();
+                let bytes = stage.wait(pending);
+                progress.stage_seconds[2] += waited.elapsed().as_secs_f64();
+                writer.send(frame, bytes);
+            }
+            if let Some(e) = report_written(writer.ready(), out, &mut progress, &mut sidecar, &dir)? {
+                drain(&mut stage, in_flight.take(), writer, out, &mut progress, &mut sidecar, &dir)?;
+                return Ok(out.fail(ErrorKind::Io, e));
             }
         }
-        record(&mut sidecar);
+        if let Some(e) = drain(&mut stage, in_flight.take(), writer, out, &mut progress, &mut sidecar, &dir)? {
+            return Ok(out.fail(ErrorKind::Io, e));
+        }
+        record(&mut sidecar, &dir);
+        let Progress { written, rendered, stage_seconds, .. } = progress;
         if let Some(prints) = &prints {
             if let Some(why) = &prints.whole {
                 writeln!(out.w, "note: {why}: an edit to the composition renders every frame")?;
@@ -1715,9 +1785,17 @@ fn render(
             }
             writeln!(out.w, "rendered {rendered} of {total} frames ({} unchanged)", total - rendered)?;
         }
+        if several {
+            writeln!(
+                out.w,
+                "stages: evaluation {:.2} s, render {:.2} s, readback wait {:.2} s, PNG writing {:.2} s",
+                stage_seconds[0], stage_seconds[1], stage_seconds[2], stage_seconds[3]
+            )?;
+        }
         result.insert("written".into(), json!(written));
         result.insert("rendered".into(), json!(rendered));
         result.insert("total".into(), json!(total));
+        result.insert("stage_seconds".into(), json!(stage_seconds));
     }
     if let Some(k) = keep {
         *k = Some((setup, r));
