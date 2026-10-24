@@ -162,6 +162,9 @@ pub struct RenderStats {
     /// Buffers made this frame for 3D passes, particle batches, vector raster jobs and effect passes: none when
     /// the ones the engines keep hold them.
     pub buffers_created: usize,
+    /// Bind groups made this frame for the compositor's backdrop and matte pairs and its cached mask coverage:
+    /// none when the ones it keeps between frames serve.
+    pub bind_groups_created: usize,
     /// Meshes and textures the 3D engine dropped after this frame: ones no pass of the frame used, least recently
     /// used first, beyond its idle budget.
     pub assets_evicted: usize,
@@ -406,6 +409,8 @@ struct MaskCoverage {
     last_used: u64,
     bytes: u64,
     view: Option<wgpu::TextureView>,
+    /// The key of the view's bindings kept between frames (see [`crate::resources::next_id`]).
+    id: u64,
 }
 
 type CachedVolume = Result<Option<Arc<sr_volume::Volume>>, String>;
@@ -429,6 +434,9 @@ pub struct Renderer {
     samp_repeat: wgpu::Sampler,
     globals: wgpu::Buffer,
     dummy: Arc<Tex>,
+    /// The compositor's (backdrop, matte) bind groups by the textures' ids (0 for the dummy) and the frame each was
+    /// last used in: kept `CACHE_KEEP` frames after.
+    pairs: HashMap<(u64, u64), (wgpu::BindGroup, u64)>,
     working: Working,
     tokens: HashMap<String, [f64; 4]>,
     images: HashMap<String, Option<Arc<Tex>>>,
@@ -836,6 +844,18 @@ fn hf(v: f64) -> u64 {
 
 fn affine_hash(a: &Affine) -> u64 {
     h(&a.0.map(hf))
+}
+
+/// FNV-1a over words, without collecting them.
+fn fnv_u64s(words: impl IntoIterator<Item = u64>) -> u64 {
+    let mut f = Fnv(0xcbf2_9ce4_8422_2325);
+    words.into_iter().for_each(|w| f.u64(w));
+    f.0
+}
+
+/// FNV-1a over the bits of floats, without collecting them.
+fn fnv_f64s(values: impl IntoIterator<Item = f64>) -> u64 {
+    fnv_u64s(values.into_iter().map(hf))
 }
 
 /// `frameBlend` of a layer or its time remap: 0 none, 1 frame mix, 2 optical flow.
@@ -1392,6 +1412,7 @@ impl Renderer {
             samp_repeat,
             globals,
             dummy,
+            pairs: HashMap::new(),
             working,
             images: HashMap::new(),
             image_notes: HashMap::new(),
@@ -2689,6 +2710,7 @@ impl Renderer {
             Some(a) => Self::element_state(ctx, a),
             None => 0,
         };
+        let glyph_depth = Self::glyph_depth(n);
         let hash = h(&[
             Self::effects_state(ctx, n),
             sr_eval::rng::hash_str(&n.id),
@@ -2701,12 +2723,12 @@ impl Renderer {
             n.three_d.map(|t| h(&t.map(hf))).unwrap_or(2),
             // the camera projects 3D objects and 2.5D layers: a still one looks different when it moves,
             // and a cached isolated group (mask, clip, matte, effects) holding it must redraw
-            if sr_eval::draws_in_3d(n.kind) || n.three_d.is_some() || Self::glyph_depth(n) { ctx.cam } else { 0 },
-            if Self::glyph_depth(n) { affine_hash(&n.world) } else { 0 },
+            if sr_eval::draws_in_3d(n.kind) || n.three_d.is_some() || glyph_depth { ctx.cam } else { 0 },
+            if glyph_depth { affine_hash(&n.world) } else { 0 },
             n.content.map(|c| h(&[h(&c.dest.map(hf)), h(&c.uv.map(hf))])).unwrap_or(3),
             n.size.map(|s| h(&s.map(hf))).unwrap_or(4),
             props,
-            n.soft.as_ref().map(|s| h(&s.offsets.iter().flat_map(|o| o.map(hf)).collect::<Vec<u64>>())).unwrap_or(5),
+            n.soft.as_ref().map(|s| fnv_f64s(s.offsets.iter().flatten().copied())).unwrap_or(5),
             // simulated content changes without the node's own attributes changing
             n.sim_image.as_ref().map(|s| s.key).unwrap_or(6),
             n.sim_volume.as_ref().map(|s| s.key).unwrap_or(8),
@@ -2715,15 +2737,10 @@ impl Renderer {
             n.sim_ocean.as_ref().map(|s| s.key).unwrap_or(10),
             n.particles
                 .as_ref()
-                .map(|p| {
-                    h(&p.pos.iter().chain(&p.vel).flat_map(|q| q.map(|v| v.to_bits() as u64)).collect::<Vec<u64>>())
-                })
+                .map(|p| fnv_u64s(p.pos.iter().chain(&p.vel).flatten().map(|v| v.to_bits() as u64)))
                 .unwrap_or(7),
             // a connector's path follows its ends, which may move while it stays put
-            n.connector
-                .as_ref()
-                .map(|c| h(&c.path.iter().flat_map(|q| q.map(hf)).chain(c.bounds.map(hf)).collect::<Vec<u64>>()))
-                .unwrap_or(12),
+            n.connector.as_ref().map(|c| fnv_f64s(c.path.iter().flatten().copied().chain(c.bounds))).unwrap_or(12),
         ]);
         // the cells of an object that a simulation cuts change without an attribute of the node changing: a group that holds it and is
         // kept between frames must be drawn again after a cut. Nodes without them hash as they did.
@@ -2742,6 +2759,10 @@ impl Renderer {
 
     /// Hash of a node and its subtree (and mattes) in a target space.
     fn subtree_hash(ctx: &Ctx, i: usize, to_space: &Affine) -> u64 {
+        let key = (i, affine_hash(to_space));
+        if let Some(hash) = ctx.memo.subtrees.lock().expect("memo").get(&key) {
+            return *hash;
+        }
         let n = &ctx.g.nodes[i];
         let rel = to_space.then(&n.world);
         let mut words = vec![Self::node_hash(ctx, n, &rel)];
@@ -2752,7 +2773,9 @@ impl Renderer {
         for &c in &ctx.kids[i] {
             words.push(Self::subtree_hash(ctx, c, to_space));
         }
-        h(&words)
+        let hash = h(&words);
+        ctx.memo.subtrees.lock().expect("memo").insert(key, hash);
+        hash
     }
 
     /// Hash of an isolated node's content: its children, not its own transform or opacity.
@@ -2800,6 +2823,9 @@ impl Renderer {
 
     /// Hash of an element's animated descendants (`id/…` keys) and intrinsic time dependence.
     fn element_state(ctx: &Ctx, id: &str) -> u64 {
+        if let Some(hash) = ctx.memo.elements.lock().expect("memo").get(id) {
+            return *hash;
+        }
         let mut words: Vec<u64> = ctx
             .el
             .iter()
@@ -2817,7 +2843,9 @@ impl Renderer {
             words.push(hf(libm::floor(ctx.g.time * ctx.p.fps.as_f64() + 1e-6)));
         }
         words.sort_unstable();
-        h(&words)
+        let hash = h(&words);
+        ctx.memo.elements.lock().expect("memo").insert(id.to_string(), hash);
+        hash
     }
 
     /// The nodes that node `n`'s effects read: their `source`, and a shader's `<param>` samplers.
@@ -4696,6 +4724,7 @@ impl Renderer {
         };
         let elements = h(&[elements_hash(&g.elements), cam_hash]);
         let el = element_hashes(&g.elements);
+        let memo = Memo::default();
         let ctx = Ctx {
             g,
             p,
@@ -4706,6 +4735,7 @@ impl Renderer {
             el: &el,
             cam: cam_hash,
             sub: subs.as_ref().map(|s| s as &dyn SubSource),
+            memo: &memo,
         };
         for m in &g.problems {
             // failures are already errors
@@ -5000,7 +5030,8 @@ impl Renderer {
     /// Reuse coverage only after identical geometry has occurred in another frame.
     /// Keys compare every input bit; at most 64 candidates and 32 MiB of R32F images
     /// survive, so animated geometry cannot accumulate a texture per frame.
-    fn prepare_mask_coverage(&mut self, plan: &mut Plan) -> HashMap<u32, (wgpu::TextureView, bool)> {
+    /// The cached mask coverage of the draws that have one: its view and id, and whether this frame draws it.
+    fn prepare_mask_coverage(&mut self, plan: &mut Plan) -> HashMap<u32, (wgpu::TextureView, u64, bool)> {
         let mut out = HashMap::new();
         let now = self.cache_frame;
         self.mask_coverage.retain(|_, e| now.saturating_sub(e.last_used) <= CACHE_KEEP);
@@ -5035,10 +5066,10 @@ impl Renderer {
                 key.extend_from_slice(bytemuck::cast_slice(
                     &plan.verts[c.first_vertex as usize..(c.first_vertex + c.count) as usize],
                 ));
-                let previous = self.mask_coverage.get(&key).map(|e| (e.last_used, e.view.clone()));
-                if let Some((_, Some(view))) = previous {
+                let previous = self.mask_coverage.get(&key).map(|e| (e.last_used, e.view.clone(), e.id));
+                if let Some((_, Some(view), id)) = previous {
                     self.mask_coverage.get_mut(&key).expect("existing coverage").last_used = now;
-                    out.insert(c.draw, (view, false));
+                    out.insert(c.draw, (view, id, false));
                     plan.stats.cache_hits += 1;
                     continue;
                 }
@@ -5055,7 +5086,7 @@ impl Renderer {
                         };
                         self.mask_coverage.remove(&k);
                     }
-                    self.mask_coverage.insert(key, MaskCoverage { last_used: now, bytes: 0, view: None });
+                    self.mask_coverage.insert(key, MaskCoverage { last_used: now, bytes: 0, view: None, id: 0 });
                     continue;
                 }
                 let e = self.mask_coverage.get_mut(&key).expect("existing candidate");
@@ -5094,8 +5125,9 @@ impl Renderer {
                     view_formats: &[],
                 });
                 let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                self.mask_coverage.insert(key, MaskCoverage { last_used: now, bytes, view: Some(view.clone()) });
-                out.insert(c.draw, (view, true));
+                let id = crate::resources::next_id();
+                self.mask_coverage.insert(key, MaskCoverage { last_used: now, bytes, view: Some(view.clone()), id });
+                out.insert(c.draw, (view, id, true));
             }
         }
         out
@@ -5167,19 +5199,27 @@ impl Renderer {
             (bg0, vbuf, pbuf, sbuf)
         };
         let bgl2 = self.bgl2.clone();
-        let pair = |a: &wgpu::TextureView, b: &wgpu::TextureView| {
-            d.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("backdrop+matte"),
-                layout: &bgl2,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(a) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(b) },
-                ],
-            })
+        // one bind group per (backdrop, matte) texture pair, kept between frames by the textures' ids
+        let mut pairs = std::mem::take(&mut self.pairs);
+        let now = self.cache_frame;
+        let mut pairs_made = 0usize;
+        let mut pair = |a: (u64, &wgpu::TextureView), b: (u64, &wgpu::TextureView)| -> wgpu::BindGroup {
+            let e = pairs.entry((a.0, b.0)).or_insert_with(|| {
+                pairs_made += 1;
+                let bg = d.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("backdrop+matte"),
+                    layout: &bgl2,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(a.1) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(b.1) },
+                    ],
+                });
+                (bg, now)
+            });
+            e.1 = now;
+            e.0.clone()
         };
-        let dummy_pair = pair(&self.dummy.view, &self.dummy.view);
-        // one bind group per (backdrop, matte) texture pair per frame, not one per draw
-        let mut pairs: HashMap<(usize, usize), wgpu::BindGroup> = HashMap::new();
+        let dummy_pair = pair((0, &self.dummy.view), (0, &self.dummy.view));
         let dummy_gen = self.dummy_gen.clone();
         // the video frames' conversions go first, in a submission of their own: the GPU converts them while the
         // frame's draws are uploaded and recorded, and the draws read them
@@ -5263,7 +5303,7 @@ impl Renderer {
         plan.stats.peak_vector_target_bytes = kept;
         for job in &plan.jobs {
             for c in &job.cmds {
-                let Some((view, true)) = coverage.get(&c.draw) else {
+                let Some((view, _, true)) = coverage.get(&c.draw) else {
                     continue;
                 };
                 let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -5440,30 +5480,26 @@ impl Renderer {
                     .map(|c| match (&c.backdrop, &c.matte) {
                         (Some(_), None) if pre_back(c) => {
                             let t = pre_back_of(c, tsize, |t| t.size).expect("checked by pre_back");
-                            Some(
-                                pairs
-                                    .entry((Arc::as_ptr(t) as usize, 0))
-                                    .or_insert_with(|| pair(&t.view, &self.dummy.view))
-                                    .clone(),
-                            )
+                            Some(pair((t.id, &t.view), (0, &self.dummy.view)))
                         }
                         (None, None) if coverage.contains_key(&c.draw) => {
-                            Some(pair(&self.dummy.view, &coverage[&c.draw].0))
+                            let (view, id, _) = &coverage[&c.draw];
+                            Some(pair((0, &self.dummy.view), (*id, view)))
                         }
                         (None, None) => None,
                         (bd, mt) => {
-                            let (bk, back) = match bd {
+                            let back = match bd {
                                 Some(_) => {
                                     let s = &scratch[&job.target.size];
-                                    (Arc::as_ptr(s) as usize, &s.view)
+                                    (s.id, &s.view)
                                 }
                                 None => (0, &self.dummy.view),
                             };
-                            let (mk, mv) = match mt {
-                                Some(t) => (Arc::as_ptr(t) as usize, &t.view),
+                            let matte = match mt {
+                                Some(t) => (t.id, &t.view),
                                 None => (0, &self.dummy.view),
                             };
-                            Some(pairs.entry((bk, mk)).or_insert_with(|| pair(back, mv)).clone())
+                            Some(pair(back, matte))
                         }
                     })
                     .collect();
@@ -5598,6 +5634,9 @@ impl Renderer {
             self.pool.put(t);
         }
         drop(jobs);
+        plan.stats.bind_groups_created += pairs_made;
+        pairs.retain(|_, (_, used)| now - *used <= CACHE_KEEP);
+        self.pairs = pairs;
         plan.post.clear();
         plan.post_out = None;
         plan.post_into = None;
@@ -5685,6 +5724,17 @@ struct Ctx<'a> {
     cam: u64,
     /// The scene at other times (motion blur, time effects), when a provider was given.
     sub: Option<&'a dyn SubSource>,
+    /// What the frame's change detection has hashed already.
+    memo: &'a Memo,
+}
+
+/// What one frame's change detection has hashed already: a node's subtree in a target space, which the root's hash,
+/// and again each isolated group, matte and effect source that holds the node, would otherwise hash again; and an
+/// element's animated state, which every node drawing the element asks for.
+#[derive(Default)]
+pub(crate) struct Memo {
+    subtrees: std::sync::Mutex<HashMap<(usize, u64), u64>>,
+    elements: std::sync::Mutex<HashMap<String, u64>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -5703,6 +5753,7 @@ impl<'a> Ctx<'a> {
             el: &sg.el,
             cam: self.cam,
             sub: self.sub,
+            memo: &sg.memo,
         }
     }
 }
@@ -5745,6 +5796,7 @@ pub(crate) struct SubGraph {
     index: HashMap<Arc<str>, usize>,
     elements: u64,
     el: HashMap<Arc<str>, u64>,
+    memo: Memo,
 }
 
 impl SubGraph {
@@ -5759,7 +5811,7 @@ impl SubGraph {
         }
         let elements = elements_hash(&g.elements);
         let el = element_hashes(&g.elements);
-        SubGraph { g, kids, index, elements, el }
+        SubGraph { g, kids, index, elements, el, memo: Memo::default() }
     }
 }
 

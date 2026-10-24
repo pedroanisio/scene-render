@@ -48,6 +48,14 @@ pub struct Tex {
     pub size: [u32; 2],
     /// Bind group for group(1) (sampled as a layer source).
     pub bind: wgpu::BindGroup,
+    /// A number no other texture of the process has: the key of bindings kept between frames.
+    pub id: u64,
+}
+
+/// The next texture id (0 is never given: it stands for no texture).
+pub fn next_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The bind group layout of a sampled layer source: one filterable 2D texture, bound twice.
@@ -107,7 +115,7 @@ pub fn create_as(
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
         ],
     });
-    Tex { tex, view, size, bind }
+    Tex { tex, view, size, bind, id: next_id() }
 }
 
 /// Frames a size may go unrequested, or a free texture untaken, before it is released.

@@ -239,3 +239,24 @@ fn overlapping_blended_layers_keep_their_order() {
     assert_px(&r, 88, 36, [src()[0], src()[1], src()[2], 1.0], 3e-3);
     assert_px(&r, 88, 48, blend_of("difference", src(), gray()), 3e-3);
 }
+
+#[test]
+fn backdrop_and_matte_bind_groups_are_kept_between_frames() {
+    // three blended layers read their backdrop, one through a matte: the bind groups of their (backdrop, matte)
+    // texture pairs are made at the first frame and serve the next ones, while a layer moves
+    let d = scene(
+        PROJECT,
+        r#"<layer id="m" asset="white" x="0" y="0" scaleX="16" scaleY="8" visible="false"/>
+        <layer id="a" asset="wide" x="4" y="4" scaleX="6" scaleY="6" blend="multiply"/>
+        <layer id="b" asset="red" x="40" y="8" scaleX="4" scaleY="4" blend="screen" matte="m"/>
+        <layer id="c" asset="red" x="20" y="20" scaleX="3" scaleY="3" blend="overlay"><animate property="x"><key time="0" value="20"/><key time="2" value="60"/></animate></layer>"#,
+        "",
+    );
+    let Some(f) = render_sub_frames(&d, &[0.0, 0.1, 0.2]) else { return };
+    assert!(f[0].stats.backdrop_copies >= 3, "{}", f[0].stats.backdrop_copies);
+    assert!(f[0].stats.bind_groups_created >= 1, "first frame: {}", f[0].stats.bind_groups_created);
+    assert_eq!(f[1].stats.bind_groups_created, 0, "second frame");
+    assert_eq!(f[2].stats.bind_groups_created, 0, "third frame");
+    let fresh = render_sub(&d, 0.2).unwrap();
+    assert_eq!(f[2].px, fresh.px);
+}

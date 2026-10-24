@@ -46,6 +46,20 @@ fn isolated_groups_follow_the_paints_of_their_content() {
 }
 
 #[test]
+fn nested_groups_and_mattes_follow_changes_deep_inside_them() {
+    // a shape that moves inside two isolated groups, and a matte whose own child moves: the hashes that decide
+    // whether a kept offscreen still shows the right thing see both, from the root and from each group
+    let d = scene(
+        "",
+        r##"<group id="mg" visible="false"><shape id="ms" shape="rect" x="0" y="0" width="32" height="32" fill="#FFFFFF"><animate property="x"><key time="0" value="0"/><key time="1" value="32"/></animate></shape></group>
+        <group id="outer" isolate="true"><group id="inner" isolate="true"><shape id="s" shape="rect" x="4" y="4" width="20" height="20" fill="#FF0000"><animate property="x"><key time="0" value="4"/><key time="1" value="30"/></animate></shape></group></group>
+        <layer id="l" asset="white" x="0" y="0" scaleX="16" scaleY="8" matte="mg"/>"##,
+        "",
+    );
+    assert_follows(&d, "nested groups and a matte group");
+}
+
+#[test]
 fn mattes_follow_the_paints_they_are_filled_with() {
     for mode in ["luma", "alpha"] {
         // the matte's gradient goes from red over white to blue over black (luma), and, for
