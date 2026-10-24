@@ -180,9 +180,43 @@ pub fn fbm1(seed: u64, x: f64, octaves: u32, amp_mult: f64) -> f64 {
     }
 }
 
+/// The first document version whose simulations draw from the D24 streams (the random-streams draft, section 6).
+pub const STREAMS_FROM: sr_model::Version = sr_model::Version::V1_8;
+
+/// Where the draws of a simulation element come from in a document of `version`: from [`STREAMS_FROM`], the stream
+/// seed E(project, id, @seed, "stream") of the element's scoped `id` and `@seed`; before it, the seed `legacy` derives
+/// as each simulation derived it (Appendix A of the draft).
+pub fn sim_draws(
+    version: sr_model::Version,
+    project: u64,
+    id: &str,
+    seed: Option<u64>,
+    legacy: impl FnOnce() -> u64,
+) -> sr_sim::rng::Draws {
+    if version >= STREAMS_FROM {
+        sr_sim::rng::Draws::Stream(element_seed(project, id, seed, "stream"))
+    } else {
+        sr_sim::rng::Draws::Legacy(legacy())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simulations_draw_from_streams_from_version_1_8_and_from_the_legacy_seed_before() {
+        use sr_model::Version;
+        use sr_sim::rng::Draws;
+        for v in [Version::V1_0, Version::V1_3, Version::V1_7] {
+            assert_eq!(sim_draws(v, 0, "p1", None, || 99), Draws::Legacy(99));
+        }
+        assert_eq!(sim_draws(Version::V1_8, 0, "p1", None, || unreachable!()), Draws::Stream(856627436));
+        assert_eq!(
+            sim_draws(Version::V1_8, 7, "fx", Some(3), || unreachable!()),
+            Draws::Stream(element_seed(7, "fx", Some(3), "stream"))
+        );
+    }
 
     #[test]
     fn streams_are_addressable_and_stable() {

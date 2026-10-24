@@ -270,7 +270,7 @@ impl EmitterDriver for Here {
 
 fn spec() -> EmitterSpec {
     EmitterSpec {
-        seed: 7,
+        draws: sr_sim::rng::Draws::Legacy(7),
         start: 0.0,
         end: None,
         preroll: 0.0,

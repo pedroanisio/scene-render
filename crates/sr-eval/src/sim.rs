@@ -1124,7 +1124,9 @@ struct EmitterRt {
     opacity_end: f64,
     color0: Option<Value>,
     color1: Option<Value>,
-    random_color: bool,
+    /// `preset="confetti"`'s colour draw per particle: the draws and their purpose (the fixed seed 0xC0FE and 0
+    /// before 1.8, the emitter's stream and `purpose::COLOR` from 1.8).
+    random_color: Option<(sr_sim::rng::Draws, u32)>,
     shape: ParticleShape,
     sprite: Option<Arc<str>>,
     cols: u32,
@@ -1457,10 +1459,13 @@ fn build_emitter(p: &Program, n: &crate::eval::FrameNode, problems: &mut Vec<Str
         (true, Some("frame")) => Walls::Frame { w: p.size[0], h: p.size[1] },
         _ => Walls::None,
     };
-    let seed = opt(e, "seed").map(|s| s as u64).unwrap_or_else(|| crate::rng::hash_str(&n.seed_id) ^ p.seed);
+    let seed = opt(e, "seed").map(|s| s as u64);
+    let draws = crate::rng::sim_draws(p.version(n.doc), p.seed, &n.seed_id, seed, || {
+        seed.unwrap_or_else(|| crate::rng::hash_str(&n.seed_id) ^ p.seed)
+    });
     let size = a.num("size", 4.0);
     let spec = EmitterSpec {
-        seed,
+        draws,
         start,
         end,
         preroll: num(e, "preroll", 0.0),
@@ -1509,7 +1514,10 @@ fn build_emitter(p: &Program, n: &crate::eval::FrameNode, problems: &mut Vec<Str
         opacity_end: a.opt("opacityEnd").unwrap_or(1.0),
         color0: a.color(props, "color"),
         color1: a.color(props, "colorEnd"),
-        random_color: text(e, "preset").as_deref() == Some("confetti"),
+        random_color: (text(e, "preset").as_deref() == Some("confetti")).then_some(match draws {
+            sr_sim::rng::Draws::Legacy(_) => (sr_sim::rng::Draws::Legacy(0xC0FE), 0),
+            stream => (stream, sr_sim::particles::purpose::COLOR),
+        }),
         shape: pshape,
         sprite,
         cols: num(e, "spriteCols", 1.0).max(1.0) as u32,
@@ -2064,7 +2072,7 @@ fn render_frame(rt: &EmitterRt, s: &sr_sim::particles::Store) -> ParticleFrame {
         f.vel.push([s.vx[i] as f32, s.vy[i] as f32]);
         f.size.push(((rt.size + (rt.size_end - rt.size) * su) * s.scale[i]).max(0.0) as f32);
         f.rot.push(if rt.orient { s.vy[i].atan2(s.vx[i]).to_degrees() as f32 } else { s.rot[i] as f32 });
-        let ct = if rt.random_color { sr_sim::rng::unit(0xC0FE, s.id[i], 0) } else { cu };
+        let ct = rt.random_color.map_or(cu, |(d, purpose)| d.unit(purpose, s.id[i]));
         f.color_t.push(if rt.color1.is_some() { ct as f32 } else { 0.0 });
         f.alpha.push((1.0 + (rt.opacity_end - 1.0) * cu).clamp(0.0, 1.0) as f32);
         let cells = (rt.cols * rt.rows).max(1);

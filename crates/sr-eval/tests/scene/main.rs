@@ -16,4 +16,5 @@ mod semantics;
 mod spring_carry;
 mod stroke_text;
 mod version_1_6;
+mod version_1_8;
 mod video_pixel_aspect;

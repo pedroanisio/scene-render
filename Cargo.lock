@@ -3337,6 +3337,7 @@ dependencies = [
  "rapier2d-f64",
  "rapier3d-f64",
  "rayon",
+ "sr-vector",
  "sr-volume",
  "thiserror",
 ]

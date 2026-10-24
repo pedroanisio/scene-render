@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use crate::fields::{self, Field};
-use crate::rng;
+use crate::rng::Draws;
 use crate::timeline;
 
 /// Where particles are born, in the emitter's local pixels.
@@ -46,10 +46,27 @@ pub enum Walls {
     Frame { w: f64, h: f64 },
 }
 
+/// The purposes of a 2D emitter's draws (the random-streams SREP, section 5), each read once per particle with the
+/// particle's ordinal `k`; a legacy draw reads the same numbers as its second counter.
+pub mod purpose {
+    pub const DIRECTION: u32 = 1;
+    pub const SPEED: u32 = 2;
+    pub const LIFETIME: u32 = 3;
+    pub const ROTATION: u32 = 4;
+    pub const SPIN: u32 = 5;
+    pub const SIZE: u32 = 6;
+    /// `randomColor`'s position along the gradient; documents before 1.8 draw it from the fixed seed 0xC0FE.
+    pub const COLOR: u32 = 7;
+    pub const SHAPE_U: u32 = 11;
+    pub const SHAPE_V: u32 = 12;
+    /// The lattice of the turbulence's curl noise, at pack(i, j, 0); documents before 1.8 XOR 0x5A5A into the seed.
+    pub const TURBULENCE: u32 = 20;
+}
+
 /// Emitter parameters (document pixels, seconds, degrees).
 #[derive(Clone, Debug)]
 pub struct EmitterSpec {
-    pub seed: u64,
+    pub draws: Draws,
     pub start: f64,
     pub end: Option<f64>,
     pub preroll: f64,
@@ -143,8 +160,8 @@ pub struct Emitter {
     per_checkpoint: u64,
 }
 
-fn shape_point(shape: &EmitShape, seed: u64, k: u64) -> [f64; 2] {
-    let (u, w) = (rng::unit(seed, k, 11), rng::unit(seed, k, 12));
+fn shape_point(shape: &EmitShape, draws: Draws, k: u64) -> [f64; 2] {
+    let (u, w) = (draws.unit(purpose::SHAPE_U, k), draws.unit(purpose::SHAPE_V, k));
     match shape {
         EmitShape::Point => [0.0, 0.0],
         EmitShape::Rect { w: sw, h: sh } => [(u - 0.5) * sw, (w - 0.5) * sh],
@@ -183,15 +200,15 @@ impl Emitter {
 
     fn spawn(&mut self, k: u64, birth: f64, advance: f64, drv: &mut dyn EmitterDriver) {
         let s = &self.spec;
-        let seed = s.seed;
+        let d = s.draws;
         let o = drv.origin(birth);
-        let lp = shape_point(&s.shape, seed, k);
+        let lp = shape_point(&s.shape, d, k);
         let (x, y) = (o[0] * lp[0] + o[2] * lp[1] + o[4], o[1] * lp[0] + o[3] * lp[1] + o[5]);
         let turn = o[1].atan2(o[0]);
-        let dir = (s.direction + s.spread * (rng::unit(seed, k, 1) - 0.5)).to_radians() + turn;
-        let speed = s.speed + s.speed_variance * rng::signed(seed, k, 2);
+        let dir = (s.direction + s.spread * (d.unit(purpose::DIRECTION, k) - 0.5)).to_radians() + turn;
+        let speed = s.speed + s.speed_variance * d.signed(purpose::SPEED, k);
         let (vx, vy) = (dir.cos() * speed, dir.sin() * speed);
-        let life = (s.lifetime + s.lifetime_variance * rng::signed(seed, k, 3)).max(1e-3);
+        let life = (s.lifetime + s.lifetime_variance * d.signed(purpose::LIFETIME, k)).max(1e-3);
         let p = &mut self.state.p;
         p.id.push(k);
         p.x.push(x + vx * advance);
@@ -200,9 +217,9 @@ impl Emitter {
         p.vy.push(vy);
         p.age.push(advance);
         p.life.push(life);
-        p.rot.push(s.rotation0 + s.rotation_variance * rng::signed(seed, k, 4));
-        p.spin.push(s.angular_velocity + s.angular_velocity_variance * rng::signed(seed, k, 5));
-        p.scale.push((1.0 + s.size_variance * rng::signed(seed, k, 6)).max(0.0));
+        p.rot.push(s.rotation0 + s.rotation_variance * d.signed(purpose::ROTATION, k));
+        p.spin.push(s.angular_velocity + s.angular_velocity_variance * d.signed(purpose::SPIN, k));
+        p.scale.push((1.0 + s.size_variance * d.signed(purpose::SIZE, k)).max(0.0));
     }
 
     fn step_once(&mut self, drv: &mut dyn EmitterDriver) {
@@ -263,8 +280,8 @@ impl Emitter {
             let mut ax = s.gravity[0];
             let mut ay = s.gravity[1];
             if s.turbulence > 0.0 {
-                let c = rng::curl2(
-                    s.seed ^ 0x5A5A,
+                let c = s.draws.salted(0x5A5A).curl2(
+                    purpose::TURBULENCE,
                     p.x[i] / s.turbulence_scale.max(1e-6),
                     p.y[i] / s.turbulence_scale.max(1e-6) + t * 0.2,
                 );
@@ -410,7 +427,7 @@ mod tests {
 
     fn spec() -> EmitterSpec {
         EmitterSpec {
-            seed: 7,
+            draws: Draws::Legacy(7),
             start: 0.0,
             end: None,
             preroll: 0.0,

@@ -629,6 +629,14 @@ pub fn draws_in_3d(name: &str) -> bool {
 }
 
 impl Program {
+    /// The version of document `doc`: 0 the main document, else include `doc − 1`.
+    pub fn version(&self, doc: u16) -> sr_model::Version {
+        match doc {
+            0 => self.scene.version,
+            d => self.includes[d as usize - 1].1.version,
+        }
+    }
+
     /// Identity of this compiled document. Caches can retain a clone and compare with
     /// `Arc::ptr_eq`; retaining it prevents reuse of the identity after the program is dropped.
     pub fn identity(&self) -> &Arc<()> {
