@@ -980,6 +980,34 @@ mod tests {
         }
     }
 
+    /// NVIDIA's OpenGL compiler inlines every call, so each march over the media brings its own copy of the media's
+    /// scattering and, with the random walk, of the walk: two marches doubled the link time of a lit water variant
+    /// with scattering (29 s to 59 s on an RTX 3050 with the shader cache off). A shader with water marches the media
+    /// outside the water with the water's march, at no absorption.
+    #[test]
+    fn every_trace_shader_marches_its_media_from_one_call_site() {
+        let calls = |source: &str, name: &str| {
+            regex::Regex::new(&format!(r"\b{name}\(")).unwrap().find_iter(source).count()
+                - source.matches(&format!("fn {name}(")).count()
+        };
+        for (grid, water, foam, scatter) in
+            (0..16u8).map(|bits| (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0, bits & 8 != 0))
+        {
+            for lighting in [false, true] {
+                let (source, _) = trace_shader(true, lighting, grid, water, foam, scatter);
+                let which = format!("lighting {lighting} grid {grid} water {water} foam {foam} scatter {scatter}");
+                let marches = calls(&source, "volume_transport") + calls(&source, "water_transport");
+                assert_eq!(marches, 1, "{which}: call sites of the media's marches");
+                assert_eq!(calls(&source, "scatter_walk"), scatter as usize, "{which}: call sites of the walk");
+                assert_eq!(
+                    calls(&source, "volume_scattering"),
+                    1 + scatter as usize,
+                    "{which}: call sites of the media's scattering"
+                );
+            }
+        }
+    }
+
     /// The functions of a WGSL source by name, each with the text of its body.
     fn wgsl_functions(source: &str) -> std::collections::HashMap<String, String> {
         let head = regex::Regex::new(r"(?m)^fn (\w+)\(").unwrap();
@@ -1042,7 +1070,8 @@ mod tests {
                 .into_iter()
                 .filter(|m| functions.contains_key(*m))
                 .collect();
-            assert_eq!(marches.len(), 1 + water as usize + scatter as usize, "{which}: the marches {marches:?}");
+            // the water's march marches the media outside the water too
+            assert_eq!(marches.len(), 1 + scatter as usize, "{which}: the marches {marches:?}");
             for march in &marches {
                 let reached = wgsl_reached(&functions, march);
                 for inner in ["volume_transmittance", "visibility", "volume_incident"] {
@@ -1469,7 +1498,7 @@ fn water_source(base: &str) -> String {
     const ENTER: &str = "        if (WATER) { in_sigma = select(vec3(0.0), m.attenuation.rgb, entering); }\n";
     const CROSSED: &str = "            in_sigma = c.in_sigma;\n";
     const FRESNEL: &str = "    let cosi = clamp(dot(v, n), 0.0, 1.0);\n    let r0 = (1.0 - eta) / (1.0 + eta);\n    let fr = r0 * r0 + (1.0 - r0 * r0) * pow(1.0 - cosi, 5.0);\n    let t = refract(d, n, eta);\n";
-    const FOG: &str = "        if (WATER && any(in_sigma > vec3(0.0))) { thr *= exp(-in_sigma * min(hit.t, 1e4)); }\n        if (HAS_MEDIA) {\n";
+    const FOG: &str = "        if (WATER && any(in_sigma > vec3(0.0))) { thr *= exp(-in_sigma * min(hit.t, 1e4)); }\n        if (HAS_MEDIA) {\n            let fog = volume_transport(o, d, hit.t);\n            col += thr * fog.rgb;\n            thr *= fog.a;\n            if (met == 0u) { alpha += (1.0 - alpha) * (1.0 - fog.a); }\n        }\n";
     const VISIBLE: &str = "            var visible = 1.0;\n            if (lt.size.y > 0.5 && m.extra.z > 0.5) { visible = visibility(p + ng * 1e-2, l, ls.w - 2e-2); }";
     for hook in [SIGMA, ENTER, CROSSED, FRESNEL, FOG, VISIBLE] {
         assert_eq!(base.matches(hook).count(), 1, "one place hooks in the refracted shadow ray: {hook}");
@@ -1485,15 +1514,18 @@ fn water_source(base: &str) -> String {
              \x20   let fr = r0 * r0 + (1.0 - r0 * r0) * pow(1.0 - cosi, 5.0);\n",
         )
         // inside absorbing water the media's light is dimmed by the water in front of it, and the water
-        // absorbs across the gaps; elsewhere the march is the plain one
+        // absorbs across the gaps; outside it the same march, at no absorption, is the plain one. The driver inlines
+        // every call, so one march compiles the media's scattering (and the random walk) once.
         .replace(
             FOG,
-            "        if (any(in_sigma > vec3(0.0))) {\n\
+            "        var marched = any(in_sigma > vec3(0.0));\n\
+             \x20       if (HAS_MEDIA) { marched = true; }\n\
+             \x20       if (marched) {\n\
              \x20           let seen = water_transport(o, d, hit.t, in_sigma);\n\
              \x20           col += thr * seen.color;\n\
              \x20           thr *= seen.trans;\n\
              \x20           if (met == 0u) { alpha += (1.0 - alpha) * (1.0 - seen.open); }\n\
-             \x20       } else if (HAS_MEDIA) {\n",
+             \x20       }\n",
         )
         .replace(
             SIGMA,
@@ -1536,7 +1568,11 @@ fn water_source(base: &str) -> String {
                  \x20           }}\n{VISIBLE}"
             ),
         );
-    format!("{hooked}\n{}", include_str!("pathtrace_water.wgsl"))
+    // the water's march is the only one this shader calls, so the media's own march is left out
+    const MARCH: &str = "fn volume_transport(o: vec3<f32>, d: vec3<f32>, distance: f32) -> vec4<f32> {";
+    let start = hooked.find(MARCH).expect("the media's march");
+    let end = start + hooked[start..].find("\n}\n").expect("the march ends") + 3;
+    format!("{}{}\n{}", &hooked[..start], &hooked[end..], include_str!("pathtrace_water.wgsl"))
 }
 
 /// The shader for scenes where some surface has foam mixed into its material: the shader it is given plus the foam at the hit. A
@@ -1753,17 +1789,17 @@ fn variant_source(base: &str, water: bool, foam: bool, scatter: bool) -> String 
     if !scatter {
         return source;
     }
-    // each march (the water's only in the shader with water) is hooked in once; the media's own light, which both
-    // marches share, once
+    // the one march (the water's in the shader with water, which marches the media outside the water too) is hooked
+    // in once, and so is the media's own light
     let mut source = source;
     for (hook, replacement, sites) in [
         ("var color=vec3(0.0); var trans=1.0; var cursor=0.0;",
-            "var color=vec3(0.0); var trans=1.0; var cursor=0.0; var reservoir: ScatterReservoir;", 1),
+            "var color=vec3(0.0); var trans=1.0; var cursor=0.0; var reservoir: ScatterReservoir;", !water as usize),
         ("if (MEDIUM_LIGHTING && any(albedo.rgb>vec3(0.0)))",
             "if (MEDIUM_LIGHTING && tverts[base+13u].w > 0.0 && any(albedo.rgb>vec3(0.0)))", 1),
         ("color+=trans*source*weight; trans*=attenuation;",
-            "scatter_offer(&reservoir, point, vec3(trans*weight)); color+=trans*source*weight; trans*=attenuation;", 1),
-        ("return vec4(color,trans);", "return vec4(color+scatter_walk(reservoir,-d,vec3(0.0)),trans);", 1),
+            "scatter_offer(&reservoir, point, vec3(trans*weight)); color+=trans*source*weight; trans*=attenuation;", !water as usize),
+        ("return vec4(color,trans);", "return vec4(color+scatter_walk(reservoir,-d,vec3(0.0)),trans);", !water as usize),
         ("var color = vec3(0.0); var trans = vec3(1.0); var open = 1.0; var cursor = 0.0;",
             "var color = vec3(0.0); var trans = vec3(1.0); var open = 1.0; var cursor = 0.0; var reservoir: ScatterReservoir;", water as usize),
         ("color += trans * source * weight; trans *= attenuation; open *= exp(-sigma * ds);",

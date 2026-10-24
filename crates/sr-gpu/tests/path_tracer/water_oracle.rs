@@ -440,11 +440,11 @@ fn glowing_smoke_seen_through_absorbing_water_is_dimmed_by_the_water_in_front_of
 }
 
 /// A scene with a transmissive object compiles the shader of the water, whose march through media
-/// is a copy that takes the water's absorption into account. A camera in the air, with no
-/// absorbing water about, must see a medium exactly as it does without the object: the plain march
-/// runs there, and the copy gives the same colour and transmittance with no absorption.
-#[test]
-fn a_medium_looks_the_same_with_a_transmissive_object_in_the_scene() {
+/// takes the water's absorption into account and is the only march that shader has. A camera in the
+/// air, with no absorbing water about, must see a medium exactly as it does without the object: at
+/// no absorption the water's march gives the colour and transmittance of the plain one. `medium` and
+/// `lights` are the smoke's medium element and the scene's lights.
+fn medium_with_and_without_glass(medium: &str, lights: &str) -> Option<(common::Rendered, common::Rendered)> {
     let cache = uniform_cache();
     let scene = |glass: &str| {
         format!(
@@ -455,16 +455,33 @@ fn a_medium_looks_the_same_with_a_transmissive_object_in_the_scene() {
       </materials>
       <composition>
         <camera id="camera" x="0" y="0" z="0" fov="40" renderer="pathtrace" pathSamples="16" maxBounces="1" denoise="false"/>
-        <object3D id="smoke" primitive="volume" volume="slab"><medium extinction="0.3" albedo="#000000" emissionColor="#FFC080" emissionScale="0.4" stepSize="0.1" maxSteps="4096"/></object3D>
+        <object3D id="smoke" primitive="volume" volume="slab">{medium}</object3D>
         {glass}
       </composition>
-      <lights><light id="off" type="ambient" color="#000000" intensity="0"/></lights></scene>"##,
+      <lights>{lights}</lights></scene>"##,
             cache.display()
         )
     };
     let glass =
         r##"<object3D id="ball" primitive="sphere" radius="1" segments="16" x="0" y="0" z="-8" material="glassMat"/>"##;
-    let (Some(plain), Some(with)) = (render(&scene("")), render(&scene(glass))) else { return };
+    Some((render(&scene(""))?, render(&scene(glass))?))
+}
+
+#[test]
+fn a_medium_looks_the_same_with_a_transmissive_object_in_the_scene() {
+    let medium = r##"<medium extinction="0.3" albedo="#000000" emissionColor="#FFC080" emissionScale="0.4" stepSize="0.1" maxSteps="4096"/>"##;
+    let lights = r##"<light id="off" type="ambient" color="#000000" intensity="0"/>"##;
+    let Some((plain, with)) = medium_with_and_without_glass(medium, lights) else { return };
     assert!(plain.px.iter().any(|p| p[0] > 0.05), "the medium glows");
     assert_eq!(plain.px, with.px, "a transmissive object elsewhere changes the medium's pixels");
+}
+
+/// The same with a medium that scatters the sun: the water's march brings the media's scattering
+/// (the lit variant's) and must light the smoke as the plain march did.
+#[test]
+fn a_lit_scattering_medium_looks_the_same_with_a_transmissive_object_in_the_scene() {
+    let medium = r##"<medium extinction="0.3" albedo="#C0C0C0" stepSize="0.1" maxSteps="4096"/>"##;
+    let Some((plain, with)) = medium_with_and_without_glass(medium, SUN) else { return };
+    assert!(plain.px.iter().any(|p| p[0] > 0.02), "the sun lights the medium");
+    assert_eq!(plain.px, with.px, "a transmissive object elsewhere changes the lit medium's pixels");
 }
