@@ -470,7 +470,7 @@ The 3D renderer draws `object3D` nodes with physically based materials, eight li
 - MaterialX is translated by parameter mapping; the MaterialX shader generator is not linked.
 - USD time-sampled attributes take their first sample (USD animation is not imported). FBX imports its hierarchy, skins, blend shapes and animation stacks.
 - Light lists are binned on the CPU and splats are drawn as sorted quads rather than by a tile rasteriser.
-- Area lights use the representative-point approximation. Shadow maps share one resolution, capped so that all shadow views fit in 512 MB.
+- Area lights use the representative-point approximation. Shadow maps share one resolution, capped so that all shadow views fit in 512 MB, and at 1024 × 1024 on a software adapter, which shades every shadow texel on the CPU (on lavapipe, perf_3d's frames with 1024 × 1024 maps have a PSNR of about 50 dB against those with 2048 × 2048 ones).
 - Spherical metadata is written for equirectangular and cubemap video in MP4 and MOV; EAC and fisheye-180 need V2 mesh projections, which are reported.
 
 ## Simulation and accessibility
