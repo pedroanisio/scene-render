@@ -308,6 +308,14 @@
       "bytes": 640,
       "note": "640-byte GeoJSON of square polygons; no generator or record names it"
     },
+    "crates/sr-gpu/tests/fixtures/geo/traced-squares.geojson": {
+      "origin": "upstream",
+      "sha256": "1164dba48ab3bb17c7826d4a3571d46052ab05778bfe3a632d202fa7fcd27a6c",
+      "bytes": 313,
+      "source": "https://github.com/pedroanisio/sr-core/tree/07eaec8d2360e6a3b6a6ff28352aa6d71c5f562a",
+      "upstream_path": "conformance/assets/srep36-squares.geojson",
+      "note": "MIT, same author; byte-equal to the file at that commit"
+    },
     "crates/sr-gpu/tests/fixtures/geo/track.gpx": {
       "origin": "unknown",
       "sha256": "1f52a4bd9ea4704d4daaedfe9bfb6ae829962151178ed7ce2f55723c083bbca9",
