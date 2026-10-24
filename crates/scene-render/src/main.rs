@@ -1645,6 +1645,7 @@ fn render(
                 "cache_hits": last.cache_hits,
                 "prefix_restored": last.prefix_restored,
                 "backdrop_copies": last.backdrop_copies,
+                "compositor_passes": last.compositor_passes,
                 "fx_passes": last.fx_passes,
                 "subframes": last.subframes,
                 "objects3d": last.objects3d,
@@ -1677,8 +1678,8 @@ fn render(
         }
         writeln!(
             out.w,
-            "last frame: {} draws, {} targets, {} cache hits, {} restored, {} backdrop copies, {} effect passes, {} sub-frames",
-            last.draws, last.targets, last.cache_hits, last.prefix_restored, last.backdrop_copies, last.fx_passes, last.subframes
+            "last frame: {} draws, {} targets, {} cache hits, {} restored, {} backdrop copies, {} compositor passes, {} effect passes, {} sub-frames",
+            last.draws, last.targets, last.cache_hits, last.prefix_restored, last.backdrop_copies, last.compositor_passes, last.fx_passes, last.subframes
         )?;
         if last.objects3d > 0 || last.splats > 0 {
             writeln!(out.w, "3d: {} mesh draws, {} triangles, {} splats", last.objects3d, last.triangles, last.splats)?;

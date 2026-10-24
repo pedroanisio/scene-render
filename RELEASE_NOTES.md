@@ -89,6 +89,10 @@ Verify the download with `sha256sum -c scene-render-v0.7.4-linux-x86_64.tar.gz.s
 
 - Each particle batch writes its instances into a buffer the engine keeps between submits (up to 64), grown when a batch needs more, instead of a new buffer every frame.
 
+### Compositor
+
+- The compositor batches its draws by dependency rather than by adjacency. A draw whose blend mode reads the backdrop goes into the first batch after the batches of every earlier draw over any of its pixels, and a normal draw into the batch of the latest such draw, so draws that share no pixel share one render pass and one set of backdrop copies whatever lies between them in the composition; two draws over the same pixel keep their paint order. Before, a batch took only consecutive draws, and any normal draw ended it for the backdrop draws after it. The earlier draws to test come from a 64x64 grid over the batch run's extent, tested exactly on their bounds, so a run of thousands of small disjoint draws still costs a test per neighbour. `--stats` and `render --bench --json` report the passes as `compositor_passes`. On perf_layers (1080p60, 200 layers in 33 blend modes, RTX 3050, 120 frames, three alternated runs each) the frame went from 175 compositor passes to 46, GPU time per frame from 12.6-12.7 ms to 12.2 ms and the frame median from 14.6-14.9 ms to 14.0-14.2 ms; the 174 backdrop copies remain. The first 24 frames are byte-identical to the previous binary's.
+
 ### Delivery
 
 - The flash check's 48x27 grid is collected one frame after it is submitted, on a second mapped buffer, instead of being read back while the render thread waits for it. Only the last frame of a programme waits. On perf_layers (1080p60, 600 frames, RTX 3050) with the flash check on, the encode went from 11.2 s to 8.9-9.2 s, level with the same scene with no check (8.65 s); the grid's cells are the same.

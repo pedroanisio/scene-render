@@ -104,6 +104,9 @@ pub struct RenderStats {
     pub prefix_restored: usize,
     /// Backdrop copies for non-normal blend modes.
     pub backdrop_copies: usize,
+    /// Render passes the compositor recorded for its draws: one per batch of draws (a backdrop draw waits for
+    /// the pass after every earlier draw over its pixels), one per adjustment layer or transient vector raster.
+    pub compositor_passes: usize,
     /// Layers behind a 3D pass copied for it to read (glass, the path tracer).
     pub three_backdrops: usize,
     /// Draws recorded as a texture copy: an aligned texture at full opacity with the normal blend, first into a
@@ -203,6 +206,9 @@ struct Cmd {
     /// Vertices drawn (6 for a quad, more for a deformed mesh).
     count: u32,
     src: Arc<Tex>,
+    /// The target pixels the draw may write, conservatively; `None` when unknown (the draw may touch any pixel).
+    bounds: Option<[u32; 4]>,
+    /// For a blend mode the shader composites: the pixels copied for it to read, the same rectangle as `bounds`.
     backdrop: Option<[u32; 4]>,
     matte: Option<Arc<Tex>>,
     hash: u64,
@@ -3121,6 +3127,7 @@ impl Renderer {
             first_vertex,
             count: 6,
             src: srctex,
+            bounds: Some(bounds),
             backdrop,
             matte,
             hash,
@@ -4075,7 +4082,7 @@ impl Renderer {
         let (tex, raster) = self.vector_target(plan, ck, hash, size, &first, "vector batch", || scene);
         // the batch's raster is the target's size and covers it 1:1: a texel copy (`aligned_texels`)
         let aligned = self.frame_texels(&space, size);
-        let (_, first_vertex) = self.push_frame(plan, &space, &Affine::IDENTITY);
+        let (bounds, first_vertex) = self.push_frame(plan, &space, &Affine::IDENTITY);
         let mut d = Draw {
             opacity: 1.0,
             blend: 0,
@@ -4095,6 +4102,7 @@ impl Renderer {
             first_vertex,
             count: 6,
             src: tex,
+            bounds: Some(bounds),
             backdrop: None,
             matte: None,
             hash,
@@ -4146,13 +4154,14 @@ impl Renderer {
         }
         c.first_vertex = first;
         c.count = idx.len() as u32;
+        let (w, hh) = (space.size[0] as f64, space.size[1] as f64);
+        let x0 = bb[0].floor().clamp(0.0, w) as u32;
+        let y0 = bb[1].floor().clamp(0.0, hh) as u32;
+        let x1 = bb[2].ceil().clamp(0.0, w) as u32;
+        let y1 = bb[3].ceil().clamp(0.0, hh) as u32;
+        c.bounds = Some([x0, y0, x1, y1]);
         if c.backdrop.is_some() {
-            let (w, hh) = (space.size[0] as f64, space.size[1] as f64);
-            let x0 = bb[0].floor().clamp(0.0, w) as u32;
-            let y0 = bb[1].floor().clamp(0.0, hh) as u32;
-            let x1 = bb[2].ceil().clamp(0.0, w) as u32;
-            let y1 = bb[3].ceil().clamp(0.0, hh) as u32;
-            c.backdrop = Some([x0, y0, x1, y1]);
+            c.backdrop = c.bounds;
         }
     }
 
@@ -4306,7 +4315,7 @@ impl Renderer {
             Some(t) => (src::TEXTURE, t),
             None => (kind, tex),
         };
-        let (_, first_vertex) =
+        let (bounds, first_vertex) =
             self.push_quad(plan, space, world, None, [0.0, 0.0, w, hh], [0.0, 0.0, 1.0, 1.0], &glam::Mat4::IDENTITY);
         plan.draws.push(Draw {
             opacity: 1.0,
@@ -4322,6 +4331,7 @@ impl Renderer {
             first_vertex,
             count: 6,
             src: tex,
+            bounds: Some(bounds),
             backdrop: None,
             matte: None,
             hash,
@@ -5262,7 +5272,18 @@ impl Renderer {
             if job.cmds.is_empty() || i >= job.cmds.len() {
                 drop(clear_pass(&mut enc, &job.target, clear));
             }
-            while i < job.cmds.len() {
+            let infos: Vec<BatchInfo> = job
+                .cmds
+                .iter()
+                .map(|c| BatchInfo {
+                    bounds: c.bounds,
+                    backdrop: c.backdrop.is_some(),
+                    pre: c.pre.is_some(),
+                    raster: c.raster.is_some(),
+                })
+                .collect();
+            for batch in compositor_batches(&infos, i, snapshot_at.filter(|_| job.root)) {
+                let i = batch[0];
                 if job.root && snapshot_at == Some(i) {
                     self.snapshot(&mut enc, &job.target, &hashes[..i]);
                 }
@@ -5302,14 +5323,11 @@ impl Renderer {
                         plan.stats.buffers_created += eng.stats.buffers_created;
                     }
                 }
-                let j = compositor_batch_end(job.cmds.len(), i, snapshot_at.filter(|_| job.root), |k| {
-                    let c = &job.cmds[k];
-                    // a transient raster starts its own batch, so one is alive at a time
-                    (c.backdrop, c.pre.is_some(), c.raster.is_some())
-                });
-                // rasterise this batch's transient vector targets just before it draws them
+                // rasterise this batch's transient vector targets just before it draws them (one is alive at a
+                // time: a raster starts its batch)
                 let mut checked_out = Vec::new();
-                for (k, c) in job.cmds[i..j].iter_mut().enumerate() {
+                for &k in &batch {
+                    let c = &mut job.cmds[k];
                     let Some(r) = c.raster else { continue };
                     let rj = &mut lazy[r as usize];
                     let created = self.pool.created;
@@ -5327,7 +5345,7 @@ impl Renderer {
                     plan.stats.targets += 1;
                     c.src = t;
                     live += bytes;
-                    checked_out.push(i + k);
+                    checked_out.push(k);
                 }
                 plan.stats.peak_vector_target_bytes = plan.stats.peak_vector_target_bytes.max(kept + live);
                 // Disjoint backdrop reads see the same pixels before this batch
@@ -5344,7 +5362,7 @@ impl Renderer {
                     c.pre.as_ref().and_then(|p| p.snapshot.as_ref()).filter(|t| f(t) == size)
                 }
                 let pre_back = |c: &Cmd| pre_back_of(c, tsize, |t| t.size).is_some();
-                for b in job.cmds[i..j].iter().filter(|c| !pre_back(c)).filter_map(|c| c.backdrop) {
+                for b in batch.iter().map(|&k| &job.cmds[k]).filter(|c| !pre_back(c)).filter_map(|c| c.backdrop) {
                     if clear {
                         drop(clear_pass(&mut enc, &job.target, true));
                         clear = false;
@@ -5356,8 +5374,9 @@ impl Renderer {
                     Self::copy(&mut enc, &job.target, &s, b);
                     plan.stats.backdrop_copies += 1;
                 }
-                let groups: Vec<Option<wgpu::BindGroup>> = job.cmds[i..j]
+                let groups: Vec<Option<wgpu::BindGroup>> = batch
                     .iter()
+                    .map(|&k| &job.cmds[k])
                     .map(|c| match (&c.backdrop, &c.matte) {
                         (Some(_), None) if pre_back(c) => {
                             let t = pre_back_of(c, tsize, |t| t.size).expect("checked by pre_back");
@@ -5416,12 +5435,13 @@ impl Renderer {
                     clear = false;
                     skip = 1;
                 }
-                if i + skip < j {
+                if skip < batch.len() {
+                    plan.stats.compositor_passes += 1;
                     let mut pass = clear_pass(&mut enc, &job.target, clear);
                     pass.set_vertex_buffer(0, verts.slice(..));
                     pass.set_bind_group(0, &bg0, &[0]);
                     pass.set_bind_group(3, &dummy_gen, &[]);
-                    for (k, c) in job.cmds[i..j].iter().enumerate().skip(skip) {
+                    for (k, c) in batch.iter().map(|&k| &job.cmds[k]).enumerate().skip(skip) {
                         let draw = &plan.draws[c.draw as usize];
                         let ellipse = draw.mask_count == 1
                             && plan.masks.get(draw.mask_off as usize).is_some_and(|m| m.kind == 1 && m.feather > 0.0);
@@ -5491,7 +5511,6 @@ impl Renderer {
                     unsubmitted = 0;
                 }
                 clear = false;
-                i = j;
             }
             if job.root && snapshot_at == Some(job.cmds.len()) {
                 self.snapshot(&mut enc, &job.target, &hashes[..job.cmds.len()]);
@@ -5735,36 +5754,135 @@ impl SubSource for SubFrames<'_> {
     }
 }
 
-fn compositor_batch_end(
-    len: usize,
-    start: usize,
-    snapshot: Option<usize>,
-    info: impl Fn(usize) -> (Option<[u32; 4]>, bool, bool),
-) -> usize {
-    let mut end = start + 1;
-    while end < len && Some(end) != snapshot {
-        let (backdrop, pre, raster) = info(end);
-        if pre || raster {
-            break;
+/// What `compositor_batches` knows of one compositor command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BatchInfo {
+    /// The target pixels the draw may write; `None` when unknown (any pixel).
+    bounds: Option<[u32; 4]>,
+    /// The draw reads the target behind it through a backdrop copy taken before its batch.
+    backdrop: bool,
+    /// An adjustment layer: its snapshot and passes run before its batch, which it starts.
+    pre: bool,
+    /// A transient vector raster: rasterised just before its batch, which it starts, one alive at a time.
+    raster: bool,
+}
+
+/// Cells per side of the grid `dependency_levels` lists draws on.
+const BATCH_GRID: u32 = 64;
+
+/// Groups the commands `start..` of a job into compositor batches, each one render pass preceded by the backdrop
+/// copies of its draws. Returns the batches in execution order, each listing its commands in paint order.
+///
+/// A draw goes into the batch of its dependency level: a backdrop draw into the first batch after the batches of
+/// every earlier draw over any of its pixels (its copy must see those draws), a normal draw into the batch of the
+/// latest such draw (the blender applies it after that draw within the pass). Two draws over the same pixel keep
+/// their order, so every pixel sees its layers as painted, and the draws of one batch that read a backdrop are
+/// pairwise disjoint. Adjustment layers, transient rasters and the `snapshot` index each start a run of batches
+/// that no draw crosses.
+fn compositor_batches(cmds: &[BatchInfo], start: usize, snapshot: Option<usize>) -> Vec<Vec<usize>> {
+    let mut out = Vec::new();
+    let mut s = start;
+    while s < cmds.len() {
+        let mut e = s + 1;
+        while e < cmds.len() && Some(e) != snapshot && !cmds[e].pre && !cmds[e].raster {
+            e += 1;
         }
-        if let Some(b) = backdrop {
-            // Bound the pairwise checks for scenes with thousands of tiny,
-            // mutually disjoint draws. Normal-only runs remain unrestricted.
-            if end - start >= 64 {
-                break;
-            }
-            // Backdrop rectangles conservatively contain all pixels written by
-            // their draw. Normal draws have no recorded bounds, so treat them
-            // as barriers to subsequent backdrop reads.
-            let independent = (start..end)
-                .all(|i| info(i).0.is_some_and(|a| a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1]));
-            if !independent {
-                break;
-            }
+        let levels = dependency_levels(&cmds[s..e]);
+        let first = out.len();
+        out.resize_with(first + levels.iter().map(|&l| l as usize + 1).max().unwrap_or(0), Vec::new);
+        for (k, &level) in levels.iter().enumerate() {
+            out[first + level as usize].push(s + k);
         }
-        end += 1;
+        s = e;
     }
-    end
+    out
+}
+
+/// The dependency level of each draw of one run (see `compositor_batches`): a backdrop draw's is one more than
+/// the highest level of the earlier draws over its pixels, a normal draw's is that level; 0 with none.
+///
+/// Overlap is tested on the bounds, exactly. The earlier draws to test come from a `BATCH_GRID` grid over the
+/// run's extent: a draw over at most a sixteenth of the cells is listed in each cell it touches, a larger one in
+/// `big`, which every later draw tests, and one over every cell only raises `floor`, the least every later draw
+/// is above. Each earlier draw is tested once per draw (`seen`). A draw without bounds covers every cell; one
+/// with empty bounds touches nothing.
+fn dependency_levels(run: &[BatchInfo]) -> Vec<u32> {
+    let g = BATCH_GRID as usize;
+    const SMALL: usize = (BATCH_GRID * BATCH_GRID / 16) as usize;
+    let (mut w, mut h) = (1u32, 1u32);
+    for c in run {
+        if let Some(b) = c.bounds {
+            w = w.max(b[2]);
+            h = h.max(b[3]);
+        }
+    }
+    let cell = |v: u32, extent: u32| (v as usize * g / extent as usize).min(g - 1);
+    let overlaps = |a: [u32; 4], b: [u32; 4]| a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+    // one linked list of entries per cell: `head` the cell's latest entry, `next` the one before it
+    let mut head = vec![u32::MAX; g * g];
+    let (mut next, mut entry): (Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new());
+    let mut big: Vec<u32> = Vec::new();
+    let mut seen = vec![u32::MAX; run.len()];
+    let (mut floor, mut top) = (0u32, 0u32);
+    let mut levels: Vec<u32> = Vec::with_capacity(run.len());
+    for (k, c) in run.iter().enumerate() {
+        let span = match c.bounds {
+            Some([x0, y0, x1, y1]) if x1 > x0 && y1 > y0 => {
+                Some((cell(x0, w), cell(y0, h), cell(x1 - 1, w), cell(y1 - 1, h)))
+            }
+            Some(_) => None,
+            None => Some((0, 0, g - 1, g - 1)),
+        };
+        let whole = span == Some((0, 0, g - 1, g - 1));
+        let bounds = c.bounds.unwrap_or([0, 0, u32::MAX, u32::MAX]);
+        let mut above = 0;
+        if let Some((x0, y0, x1, y1)) = span {
+            above = floor;
+            if whole {
+                above = above.max(top);
+            } else {
+                for &i in &big {
+                    if overlaps(bounds, run[i as usize].bounds.unwrap_or([0, 0, u32::MAX, u32::MAX])) {
+                        above = above.max(levels[i as usize] + 1);
+                    }
+                }
+                for y in y0..=y1 {
+                    for x in x0..=x1 {
+                        let mut e = head[y * g + x];
+                        while e != u32::MAX {
+                            let i = entry[e as usize] as usize;
+                            if seen[i] != k as u32 {
+                                seen[i] = k as u32;
+                                if overlaps(bounds, run[i].bounds.unwrap_or([0, 0, u32::MAX, u32::MAX])) {
+                                    above = above.max(levels[i] + 1);
+                                }
+                            }
+                            e = next[e as usize];
+                        }
+                    }
+                }
+            }
+        }
+        let level = if c.backdrop { above } else { above.saturating_sub(1) };
+        if let Some((x0, y0, x1, y1)) = span {
+            if whole {
+                floor = floor.max(level + 1);
+            } else if (x1 - x0 + 1) * (y1 - y0 + 1) > SMALL {
+                big.push(k as u32);
+            } else {
+                for y in y0..=y1 {
+                    for x in x0..=x1 {
+                        entry.push(k as u32);
+                        next.push(head[y * g + x]);
+                        head[y * g + x] = (entry.len() - 1) as u32;
+                    }
+                }
+            }
+            top = top.max(level + 1);
+        }
+        levels.push(level);
+    }
+    levels
 }
 
 // Frame indices intentionally differ: reuse is based on complete decoded content,
@@ -5920,6 +6038,7 @@ mod draw_uniform_tests {
                 first_vertex: 0,
                 count: 6,
                 src: target.clone(),
+                bounds: None,
                 backdrop: None,
                 matte: None,
                 hash: 0,
@@ -5995,44 +6114,83 @@ mod draw_uniform_tests {
     }
 
     #[test]
-    fn compositor_batches_disjoint_backdrops_without_crossing_dependencies() {
+    fn compositor_batches_group_draws_by_dependency_level() {
         let a = Some([0, 0, 10, 10]);
         let b = Some([10, 0, 20, 10]);
         let overlap = Some([5, 5, 15, 15]);
         let c = Some([0, 10, 10, 20]);
-        let batch = |items: &[(Option<[u32; 4]>, bool)], snapshot| {
-            compositor_batch_end(items.len(), 0, snapshot, |i| (items[i].0, items[i].1, false))
-        };
-        assert_eq!(batch(&[(a, false), (b, false), (c, false)], None), 3);
-        assert_eq!(batch(&[(a, false), (b, false), (overlap, false)], None), 2);
-        // A normal draw may overlap any later backdrop: keep the existing barrier.
-        assert_eq!(batch(&[(None, false), (b, false)], None), 1);
-        assert_eq!(batch(&[(a, false), (None, false), (b, false)], None), 2);
-        assert_eq!(batch(&[(a, false), (b, true)], None), 1);
-        assert_eq!(batch(&[(a, false), (b, false), (c, false)], Some(2)), 2);
-        assert_eq!(batch(&[(None, false), (None, false)], None), 2);
-        // a transient vector raster starts a batch of its own, like an adjustment layer
-        let lazy = |items: &[bool]| compositor_batch_end(items.len(), 0, None, |i| (None, false, items[i]));
-        assert_eq!(lazy(&[true, false, false]), 3);
-        assert_eq!(lazy(&[true, false, true, false]), 2);
-        assert_eq!(lazy(&[false, true]), 1);
+        let far = Some([20, 0, 30, 10]);
+        let info = |bounds, backdrop| BatchInfo { bounds, backdrop, pre: false, raster: false };
+        let batches = |items: &[BatchInfo], snapshot| compositor_batches(items, 0, snapshot);
+        // disjoint backdrop draws share a batch; one over an earlier draw waits for the next
+        assert_eq!(batches(&[info(a, true), info(b, true), info(c, true)], None), [vec![0, 1, 2]]);
+        assert_eq!(batches(&[info(a, true), info(b, true), info(overlap, true)], None), [vec![0, 1], vec![2]]);
+        // a later disjoint backdrop draw joins the first batch past an overlapping one
+        assert_eq!(batches(&[info(a, true), info(overlap, true), info(far, true)], None), [vec![0, 2], vec![1]]);
+        assert_eq!(batches(&[info(a, true), info(overlap, true), info(c, true)], None), [vec![0], vec![1], vec![2]]);
+        // a normal draw joins the batch of the latest draw under it, after it, and holds back only backdrop
+        // draws over it
+        assert_eq!(batches(&[info(a, false), info(b, true)], None), [vec![0, 1]]);
+        assert_eq!(batches(&[info(a, false), info(overlap, true)], None), [vec![0], vec![1]]);
+        assert_eq!(batches(&[info(a, true), info(overlap, false), info(far, true)], None), [vec![0, 1, 2]]);
+        assert_eq!(batches(&[info(a, true), info(overlap, false), info(c, true)], None), [vec![0, 1], vec![2]]);
+        assert_eq!(batches(&[info(a, true), info(b, true), info(overlap, false)], None), [vec![0, 1, 2]]);
+        assert_eq!(batches(&[info(a, true), info(overlap, true), info(c, false)], None), [vec![0], vec![1, 2]]);
+        // unknown bounds touch every pixel; empty bounds none
+        assert_eq!(batches(&[info(None, false), info(b, true)], None), [vec![0], vec![1]]);
+        assert_eq!(batches(&[info(None, false), info(None, false)], None), [vec![0, 1]]);
+        assert_eq!(batches(&[info(a, true), info(None, true)], None), [vec![0], vec![1]]);
+        assert_eq!(batches(&[info(a, true), info(None, true), info(b, true)], None), [vec![0], vec![1], vec![2]]);
+        assert_eq!(batches(&[info(a, true), info(Some([3, 3, 3, 3]), true)], None), [vec![0, 1]]);
+        // the snapshot index ends a batch, and no draw crosses it
+        assert_eq!(batches(&[info(a, true), info(b, true), info(c, true)], Some(2)), [vec![0, 1], vec![2]]);
+        assert_eq!(batches(&[info(a, true), info(overlap, true), info(c, true)], Some(2)), [vec![0], vec![1], vec![2]]);
+        // adjustment layers and transient rasters start a batch; later draws may join it
+        let pre = BatchInfo { bounds: a, backdrop: true, pre: true, raster: false };
+        assert_eq!(batches(&[info(a, true), pre, info(b, true)], None), [vec![0], vec![1, 2]]);
+        assert_eq!(batches(&[info(b, true), pre, info(overlap, true)], None), [vec![0], vec![1], vec![2]]);
+        let raster = |bounds| BatchInfo { bounds, backdrop: false, pre: false, raster: true };
+        assert_eq!(batches(&[raster(a), info(b, false), info(c, false)], None), [vec![0, 1, 2]]);
+        assert_eq!(batches(&[raster(a), info(b, false), raster(c), info(b, false)], None), [vec![0, 1], vec![2, 3]]);
+        assert_eq!(batches(&[info(b, false), raster(a)], None), [vec![0], vec![1]]);
+        // starting later leaves the earlier draws out
+        assert_eq!(compositor_batches(&[info(a, true), info(overlap, true)], 1, None), [vec![1]]);
+        assert!(compositor_batches(&[info(a, true)], 1, None).is_empty());
     }
 
     #[test]
-    fn compositor_dependency_checks_stay_bounded_for_many_disjoint_draws() {
-        let count = 1_000;
-        let reads = std::cell::Cell::new(0);
-        let mut start = 0;
-        while start < count {
-            let end = compositor_batch_end(count, start, None, |i| {
-                reads.set(reads.get() + 1);
-                let x = i as u32 * 4;
-                (Some([x, 0, x + 2, 2]), false, false)
-            });
-            assert!(end > start && end <= count);
-            start = end;
-        }
-        assert!(reads.get() < 64 * count, "{} dependency reads for {count} draws", reads.get());
+    fn compositor_batches_are_exact_for_many_draws_of_any_size() {
+        let info = |bounds| BatchInfo { bounds: Some(bounds), backdrop: true, pre: false, raster: false };
+        let count = 4_000u32;
+        // tiny disjoint draws spread wide: one batch, whatever their number
+        let spread: Vec<BatchInfo> = (0..count).map(|i| info([i * 4, 0, i * 4 + 2, 2])).collect();
+        let batches = compositor_batches(&spread, 0, None);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), count as usize);
+        // each over the next by a pixel: a chain, one batch each
+        let chain: Vec<BatchInfo> = (0..count).map(|i| info([i * 4, 0, i * 4 + 5, 2])).collect();
+        let batches = compositor_batches(&chain, 0, None);
+        assert_eq!(batches.len(), count as usize);
+        assert!(batches.iter().enumerate().all(|(k, b)| b == &[k]));
+        // draws that each cover everything: one batch each, in order
+        let stacked: Vec<BatchInfo> = (0..count).map(|_| info([0, 0, 1920, 1080])).collect();
+        let batches = compositor_batches(&stacked, 0, None);
+        assert_eq!(batches.len(), count as usize);
+        assert!(batches.iter().enumerate().all(|(k, b)| b == &[k]));
+        // a grid of draws with a two-pixel gap: one batch, their cells notwithstanding
+        let grid: Vec<BatchInfo> = (0..64u32)
+            .flat_map(|y| (0..64u32).map(move |x| info([x * 30, y * 17, x * 30 + 28, y * 17 + 15])))
+            .collect();
+        assert_eq!(compositor_batches(&grid, 0, None).len(), 1);
+        // a large draw (over more than a sixteenth of the extent) holds back what it covers, and nothing else
+        let large = info([0, 0, 960, 540]);
+        let (under, beside) = (info([100, 100, 110, 110]), info([1000, 600, 1010, 610]));
+        assert_eq!(compositor_batches(&[large, beside, under], 0, None), [vec![0, 1], vec![2]]);
+        assert_eq!(compositor_batches(&[under, large, beside], 0, None), [vec![0, 2], vec![1]]);
+        // a draw over everything, read through the blender, holds back the backdrop draws after it
+        let whole = BatchInfo { bounds: None, backdrop: false, pre: false, raster: false };
+        assert_eq!(compositor_batches(&[under, whole, beside], 0, None), [vec![0, 1], vec![2]]);
+        assert_eq!(compositor_batches(&[under, whole, whole, beside], 0, None), [vec![0, 1, 2], vec![3]]);
     }
 
     #[test]

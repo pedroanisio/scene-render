@@ -128,8 +128,8 @@ def parse_bench(stdout, stderr):
     if frame is not None and isinstance(frame["stats"], dict):
         rec["stats"] = {k: frame["stats"].get(k) for k in STAT_KEYS}
     else:  # no --stats lines: fall back to the summary line
-        m = re.search(r"last frame: (\d+) draws, (\d+) targets, .*?(\d+) backdrop copies, (\d+) effect passes, "
-                      r"(\d+) sub-frames", stdout)
+        m = re.search(r"last frame: (\d+) draws, (\d+) targets, .*?(\d+) backdrop copies, (?:\d+ compositor passes, )?"
+                      r"(\d+) effect passes, (\d+) sub-frames", stdout)
         rec["stats"] = ({"draws": int(m.group(1)), "targets": int(m.group(2)), "fx_passes": int(m.group(4)),
                          "backdrop_copies": int(m.group(3)), "vector_seconds": None, "subframes": int(m.group(5))}
                         if m else {k: None for k in STAT_KEYS})

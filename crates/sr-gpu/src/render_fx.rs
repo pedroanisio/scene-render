@@ -593,6 +593,7 @@ impl Renderer {
                 first_vertex,
                 count: 6,
                 src: itex,
+                bounds: Some(bounds),
                 backdrop: (blend >= 2 && !fixed_function_blend(blend)).then_some(bounds),
                 matte: Some(cover),
                 hash: h(&[

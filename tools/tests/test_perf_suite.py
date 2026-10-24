@@ -39,6 +39,22 @@ class EncodeReportTests(unittest.TestCase):
                     perf_suite.parse_encode(stdout, "")
 
 
+class BenchReportTests(unittest.TestCase):
+    def test_the_summary_line_serves_when_no_stats_lines_were_printed(self):
+        head = "render: median 14.3 ms (69.9 fps), p95 15.1 ms\nCPU planning and submission 1.5 ms\n"
+        for line in ("last frame: 201 draws, 1 targets, 0 cache hits, 0 restored, 174 backdrop copies, "
+                     "12 compositor passes, 0 effect passes, 0 sub-frames\n",
+                     "last frame: 201 draws, 1 targets, 0 cache hits, 0 restored, 174 backdrop copies, "
+                     "0 effect passes, 0 sub-frames\n"):
+            with self.subTest(line=line):
+                rec = perf_suite.parse_bench(head + line, "")
+                self.assertEqual(rec["median_ms"], 14.3)
+                self.assertEqual({k: rec["stats"][k] for k in ("draws", "targets", "backdrop_copies", "fx_passes",
+                                                               "subframes")},
+                                 {"draws": 201, "targets": 1, "backdrop_copies": 174, "fx_passes": 0,
+                                  "subframes": 0})
+
+
 class SuiteTests(unittest.TestCase):
     def test_failed_workload_fails_the_suite_and_preserves_diagnostics(self):
         with tempfile.TemporaryDirectory() as directory:

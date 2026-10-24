@@ -163,3 +163,79 @@ fn additive_blending_needs_no_backdrop_copy() {
     let Some(r) = render_sub(&d, 0.0) else { return };
     assert_eq!(r.stats.backdrop_copies, 1);
 }
+
+/// Multiply, screen, difference and overlay of opaque `s` over opaque `b`, in linear values.
+fn blend_of(mode: &str, b: [f32; 3], s: [f32; 3]) -> [f32; 4] {
+    let f = |i: usize| match mode {
+        "multiply" => b[i] * s[i],
+        "screen" => b[i] + s[i] - b[i] * s[i],
+        "difference" => (b[i] - s[i]).abs(),
+        "overlay" if b[i] <= 0.5 => 2.0 * b[i] * s[i],
+        "overlay" => 1.0 - 2.0 * (1.0 - b[i]) * (1.0 - s[i]),
+        _ => unreachable!("{mode}"),
+    };
+    [f(0), f(1), f(2), 1.0]
+}
+
+fn src() -> [f32; 3] {
+    [lin8(200), lin8(100), lin8(50)]
+}
+
+fn gray() -> [f32; 3] {
+    [lin8(128); 3]
+}
+
+#[test]
+fn disjoint_blended_layers_share_one_pass() {
+    // four blended layers over a base image, none over another, with normal layers between them in paint
+    // order: the base and the normal layers draw in one pass, the four blends in a second, after four
+    // backdrop copies. Before, each normal layer was a barrier and each blend began a pass of its own.
+    let d = scene(
+        r##"width="96" height="64" fps="10" duration="1" background="#000000""##,
+        r##"<layer id="base" asset="src" scaleX="24" scaleY="16"/>
+            <layer id="m" asset="gray" scaleX="4" scaleY="4" blend="multiply"/>
+            <layer id="n1" asset="red" x="24" scaleX="4" scaleY="4"/>
+            <layer id="s" asset="gray" x="48" scaleX="4" scaleY="4" blend="screen"/>
+            <layer id="n2" asset="white" x="72" scaleX="4" scaleY="4"/>
+            <layer id="d" asset="gray" y="32" scaleX="4" scaleY="4" blend="difference"/>
+            <layer id="o" asset="gray" x="48" y="32" scaleX="4" scaleY="4" blend="overlay"/>"##,
+        "",
+    );
+    let Some(r) = render_sub(&d, 0.0) else { return };
+    assert_eq!((r.stats.compositor_passes, r.stats.backdrop_copies), (2, 4), "{:?}", r.stats);
+    assert_px(&r, 8, 8, blend_of("multiply", src(), gray()), 3e-3);
+    assert_px(&r, 32, 8, [1.0, 0.0, 0.0, 1.0], 3e-3);
+    assert_px(&r, 56, 8, blend_of("screen", src(), gray()), 3e-3);
+    assert_px(&r, 80, 8, [1.0; 4], 3e-3);
+    assert_px(&r, 8, 40, blend_of("difference", src(), gray()), 3e-3);
+    assert_px(&r, 56, 40, blend_of("overlay", src(), gray()), 3e-3);
+    assert_px(&r, 32, 40, [src()[0], src()[1], src()[2], 1.0], 3e-3);
+}
+
+#[test]
+fn overlapping_blended_layers_keep_their_order() {
+    // a: multiply over the base; b: screen over a and the base; c: normal over b and the base; d: multiply over c;
+    // e: difference over the base beside c. Every pixel sees its layers in paint order while the frame takes
+    // one pass per dependency level: {base}, {a, e}, {b, c}, {d}.
+    let d = scene(
+        r##"width="96" height="64" fps="10" duration="1" background="#000000""##,
+        r##"<layer id="base" asset="src" scaleX="24" scaleY="16"/>
+            <layer id="a" asset="gray" scaleX="12" scaleY="16" blend="multiply"/>
+            <layer id="b" asset="gray" x="24" scaleX="12" scaleY="16" blend="screen"/>
+            <layer id="c" asset="red" x="60" scaleX="9" scaleY="8"/>
+            <layer id="d" asset="gray" x="80" scaleX="4" scaleY="4" blend="multiply"/>
+            <layer id="e" asset="gray" x="80" y="40" scaleX="4" scaleY="4" blend="difference"/>"##,
+        "",
+    );
+    let Some(r) = render_sub(&d, 0.0) else { return };
+    assert_eq!((r.stats.compositor_passes, r.stats.backdrop_copies), (4, 4), "{:?}", r.stats);
+    let a = blend_of("multiply", src(), gray());
+    assert_px(&r, 8, 32, a, 3e-3);
+    assert_px(&r, 36, 32, blend_of("screen", [a[0], a[1], a[2]], gray()), 3e-3);
+    assert_px(&r, 56, 48, blend_of("screen", src(), gray()), 3e-3);
+    assert_px(&r, 66, 16, [1.0, 0.0, 0.0, 1.0], 3e-3);
+    assert_px(&r, 88, 8, blend_of("multiply", [1.0, 0.0, 0.0], gray()), 3e-3);
+    assert_px(&r, 88, 24, [1.0, 0.0, 0.0, 1.0], 3e-3);
+    assert_px(&r, 88, 36, [src()[0], src()[1], src()[2], 1.0], 3e-3);
+    assert_px(&r, 88, 48, blend_of("difference", src(), gray()), 3e-3);
+}
