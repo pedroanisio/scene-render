@@ -80,6 +80,32 @@ pub struct PathSamples {
     pub hardware_rays: bool,
 }
 
+impl PathSamples {
+    /// The samples of two frames, or of two parts of an output, together.
+    pub fn and(self, other: PathSamples) -> PathSamples {
+        PathSamples {
+            traced: self.traced + other.traced,
+            budget: self.budget + other.budget,
+            hardware_rays: self.hardware_rays && other.hardware_rays,
+        }
+    }
+}
+
+/// The sample counters of a frame's path-traced passes, taken from the renderer (`Renderer::take_path_samples`) so
+/// the frames after it do not replace them: read once the frame's work has completed, they cost no wait.
+pub struct PathCounts(Vec<crate::pathtrace::SampleCount>);
+
+impl PathCounts {
+    /// The samples traced and the most they could have been; waits for the frame's work to complete.
+    pub fn read(&self, device: &wgpu::Device) -> PathSamples {
+        PathSamples {
+            traced: self.0.iter().map(|c| c.traced(device)).sum(),
+            budget: self.0.iter().map(|c| c.budget).sum(),
+            hardware_rays: self.0.iter().all(|c| c.hardware_rays),
+        }
+    }
+}
+
 /// Counters for one rendered frame.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct RenderStats {
@@ -1473,13 +1499,14 @@ impl Renderer {
 
     /// The samples the last frame's path-traced passes traced and the most they could have, None without such a pass;
     /// waits for that frame's work to complete.
-    pub fn path_samples(&self) -> Option<PathSamples> {
-        let counts = self.three.as_ref().map(|e| e.pt_samples.as_slice()).unwrap_or_default();
-        (!counts.is_empty()).then(|| PathSamples {
-            traced: counts.iter().map(|c| c.traced(&self.gpu.device)).sum(),
-            budget: counts.iter().map(|c| c.budget).sum(),
-            hardware_rays: counts.iter().all(|c| c.hardware_rays),
-        })
+    pub fn path_samples(&mut self) -> Option<PathSamples> {
+        self.take_path_samples().map(|c| c.read(&self.gpu.device))
+    }
+
+    /// The sample counters of the last frame's path-traced passes, None without such a pass; does not wait.
+    pub fn take_path_samples(&mut self) -> Option<PathCounts> {
+        let counts = self.three.as_mut().map(|e| std::mem::take(&mut e.pt_samples)).unwrap_or_default();
+        (!counts.is_empty()).then_some(PathCounts(counts))
     }
 
     pub fn gpu(&self) -> &Gpu {

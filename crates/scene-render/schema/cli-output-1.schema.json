@@ -245,7 +245,24 @@
       "properties": {
         "outputs": {
           "type": "array",
-          "items": {"type": "object", "required": ["path", "files", "frames", "size", "fps", "encoder"]}
+          "items": {
+            "type": "object",
+            "required": ["path", "files", "frames", "size", "fps", "encoder"],
+            "properties": {
+              "paths": {
+                "description": "Since 1.3.0: the path samples the output's frames traced and their cameras' pathSamples budget; null without a path-traced camera.",
+                "anyOf": [
+                  {"type": "null"},
+                  {
+                    "type": "object",
+                    "required": ["budget", "traced", "hardware_rays"],
+                    "additionalProperties": false,
+                    "properties": {"budget": {"$ref": "#/$defs/count"}, "traced": {"$ref": "#/$defs/count"}, "hardware_rays": {"type": "boolean"}}
+                  }
+                ]
+              }
+            }
+          }
         }
       }
     },

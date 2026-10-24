@@ -167,6 +167,9 @@ pub struct Report {
     pub checkpoint_hits: usize,
     pub checkpoint_misses: usize,
     pub iterate_steps: std::collections::BTreeMap<String, [u64; 2]>,
+    /// The path samples the frames traced against their cameras' `pathSamples` budget, as `render --stats` reports per
+    /// frame; absent without a path-traced camera.
+    pub paths: Option<sr_gpu::PathSamples>,
     /// Each `object3D` drawn as a mesh: the first and last times it was drawn, and whether it was inside the camera's
     /// view at any of them (the render report's 3D-OFF-CAMERA).
     #[serde(skip)]
@@ -461,7 +464,8 @@ impl Video<'_> {
     ) -> Result<(), DeliverError> {
         let p = self.ev.program();
         let working = self.renderer.working();
-        let mut pending: Option<(f64, sr_gpu::output::Pending)> = None;
+        // the frame's path-sample counters travel with its pixels and are read when they are, once its work is done
+        let mut pending: Option<(Option<sr_gpu::PathCounts>, sr_gpu::output::Pending)> = None;
         // The flash grid of the frame before, begun with that frame and collected with this one: the GPU reduces
         // one frame while this thread prepares the next, and the observations keep their order.
         let mut flash_pending: Option<(f64, sr_gpu::FlashPending)> = None;
@@ -498,6 +502,7 @@ impl Video<'_> {
                     let ft = self.segments.as_ref().map(|(_, frames)| frames[k]);
                     let out_t = ft.map_or(t - self.origin, |f| f.output);
                     let frame = self.render_side(&g, t, ft.as_ref())?;
+                    let paths = self.renderer.take_path_samples();
                     unsupported.extend(frame.stats.unsupported.iter().cloned());
                     for id in &frame.stats.contrast_unprobed {
                         seen.unprobed(id, k, opacity_of(&g, id));
@@ -554,9 +559,10 @@ impl Video<'_> {
                             seen.flash(prev_t, cells);
                         }
                     }
-                    if let Some((_, prev)) = pending.replace((t, next)) {
+                    if let Some((counts, prev)) = pending.replace((paths, next)) {
                         let w = Instant::now();
                         let bytes = self.stage.wait(prev);
+                        count_paths(report, counts, &self.renderer);
                         meter::add(&mut report.stage_seconds, 2, w.elapsed().as_secs_f64());
                         meter::add(&mut report.stage_seconds, 3, sink(bytes)?);
                     }
@@ -567,9 +573,10 @@ impl Video<'_> {
                             meter::add(&mut report.stage_seconds, 2, w.elapsed().as_secs_f64());
                             seen.flash(last_t, cells);
                         }
-                        if let Some((_, last)) = pending.take() {
+                        if let Some((counts, last)) = pending.take() {
                             let w = Instant::now();
                             let bytes = self.stage.wait(last);
+                            count_paths(report, counts, &self.renderer);
                             meter::add(&mut report.stage_seconds, 2, w.elapsed().as_secs_f64());
                             meter::add(&mut report.stage_seconds, 3, sink(bytes)?);
                         }
@@ -2125,6 +2132,7 @@ fn run_delivery(
                 report.subframe_seconds += part.subframe_seconds;
                 report.checkpoint_hits += part.checkpoint_hits;
                 report.checkpoint_misses += part.checkpoint_misses;
+                report.paths = merge_paths(report.paths, part.paths);
                 for (who, [lo, hi]) in part.iterate_steps {
                     let e = report.iterate_steps.entry(who).or_insert([lo, hi]);
                     *e = [e[0].min(lo), e[1].max(hi)];
@@ -2781,6 +2789,21 @@ fn three_d_findings(report: &mut Report) {
     report.findings.extend(found);
 }
 
+/// Adds a frame's path samples to the report; the frame's work has completed, so reading them does not wait.
+fn count_paths(report: &mut Report, counts: Option<sr_gpu::PathCounts>, renderer: &sr_gpu::Renderer) {
+    if let Some(c) = counts {
+        report.paths = merge_paths(report.paths, Some(c.read(&renderer.gpu().device)));
+    }
+}
+
+/// The path samples of two frames or segments of an output; a part without a path-traced camera adds nothing.
+fn merge_paths(a: Option<sr_gpu::PathSamples>, b: Option<sr_gpu::PathSamples>) -> Option<sr_gpu::PathSamples> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.and(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 /// What a frame's stateful effects add to the report (SREPs 67 and 68).
 fn stateful(report: &mut Report, stats: &sr_gpu::RenderStats) {
     report.checkpoint_hits += stats.checkpoint_hits;
@@ -2957,6 +2980,18 @@ fn shader_signals(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_outputs_path_samples_sum_over_its_parts() {
+        let part = |traced, budget, hardware_rays| Some(sr_gpu::PathSamples { traced, budget, hardware_rays });
+        assert_eq!(merge_paths(part(3, 8, true), part(5, 8, true)), part(8, 16, true));
+        // one pass without ray queries is enough for the output not to have used them throughout
+        assert_eq!(merge_paths(part(3, 8, true), part(5, 8, false)), part(8, 16, false));
+        // a segment without a path-traced camera adds nothing
+        assert_eq!(merge_paths(None, part(5, 8, false)), part(5, 8, false));
+        assert_eq!(merge_paths(part(3, 8, true), None), part(3, 8, true));
+        assert_eq!(merge_paths(None, None), None);
+    }
 
     #[test]
     fn outputs_render_to_the_planar_format_their_encoder_reads() {

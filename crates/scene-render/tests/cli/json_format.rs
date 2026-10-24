@@ -72,7 +72,7 @@ fn validate_reports_each_file_and_a_typed_failure() {
     let v = envelope(&o, Some("validate"));
     assert_eq!(v["ok"], true);
     assert_eq!(v["error"], Value::Null);
-    assert_eq!(v["schema_version"], "1.2.0");
+    assert_eq!(v["schema_version"], "1.3.0");
 
     let o = run(&["validate", "--format=json", "/nonexistent/scene.xml"]);
     assert_eq!(o.status.code(), Some(2));
@@ -311,6 +311,47 @@ fn render_and_encode_give_what_they_wrote_or_a_typed_failure() {
     assert!(v["result"]["outputs"][0]["frames"].as_u64().is_some_and(|n| n > 0), "{v:#}");
 }
 
+/// Each encoded output reports the path samples it traced against its cameras' `pathSamples` budget, as
+/// `render --stats` does per frame, so an encode under `--path-noise` says how many samples it saved.
+#[test]
+fn encode_reports_the_path_samples_of_each_output() {
+    let d = dir("encode-paths");
+    let f = write(
+        &d,
+        "p.scene.xml",
+        r#"<scene version="1.7"><project width="64" height="48" fps="2" duration="1"/><composition>
+<camera id="eye" z="-10" renderer="pathtrace" pathSamples="64" maxBounces="2" denoise="false"/>
+<object3D id="ball" primitive="sphere" radius="1"/></composition></scene>"#,
+    );
+    if !crate::common::ffmpeg("encode_reports_the_path_samples_of_each_output") {
+        return;
+    }
+    let pattern = d.join("p_%03d.png").display().to_string();
+    let encode = |extra: &[&str]| {
+        let o = run(&[&["encode", &f, "-o", &pattern, "--json"][..], extra].concat());
+        if no_gpu(&o) {
+            return None;
+        }
+        assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+        Some(envelope(&o, Some("encode"))["result"]["outputs"][0]["paths"].clone())
+    };
+    let Some(full) = encode(&[]) else { return };
+    // two frames of 64 × 48 pixels at 64 samples each
+    assert_eq!(full["budget"], 2 * 64 * 48 * 64, "{full}");
+    assert_eq!(full["traced"], full["budget"], "{full}");
+    assert!(full["hardware_rays"].is_boolean(), "{full}");
+    let adaptive = encode(&["--path-noise", "0.05"]).unwrap();
+    assert_eq!(adaptive["budget"], full["budget"]);
+    let traced = adaptive["traced"].as_u64().unwrap();
+    assert!(traced > 0 && traced < 2 * 64 * 48 * 64 / 2, "{adaptive}");
+    // a document without a path-traced camera traces nothing
+    let flat = write(&d, "flat.scene.xml", SMALL);
+    let png = d.join("flat_%03d.png").display().to_string();
+    let o = run(&["encode", &flat, "-o", &png, "--end", "0.2", "--json"]);
+    assert_eq!(o.status.code(), Some(0), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(envelope(&o, Some("encode"))["result"]["outputs"][0]["paths"], Value::Null);
+}
+
 #[test]
 fn watch_prints_one_envelope_per_run() {
     let d = dir("watch");
@@ -423,6 +464,30 @@ fn the_schema_refuses_inconsistent_envelopes() {
     let mut missing = good.clone();
     missing.as_object_mut().unwrap().remove("diagnostics");
     assert!(validate(&schema, &schema, &missing, "").is_err(), "accepted a missing key");
+    // an encoded output's path samples are counts and a flag
+    let output =
+        serde_json::json!({"path": "a.mp4", "files": [], "frames": 1, "size": [2, 2], "fps": 1.0, "encoder": "x"});
+    let encoded = |paths: Value| {
+        let mut o = output.clone();
+        o["paths"] = paths;
+        serde_json::json!({
+            "format": "scene-render-cli/1", "schema_version": "1.3.0", "command": "encode", "ok": true, "exit_code": 0,
+            "result": {"outputs": [o]}, "diagnostics": [], "error": null
+        })
+    };
+    let fine = serde_json::json!({"budget": 8, "traced": 4, "hardware_rays": false});
+    validate(&schema, &schema, &encoded(fine.clone()), "").unwrap();
+    validate(&schema, &schema, &encoded(Value::Null), "").unwrap();
+    let mut short = fine.clone();
+    short.as_object_mut().unwrap().remove("traced");
+    for (what, paths) in [
+        ("a count that is not a number", serde_json::json!({"budget": "8", "traced": 4, "hardware_rays": false})),
+        ("a missing count", short),
+        ("a flag that is not a boolean", serde_json::json!({"budget": 8, "traced": 4, "hardware_rays": 1})),
+        ("an undeclared key", serde_json::json!({"budget": 8, "traced": 4, "hardware_rays": false, "x": 1})),
+    ] {
+        assert!(validate(&schema, &schema, &encoded(paths), "").is_err(), "accepted {what}");
+    }
 }
 
 // ---- the JSON Schema of the envelope (schema/cli-output-1.schema.json) ----

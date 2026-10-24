@@ -2283,6 +2283,16 @@ fn encode(
                         if r.segments > 1 { format!(", {} segments at once (stage times summed over them)", r.segments) } else { String::new() }
                     )?;
                 }
+                if let Some(p) = r.paths {
+                    let share = if p.budget > 0 { 100.0 * p.traced as f64 / p.budget as f64 } else { 100.0 };
+                    writeln!(
+                        out.w,
+                        "  paths: {} of {} samples traced ({share:.1}%){}",
+                        p.traced,
+                        p.budget,
+                        if p.hardware_rays { ", hits found with the adapter's ray queries" } else { "" }
+                    )?;
+                }
                 if let Some(tp) = r.true_peak {
                     let l = r
                         .loudness
