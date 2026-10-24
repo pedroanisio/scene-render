@@ -14,7 +14,7 @@ use sr_model::model::{Node, TimeBase};
 use sr_model::values::Length;
 
 use crate::expr::vm::{self, Band, Host, LoopKind, Var, V};
-use crate::program::{marker_time, tfi, Clock, Kind, LinkSource, Owner, Program};
+use crate::program::{marker_time, tfi, Clock, InstNode, Kind, LinkSource, Owner, Program};
 use crate::rng;
 use crate::value::Value;
 
@@ -417,6 +417,13 @@ struct Local {
     rot: f64,
 }
 
+/// Whether a plain node is inside its own window at `tl` on its timeline, `t` being the composition time. Before time 0,
+/// which a shutter opening early samples for the first frame (SREP 55), a window that opens at or before 0 is open: the
+/// programme's start is not a cut, so the first frame blurs over the scene it starts with.
+fn in_own_window(node: &InstNode, tl: f64, t: f64) -> bool {
+    (tl >= node.vis_start || (t < 0.0 && node.vis_start <= 0.0)) && node.vis_end.is_none_or(|e| tl < e)
+}
+
 /// Whether node `n` is inside its time window at composition time `t`, and so is every ancestor, each
 /// ancestor's clock mapping the time for its children: the node is then in the frame graph unless a
 /// condition hides it (conditions are not evaluated here).
@@ -431,7 +438,7 @@ pub(crate) fn in_window(p: &Program, n: u32, t: f64) -> bool {
         let on = match node.kind {
             Kind::RepeatCopy { .. } => true,
             Kind::Transition(_) => false,
-            Kind::Plain => tl >= node.vis_start && node.vis_end.is_none_or(|e| tl < e),
+            Kind::Plain => in_own_window(node, tl, t),
         };
         if !on {
             return false;
@@ -817,7 +824,7 @@ impl<'p> Frame<'p> {
             let alive = up
                 && (clock_override.is_some()
                     || match node.kind {
-                        Kind::Plain => t >= node.vis_start && node.vis_end.is_none_or(|e| t < e),
+                        Kind::Plain => in_own_window(node, t, self.t),
                         _ => true,
                     });
             self.alive[n as usize] = alive;
@@ -1090,7 +1097,7 @@ impl<'p> Frame<'p> {
         let on = match node.kind {
             Kind::RepeatCopy { .. } => true,
             Kind::Transition(_) => false,
-            Kind::Plain => tl >= node.vis_start && node.vis_end.is_none_or(|e| tl < e),
+            Kind::Plain => in_own_window(node, tl, self.t),
         };
         on && self.condition(n)
     }
