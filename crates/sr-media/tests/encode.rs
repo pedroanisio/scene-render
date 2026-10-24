@@ -839,3 +839,33 @@ fn a_pass_reads_its_frames_from_a_coded_source_and_counts_them() {
     Encoder::start(&s).unwrap().finish().unwrap();
     assert_eq!(frames_of(&s.path), 7);
 }
+
+#[test]
+fn the_dnxhr_encoder_is_found_where_ffmpeg_has_it() {
+    // DNxHD encodes arbitrary sizes only under a DNxHR profile: a probe without one is refused by every FFmpeg, which hid the encoder
+    if !common::ffmpeg_available("the_dnxhr_encoder_is_found_where_ffmpeg_has_it") {
+        return;
+    }
+    let listed = std::process::Command::new(sr_media::ffmpeg()).args(["-hide_banner", "-encoders"]).output().unwrap();
+    if !String::from_utf8_lossy(&listed.stdout).contains(" dnxhd ") {
+        return common::skip_ffmpeg("the_dnxhr_encoder_is_found_where_ffmpeg_has_it", "FFmpeg was built without dnxhd");
+    }
+    assert!(sr_media::encode::working_encoder("dnxhd"), "FFmpeg lists dnxhd, and the probe has to find it working");
+}
+
+#[test]
+fn a_dnxhr_file_takes_a_frame_rate_outside_the_broadcast_set() {
+    // the MXF muxer lists only broadcast rates and refuses the others unless told the file need not be official
+    if !common::ffmpeg_available("a_dnxhr_file_takes_a_frame_rate_outside_the_broadcast_set") {
+        return;
+    }
+    let d = dir();
+    for fps in [10.0, 25.0] {
+        let p = d.join(format!("r{fps}.mxf"));
+        let mut s = spec(&p, Codec::Dnxhr, InputFormat::Yuv422p);
+        (s.width, s.height, s.fps) = (256, 128, fps);
+        encode(&s, 4);
+        let v = probe(&p).unwrap().video.unwrap();
+        assert!((v.fps - fps).abs() < 1e-6, "{fps} fps: {}", v.fps);
+    }
+}

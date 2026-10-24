@@ -434,7 +434,12 @@ fn probe_encoder(name: &str) -> bool {
     if name.ends_with("_vaapi") {
         cmd.args(["-vf", "format=nv12,hwupload"]);
     }
-    cmd.args(["-frames:v", "2", "-c:v", name, "-f", "null", "-"]);
+    cmd.args(["-frames:v", "2", "-c:v", name]);
+    if name == "dnxhd" {
+        // DNxHD itself takes only broadcast sizes and bitrates; the DNxHR profiles, which encodes use, take any size
+        cmd.args(["-profile:v", "dnxhr_lb", "-pix_fmt", "yuv422p"]);
+    }
+    cmd.args(["-f", "null", "-"]);
     cmd.stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
 }
 
@@ -1118,6 +1123,11 @@ impl EncodeSpec {
         if matches!(container, Some(Container::Mkv | Container::Webm | Container::Mxf)) {
             // These muxers otherwise create random identifiers. Never use the wall clock.
             a.extend(["-fflags".into(), "+bitexact".into()]);
+        }
+        if container == Some(Container::Mxf) {
+            // The MXF muxer refuses rates outside its broadcast list (10 or 15 fps) unless the file may be
+            // unofficial; at a listed rate the flag leaves the file byte-identical.
+            a.extend(["-strict".into(), "unofficial".into()]);
         }
         for (k, v) in &self.metadata {
             a.push("-metadata".into());
