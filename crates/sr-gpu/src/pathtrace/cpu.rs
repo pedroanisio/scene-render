@@ -135,6 +135,22 @@ fn tri_hit(
     let p0 = xyz(&scene.pos[k * 3]);
     let e1 = sub(xyz(&scene.pos[k * 3 + 1]), p0);
     let e2 = sub(xyz(&scene.pos[k * 3 + 2]), p0);
+    tri_hit_edges([p0, e1, e2], k as u32, o, d, tmax, h, instance, determinant_scale);
+}
+
+/// `tri_hit` past the material check, from the first corner and the two edges it computes.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn tri_hit_edges(
+    [p0, e1, e2]: [[f32; 3]; 3],
+    k: u32,
+    o: [f32; 3],
+    d: [f32; 3],
+    tmax: f32,
+    h: &mut Hit,
+    instance: u32,
+    determinant_scale: f32,
+) {
     let pv = cross(d, e2);
     let det = dot(e1, pv);
     if (det * determinant_scale).abs() < 1e-12 {
@@ -153,7 +169,7 @@ fn tri_hit(
     }
     let t = dot(e2, q) * inv;
     if t > 1e-4 && t < tmax.min(h.t) {
-        *h = Hit { t, u, v, tri: k as u32, instance };
+        *h = Hit { t, u, v, tri: k, instance };
     }
 }
 
@@ -186,6 +202,16 @@ pub(crate) struct Top {
     /// children at `a` and `a + 1`. It is empty when the scene has no top-level primitive.
     nodes: Vec<PtNode>,
     order: Vec<u32>,
+    /// `order`'s primitives as the walk reads them, side by side: a loose triangle's first corner and edges, or a
+    /// prototype proxy.
+    leaves: Vec<Leaf>,
+}
+
+#[derive(Clone, Copy)]
+struct Leaf {
+    corner_edges: [[f32; 3]; 3],
+    k: u32,
+    prototype: bool,
 }
 
 impl Top {
@@ -200,7 +226,17 @@ impl Top {
             records.push(scene.instances[&k]);
         }
         let (nodes, order) = sah_bvh(top_level_prims(scene));
-        Top { pixels: scene.atlas_pixels(), records, slot, nodes, order }
+        let leaves = order
+            .iter()
+            .map(|&k| {
+                let p = |c: usize| xyz(&scene.pos[k as usize * 3 + c]);
+                let p0 = p(0);
+                let prototype = scene.tri_mat[k as usize] == PROTOTYPE;
+                let corner_edges = if prototype { [[0.0; 3]; 3] } else { [p0, sub(p(1), p0), sub(p(2), p0)] };
+                Leaf { corner_edges, k, prototype }
+            })
+            .collect();
+        Top { pixels: scene.atlas_pixels(), records, slot, nodes, order, leaves }
     }
 
     /// The bytes this holds, for the tracer's budget.
@@ -210,6 +246,7 @@ impl Top {
             + self.slot.len() * 4
             + self.nodes.len() * std::mem::size_of::<PtNode>()
             + self.order.len() * 4
+            + self.leaves.len() * std::mem::size_of::<Leaf>()
     }
 }
 
@@ -217,6 +254,9 @@ impl Top {
 pub(crate) struct Dense<'a> {
     scene: &'a PtScene,
     top: std::sync::Arc<Top>,
+    /// Every material casts shadows and lets no light through (opacity 1 without an alpha map): any caster on a
+    /// shadow ray then makes it 0, so the ray needs any hit, not the nearest.
+    pub(crate) opaque_casters: bool,
 }
 
 impl<'a> Dense<'a> {
@@ -226,7 +266,9 @@ impl<'a> Dense<'a> {
 
     /// `scene` with a `top` built from it, or from a scene with the same geometry, instances and atlas.
     pub(crate) fn with(scene: &'a PtScene, top: std::sync::Arc<Top>) -> Self {
-        Dense { scene, top }
+        let opaque_casters = !scene.mats.is_empty()
+            && scene.mats.iter().all(|m| m.extra[1] > 0.5 && m.texture_params[1] == 0.0 && m.base[3] >= 1.0);
+        Dense { scene, top, opaque_casters }
     }
 
     /// The record of instance `k`; panics like the map index when `k` is not an instance.
@@ -244,8 +286,16 @@ impl std::ops::Deref for Dense<'_> {
     }
 }
 
-/// The shader's `prototype_hit`: the ray in the instance's local space, walking the shared prototype BVH.
-fn prototype_hit(scene: &Dense, instance: usize, world_o: [f32; 3], world_d: [f32; 3], tmax: f32, h: &mut Hit) {
+/// The shader's `prototype_hit`: the ray in the instance's local space, walking the shared prototype BVH. `ANY`
+/// returns at the first hit instead of the nearest.
+fn prototype_hit<const ANY: bool>(
+    scene: &Dense,
+    instance: usize,
+    world_o: [f32; 3],
+    world_d: [f32; 3],
+    tmax: f32,
+    h: &mut Hit,
+) {
     let record = scene.record(instance);
     let inverse = &record[5..9];
     let o = transform(inverse, world_o, 1.0);
@@ -264,20 +314,46 @@ fn prototype_hit(scene: &Dense, instance: usize, world_o: [f32; 3], world_d: [f3
         if n.b > 0 {
             for k in n.a..n.a + n.b {
                 tri_hit(scene, k as usize, o, d, tmax, h, instance as u32, record[13][2]);
+                if ANY && h.tri != NONE {
+                    return;
+                }
             }
         } else if sp < 62 {
-            stack[sp] = n.a;
-            stack[sp + 1] = n.a - 1;
+            (stack[sp], stack[sp + 1]) = far_then_near(&scene.nodes, n.a, n.a - 1, d);
             sp += 2;
         }
     }
 }
 
+/// An inner node's children `a` and `b` in the order a walk pushes them, `b` popped first unless `a`'s box centre lies
+/// nearer along `d`: the nearer child is walked first, so its hit prunes the farther one's boxes. Only which of two
+/// hits at exactly the same distance is kept depends on it.
+#[inline(always)]
+fn far_then_near(nodes: &[PtNode], a: u32, b: u32, d: [f32; 3]) -> (u32, u32) {
+    let (x, y) = (&nodes[a as usize], &nodes[b as usize]);
+    let along = (0..3).map(|i| (x.lo[i] + x.hi[i] - y.lo[i] - y.hi[i]) * d[i]).sum::<f32>();
+    if along >= 0.0 {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
 /// The shader's `trace`: the nearest hit along the ray within `tmax` (`tri == 0xffffffff` when there is none).
 pub(crate) fn trace(scene: &Dense, o: [f32; 3], d: [f32; 3], tmax: f32) -> Hit {
+    walk::<false>(scene, o, d, tmax)
+}
+
+/// Whether anything is hit along the ray within `tmax`: the walk of `trace`, ended at the first hit. A ray `trace`
+/// finds nothing on finds nothing here, since a walk prunes by the nearest hit so far and here there is none.
+pub(crate) fn occluded(scene: &Dense, o: [f32; 3], d: [f32; 3], tmax: f32) -> bool {
+    walk::<true>(scene, o, d, tmax).tri != NONE
+}
+
+fn walk<const ANY: bool>(scene: &Dense, o: [f32; 3], d: [f32; 3], tmax: f32) -> Hit {
     let mut h = Hit { t: tmax, u: 0.0, v: 0.0, tri: NONE, instance: NONE };
     // the shared scene's slices, read once for the walk
-    let (nodes, order) = (&scene.top.nodes[..], &scene.top.order[..]);
+    let (nodes, leaves) = (&scene.top.nodes[..], &scene.top.leaves[..]);
     if nodes.is_empty() {
         return h;
     }
@@ -291,16 +367,18 @@ pub(crate) fn trace(scene: &Dense, o: [f32; 3], d: [f32; 3], tmax: f32) -> Hit {
             continue;
         }
         if n.b > 0 {
-            for &k in &order[n.a as usize..(n.a + n.b) as usize] {
-                if scene.tri_mat[k as usize] == PROTOTYPE {
-                    prototype_hit(scene, k as usize, o, d, tmax, &mut h);
+            for leaf in &leaves[n.a as usize..(n.a + n.b) as usize] {
+                if leaf.prototype {
+                    prototype_hit::<ANY>(scene, leaf.k as usize, o, d, tmax, &mut h);
                 } else {
-                    tri_hit(scene, k as usize, o, d, tmax, &mut h, NONE, 1.0);
+                    tri_hit_edges(leaf.corner_edges, leaf.k, o, d, tmax, &mut h, NONE, 1.0);
+                }
+                if ANY && h.tri != NONE {
+                    return h;
                 }
             }
         } else if sp < 62 {
-            stack[sp] = n.a;
-            stack[sp + 1] = n.a + 1;
+            (stack[sp], stack[sp + 1]) = far_then_near(nodes, n.a, n.a + 1, d);
             sp += 2;
         }
     }
@@ -889,7 +967,7 @@ mod tests {
         assert!(hits > 200, "the rays should hit often enough to mean something: {hits}");
     }
 
-    fn random_scene(count: usize) -> PtScene {
+    pub(super) fn random_scene(count: usize) -> PtScene {
         let mut rng = Rng(11);
         let mut r = move |lo: f32, hi: f32| lo + (hi - lo) * rng.rnd();
         let mut tris = Vec::new();
@@ -1414,8 +1492,18 @@ fn env_term(env: &EnvMap, p: &RadianceParams, d: [f32; 3]) -> [f32; 3] {
     }
 }
 
-/// The shader's `visibility`: transmittance of casters along `d` for `dist`.
+/// The shader's `visibility`: transmittance of casters along `d` for `dist`. Among opaque casters only (see
+/// `Dense::opaque_casters`) the nearest hit's walk returns 0 at the first caster and 1 without one, so any hit
+/// answers it.
 pub(crate) fn visibility(scene: &Dense, o: [f32; 3], d: [f32; 3], dist: f32) -> f32 {
+    if scene.opaque_casters {
+        return if occluded(scene, o, d, dist) { 0.0 } else { 1.0 };
+    }
+    visibility_by_nearest_hits(scene, o, d, dist)
+}
+
+/// `visibility` as the shader walks it: from each caster's nearest hit to the next.
+fn visibility_by_nearest_hits(scene: &Dense, o: [f32; 3], d: [f32; 3], dist: f32) -> f32 {
     let mut o = o;
     let mut remaining = dist;
     let mut result = 1.0f32;
@@ -1669,6 +1757,47 @@ mod radiance_tests {
             assert_eq!(d.record(*k), r);
         }
         assert!(Dense::new(&PtScene::default()).top.slot.is_empty());
+    }
+
+    #[test]
+    fn shadow_rays_among_opaque_casters_stop_at_the_first_hit_with_the_nearest_hit_loops_answer() {
+        let mut s = super::tests::random_scene(2000);
+        s.mats = vec![material([0.8, 0.6, 0.4, 1.0], 1.0, 1.0)];
+        // what the reference loop's shading reads at each corner
+        s.uv = vec![[[0.0; 2]; 6]; s.pos.len()];
+        s.colors = vec![[1.0; 4]; s.pos.len()];
+        let d = Dense::new(&s);
+        assert!(d.opaque_casters, "every material casts and lets nothing through");
+        let mut rng = Rng(3);
+        let mut r = move |lo: f32, hi: f32| lo + (hi - lo) * rng.rnd();
+        let (mut blocked, mut clear) = (0, 0);
+        for _ in 0..4000 {
+            let o = [r(-60.0, 60.0), r(-60.0, 60.0), r(-60.0, 60.0)];
+            // towards a random corner, nudged, so many rays meet a caster within their distance and many do not
+            let k = (r(0.0, s.pos.len() as f32) as usize).min(s.pos.len() - 1);
+            let aim =
+                glam::Vec3::from_slice(&s.pos[k][..3]) + glam::Vec3::new(r(-0.5, 0.5), r(-0.5, 0.5), r(-0.5, 0.5));
+            let dir = (aim - glam::Vec3::from(o)).normalize().to_array();
+            let dist = r(1.0, 150.0);
+            let want = visibility_by_nearest_hits(&d, o, dir, dist);
+            assert_eq!(visibility(&d, o, dir, dist).to_bits(), want.to_bits());
+            if want == 0.0 {
+                blocked += 1
+            } else {
+                clear += 1
+            }
+        }
+        assert!(blocked > 200 && clear > 200, "both answers occur often: {blocked} blocked, {clear} clear");
+        for other in [material([0.8, 0.6, 0.4, 0.5], 1.0, 1.0), material([0.8, 0.6, 0.4, 1.0], 0.0, 1.0), {
+            let mut cut = material([0.8, 0.6, 0.4, 1.0], 1.0, 1.0);
+            cut.texture_params[1] = 1.0;
+            cut
+        }] {
+            s.mats = vec![s.mats[0], other];
+            assert!(!Dense::new(&s).opaque_casters, "a material that lets light through keeps the nearest-hit loop");
+        }
+        s.mats.clear();
+        assert!(!Dense::new(&s).opaque_casters);
     }
 
     #[test]
