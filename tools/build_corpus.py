@@ -928,6 +928,38 @@ CASES += [
     ("field-arrows-show-enum", ["S06"], lambda _: FIELDS.replace('show="poynting"', 'show="flux"')),
     ("field-source-order", ["S02"], lambda _: FIELDS.replace('<charge x="0.5" y="0" q="-1"/><lines perCharge="6"/>', '<lines perCharge="6"/><charge x="0.5" y="0" q="-1"/>')),
 ]
+# the time-frames draft: space, the ephemeris asset, object3D/@body, @positionFrom and @orientation, TF2 to TF5, V17
+TF = ('<scene version="1.8"><project width="64" height="64" fps="24" duration="1" background="#000000FF"/><assets>'
+    '<ephemeris id="de" src="../media/de440s-excerpt.bsp" digest="sha256:' + hashlib.sha256((MEDIA / "de440s-excerpt.bsp").read_bytes()).hexdigest() + '"/>'
+    '</assets><composition><object3D id="moon" primitive="sphere" radius="4" body="301" positionFrom="ephemeris" orientation="bodyFixed"/></composition>'
+    '<physics pixelsPerMeter="1e-6"/><space epoch="2451545.0" timeScale="tdb" origin="399" ephemeris="de"/></scene>\n')
+TF_APPROX = TF.replace('body="301" positionFrom="ephemeris" orientation="bodyFixed"', 'body="4" positionFrom="ephemeris"').replace(' origin="399" ephemeris="de"', '').replace('epoch="2451545.0" timeScale="tdb"', 'epoch="2025-06-01T00:00:00Z"')
+VALID["time-frames"] = TF
+VALID["time-frames-approximate"] = TF_APPROX
+VALID["time-frames-utc-offset"] = TF.replace('epoch="2451545.0" timeScale="tdb"', 'epoch="2024-02-29T23:59:59.25+05:30"')
+VALID["time-frames-body-fixed"] = TF.replace('timeScale="tdb"', 'timeScale="tt" rate="+86164.0962" frame="bodyFixed" frameBody="0399"')
+CASES += [
+    ("v17-time-frames", ["V17"], lambda _: TF.replace('version="1.8"', 'version="1.7"')),
+    ("tf2-february-29", ["TF2"], lambda _: TF.replace('epoch="2451545.0" timeScale="tdb"', 'epoch="2026-02-29T00:00:00Z"')),
+    ("tf2-before-1972", ["TF2"], lambda _: TF.replace('epoch="2451545.0" timeScale="tdb"', 'epoch="1972-01-01T00:30:00+01:00"')),
+    ("tf2-offset-minutes", ["TF2"], lambda _: TF.replace('epoch="2451545.0" timeScale="tdb"', 'epoch="2026-10-24T00:00:00+05:60"')),
+    ("tf2-fraction-without-digits", ["TF2"], lambda _: TF.replace('epoch="2451545.0" timeScale="tdb"', 'epoch="2026-10-24T00:00:00.Z"')),
+    ("tf2-non-ascii", ["TF2"], lambda _: TF.replace('epoch="2451545.0" timeScale="tdb"', 'epoch="2026-10-24T00:00:00+0\u00e9:00"')),
+    ("tf2-julian-exponent", ["TF2"], lambda _: TF.replace('epoch="2451545.0"', 'epoch="2.451545e6"')),
+    ("tf2-approximate-year", ["TF2"], lambda _: TF_APPROX.replace('epoch="2025-06-01T00:00:00Z"', 'epoch="2817152.5" timeScale="tdb"')),
+    ("tf3-no-frame-body", ["TF3"], lambda _: TF.replace('ephemeris="de"/>', 'ephemeris="de" frame="bodyFixed"/>')),
+    ("tf3-frame-body-without-rotation", ["TF3"], lambda _: TF.replace('ephemeris="de"/>', 'ephemeris="de" frame="bodyFixed" frameBody="4"/>')),
+    ("tf4-no-body", ["TF4"], lambda _: TF.replace(' body="301"', '')),
+    ("tf4-no-space", ["TF4"], lambda _: TF.replace('<space epoch="2451545.0" timeScale="tdb" origin="399" ephemeris="de"/>', '')),
+    ("tf4-approximate-moon", ["TF4"], lambda _: TF_APPROX.replace('body="4"', 'body="301"')),
+    ("tf4-orientation-without-rotation", ["TF4"], lambda _: TF.replace('body="301"', 'body="3"')),
+    ("tf5-rate-inf", ["TF5", "W01"], lambda _: TF.replace('timeScale="tdb"', 'timeScale="tdb" rate="INF"')),
+    ("tf5-unknown-ephemeris", ["TF5"], lambda _: TF.replace('ephemeris="de"/>', 'ephemeris="dx"/>')),
+    ("tf5-approximate-origin", ["TF5"], lambda _: TF_APPROX.replace('<space ', '<space origin="399" ')),
+    ("space-time-scale-enum", ["S06", "TF2"], lambda _: TF.replace('timeScale="tdb"', 'timeScale="tai"')),
+    ("ephemeris-digest-pattern", ["S06"], lambda _: re.sub(r'digest="sha256:([0-9a-f]{64})"', lambda m: 'digest="sha256:' + m.group(1).upper() + '"', TF)),
+    ("object3d-position-from-enum", ["S06"], lambda _: TF.replace('positionFrom="ephemeris"', 'positionFrom="file"')),
+]
 CASES += [
     ("v16-fractal", ["V16"], lambda _: FRACTAL.replace('version="1.6"', 'version="1.5"')),
     ("frc1-julia-without-c", ["FRC1"], lambda _: FRACTAL.replace(' juliaX="-0.8" juliaY="0.156"', ' juliaX="-0.8"')),

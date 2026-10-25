@@ -106,6 +106,7 @@ mod coverage {
             "fpsType" => Some("30000/1001"),
             "aspectType" => Some("16:9"),
             "sha256Type" => Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+            "ephemerisDigestType" => Some("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
             "timecodeType" => Some("01:00:00;02"),
             "languageTagType" => Some("en-US"),
             "pointType" => Some("0.5,-1e2"),

@@ -231,6 +231,66 @@ fn xs_number(value: &str) -> f64 {
     xpath_number(v.strip_prefix('+').unwrap_or(v))
 }
 
+/// TF3 and TF4: the bodies with IAU rotation elements in the time-frames draft's rule 6.
+fn rotating(body: f64) -> bool {
+    [10.0, 199.0, 299.0, 399.0, 499.0, 599.0, 699.0, 799.0, 899.0, 301.0].contains(&body)
+}
+
+/// TF2 for timeScale="utc", as the Schematron reads the text: YYYY-MM-DDThh:mm:ss, an optional fraction of digits,
+/// then Z or ±hh:mm; a calendar date of 1972 or later in UTC; with the approximate elements a year to 3000.
+fn utc_epoch(e: &str, approx: bool) -> bool {
+    let b = e.as_bytes();
+    let zone_len = if e.ends_with('Z') { 1 } else { 6 };
+    // every place of the shape is ASCII, so any other character fails it, as in the Schematron
+    if b.len() < 20 || !e.is_ascii() {
+        return false;
+    }
+    let (stamp, zone) = e.split_at(b.len() - zone_len);
+    let shape = |s: &str, pat: &str| {
+        s.len() == pat.len()
+            && s.bytes().zip(pat.bytes()).all(|(c, p)| if p == b'0' { c.is_ascii_digit() } else { c == p })
+    };
+    let Some(head) = stamp.get(..19) else { return false };
+    let frac = &stamp[19..];
+    let frac_ok =
+        frac.is_empty() || (frac.len() > 1 && frac.starts_with('.') && frac[1..].bytes().all(|c| c.is_ascii_digit()));
+    let zone_ok = zone == "Z" || ((zone.starts_with('+') || zone.starts_with('-')) && shape(&zone[1..], "00:00"));
+    if !(shape(head, "0000-00-00T00:00:00") && frac_ok && zone_ok) {
+        return false;
+    }
+    let field = |s: &str| s.parse::<i64>().unwrap_or(-1);
+    let (y, m, d, h, mi, s) =
+        (field(&e[0..4]), field(&e[5..7]), field(&e[8..10]), field(&e[11..13]), field(&e[14..16]), field(&e[17..19]));
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days = [31, 28 + i64::from(leap), 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let (zh, zm) = if zone == "Z" { (0, 0) } else { (field(&zone[1..3]), field(&zone[4..6])) };
+    let ahead = if zone.starts_with('+') { 60 * zh + zm } else { 0 };
+    (1..=12).contains(&m)
+        && d >= 1
+        && d <= days[(m - 1) as usize]
+        && h <= 23
+        && mi <= 59
+        && s <= 59
+        && zh <= 23
+        && zm <= 59
+        && y >= 1972
+        && !(y == 1972 && m == 1 && d == 1 && ahead > 60 * h + mi)
+        && (!approx || y <= 3000)
+}
+
+/// TF2 for timeScale="tt" or "tdb": a decimal number once XML whitespace is collapsed (a sign, digits with at most one
+/// point); with the approximate elements a Julian day of the years -3000 to 3000.
+fn julian_epoch(e: &str, approx: bool) -> bool {
+    let j = normalize_space(e);
+    let digits = j.strip_prefix(['+', '-']).unwrap_or(&j);
+    let lexical = !digits.is_empty()
+        && digits != "."
+        && digits.bytes().all(|c| c.is_ascii_digit() || c == b'.')
+        && digits.bytes().filter(|&c| c == b'.').count() <= 1;
+    let jd = xs_number(e);
+    lexical && (!approx || (625332.5..2817152.5).contains(&jd))
+}
+
 fn is(n: Node, name: &str) -> bool {
     n.is_element() && n.tag_name().name() == name && n.tag_name().namespace().is_none()
 }
@@ -1156,8 +1216,63 @@ impl<'a> Eval<'a> {
                 });
             // the fields draft's field node
             let uses = uses || n.descendants().any(|d| is(d, "field"));
+            // the time-frames draft's space, ephemeris assets and placed objects
+            let uses = uses
+                || has_kid(n, "space")
+                || kids(n, "assets").any(|s| has_kid(s, "ephemeris"))
+                || n.descendants().any(|d| {
+                    is(d, "object3D") && ["body", "positionFrom", "orientation"].iter().any(|k| d.has_attribute(*k))
+                });
             self.check(!uses, n, "V17", || {
-                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula, value assets and field nodes need version=\"1.8\".".into()
+                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula, value assets, field nodes, space, ephemeris assets and object3D/@body, @positionFrom and @orientation need version=\"1.8\".".into()
+            });
+        }
+        // the time-frames draft (p-srep-time-frames)
+        if local == "space" && n.parent_element().is_some_and(|p| p.parent_element().is_none()) {
+            let approx = matches!(a("ephemeris"), None | Some("approximate"));
+            let julian = matches!(a("timeScale"), Some("tt" | "tdb"));
+            let epoch = a("epoch").unwrap_or("");
+            let ok = if julian { julian_epoch(epoch, approx) } else { utc_epoch(epoch, approx) };
+            self.check(ok, n, "TF2", || {
+                "a space's epoch is YYYY-MM-DDThh:mm:ss[.s] with Z or a ±hh:mm offset from 1972-01-01 on \
+                 (timeScale=\"utc\") or a Julian day (tt, tdb); with the approximate elements its year is -3000 to 3000."
+                    .into()
+            });
+            let ok = a("frame") != Some("bodyFixed") || rotating(num(n, "frameBody"));
+            self.check(ok, n, "TF3", || {
+                "frame=\"bodyFixed\" needs a frameBody with rotation elements: 10, 199, 299, 399, 499, 599, 699, 799, \
+                 899 or 301."
+                    .into()
+            });
+            let named = n
+                .document()
+                .root_element()
+                .children()
+                .filter(|s| is(*s, "assets"))
+                .flat_map(|s| kids(s, "ephemeris"))
+                .any(|e| e.attribute("id").is_some() && e.attribute("id") == a("ephemeris"));
+            let o = num(n, "origin");
+            let ok = (!has("rate") || !num(n, "rate").is_nan())
+                && (approx || named)
+                && (!approx || !has("origin") || o == 0.0 || o == 10.0 || (1.0..=8.0).contains(&o));
+            self.check(ok, n, "TF5", || {
+                "a space's rate is finite; its ephemeris is approximate or names an ephemeris asset; with the \
+                 approximate elements the origin is 0, 10 or a planet 1 to 8."
+                    .into()
+            });
+        }
+        if local == "object3D" && (a("positionFrom") == Some("ephemeris") || a("orientation") == Some("bodyFixed")) {
+            let space = n.document().root_element().children().find(|s| is(*s, "space"));
+            let approx = space.is_none_or(|s| matches!(s.attribute("ephemeris"), None | Some("approximate")));
+            let b = num(n, "body");
+            let ok = has("body")
+                && space.is_some()
+                && (a("positionFrom") != Some("ephemeris") || !approx || (1.0..=8.0).contains(&b))
+                && (a("orientation") != Some("bodyFixed") || rotating(b));
+            self.check(ok, n, "TF4", || {
+                "positionFrom=\"ephemeris\" and orientation=\"bodyFixed\" need a body and a space; with the approximate \
+                 elements the body is a planet 1 to 8, and orientation=\"bodyFixed\" a body with rotation elements."
+                    .into()
             });
         }
         // the fields draft (p-srep-fields)

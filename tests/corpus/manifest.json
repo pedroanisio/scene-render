@@ -450,6 +450,9 @@
     "crt9-capture-without-source.scene.xml": [
       "CRT9"
     ],
+    "ephemeris-digest-pattern.scene.xml": [
+      "S06"
+    ],
     "field-arrows-bound.scene.xml": [
       "S06"
     ],
@@ -701,6 +704,9 @@
     ],
     "mtx1-occlusionmap.scene.xml": [
       "MTX1-occlusionMap"
+    ],
+    "object3d-position-from-enum.scene.xml": [
+      "S06"
     ],
     "ocean-density-zero.scene.xml": [
       "S06"
@@ -1334,6 +1340,10 @@
     "space-group-body.scene.xml": [
       "S02"
     ],
+    "space-time-scale-enum.scene.xml": [
+      "S06",
+      "TF2"
+    ],
     "spt1-mobius.scene.xml": [
       "SPT1"
     ],
@@ -1354,6 +1364,55 @@
     ],
     "stp1-not-a-shader.scene.xml": [
       "STP1"
+    ],
+    "tf2-approximate-year.scene.xml": [
+      "TF2"
+    ],
+    "tf2-before-1972.scene.xml": [
+      "TF2"
+    ],
+    "tf2-february-29.scene.xml": [
+      "TF2"
+    ],
+    "tf2-fraction-without-digits.scene.xml": [
+      "TF2"
+    ],
+    "tf2-julian-exponent.scene.xml": [
+      "TF2"
+    ],
+    "tf2-non-ascii.scene.xml": [
+      "TF2"
+    ],
+    "tf2-offset-minutes.scene.xml": [
+      "TF2"
+    ],
+    "tf3-frame-body-without-rotation.scene.xml": [
+      "TF3"
+    ],
+    "tf3-no-frame-body.scene.xml": [
+      "TF3"
+    ],
+    "tf4-approximate-moon.scene.xml": [
+      "TF4"
+    ],
+    "tf4-no-body.scene.xml": [
+      "TF4"
+    ],
+    "tf4-no-space.scene.xml": [
+      "TF4"
+    ],
+    "tf4-orientation-without-rotation.scene.xml": [
+      "TF4"
+    ],
+    "tf5-approximate-origin.scene.xml": [
+      "TF5"
+    ],
+    "tf5-rate-inf.scene.xml": [
+      "TF5",
+      "W01"
+    ],
+    "tf5-unknown-ephemeris.scene.xml": [
+      "TF5"
     ],
     "txt2.scene.xml": [
       "TXT2"
@@ -1401,6 +1460,9 @@
       "V17"
     ],
     "v17-space.scene.xml": [
+      "V17"
+    ],
+    "v17-time-frames.scene.xml": [
       "V17"
     ],
     "v17.scene.xml": [
@@ -1729,6 +1791,10 @@
     "stroke-text.scene.xml": [],
     "text3d-tracking.scene.xml": [],
     "thermal-volume.scene.xml": [],
+    "time-frames-approximate.scene.xml": [],
+    "time-frames-body-fixed.scene.xml": [],
+    "time-frames-utc-offset.scene.xml": [],
+    "time-frames.scene.xml": [],
     "version-1.0.scene.xml": [],
     "version-1.6-parametric-beside-crater.scene.xml": [],
     "viewport3d.scene.xml": [],

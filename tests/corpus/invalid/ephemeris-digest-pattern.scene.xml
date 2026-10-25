@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- expect: S06 -->
+<scene version="1.8"><project width="64" height="64" fps="24" duration="1" background="#000000FF"/><assets><ephemeris id="de" src="../media/de440s-excerpt.bsp" digest="sha256:D113BB5117946244CF63DE9D06287D5AAC008ACD1A561D28B760BCC7D4C3D1FD"/></assets><composition><object3D id="moon" primitive="sphere" radius="4" body="301" positionFrom="ephemeris" orientation="bodyFixed"/></composition><physics pixelsPerMeter="1e-6"/><space epoch="2451545.0" timeScale="tdb" origin="399" ephemeris="de"/></scene>

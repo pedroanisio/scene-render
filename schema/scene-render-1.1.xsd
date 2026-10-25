@@ -1222,6 +1222,40 @@
     <xs:attribute name="size" type="positiveDecimal" default="48"/>
     <xs:attribute name="color" type="paintType" default="#FFFFFFFF"/>
   </xs:complexType>
+  <!-- time-frames draft, version 1.8 -->
+  <xs:simpleType name="ephemerisDigestType">
+    <xs:restriction base="xs:string"><xs:pattern value="sha256:[0-9a-f]{64}"/></xs:restriction>
+  </xs:simpleType>
+  <xs:complexType name="ephemerisType">
+    <xs:annotation><xs:documentation>
+      A JPL SPK file (DAF, type 2 Chebyshev segments in the ICRF, either byte order) pinned by the sha256 of its
+      bytes; a file of another kind or digest refuses the document (TF1). Time-frames draft, version 1.8.
+    </xs:documentation></xs:annotation>
+    <xs:attribute name="id" type="xs:ID" use="required"/>
+    <xs:attribute name="src" type="xs:anyURI" use="required"/>
+    <xs:attribute name="digest" type="ephemerisDigestType" use="required"/>
+  </xs:complexType>
+  <xs:complexType name="spaceType">
+    <xs:annotation><xs:documentation>
+      The scene's clock in a time scale and its celestial frame about an origin body. Frame f is at ephemeris time
+      epoch + f / fps × rate (seconds of TDB); positions in km map to scene pixels as (x, −z, y) × 1000 ×
+      physics/@pixelsPerMeter in the frame's axes. With timeScale="utc" the epoch is YYYY-MM-DDThh:mm:ss[.s] with Z
+      or a ±hh:mm offset, from 1972-01-01 on; with tt or tdb a Julian day (TF2). ephemeris names an ephemeris
+      asset or is approximate, the Keplerian elements of Standish and Williams (planets 1 to 8 about the Sun,
+      years −3000 to 3000). Time-frames draft, version 1.8.
+    </xs:documentation></xs:annotation>
+    <xs:attribute name="epoch" type="xs:string" use="required"/>
+    <xs:attribute name="timeScale" default="utc">
+      <xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="utc"/><xs:enumeration value="tt"/><xs:enumeration value="tdb"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="rate" type="nonNegativeDecimal" default="1"/>
+    <xs:attribute name="origin" type="xs:int" default="0"/>
+    <xs:attribute name="frame" default="icrf">
+      <xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="icrf"/><xs:enumeration value="eclipticJ2000"/><xs:enumeration value="bodyFixed"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="frameBody" type="xs:int"/>
+    <xs:attribute name="ephemeris" type="xs:string" default="approximate"/>
+  </xs:complexType>
   <xs:complexType name="valueAssetType">
     <xs:annotation><xs:documentation>
       A named number that draws nothing, read by prop("id.value"), propAtTime and link source="id.value".
@@ -1562,6 +1596,8 @@
       <xs:element name="formulaMorph" type="formulaMorphType"/>
       <!-- reactive-values draft, version 1.8 -->
       <xs:element name="value" type="valueAssetType"/>
+      <!-- time-frames draft, version 1.8 -->
+      <xs:element name="ephemeris" type="ephemerisType"/>
       <xs:element name="generated" type="generatedAssetType"/>
       <xs:element name="geo" type="geoAssetType"/>
       <xs:element name="tiles" type="tilesAssetType"/>
@@ -2698,6 +2734,18 @@
     <xs:attribute name="morphWeights" type="numberListType"/>
     <xs:attribute name="materialVariant" type="xs:string"/>
     <xs:attribute name="instances" type="xs:positiveInteger" default="1"/>
+    <!-- time-frames draft, version 1.8 -->
+    <xs:attribute name="body" type="xs:int">
+      <xs:annotation><xs:documentation>The NAIF id of the solar-system body the object stands for (TF4).</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="positionFrom" default="document">
+      <xs:annotation><xs:documentation>ephemeris: the object stands at its body's position about the space's origin at the frame's time, mapped into scene pixels; its x, y and z are ignored with a warning.</xs:documentation></xs:annotation>
+      <xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="document"/><xs:enumeration value="ephemeris"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="orientation" default="document">
+      <xs:annotation><xs:documentation>bodyFixed: the object's axes are its body's IAU body-fixed axes in the space's frame at the frame's time.</xs:documentation></xs:annotation>
+      <xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="document"/><xs:enumeration value="bodyFixed"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
     <xs:attribute name="map" type="xs:IDREF">
       <xs:annotation><xs:documentation>
         primitive="map": the map asset as ground in the object's xy plane, one map pixel per scene
@@ -4919,6 +4967,8 @@
         <xs:element name="lights" type="lightsType" minOccurs="0"/>
         <xs:element name="effects" type="effectsType" minOccurs="0"/>
         <xs:element name="physics" type="physicsType" minOccurs="0"/>
+        <!-- time-frames draft, version 1.8 -->
+        <xs:element name="space" type="spaceType" minOccurs="0"/>
         <xs:element name="audioMix" type="audioMixType" minOccurs="0"/>
         <xs:element name="captions" type="captionsType" minOccurs="0"/>
       </xs:sequence>

@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- expect: TF2 -->
+<scene version="1.8"><project width="64" height="64" fps="24" duration="1" background="#000000FF"/><assets><ephemeris id="de" src="../media/de440s-excerpt.bsp" digest="sha256:d113bb5117946244cf63de9d06287d5aac008acd1a561d28b760bcc7d4c3d1fd"/></assets><composition><object3D id="moon" primitive="sphere" radius="4" body="301" positionFrom="ephemeris" orientation="bodyFixed"/></composition><physics pixelsPerMeter="1e-6"/><space epoch="2026-10-24T00:00:00+0é:00" origin="399" ephemeris="de"/></scene>

@@ -77,7 +77,13 @@ fn the_corpus_validates_alike_at_1_7_and_1_8() {
                 // and the reactive-values draft's value asset
                 || xml.contains("<value id=")
                 // and the fields draft's field node
-                || xml.contains("<field ");
+                || xml.contains("<field ")
+                // and the time-frames draft's space, ephemeris asset and object3D attributes
+                || ["<space ", "<ephemeris "].iter().any(|k| xml.contains(k))
+                || xml.split("<object3D").skip(1).any(|tag| {
+                    let tag = &tag[..tag.find('>').unwrap_or(tag.len())];
+                    [" body=", " positionFrom=", " orientation="].iter().any(|k| tag.contains(k))
+                });
             let plot_gated = at_1_7.iter().any(|c| c == "V17");
             at_1_7.retain(|c| c != "V17");
             assert_eq!(plot_gated, plotted && !codes(&b).iter().any(|c| c == "S01"), "{}", f.display());

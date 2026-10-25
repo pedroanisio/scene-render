@@ -869,7 +869,7 @@
   <sch:pattern id="p-v17">
     <sch:rule context="/scene[@version='1.0' or @version='1.1' or @version='1.2' or @version='1.3' or @version='1.4' or @version='1.5' or @version='1.6' or @version='1.7']">
       <sch:let name="partTag" value="'\part{'"/>
-      <sch:assert id="V17" test="not(.//axes or .//plot or .//object3D[@primitive='axes'] or .//axes3D or .//plot3D or .//modifier[@type='matrix' or @type='map' or @type='complex'] or .//group/deform or .//formulaAnimator or assets/formulaMorph or .//shape[@morph] or assets/formula[contains(@tex, $partTag)] or assets/value or .//field)">axes, plot, axes3D, plot3D, primitive="axes", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \part in a formula, value assets and field nodes need version="1.8".</sch:assert>
+      <sch:assert id="V17" test="not(.//axes or .//plot or .//object3D[@primitive='axes'] or .//axes3D or .//plot3D or .//modifier[@type='matrix' or @type='map' or @type='complex'] or .//group/deform or .//formulaAnimator or assets/formulaMorph or .//shape[@morph] or assets/formula[contains(@tex, $partTag)] or assets/value or .//field or space or assets/ephemeris or .//object3D[@body or @positionFrom or @orientation])">axes, plot, axes3D, plot3D, primitive="axes", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \part in a formula, value assets, field nodes, space, ephemeris assets and object3D/@body, @positionFrom and @orientation need version="1.8".</sch:assert>
     </sch:rule>
   </sch:pattern>
   <sch:pattern id="p-srep-plots">
@@ -903,6 +903,38 @@
     </sch:rule>
     <sch:rule context="field/arrows[@show='poynting']">
       <sch:assert id="FLD6" test="../wire[@i != 0] and (../charge or ../dipole or ../wire[@q != 0])">Poynting arrows need a current-carrying wire and a charge.</sch:assert>
+    </sch:rule>
+  </sch:pattern>
+  <sch:pattern id="p-srep-time-frames">
+    <sch:rule context="/scene/space">
+      <sch:let name="e" value="string(@epoch)"/>
+      <sch:let name="approx" value="not(@ephemeris) or @ephemeris='approximate'"/>
+      <sch:let name="zlen" value="6 - 5*number(substring($e,string-length($e))='Z')"/>
+      <sch:let name="stamp" value="substring($e,1,string-length($e)-$zlen)"/>
+      <sch:let name="zone" value="substring($e,string-length($e)-$zlen+1)"/>
+      <sch:let name="Y" value="number(substring($e,1,4))"/>
+      <sch:let name="M" value="number(substring($e,6,2))"/>
+      <sch:let name="D" value="number(substring($e,9,2))"/>
+      <sch:let name="h" value="number(substring($e,12,2))"/>
+      <sch:let name="mi" value="number(substring($e,15,2))"/>
+      <sch:let name="leap" value="($Y mod 4 = 0 and $Y mod 100 != 0) or $Y mod 400 = 0"/>
+      <sch:let name="days" value="number(substring('312831303130313130313031',2*$M - 1,2)) + number($M=2 and $leap)"/>
+      <sch:let name="ahead" value="number(substring($zone,1,1)='+')*(60*number(substring($zone,2,2))+number(substring($zone,5,2)))"/>
+      <sch:let name="utc" value="string-length($e) &gt;= 20 and translate(substring($stamp,1,19),'0123456789','0000000000')='0000-00-00T00:00:00' and (string-length($stamp)=19 or (substring($stamp,20,1)='.' and string-length($stamp) &gt; 20 and translate(substring($stamp,21),'0123456789','')='')) and ($zone='Z' or translate($zone,'0123456789+','0000000000-')='-00:00') and $M &gt;= 1 and $M &lt;= 12 and $D &gt;= 1 and $D &lt;= $days and $h &lt;= 23 and $mi &lt;= 59 and number(substring($e,18,2)) &lt;= 59 and ($zone='Z' or (number(substring($zone,2,2)) &lt;= 23 and number(substring($zone,5,2)) &lt;= 59)) and $Y &gt;= 1972 and not($Y=1972 and $M=1 and $D=1 and $ahead &gt; 60*$h+$mi) and (not($approx) or $Y &lt;= 3000)"/>
+      <sch:let name="j" value="normalize-space(@epoch)"/>
+      <sch:let name="digits" value="substring($j,1+number(starts-with($j,'+') or starts-with($j,'-')))"/>
+      <sch:let name="jd" value="number(substring(normalize-space(@epoch),1+number(starts-with(normalize-space(@epoch),'+'))))"/>
+      <sch:let name="julian" value="$digits != '' and $digits != '.' and translate($digits,'0123456789.','')='' and string-length($digits) - string-length(translate($digits,'.','')) &lt;= 1 and (not($approx) or ($jd &gt;= 625332.5 and $jd &lt; 2817152.5))"/>
+      <sch:let name="b" value="number(substring(normalize-space(@frameBody),1+number(starts-with(normalize-space(@frameBody),'+'))))"/>
+      <sch:let name="o" value="number(substring(normalize-space(@origin),1+number(starts-with(normalize-space(@origin),'+'))))"/>
+      <sch:assert id="TF2" test="(@timeScale='tt' or @timeScale='tdb') and $julian or not(@timeScale='tt' or @timeScale='tdb') and $utc">a space's epoch is YYYY-MM-DDThh:mm:ss[.s] with Z or a ±hh:mm offset from 1972-01-01 on (timeScale="utc") or a Julian day (tt, tdb); with the approximate elements its year is -3000 to 3000.</sch:assert>
+      <sch:assert id="TF3" test="not(@frame='bodyFixed') or ($b=10 or $b=199 or $b=299 or $b=399 or $b=499 or $b=599 or $b=699 or $b=799 or $b=899 or $b=301)">frame="bodyFixed" needs a frameBody with rotation elements: 10, 199, 299, 399, 499, 599, 699, 799, 899 or 301.</sch:assert>
+      <sch:assert id="TF5" test="(not(@rate) or number(substring(normalize-space(@rate),1+number(starts-with(normalize-space(@rate),'+')))) = number(substring(normalize-space(@rate),1+number(starts-with(normalize-space(@rate),'+'))))) and ($approx or /scene/assets/ephemeris[@id=current()/@ephemeris]) and (not($approx) or not(@origin) or $o=0 or $o=10 or ($o &gt;= 1 and $o &lt;= 8))">a space's rate is finite; its ephemeris is approximate or names an ephemeris asset; with the approximate elements the origin is 0, 10 or a planet 1 to 8.</sch:assert>
+    </sch:rule>
+    <sch:rule context="object3D[@positionFrom='ephemeris' or @orientation='bodyFixed']">
+      <sch:let name="b" value="number(substring(normalize-space(@body),1+number(starts-with(normalize-space(@body),'+'))))"/>
+      <sch:let name="approx" value="not(/scene/space/@ephemeris) or /scene/space/@ephemeris='approximate'"/>
+      <sch:assert id="TF4" test="@body and /scene/space and (not(@positionFrom='ephemeris') or not($approx) or ($b &gt;= 1 and $b &lt;= 8)) and (not(@orientation='bodyFixed') or $b=10 or $b=199 or $b=299 or $b=399 or $b=499 or $b=599 or $b=699 or $b=799 or $b=899 or $b=301)">positionFrom="ephemeris" and orientation="bodyFixed" need a body and a space; with the approximate elements the body is a planet 1 to 8, and orientation="bodyFixed" a body with rotation elements.</sch:assert>
     </sch:rule>
   </sch:pattern>
 </sch:schema>
