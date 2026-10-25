@@ -2026,9 +2026,30 @@ fn watch(
         out.w.flush()?;
         // Resolve bindings once per render, then poll those files. A changed source or data
         // file starts another iteration, which discovers any newly selected dependencies.
-        while before.iter().all(|(f, stamp)| changes::stamp(f) == *stamp) {
-            std::thread::sleep(std::time::Duration::from_millis(interval.max(20)));
+        let stamps: Vec<_> = before.iter().map(|(_, s)| *s).collect();
+        settled_change(
+            &stamps,
+            || before.iter().map(|(f, _)| changes::stamp(f)).collect(),
+            || std::thread::sleep(std::time::Duration::from_millis(interval.max(20))),
+        );
+    }
+}
+
+/// Polls until the stamps differ from `before`, then until two polls one `pause` apart agree. A writer that
+/// truncates a file and then writes it changes the stamp twice; a render between the two would read a partial file.
+fn settled_change<S: PartialEq>(before: &[S], mut poll: impl FnMut() -> Vec<S>, mut pause: impl FnMut()) {
+    let mut seen = poll();
+    while seen == before {
+        pause();
+        seen = poll();
+    }
+    loop {
+        pause();
+        let next = poll();
+        if next == seen {
+            return;
         }
+        seen = next;
     }
 }
 
@@ -2825,5 +2846,30 @@ mod watch_tests {
           <assets><image id="img" src="base.png" width="16" height="16"/></assets><composition><layer id="l" asset="img"/></composition></scene>"#).unwrap();
         let watched = super::watched_stamps(&file).unwrap();
         assert!(watched.iter().any(|(f, _)| f == &dir.join("actual.png")), "bound file missing: {watched:?}");
+    }
+
+    /// The polls `settled_change` makes over `seen`, the stamps of successive polls.
+    fn polls(before: &[u8], seen: &[u8]) -> usize {
+        let mut next = seen.iter();
+        let mut n = 0;
+        super::settled_change(
+            before,
+            || {
+                n += 1;
+                vec![*next.next().expect("returned after the stamps settled")]
+            },
+            || {},
+        );
+        n
+    }
+
+    #[test]
+    fn a_change_is_rendered_once_its_files_settle() {
+        // unchanged, unchanged, truncated, written, written: the truncated file is never the one rendered
+        assert_eq!(polls(&[1], &[1, 1, 2, 3, 3, 9]), 5);
+        // a change that is complete when first seen waits one more poll
+        assert_eq!(polls(&[1], &[3, 3, 9]), 2);
+        // a file written back to its old stamp is still a change once seen different
+        assert_eq!(polls(&[1], &[2, 1, 1, 9]), 3);
     }
 }

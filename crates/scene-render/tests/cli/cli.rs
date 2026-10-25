@@ -1450,21 +1450,26 @@ fn watch_reloads_edited_caption_text() {
         .unwrap();
     let stdout = child.stdout.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
+    // watch reports on stdout, which this thread takes: it keeps the lines for the failure messages
     let reader = std::thread::spawn(move || {
+        let mut lines = Vec::new();
         for line in BufReader::new(stdout).lines() {
-            if line.unwrap().contains("watching") {
+            let line = line.unwrap();
+            if line.contains("watching") {
                 let _ = tx.send(());
             }
+            lines.push(line);
         }
+        lines
     });
     if rx.recv_timeout(std::time::Duration::from_secs(60)).is_err() {
         let _ = child.kill();
         let o = child.wait_with_output().unwrap();
-        reader.join().unwrap();
+        let lines = reader.join().unwrap();
         if no_gpu(&o) {
             return;
         }
-        panic!("watch did not become ready: {o:?}");
+        panic!("watch did not become ready: {o:?}\n{}", lines.join("\n"));
     }
     let before = image::open(&output).unwrap().to_rgba8();
     std::fs::write(&scene, xml.replace("ABC", "XYZ")).unwrap();
@@ -1477,8 +1482,8 @@ fn watch_reloads_edited_caption_text() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let o = child.wait_with_output().unwrap();
-    reader.join().unwrap();
-    assert!(o.status.success(), "{o:?}");
+    let lines = reader.join().unwrap();
+    assert!(o.status.success(), "{o:?}\n{}", lines.join("\n"));
     let fresh = dir.join("fresh.png");
     let o = run(&["render", scene.to_str().unwrap(), "-o", fresh.to_str().unwrap()]);
     assert!(o.status.success(), "{o:?}");
