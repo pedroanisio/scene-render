@@ -275,6 +275,10 @@ pub struct FrameNode {
     /// The meshes an axes object draws with other materials than its own (the plots draft): (material id, mesh).
     #[serde(skip)]
     pub param_parts: Vec<(Arc<str>, Arc<crate::parametric::ParamMesh>)>,
+    /// The space-transforms draft: the node's `map` modifiers at this frame, by the renderer's part key
+    /// (`{id}/deform[i]/modifier[j]`); [`FrameGraph::point_map`] turns one into its point function.
+    #[serde(skip)]
+    pub deform_maps: Vec<(Arc<str>, MapSpec)>,
     /// A clay object's surface at this time, extracted ahead of rendering ([`crate::solid::attach_clay`]); None when
     /// the renderer extracts it itself.
     #[serde(skip)]
@@ -375,9 +379,70 @@ pub struct FrameGraph {
     /// The project seed (the default for seeded behaviour such as camera shake).
     #[serde(skip)]
     pub seed: u64,
+    /// The compiled program the graph was evaluated from, which [`FrameGraph::point_map`] runs: set by
+    /// [`crate::Evaluator::evaluate`], absent from a graph evaluated from a borrowed program.
+    #[serde(skip)]
+    pub program: SharedProgram,
+}
+
+/// The program behind a frame graph, shared with the point functions made from it.
+#[derive(Clone, Default)]
+pub struct SharedProgram(pub Option<Arc<Program>>);
+
+impl std::fmt::Debug for SharedProgram {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "SharedProgram(Some(..))" } else { "SharedProgram(None)" })
+    }
+}
+
+/// A `map` modifier at one frame (the space-transforms draft, Semantics 2): its compiled `x` and `y` expressions
+/// and the times they read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapSpec {
+    /// The part key, `{id}/deform[i]/modifier[j]`.
+    pub key: Arc<str>,
+    exprs: [u32; 2],
+    comp_t: f64,
+    /// Time on the node's timeline.
+    t: f64,
 }
 
 impl FrameGraph {
+    /// The point function of a `map` modifier of this frame: (u, v) in data units to the values of its `x` and `y`,
+    /// each NaN when its expression gives no number. It holds the program, so it outlives the graph and runs on any
+    /// thread, each call with its own registers and memo. Refused when the graph was evaluated without its program.
+    pub fn point_map(&self, spec: &MapSpec) -> Result<impl Fn(f64, f64) -> [f64; 2] + Send + Sync + 'static, String> {
+        let p = self
+            .program
+            .0
+            .clone()
+            .ok_or_else(|| format!("{}: the frame was evaluated without its program", spec.key))?;
+        let spec = spec.clone();
+        Ok(move |u: f64, v: f64| {
+            let memo = Memo::default();
+            let mut regs = Vec::new();
+            spec.exprs.map(|x| {
+                let mut h = ExprHost {
+                    p: &p,
+                    frame: None,
+                    comp_t: spec.comp_t,
+                    t: spec.t,
+                    slot: None,
+                    expr: x,
+                    value: Value::Num(0.0),
+                    depth: 0,
+                    memo: &memo,
+                    sample: [u, v],
+                };
+                let r = vm::run(&p.exprs[x as usize].code, &mut h, &mut regs);
+                match r {
+                    V::Num(_) | V::Bool(_) => r.num(),
+                    _ => f64::NAN,
+                }
+            })
+        })
+    }
+
     /// Records a simulation that could not run, as a problem and as a failure.
     pub fn fail(&mut self, message: String) {
         self.problems.push(message.clone());
@@ -1492,6 +1557,11 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
             connector: None,
             param_mesh: None,
             param_parts: Vec::new(),
+            deform_maps: node
+                .deform_maps
+                .iter()
+                .map(|(k, x)| (k.clone(), MapSpec { key: k.clone(), exprs: *x, comp_t: f.t, t: tl }))
+                .collect(),
             clay_mesh: None,
             param_box: None,
             elem: node.elem.clone(),
@@ -1702,6 +1772,7 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
         problems: std::mem::take(&mut out.problems),
         failures: Vec::new(),
         sim_seconds: SimSeconds::default(),
+        program: SharedProgram::default(),
         seed: p.seed,
     };
     crate::joints::attach(p, &mut graph);

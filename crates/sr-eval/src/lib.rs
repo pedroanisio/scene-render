@@ -102,7 +102,7 @@ pub(crate) fn suggest<'c>(word: &str, candidates: impl IntoIterator<Item = &'c s
 
 pub use eval::{
     inside_include, resolve_in, viewport_camera, viewport_of, Affine, BonePose, ElementState, FrameGraph, FrameNode,
-    FrameTransition, JointFrames, Props, SimSeconds, SkinWeights,
+    FrameTransition, JointFrames, MapSpec, Props, SharedProgram, SimSeconds, SkinWeights,
 };
 pub use local_ids::LocalIds;
 pub use physcache::PhysicsTrace;
@@ -113,7 +113,7 @@ pub use value::Value;
 /// A compiled document, ready to evaluate any frame.
 #[derive(Debug)]
 pub struct Evaluator {
-    program: program::Program,
+    program: std::sync::Arc<program::Program>,
     /// Physics and particles, when the document has any.
     sim: Option<std::sync::Mutex<sim::Runtime>>,
 }
@@ -127,7 +127,7 @@ impl Evaluator {
     pub fn new(doc: &sr_model::Document, opts: &EvalOptions) -> Result<Evaluator, sr_model::Report> {
         program::build(doc, opts).map(|program| {
             let sim = sim::needed(&program).then(|| std::sync::Mutex::new(sim::Runtime::default()));
-            Evaluator { program, sim }
+            Evaluator { program: std::sync::Arc::new(program), sim }
         })
     }
 
@@ -145,6 +145,7 @@ impl Evaluator {
             region::resolve(&self.program, &mut g.nodes);
             connector::resolve(&self.program, &mut g.nodes);
         }
+        g.program = eval::SharedProgram(Some(self.program.clone()));
         g
     }
 
@@ -152,7 +153,9 @@ impl Evaluator {
     /// the same graph as [`Evaluator::evaluate`] minus simulated state (particles, physics poses, fluids). A
     /// pure function of `t` at the cost of one walk over the nodes, for checks that only need placement.
     pub fn evaluate_layout(&self, t: f64) -> FrameGraph {
-        eval::evaluate(&self.program, t)
+        let mut g = eval::evaluate(&self.program, t);
+        g.program = eval::SharedProgram(Some(self.program.clone()));
+        g
     }
 
     /// Whether frames depend on a simulation (physics, particles, agents). Simulated state is

@@ -335,6 +335,9 @@ pub struct InstNode {
     pub data_axes: Option<u32>,
     /// The plots draft: this `object3D primitive="axes"`'s axes and plots, in `Program::axes3d`.
     pub axes3d: Option<u32>,
+    /// The space-transforms draft: the node's `map` modifiers, by the renderer's part key
+    /// (`{id}/deform[i]/modifier[j]`), with their compiled `x` and `y` expressions of `u` and `v`.
+    pub deform_maps: Vec<(Arc<str>, [u32; 2])>,
 }
 
 /// The nodes an `axes` lowers to (the plots draft), in paint order: the grid, the axis lines, the ticks, each
@@ -1303,6 +1306,8 @@ struct Builder {
     axes3d: Vec<crate::axes::Axes3DInst>,
     /// 3D axes objects waiting for their plots' expressions to compile: (node, axes, plots, scope, doc).
     pending_axes3d: Vec<(u32, m::Axes3D, Vec<m::Plot3D>, Arc<str>, u16)>,
+    /// `map` modifiers waiting for their expressions to compile: (node, part key, x, y, location, scope, doc).
+    pending_maps: Vec<(u32, Arc<str>, String, String, Loc, Arc<str>, u16)>,
     links: Vec<LinkInst>,
     elements: Vec<ElemTarget>,
     /// Element targets that run on an include's clock: (element, include node). See [`Slot::clock`].
@@ -1639,6 +1644,7 @@ impl Builder {
                 axes_part: None,
                 data_axes: None,
                 axes3d: None,
+                deform_maps: Vec::new(),
             };
             self.nodes.push(node);
             if matches!(name, "flock" | "fluid" | "slime" | "erosion" | "compute" | "program") {
@@ -3607,6 +3613,36 @@ impl Builder {
                 self.nodes[n as usize].axes3d = Some((self.axes3d.len() - 1) as u32);
             }
         }
+        // the space-transforms draft: a map modifier's x and y, in u and v
+        for (n, key, x, y, loc, scope, doc) in std::mem::take(&mut self.pending_maps) {
+            let points = self.nodes[n as usize].point.is_some();
+            let seed = self.project_seed;
+            let mut exprs = [0u32; 2];
+            let mut ok = true;
+            for (k, (attr, src)) in [("x", &x), ("y", &y)].into_iter().enumerate() {
+                let who = format!("{key}@{attr}");
+                let mut res = ExprResolver { b: self, scope: scope.clone(), doc, points, sample: &["u", "v"] };
+                match vm::compile(src, &mut res) {
+                    Ok(code) => {
+                        self.exprs.push(ExprInst { code, slot: None, node: Some(n), doc, seed });
+                        exprs[k] = (self.exprs.len() - 1) as u32;
+                    }
+                    Err(e) => {
+                        ok = false;
+                        let excerpt: String = src.chars().skip(e.offset.saturating_sub(10)).take(30).collect();
+                        self.diags.push(err(
+                            "E01",
+                            format!("{who}: {} (near {:?})", e.message, excerpt.trim()),
+                            loc,
+                            who.as_str(),
+                        ));
+                    }
+                }
+            }
+            if ok {
+                self.nodes[n as usize].deform_maps.push((key, exprs));
+            }
+        }
         for (slot, l, _node, scope, doc) in std::mem::take(&mut self.pending_link) {
             let who = self.slot_name(slot);
             let source = if let Some(p) = l.source.strip_prefix("param:") {
@@ -3976,6 +4012,7 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         pending_plot: Vec::new(),
         axes3d: Vec::new(),
         pending_axes3d: Vec::new(),
+        pending_maps: Vec::new(),
         links: Vec::new(),
         elements: Vec::new(),
         elem_clock: HashMap::new(),
@@ -4028,6 +4065,16 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
             let plots = kids.iter().filter_map(|c| c.as_any().downcast_ref::<m::Plot3D>()).cloned().collect();
             if let Some(axes) = axes {
                 b.pending_axes3d.push((n, axes, plots, scope.clone(), doc_ix));
+            }
+        }
+        // the space-transforms draft: keyed as the renderer counts its deforms and their modifiers
+        let deforms = children(&*elem).into_iter().filter_map(|c| c.as_any().downcast_ref::<m::Deform>());
+        for (i, d) in deforms.enumerate() {
+            for (j, md) in d.modifiers.iter().enumerate() {
+                if let (m::ModifierKind::Map, Some(x), Some(y)) = (&md.r#type, &md.x, &md.y) {
+                    let key: Arc<str> = format!("{id}/deform[{i}]/modifier[{j}]").into();
+                    b.pending_maps.push((n, key, x.clone(), y.clone(), md.loc, scope.clone(), doc_ix));
+                }
             }
         }
     }
