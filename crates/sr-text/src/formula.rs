@@ -4,14 +4,17 @@
 //! big operators (`\sum`, `\prod`, `\int`) with limits in display style,
 //! `\left`/`\right` delimiters stretched to their content, `\text`,
 //! `\mathrm`, function names, matrices, accents, infix fractions and spaces.
+//! `\part{name}{body}` (the semantic-tex draft) lays out as the group `{body}` and tags the glyphs and rules the
+//! body produces with the part, for [`typeset_parts`].
 
 use rustybuzz::ttf_parser::GlyphId;
-use sr_vector::geom::Xf;
+use sr_vector::geom::{Rect, Xf};
 use sr_vector::scene::{FillRule, Paint};
 use sr_vector::{shapes, Path};
 
 use crate::font::FontLib;
 use crate::glyph::Drawing;
+use crate::parts::{Part, PartBox};
 
 #[derive(Debug, Clone, PartialEq)]
 enum N {
@@ -32,6 +35,8 @@ enum N {
     Delim(char, Box<N>, char),
     Text(String),
     Space(f64),
+    /// A tagged part, numbered in order of its opening tag.
+    Part(u32, Box<N>),
 }
 
 fn symbol(name: &str) -> Option<N> {
@@ -130,6 +135,8 @@ struct Parser<'a> {
     s: &'a [char],
     i: usize,
     depth: usize,
+    /// The `\part` tags opened so far.
+    parts: u32,
 }
 
 impl Parser<'_> {
@@ -315,6 +322,17 @@ impl Parser<'_> {
                         N::Delim(l, Box::new(body), r)
                     }
                     "text" | "mathrm" | "operatorname" | "mathbf" => N::Text(self.raw_group()?),
+                    "part" => {
+                        // the name: checked with the whole formula by parts::parts before parsing
+                        self.raw_group()?;
+                        self.skip_ws();
+                        if self.peek() != Some('{') {
+                            return Err("\\part has no body group".into());
+                        }
+                        let index = self.parts;
+                        self.parts += 1;
+                        N::Part(index, Box::new(self.group()?))
+                    }
                     other => symbol(other).ok_or_else(|| format!("unknown command \\{other}"))?,
                 }
             }
@@ -401,8 +419,16 @@ impl Parser<'_> {
 /// Glyph or rule of a laid-out formula (y down, baseline 0).
 #[derive(Debug, Clone)]
 enum Item {
-    Glyph { gid: u16, x: f64, y: f64, k: f64, sy: f64 },
-    Rule { x: f64, y: f64, w: f64, h: f64 },
+    Glyph { gid: u16, x: f64, y: f64, k: f64, sy: f64, part: Option<u32> },
+    Rule { x: f64, y: f64, w: f64, h: f64, part: Option<u32> },
+}
+
+impl Item {
+    fn part_mut(&mut self) -> &mut Option<u32> {
+        match self {
+            Item::Glyph { part, .. } | Item::Rule { part, .. } => part,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -417,8 +443,10 @@ impl B {
     fn put(&mut self, o: B, x: f64, y: f64) {
         for it in o.items {
             self.items.push(match it {
-                Item::Glyph { gid, x: gx, y: gy, k, sy } => Item::Glyph { gid, x: gx + x, y: gy + y, k, sy },
-                Item::Rule { x: rx, y: ry, w, h } => Item::Rule { x: rx + x, y: ry + y, w, h },
+                Item::Glyph { gid, x: gx, y: gy, k, sy, part } => {
+                    Item::Glyph { gid, x: gx + x, y: gy + y, k, sy, part }
+                }
+                Item::Rule { x: rx, y: ry, w, h, part } => Item::Rule { x: rx + x, y: ry + y, w, h, part },
             });
         }
         self.asc = self.asc.max(o.asc - y);
@@ -476,7 +504,7 @@ impl Ctx<'_> {
             w: adv,
             asc: asc.max(0.0),
             desc: desc.max(0.0),
-            items: vec![Item::Glyph { gid, x: 0.0, y: 0.0, k, sy: 1.0 }],
+            items: vec![Item::Glyph { gid, x: 0.0, y: 0.0, k, sy: 1.0, part: None }],
         }
     }
     /// A delimiter or radical stretched to cover `target` height, centred on the axis unless `bottom` aligns it.
@@ -525,6 +553,14 @@ impl Ctx<'_> {
                 b
             }
             N::Space(em) => B { w: em * sz, ..Default::default() },
+            N::Part(index, body) => {
+                // a part lays out as its group; what an inner part already holds stays the inner part's
+                let mut b = self.layout(body, size, level, display);
+                for it in &mut b.items {
+                    it.part_mut().get_or_insert(*index);
+                }
+                b
+            }
             N::Big(c, _) => {
                 let g = self.glyph(*c, sz, false);
                 if display {
@@ -593,7 +629,7 @@ impl Ctx<'_> {
                 let (nw, dw) = (nb.w, db.w);
                 b.put(nb, (w - nw) * 0.5, -up);
                 b.put(db, (w - dw) * 0.5, down);
-                b.items.push(Item::Rule { x: 0.0, y: -axis - t * 0.5, w, h: t });
+                b.items.push(Item::Rule { x: 0.0, y: -axis - t * 0.5, w, h: t, part: None });
                 b.asc = b.asc.max(axis + t);
                 b
             }
@@ -653,7 +689,7 @@ impl Ctx<'_> {
                 let gap = sz * 0.08;
                 if matches!(name.as_str(), "bar" | "overline" | "underline") {
                     let y = if name == "underline" { desc + gap } else { -asc - gap - thickness };
-                    out.items.push(Item::Rule { x: 0.0, y, w, h: thickness });
+                    out.items.push(Item::Rule { x: 0.0, y, w, h: thickness, part: None });
                     out.asc = out.asc.max(-y);
                     out.desc = out.desc.max(y + thickness);
                 } else {
@@ -725,7 +761,7 @@ impl Ctx<'_> {
                 b.put(B { w: rw, asc: asc_rad, desc: bb.desc, items: rad.items }, x, 0.0);
                 let bw = bb.w;
                 b.put(bb, x + rw, 0.0);
-                b.items.push(Item::Rule { x: x + rw, y: -(asc_rad), w: bw + sz * 0.05, h: t });
+                b.items.push(Item::Rule { x: x + rw, y: -(asc_rad), w: bw + sz * 0.05, h: t, part: None });
                 b.w = x + rw + bw + sz * 0.05;
                 b.asc = b.asc.max(asc_rad + t);
                 b
@@ -815,8 +851,11 @@ fn math_italic(c: char) -> char {
 
 /// The layout of `tex` at `size` px, with the math face it is set in.
 fn typeset(lib: &mut FontLib, tex: &str, size: f64) -> Result<(usize, B), String> {
+    if tex.contains("\\part") {
+        crate::parts::parts(tex)?;
+    }
     let chars: Vec<char> = tex.chars().collect();
-    let mut parser = Parser { s: &chars, i: 0, depth: 0 };
+    let mut parser = Parser { s: &chars, i: 0, depth: 0, parts: 0 };
     let ast = parser.row(None)?;
     if parser.i != chars.len() {
         return Err("unexpected alignment or closing delimiter".into());
@@ -847,23 +886,116 @@ pub fn draw(
     tol: f64,
 ) -> Result<Drawing, String> {
     let (face, b) = typeset(lib, tex, size)?;
-    let (w, h) = (b.w, b.asc + b.desc);
-    let fit = (size_box[0] / w.max(1e-9)).min(size_box[1] / h.max(1e-9)).min(1.0);
-    let place = Xf::translate(size_box[0] * 0.5, size_box[1] * 0.5)
-        .mul(&Xf::scale(fit, fit))
-        // the layout's box spans [−asc, desc] about its baseline (y down): its middle is (desc − asc)/2
-        .mul(&Xf::translate(-w * 0.5, b.asc - h * 0.5));
+    let place = placement(&b, size_box);
     let mut path = Path::default();
     for it in &b.items {
-        match *it {
-            Item::Glyph { gid, x, y, k, sy } => {
-                let o = lib.outline(face, gid, &[]);
-                path.extend(&o.transform(&place.mul(&Xf([k, 0.0, 0.0, -k * sy, x, y]))));
-            }
-            Item::Rule { x, y, w, h } => path.extend(&shapes::rect(x, y, w, h, [0.0; 4]).transform(&place)),
-        }
+        path.extend(&item_path(lib, face, it, &place));
     }
     let mut d = Drawing::default();
     d.scene.fill(&path, FillRule::NonZero, color, 1.0, tol);
     Ok(d)
+}
+
+/// The layout centred in a `size_box` box and scaled down to fit.
+fn placement(b: &B, size_box: [f64; 2]) -> Xf {
+    let (w, h) = (b.w, b.asc + b.desc);
+    let fit = (size_box[0] / w.max(1e-9)).min(size_box[1] / h.max(1e-9)).min(1.0);
+    Xf::translate(size_box[0] * 0.5, size_box[1] * 0.5)
+        .mul(&Xf::scale(fit, fit))
+        // the layout's box spans [−asc, desc] about its baseline (y down): its middle is (desc − asc)/2
+        .mul(&Xf::translate(-w * 0.5, b.asc - h * 0.5))
+}
+
+fn item_path(lib: &mut FontLib, face: usize, it: &Item, place: &Xf) -> Path {
+    match *it {
+        Item::Glyph { gid, x, y, k, sy, .. } => {
+            lib.outline(face, gid, &[]).transform(&place.mul(&Xf([k, 0.0, 0.0, -k * sy, x, y])))
+        }
+        Item::Rule { x, y, w, h, .. } => shapes::rect(x, y, w, h, [0.0; 4]).transform(place),
+    }
+}
+
+/// A glyph or rule of a formula, in the formula image's pixels after the fit, with the innermost part that produced
+/// it (an index into [`Parted::parts`]) or `None`.
+#[derive(Debug, Clone)]
+pub struct Piece {
+    pub part: Option<usize>,
+    pub path: Path,
+}
+
+/// A formula typeset by part (the semantic-tex draft, Semantics 1): its parts in order of their opening tag, the
+/// part that contains each, every glyph and rule as a [`Piece`] in layout order, and each part's box.
+#[derive(Debug, Clone)]
+pub struct Parted {
+    pub parts: Vec<Part>,
+    /// The innermost part that contains each part.
+    pub parent: Vec<Option<usize>>,
+    pub pieces: Vec<Piece>,
+    /// The union of the flattened outlines of the part's pieces and its nested parts'; `None` when it produces
+    /// nothing.
+    pub boxes: Vec<Option<PartBox>>,
+}
+
+impl Parted {
+    /// Whether piece `piece` belongs to part `part` or to a part nested in it.
+    pub fn in_part(&self, piece: usize, part: usize) -> bool {
+        let mut at = self.pieces[piece].part;
+        while let Some(p) = at {
+            if p == part {
+                return true;
+            }
+            at = self.parent[p];
+        }
+        false
+    }
+}
+
+/// Typesets `tex` at `size` px, centred in a `size_box` box and scaled down to fit as [`draw`] places it, and splits
+/// it by `\part` (the semantic-tex draft, Semantics 1); `tol` is the flatness of the outlines the boxes are measured
+/// on.
+pub fn typeset_parts(lib: &mut FontLib, tex: &str, size: f64, size_box: [f64; 2], tol: f64) -> Result<Parted, String> {
+    let parts = crate::parts::parts(tex)?;
+    let (face, b) = typeset(lib, tex, size)?;
+    let place = placement(&b, size_box);
+    let pieces: Vec<Piece> = b
+        .items
+        .iter()
+        .map(|it| {
+            let part = match it {
+                Item::Glyph { part, .. } | Item::Rule { part, .. } => part.map(|p| p as usize),
+            };
+            Piece { part, path: item_path(lib, face, it, &place) }
+        })
+        .collect();
+    // the container of a part is the last part opened before it one level out
+    let parent = parts
+        .iter()
+        .map(|p| (p.depth > 0).then(|| parts[..p.index].iter().rposition(|q| q.depth + 1 == p.depth)).flatten())
+        .collect();
+    let mut parted = Parted { parts, parent, pieces, boxes: Vec::new() };
+    let bounds: Vec<Rect> = parted
+        .pieces
+        .iter()
+        .map(|pc| {
+            let mut r = Rect::EMPTY;
+            for poly in pc.path.flatten(tol) {
+                for q in poly.pts {
+                    r.add(q);
+                }
+            }
+            r
+        })
+        .collect();
+    parted.boxes = (0..parted.parts.len())
+        .map(|i| {
+            let r = (0..parted.pieces.len())
+                .filter(|&k| parted.in_part(k, i) && !bounds[k].is_empty())
+                .fold(Rect::EMPTY, |r, k| r.union(&bounds[k]));
+            (!r.is_empty()).then(|| {
+                let [x0, y0, x1, y1] = r.0;
+                PartBox::new(x0, y0, x1 - x0, y1 - y0)
+            })
+        })
+        .collect();
+    Ok(parted)
 }
