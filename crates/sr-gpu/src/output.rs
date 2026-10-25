@@ -853,7 +853,7 @@ impl OutputStage {
     /// earlier frame returned when dropped, if one is free.
     pub fn wait(&mut self, p: Pending) -> FrameBytes {
         let Pending { slot, buffers, bytes, submitted, ready } = p;
-        let _ = self.device.poll(wgpu::PollType::Wait { submission_index: Some(submitted), timeout: None });
+        let _ = crate::gpu::poll_wait(&self.device, Some(submitted), None);
         for map in ready {
             map.wait(&self.device, crate::gpu::MAP_READ_TIMEOUT)
                 .unwrap_or_else(|e| panic!("reading back a converted frame: {e}"));

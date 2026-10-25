@@ -634,7 +634,7 @@ impl Renderer {
     pub fn finish_flash_grid(&mut self, p: FlashPending) -> Vec<[f64; 3]> {
         let FlashPending { buffer, submitted, wait } = p;
         // wait for the grid's own submission, not for everything submitted since (the frames after it)
-        let _ = self.gpu.device.poll(wgpu::PollType::Wait { submission_index: Some(submitted), timeout: None });
+        let _ = crate::gpu::poll_wait(&self.gpu.device, Some(submitted), None);
         wait.wait(&self.gpu.device, crate::gpu::MAP_READ_TIMEOUT)
             .unwrap_or_else(|e| panic!("reading back the flash grid: {e}"));
         let bytes = resources::texel_bytes(resources::FORMAT) as usize;

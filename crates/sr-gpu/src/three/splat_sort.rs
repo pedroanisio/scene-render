@@ -99,7 +99,7 @@ fn sorted_timed(eng: &ThreeEngine, keys: &[u32], scatter: &str) -> (Vec<u32>, f6
     let clock = std::time::Instant::now();
     eng.queue.submit([command]);
     read.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
-    d.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    crate::gpu::poll_wait(d, None, None).unwrap();
     let elapsed = clock.elapsed().as_secs_f64();
     let view = read.slice(..).get_mapped_range().unwrap();
     (bytemuck::cast_slice::<u8, u32>(&view)[..n as usize].to_vec(), elapsed)

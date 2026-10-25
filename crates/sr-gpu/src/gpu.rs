@@ -134,11 +134,43 @@ impl MapWait {
                 return Err(MapReadError::TimedOut(timeout));
             }
             let step = left.min(std::time::Duration::from_millis(50));
-            if let Err(e) = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: Some(step) }) {
+            if let Err(e) = poll_wait(device, None, Some(step)) {
                 if !matches!(e, wgpu::PollError::Timeout) {
                     return Err(MapReadError::Poll(e.to_string()));
                 }
             }
+        }
+    }
+}
+
+/// The lock every [`poll_wait`] of this process holds while it polls a device.
+static POLL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// The longest a [`poll_wait`] holds [`POLL`] at once.
+const POLL_STEP: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Polls `device` until `submission` (every submission so far when `None`) is done, for at most `timeout` (no bound when
+/// `None`), and runs the callbacks of the work that finished.
+///
+/// One poll runs at a time in the process. wgpu-core 30 reads a device's fence before it triages the finished
+/// submissions, so a second poll that triages in between leaves the first with no submission in flight and a fence
+/// below its wait index, which wgpu-core asserts against (`Device::maintain`): threads that render on one device at once
+/// (the threads of a test binary, the workers of a parallel delivery) panicked there. A wait polls in steps of
+/// [`POLL_STEP`] and lets go of the lock between them, so another thread's poll waits at most one step.
+pub fn poll_wait(
+    device: &wgpu::Device,
+    submission: Option<wgpu::SubmissionIndex>,
+    timeout: Option<std::time::Duration>,
+) -> Result<(), wgpu::PollError> {
+    let start = std::time::Instant::now();
+    loop {
+        let step = timeout.map_or(POLL_STEP, |t| t.saturating_sub(start.elapsed()).min(POLL_STEP));
+        let polled = {
+            let _one = POLL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            device.poll(wgpu::PollType::Wait { submission_index: submission.clone(), timeout: Some(step) })
+        };
+        match polled {
+            Err(wgpu::PollError::Timeout) if timeout.is_none_or(|t| start.elapsed() < t) => {}
+            r => return r.map(|_| ()),
         }
     }
 }
@@ -863,7 +895,7 @@ impl Gpu {
 
     /// Blocks until submitted work completes.
     pub fn wait(&self) {
-        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        let _ = poll_wait(&self.device, None, None);
     }
 
     /// Maps `slice` for reading and waits for it (see [`map_read`]); when the map fails, the error the device
@@ -879,7 +911,7 @@ impl Gpu {
 
     /// Waits for one submission (and everything before it), leaving later submissions in flight.
     pub fn wait_for(&self, idx: wgpu::SubmissionIndex) {
-        let _ = self.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: None });
+        let _ = poll_wait(&self.device, Some(idx), None);
     }
 }
 
@@ -923,6 +955,53 @@ mod map_read_tests {
         let bound = std::time::Duration::from_millis(20);
         let err = MapWait(rx).wait(&gpu.device, bound).expect_err("a result that never arrives times out");
         assert!(matches!(err, MapReadError::TimedOut(t) if t == bound), "{err:?}");
+    }
+
+    /// Threads that submit and wait on one device at once, as the threads of a test binary and the workers of a
+    /// parallel delivery do. wgpu-core asserts that a poll which finds no submission in flight has a fence at its wait
+    /// index; two polls at once broke that (one triaged the submission the other had read the fence before).
+    #[test]
+    fn threads_that_submit_and_wait_on_one_device_at_once_read_their_own_bytes() {
+        let gpu = sr_testkit::require_gpu!(test_gpu(), "threads_that_submit_and_wait_on_one_device_at_once");
+        const SIZE: u64 = 64 << 20;
+        let threads: Vec<_> = (0..6u32)
+            .map(|t| {
+                let gpu = gpu.clone();
+                std::thread::spawn(move || {
+                    for i in 0..40u32 {
+                        let src = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("poll race source"),
+                            size: SIZE,
+                            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                            mapped_at_creation: false,
+                        });
+                        let dst = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("poll race destination"),
+                            size: SIZE,
+                            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                            mapped_at_creation: false,
+                        });
+                        gpu.queue.write_buffer(&src, 0, &vec![(t * 31 + i) as u8; SIZE as usize]);
+                        let mut enc = gpu.device.create_command_encoder(&Default::default());
+                        enc.copy_buffer_to_buffer(&src, 0, &dst, 0, SIZE);
+                        let idx = gpu.queue.submit([enc.finish()]);
+                        if i % 2 == 0 {
+                            gpu.wait_for(idx);
+                        }
+                        gpu.map_read(dst.slice(..)).expect("maps");
+                        assert!(dst
+                            .slice(..)
+                            .get_mapped_range()
+                            .expect("mapped")
+                            .iter()
+                            .all(|&b| b == (t * 31 + i) as u8));
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().expect("a thread panicked");
+        }
     }
 
     #[test]

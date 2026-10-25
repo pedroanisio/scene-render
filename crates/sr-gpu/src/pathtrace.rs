@@ -818,7 +818,7 @@ mod tests {
             cache: None,
         });
         let error = pollster::block_on(scope.pop());
-        d.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        crate::gpu::poll_wait(d, None, None).unwrap();
         println!("link {:.3} s", start.elapsed().as_secs_f64());
         assert!(error.is_none(), "{names}: {error:?}");
     }
