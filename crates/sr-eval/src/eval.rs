@@ -283,6 +283,9 @@ pub struct FrameNode {
     /// the renderer extracts it itself.
     #[serde(skip)]
     pub clay_mesh: Option<Arc<crate::solid::ClayMesh>>,
+    /// The fields draft: the raster a `fieldRaster` node (a lic or a portrait) draws over its field's box.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raster: Option<Arc<crate::field_node::FieldRaster>>,
     /// The box of a parametric shape at this time (SREP 70): the bounding box `[x0, y0, x1, y1]` of its finite
     /// points, in local pixels. Its outline is the `path` property.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1213,6 +1216,142 @@ impl<'p> Frame<'p> {
         }
     }
 
+    /// The fields draft: the box of field `fi` at this frame, its enclosing axes' or its own; `None` when the axes
+    /// has no frame (its problem is reported once, as the axes').
+    fn field_box(&self, fi: &crate::field_node::FieldInst) -> Option<Result<crate::field_node::FieldBox, String>> {
+        use crate::field_node::FieldBox;
+        if let Some(a) = fi.axes {
+            let af = self.axes_of(a)?;
+            let a = &af.axes;
+            return Some(FieldBox::new(a.width, a.height, [a.x_min, a.y_min, a.x_max, a.y_max]));
+        }
+        let node = &self.p.nodes[fi.node as usize];
+        let Node::Field(fl) = &*node.elem else { return None };
+        let props = self.props(&node.slots);
+        let num = |k: &str, d: f64| props.get(k).and_then(Value::as_num).unwrap_or(d);
+        let width = num("width", fl.width.map_or(f64::NAN, |w| w.get()));
+        let height = num("height", fl.height.map_or(f64::NAN, |h| h.get()));
+        let ranges = [
+            num("xMin", fl.x_min.unwrap_or(-1.0)),
+            num("yMin", fl.y_min.unwrap_or(-1.0)),
+            num("xMax", fl.x_max.unwrap_or(1.0)),
+            num("yMax", fl.y_max.unwrap_or(1.0)),
+        ];
+        Some(FieldBox::new(width, height, ranges))
+    }
+
+    /// The fields draft: sets the path or the raster of part `j` of field `k`, drawn by `out`, at this frame.
+    fn field_part(&mut self, k: u32, j: u32, out: &mut FrameNode) -> Result<(), String> {
+        use crate::field_node::{self as fnode, Kind, Part, Source};
+        let p = self.p;
+        let fi = &p.fields[k as usize];
+        let b = match self.field_box(fi) {
+            None => return Ok(()),
+            Some(b) => b?,
+        };
+        let n = fi.node;
+        // the force field's values at this frame, read before the frame is lent to the samplers
+        let force = match &fi.source {
+            Source::ForceField(key) => {
+                let props = p.elements.iter().find(|e| *e.key == **key).map(|e| self.props(&e.slots));
+                let get = |name: &str| props.as_ref().and_then(|pr| pr.get(name)).and_then(Value::as_num);
+                Some(crate::sim::force_field_at(p, key, self.t, &get))
+            }
+            _ => None,
+        };
+        let frame = std::cell::RefCell::new(&mut *self);
+        let one = |e: u32, x: f64, y: f64| {
+            let mut v = Vec::with_capacity(1);
+            frame.borrow_mut().sampled(n, e, &[[x, y]], &mut v);
+            v[0]
+        };
+        // the field as a vector function of data (x, y): (u, v), the gradient of a scalar, or (Re w, Im w)
+        let vector: Box<dyn Fn(f64, f64) -> [f64; 2] + '_> = match (&fi.source, fi.kind) {
+            (Source::Exprs { u, v: Some(v) }, _) => Box::new(|x, y| [one(*u, x, y), one(*v, x, y)]),
+            (Source::Exprs { u, v: None }, _) => Box::new(fnode::gradient(move |x, y| one(*u, x, y))),
+            (Source::W([re, im]), _) => Box::new(|x, y| [one(*re, x, y), one(*im, x, y)]),
+            (Source::Function { f, coefficients }, _) => Box::new(|x, y| fnode::complex_at(*f, coefficients, x, y)),
+            (Source::Grid { lattice, ranges }, kind) => {
+                let g = crate::fields::grid_sampler(lattice, *ranges).map_err(|e| e.to_string())?;
+                if kind == Kind::Scalar {
+                    Box::new(fnode::gradient(move |x, y| g(x, y)[0]))
+                } else {
+                    Box::new(g)
+                }
+            }
+            (Source::ForceField(_), _) => match force.clone().flatten() {
+                Some((field, ppm)) => {
+                    let t = frame.borrow().t;
+                    Box::new(move |x, y| {
+                        let a = field.accel([x * ppm, -y * ppm], [0.0, 0.0], t);
+                        [a[0] / ppm, -a[1] / ppm]
+                    })
+                }
+                None => Box::new(|_, _| [0.0, 0.0]),
+            },
+            (Source::Sources { charges, currents, dipoles }, _) => Box::new(move |x, y| {
+                let mut f = crate::fields::charge_field(charges, [x, y]);
+                for c in currents {
+                    let w = crate::fields::wire_field([x, y], c[2], [c[0], c[1]]);
+                    f = [f[0] + w[0], f[1] + w[1]];
+                }
+                for d in dipoles {
+                    let w = crate::fields::dipole_field([x, y], [d[2], d[3]], [d[0], d[1]]);
+                    f = [f[0] + w[0], f[1] + w[1]];
+                }
+                f
+            }),
+        };
+        // a scalar field draws only its contours and the lic of its gradient (rule 1)
+        let drawn = fi.kind != Kind::Scalar;
+        let d = match &fi.parts[j as usize] {
+            Part::Arrows { .. } | Part::Streamlines { .. } | Part::Lines { .. } if !drawn => String::new(),
+            Part::Arrows { cols, rows, style } => {
+                fnode::arrows_path(&vector, &b, *cols, *rows, style).map_err(|e| e.to_string())?
+            }
+            &Part::Streamlines { separation, test, step, max_steps, max_lines, seed } => {
+                fnode::streamlines_path(&vector, &b, separation, test, step, max_steps, max_lines, seed)
+                    .map_err(|e| e.to_string())?
+            }
+            &Part::Lines { per_charge, radius, step, max_steps } => {
+                let Source::Sources { charges, .. } = &fi.source else { return Ok(()) };
+                fnode::lines_path(charges, &b, per_charge, radius, step, max_steps).map_err(|e| e.to_string())?
+            }
+            Part::Contours { levels, resolution } => {
+                let sample = |at: &[[f64; 2]]| -> Vec<f64> {
+                    match &fi.source {
+                        Source::Exprs { u, .. } => {
+                            let mut v = Vec::new();
+                            frame.borrow_mut().sampled(n, *u, at, &mut v);
+                            v
+                        }
+                        Source::Grid { lattice, ranges } => match crate::fields::grid_sampler(lattice, *ranges) {
+                            Ok(g) => at.iter().map(|q| g(q[0], q[1])[0]).collect(),
+                            Err(_) => vec![f64::NAN; at.len()],
+                        },
+                        _ => vec![f64::NAN; at.len()],
+                    }
+                };
+                fnode::contours_path(sample, &b, levels, *resolution).map_err(|e| e.to_string())?
+            }
+            &Part::Lic { length, step, resolution, seed, opacity } => {
+                let r = fnode::lic_raster(&vector, &b, length, step, resolution, seed, opacity)
+                    .map_err(|e| e.to_string())?;
+                out.raster = Some(Arc::new(r));
+                return Ok(());
+            }
+            &Part::Portrait { modulus, base, opacity } => {
+                out.raster = Some(Arc::new(fnode::portrait_raster(&vector, &b, modulus, base, opacity)));
+                return Ok(());
+            }
+        };
+        match out.props.0.iter_mut().find(|(k, _)| &**k == "path") {
+            Some(slot) => slot.1 = Value::Str(d.into()),
+            None => out.props.0.push((Arc::from("path"), Value::Str(d.into()))),
+        }
+        Ok(())
+    }
+
     fn num(&self, n: u32, k: usize) -> f64 {
         let node = &self.p.nodes[n as usize];
         match node.tf_slots.num[k] {
@@ -1666,6 +1805,7 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
                 })
                 .collect(),
             clay_mesh: None,
+            raster: None,
             param_box: None,
             elem: node.elem.clone(),
         });
@@ -1677,6 +1817,13 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
         if let Some((a, part)) = node.axes_part {
             if let Some(out) = o.nodes.last_mut() {
                 f.axes_part(n, a, part, out, &mut o.problems);
+            }
+        }
+        if let Some((k, j)) = node.field_part {
+            if let Some(out) = o.nodes.last_mut() {
+                if let Err(e) = f.field_part(k, j, out) {
+                    o.problems.push(format!("{}: {e}", out.id));
+                }
             }
         }
         if let Some(k) = node.axes3d {

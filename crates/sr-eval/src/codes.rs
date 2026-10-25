@@ -27,6 +27,7 @@ pub const CODES: &[(&str, &str)] = &[
     ("E22", "A feature of an accepted SREP that this engine does not implement yet is used (warning, --strict fails): the document is valid and the feature is ignored. The SREP number is in the message."),
     ("PREC1", "project/@precision=\"f32\" in a document with 3D content (an object3D, particles3D, ocean, blackHole or accretionDisk the composition draws, after instances and includes): the 2D working textures are 32-bit float, the 3D renderer's internal buffers stay 16-bit float (information; SREP 72 names it; it replaces E23)."),
     ("E16", "A {{placeholder}} names no parameter or repeat variable (warning; the text is left unchanged)."),
+    ("FLDE1", "A field cannot be evaluated: its source does not fit its kind, a vector u has no v, it has no box outside an axes, a mobius function lacks eight coefficients, a portrait base is not above 1, or its grid or forceField is not usable (the fields draft)."),
     ("RVE1", "A value's update reads, with prop or propAtTime, a time fold of another step or start, or an index fold: time folds that read each other share step and start (the reactive-values draft, Semantics 5; the draft's E1)."),
     ("RVE2", "A time fold takes more than 1,000,000 steps by the composition's end (the reactive-values draft, Semantics 8; the draft's E2)."),
 ];

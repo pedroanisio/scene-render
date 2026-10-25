@@ -321,19 +321,10 @@ impl FieldSrc {
             .iter()
             .filter(|(_, _, s, e)| t >= *s && e.map(|e| t < e).unwrap_or(true))
             .map(|(key, f, _, _)| {
-                let mut f = f.clone();
-                if let Some(g) = g {
-                    let get = |n: &str| prop_num(g, key, n);
-                    f.pos = [get("x").unwrap_or(f.pos[0]), get("y").unwrap_or(f.pos[1])];
-                    f.force = [get("forceX").unwrap_or(f.force[0]), get("forceY").unwrap_or(f.force[1])];
-                    f.z = get("z").unwrap_or(f.z);
-                    f.force_z = get("forceZ").unwrap_or(f.force_z);
-                    f.strength = get("strength").unwrap_or(f.strength);
-                    f.falloff = get("falloff").unwrap_or(f.falloff);
-                    if let Some(r) = get("radius") {
-                        f.radius = Some(r);
-                    }
-                }
+                let f = match g {
+                    Some(g) => animated(f.clone(), &|n: &str| prop_num(g, key, n)),
+                    None => f.clone(),
+                };
                 to_pixels(f, self.ppm)
             })
             .collect()
@@ -361,6 +352,37 @@ impl FieldSrc {
             .collect();
         all.into_iter().zip(keys).filter(|(_, k)| ids.iter().any(|i| i == *k)).map(|(f, _)| f).collect()
     }
+}
+
+/// The fields draft: the `forceField` `key` of physics at composition time `t`, its animated values read through
+/// `get`, as the simulation's pixel-space field with its pixels per metre; `None` outside its start and end, or
+/// when physics has no such field.
+pub(crate) fn force_field_at(
+    p: &Program,
+    key: &str,
+    t: f64,
+    get: &dyn Fn(&str) -> Option<f64>,
+) -> Option<(Field, f64)> {
+    let src = build_fields(p);
+    let (_, f, s, e) = src.fields.iter().find(|(k, ..)| k == key)?;
+    if !(t >= *s && e.is_none_or(|e| t < e)) {
+        return None;
+    }
+    Some((to_pixels(animated(f.clone(), get), src.ppm), src.ppm))
+}
+
+/// A field with the animated values `get` gives in place of its static ones.
+fn animated(mut f: Field, get: &dyn Fn(&str) -> Option<f64>) -> Field {
+    f.pos = [get("x").unwrap_or(f.pos[0]), get("y").unwrap_or(f.pos[1])];
+    f.force = [get("forceX").unwrap_or(f.force[0]), get("forceY").unwrap_or(f.force[1])];
+    f.z = get("z").unwrap_or(f.z);
+    f.force_z = get("forceZ").unwrap_or(f.force_z);
+    f.strength = get("strength").unwrap_or(f.strength);
+    f.falloff = get("falloff").unwrap_or(f.falloff);
+    if let Some(r) = get("radius") {
+        f.radius = Some(r);
+    }
+    f
 }
 
 fn build_fields(p: &Program) -> FieldSrc {

@@ -335,6 +335,8 @@ pub struct InstNode {
     pub data_axes: Option<u32>,
     /// The plots draft: this `object3D primitive="axes"`'s axes and plots, in `Program::axes3d`.
     pub axes3d: Option<u32>,
+    /// The fields draft: the presentation this synthetic node draws, as (field in `Program::fields`, part index).
+    pub field_part: Option<(u32, u32)>,
     /// The space-transforms draft: the node's `map` modifiers, by their part key (`{id}/deform[i]/modifierType[j]`,
     /// as the node's parts are keyed), with their compiled `x` and `y` expressions of `u` and `v`.
     pub deform_maps: Vec<(Arc<str>, [u32; 2])>,
@@ -602,6 +604,8 @@ pub struct Program {
     pub axes_nodes: Vec<u32>,
     /// The 3D axes objects (the plots draft, rules 10 and 11), indexed by [`InstNode::axes3d`].
     pub axes3d: Vec<crate::axes::Axes3DInst>,
+    /// The `field` nodes (the fields draft), indexed by [`InstNode::field_part`].
+    pub fields: Vec<crate::field_node::FieldInst>,
     /// Links.
     pub links: Vec<LinkInst>,
     /// The point generators of repeats with a `points` child (SREP 26).
@@ -1312,6 +1316,9 @@ struct Builder {
     axes3d: Vec<crate::axes::Axes3DInst>,
     /// 3D axes objects waiting for their plots' expressions to compile: (node, axes, plots, scope, doc).
     pending_axes3d: Vec<(u32, m::Axes3D, Vec<m::Plot3D>, Arc<str>, u16)>,
+    fields: Vec<crate::field_node::FieldInst>,
+    /// Fields waiting for their expressions to compile: (field node, field, part nodes, enclosing axes, scope, doc).
+    pending_field: Vec<(u32, m::Field, Vec<u32>, Option<u32>, Arc<str>, u16)>,
     /// `map` modifiers waiting for their expressions to compile: (node, part key, path in the document, x, y,
     /// location, scope, doc).
     pending_maps: Vec<(u32, Arc<str>, Arc<str>, String, String, Loc, Arc<str>, u16)>,
@@ -1655,6 +1662,7 @@ impl Builder {
                 axes_part: None,
                 data_axes: None,
                 axes3d: None,
+                field_part: None,
                 deform_maps: Vec::new(),
             };
             self.nodes.push(node);
@@ -1701,6 +1709,7 @@ impl Builder {
                 Node::Repeat(r) => self.repeat(idx, r, n, ctx),
                 Node::Connector(c) => self.connector(idx, c, ctx),
                 Node::Axes(a) => self.axes(idx, a, ctx),
+                Node::Field(fl) => self.field(idx, fl, ctx),
                 Node::Instance(i) => self.instance(idx, i, ctx),
                 Node::Include(i) => self.include(idx, i, ctx),
                 Node::Layer(l) => self.layer_clock(idx, l, ctx),
@@ -2112,7 +2121,10 @@ impl Builder {
             let children = node_children(&Node::Axes(a.clone()));
             let placed = self.instantiate(&children, Some(c), ctx);
             for &k in &placed {
-                self.nodes[k as usize].data_axes = Some(idx);
+                // a field takes the axes' box and ranges and sits at its origin (the fields draft)
+                if self.nodes[k as usize].name != "field" {
+                    self.nodes[k as usize].data_axes = Some(idx);
+                }
             }
             self.nodes[c as usize].children = placed;
             kids.push(c);
@@ -2125,6 +2137,97 @@ impl Builder {
             }
         }
         self.nodes[idx as usize].children = kids;
+    }
+
+    /// The fields draft: a `field` lowers to a path shape per stroked presentation (`{kind}{i}`, i counting that
+    /// kind), whose path the frame sets, and a `fieldRaster` group per lic and portrait; its expressions compile
+    /// with the others ([`Builder::compile_fields`]). In an `axes` the field takes the axes' box.
+    fn field(&mut self, idx: u32, fl: &m::Field, ctx: &Ctx) {
+        let id = self.nodes[idx as usize].id.clone();
+        let axes = self.nodes[idx as usize]
+            .parent
+            .and_then(|c| self.nodes[c as usize].parent)
+            .filter(|&a| matches!(&*self.nodes[a as usize].elem, Node::Axes(_)));
+        let size = match axes.map(|a| &*self.nodes[a as usize].elem) {
+            Some(Node::Axes(a)) => Some([a.width.get(), a.height.get()]),
+            _ => fl.width.zip(fl.height).map(|(w, h)| [w.get(), h.get()]),
+        };
+        if let Some([w, h]) = size {
+            self.nodes[idx as usize].box_size = Some([Length::px(w), Length::px(h)]);
+        }
+        let paint = |own: &Option<sr_model::values::Paint>| own.as_ref().unwrap_or(&fl.stroke).to_string();
+        let width = |own: Option<m::PositiveDecimal>| own.unwrap_or(fl.stroke_width).get();
+        let dash = |own: &Option<Vec<f64>>| {
+            own.as_ref().or(fl.dash.as_ref()).map_or(String::new(), |d| {
+                format!(r#" dash="{}""#, d.iter().map(f64::to_string).collect::<Vec<_>>().join(" "))
+            })
+        };
+        let style = |e: &dyn Element| -> String {
+            [
+                "strokeCap",
+                "strokeJoin",
+                "miterLimit",
+                "dashOffset",
+                "strokePosition",
+                "markerStart",
+                "markerEnd",
+                "markerSize",
+            ]
+            .iter()
+            .filter_map(|k| e.get_attr(k).map(|v| format!(r#" {k}="{}""#, xml_attr(&v.to_string()))))
+            .collect()
+        };
+        let stroked = |part: String, stroke: String, w: f64, extra: String| {
+            format!(
+                r##"<shape id="{part}" shape="path" fill="#00000000" stroke="{}" strokeWidth="{w}"{extra}/>"##,
+                xml_attr(&stroke)
+            )
+        };
+        let mut counts: HashMap<&'static str, usize> = HashMap::new();
+        let mut name = |kind: &'static str| {
+            let c = counts.entry(kind).or_insert(0);
+            *c += 1;
+            format!("{kind}{}", *c - 1)
+        };
+        let mut xmls: Vec<(String, bool)> = Vec::new();
+        for c in &fl.children {
+            let xml = match c {
+                m::FieldChild::Arrows(x) => {
+                    stroked(name("arrows"), paint(&x.stroke), width(x.stroke_width), dash(&x.dash) + &style(x))
+                }
+                m::FieldChild::Streamlines(x) => {
+                    stroked(name("streamlines"), paint(&x.stroke), width(x.stroke_width), dash(&x.dash) + &style(x))
+                }
+                m::FieldChild::Lines(x) => {
+                    stroked(name("lines"), paint(&x.stroke), width(x.stroke_width), dash(&x.dash) + &style(x))
+                }
+                m::FieldChild::Contours(x) => {
+                    stroked(name("contours"), paint(&x.stroke), width(x.stroke_width), dash(&x.dash) + &style(x))
+                }
+                m::FieldChild::Lic(_) => format!(r#"<group id="{}"/>"#, name("lic")),
+                m::FieldChild::Portrait(_) => format!(r#"<group id="{}"/>"#, name("portrait")),
+                _ => continue,
+            };
+            let raster = matches!(c, m::FieldChild::Lic(_) | m::FieldChild::Portrait(_));
+            xmls.push((xml, raster));
+        }
+        let cctx = Ctx { scope: id.clone(), ..ctx.clone() };
+        let mut kids = Vec::new();
+        for (xml, raster) in xmls {
+            match Node::from_fragment(&xml) {
+                Ok(node) => {
+                    if let Some(&k) = self.instantiate(std::slice::from_ref(&node), Some(idx), &cctx).first() {
+                        if raster {
+                            self.nodes[k as usize].name = "fieldRaster";
+                        }
+                        kids.push(k);
+                    }
+                }
+                Err(e) => self.diags.push(err("E10", format!("field {id:?}: {}", e.message), fl.loc, &*id)),
+            }
+        }
+        self.nodes[idx as usize].children = kids.clone();
+        self.pending_field.push((idx, fl.clone(), kids, axes, ctx.scope.clone(), ctx.doc));
     }
 
     /// Registers every shape placed on a pdf region (SREP 17) with its region's box and its layer's effective id.
@@ -3614,6 +3717,182 @@ impl Builder {
         }
     }
 
+    /// The fields draft: each pending field's source, with its expressions compiled in x and y, and its
+    /// presentations. A source that does not fit the field's kind, a field with no box, a mobius function without
+    /// its eight coefficients, a portrait base of at most 1 and a grid that is not a data source of a regular
+    /// lattice are FLDE1.
+    fn compile_fields(&mut self) {
+        use crate::field_node::{FieldInst, Kind, Part, Source};
+        const XY: &[&str] = &["x", "y"];
+        for (n, fl, kids, axes, scope, doc) in std::mem::take(&mut self.pending_field) {
+            let id = self.nodes[n as usize].id.clone();
+            let mut problems: Vec<String> = Vec::new();
+            let kind = match fl.kind {
+                m::FieldKind::Vector => Kind::Vector,
+                m::FieldKind::Scalar => Kind::Scalar,
+                m::FieldKind::Complex => Kind::Complex,
+            };
+            if axes.is_none() && (fl.width.is_none() || fl.height.is_none()) {
+                problems.push("a field outside an axes needs width and height".into());
+            }
+            let points = self.nodes[n as usize].point.is_some();
+            let seed = self.project_seed;
+            let compile = |b: &mut Self, attr: &str, src: &str| -> Option<u32> {
+                let who = format!("{id}@{attr}");
+                let mut res = ExprResolver { b, scope: scope.clone(), doc, points, sample: XY, fold: false };
+                match vm::compile(src, &mut res) {
+                    Ok(code) => {
+                        b.exprs.push(ExprInst { code, slot: None, node: Some(n), doc, seed });
+                        Some((b.exprs.len() - 1) as u32)
+                    }
+                    Err(e) => {
+                        let excerpt: String = src.chars().skip(e.offset.saturating_sub(10)).take(30).collect();
+                        b.diags.push(err(
+                            "E01",
+                            format!("{who}: {} (near {:?})", e.message, excerpt.trim()),
+                            fl.loc,
+                            who.as_str(),
+                        ));
+                        None
+                    }
+                }
+            };
+            let mut charges = Vec::new();
+            let mut currents = Vec::new();
+            let mut dipoles = Vec::new();
+            for c in &fl.children {
+                match c {
+                    m::FieldChild::Charge(q) => charges.push([q.x, q.y, q.q]),
+                    m::FieldChild::Current(q) => currents.push([q.x, q.y, q.i]),
+                    m::FieldChild::Dipole(q) => dipoles.push([q.x, q.y, q.mx, q.my]),
+                    _ => {}
+                }
+            }
+            let held = !(charges.is_empty() && currents.is_empty() && dipoles.is_empty());
+            let fits = |ok: bool, what: &str, problems: &mut Vec<String>| {
+                if !ok {
+                    problems.push(format!("{what} does not fit kind=\"{}\"", fl.kind.as_str()));
+                }
+            };
+            let source = if let Some(u) = &fl.u {
+                fits(kind != Kind::Complex, "u", &mut problems);
+                if kind == Kind::Vector && fl.v.is_none() {
+                    problems.push("a vector field of u needs v".into());
+                }
+                let u = compile(self, "u", u);
+                let v = fl.v.as_ref().map(|v| compile(self, "v", v));
+                match (u, v) {
+                    (Some(u), None) => Some(Source::Exprs { u, v: None }),
+                    (Some(u), Some(Some(v))) => Some(Source::Exprs { u, v: Some(v) }),
+                    _ => None,
+                }
+            } else if let Some(w) = &fl.w {
+                fits(kind == Kind::Complex, "w", &mut problems);
+                match w.split_once(';') {
+                    Some((re, im)) => match (compile(self, "w", re), compile(self, "w", im)) {
+                        (Some(re), Some(im)) => Some(Source::W([re, im])),
+                        _ => None,
+                    },
+                    None => {
+                        problems.push("w is two expressions, \"re; im\"".into());
+                        None
+                    }
+                }
+            } else if let Some(f) = fl.function {
+                fits(kind == Kind::Complex, "function", &mut problems);
+                let coefficients = fl.coefficients.clone().unwrap_or_default();
+                if f == m::Function::Mobius && coefficients.len() != 8 {
+                    problems.push(format!("function=\"mobius\" needs eight coefficients, not {}", coefficients.len()));
+                }
+                sr_vector::space::ComplexFn::parse(f.as_str()).map(|f| Source::Function { f, coefficients })
+            } else if let Some(g) = &fl.grid {
+                fits(kind != Kind::Complex, "grid", &mut problems);
+                match self.doc(doc).params.get(g).map(|v| crate::field_node::lattice(v, kind == Kind::Scalar)) {
+                    Some(Ok((lattice, ranges))) => Some(Source::Grid { lattice, ranges }),
+                    Some(Err(e)) => {
+                        problems.push(format!("grid {g:?}: {e}"));
+                        None
+                    }
+                    None => {
+                        problems.push(format!("grid {g:?} names no data source"));
+                        None
+                    }
+                }
+            } else if let Some(ff) = &fl.force_field {
+                fits(kind == Kind::Vector, "forceField", &mut problems);
+                let known = self.doc(0).scene.physics.as_ref().is_some_and(|ph| {
+                    ph.children.iter().any(|c| matches!(c, m::PhysicsChild::ForceField(f) if f.id == *ff))
+                });
+                if !known {
+                    problems.push(format!("forceField {ff:?} names no forceField of physics"));
+                }
+                Some(Source::ForceField(ff.as_str().into()))
+            } else if held {
+                fits(kind == Kind::Vector, "charge, current and dipole children", &mut problems);
+                Some(Source::Sources { charges, currents, dipoles })
+            } else {
+                problems.push("a field has no source".into());
+                None
+            };
+            let mut parts = Vec::new();
+            for c in &fl.children {
+                parts.push(match c {
+                    m::FieldChild::Arrows(a) => Part::Arrows {
+                        cols: a.cols.get() as usize,
+                        rows: a.rows.get() as usize,
+                        style: crate::fields::ArrowStyle {
+                            scale: a.scale.get(),
+                            max_length: a.max_length.get(),
+                            head_length: a.head_length.get(),
+                            head_width: a.head_width.get(),
+                        },
+                    },
+                    m::FieldChild::Streamlines(a) => Part::Streamlines {
+                        separation: a.separation.get(),
+                        test: a.test.map(|v| v.get()),
+                        step: a.step.map(|v| v.get()),
+                        max_steps: a.max_steps,
+                        max_lines: usize::try_from(a.max_lines).unwrap_or(usize::MAX),
+                        seed: [a.seed_x, a.seed_y],
+                    },
+                    m::FieldChild::Lines(a) => Part::Lines {
+                        per_charge: u32::try_from(a.per_charge.get()).unwrap_or(u32::MAX),
+                        radius: a.radius.get(),
+                        step: a.step.map(|v| v.get()),
+                        max_steps: a.max_steps,
+                    },
+                    m::FieldChild::Contours(a) => Part::Contours {
+                        levels: a.levels.clone(),
+                        resolution: usize::try_from(a.resolution).unwrap_or(usize::MAX),
+                    },
+                    m::FieldChild::Lic(a) => Part::Lic {
+                        length: a.length.get(),
+                        step: a.step.get(),
+                        resolution: a.resolution.map(|r| usize::try_from(r).unwrap_or(usize::MAX)),
+                        seed: a.seed.unwrap_or(self.project_seed),
+                        opacity: a.opacity.get(),
+                    },
+                    m::FieldChild::Portrait(a) => {
+                        if a.base.get() <= 1.0 {
+                            problems.push(format!("a portrait's base is above 1, not {}", a.base.get()));
+                        }
+                        Part::Portrait { modulus: a.modulus, base: a.base.get(), opacity: a.opacity.get() }
+                    }
+                    _ => continue,
+                });
+            }
+            for e in &problems {
+                self.diags.push(err("FLDE1", format!("{id}: {e}"), fl.loc, &*id));
+            }
+            let (Some(source), true) = (source, problems.is_empty()) else { continue };
+            self.fields.push(FieldInst { kind, source, parts, axes, node: n });
+            let k = (self.fields.len() - 1) as u32;
+            for (j, &part) in kids.iter().enumerate() {
+                self.nodes[part as usize].field_part = Some((k, j as u32));
+            }
+        }
+    }
+
     fn compile_pending(&mut self) {
         for (slot, node, src, seed, loc, scope, doc) in std::mem::take(&mut self.pending_expr) {
             let who = match (slot, node) {
@@ -3677,6 +3956,7 @@ impl Builder {
                 self.nodes[n as usize].geom = Some((self.geoms.len() - 1) as u32);
             }
         }
+        self.compile_fields();
         // the plots draft: a plot's expressions, with the sampling variables of its kind
         for (n, axes, i, plot, scope, doc) in std::mem::take(&mut self.pending_plot) {
             let (sources, names) = crate::axes::plot_sources(&plot);
@@ -4152,6 +4432,8 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         pending_plot: Vec::new(),
         axes3d: Vec::new(),
         pending_axes3d: Vec::new(),
+        fields: Vec::new(),
+        pending_field: Vec::new(),
         pending_maps: Vec::new(),
         links: Vec::new(),
         elements: Vec::new(),
@@ -4382,6 +4664,7 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         plots: b.plots,
         axes_nodes,
         axes3d: b.axes3d,
+        fields: b.fields,
         links: b.links,
         points: b.points,
         connectors: b.connectors.into_iter().map(|(c, _, _)| c).collect(),
