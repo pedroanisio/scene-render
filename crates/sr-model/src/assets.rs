@@ -13,6 +13,10 @@
 //! image dimensions differ from the local source file, `A08` an image/video representation declares other
 //! dimensions than its file or another aspect ratio than the asset, `A09` an audio asset declares a sample rate,
 //! channel count or duration that its file contradicts.
+//!
+//! An `ephemeris` asset's file is read as an SPK file pinned by its `digest` (the time-frames draft): a file of
+//! another kind or digest is `TF1`, a body placed from it that it does not hold `TF4`, and a space's origin or
+//! frameBody that it does not hold `TF5`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
@@ -296,6 +300,24 @@ pub fn verify(doc: &Document<'_>, base_dir: &Path, out: &mut Vec<Diagnostic>) {
             if is_document_reference(name, attr, value) {
                 continue;
             }
+            if name == "ephemeris" && attr == "src" && n.parent_element().is_some_and(|p| p.has_tag_name("assets")) {
+                match resolve(value, base_dir) {
+                    // a missing file is A01, as for any asset
+                    Resolved::Local(path) if !path.exists() => checks.push(Check {
+                        node: n,
+                        attr,
+                        value,
+                        path,
+                        expected: None,
+                        hash_attr: "",
+                        missing: Severity::Error,
+                        missing_code: "A01",
+                    }),
+                    Resolved::Local(path) => ephemeris(n, &path, out),
+                    Resolved::Remote(scheme) => remote.push((n, attr, scheme)),
+                }
+                continue;
+            }
             if name == "volume" && n.attribute("format") == Some("srvseq") && attr == "src" {
                 match resolve(value, base_dir) {
                     Resolved::Local(path) => {
@@ -509,6 +531,64 @@ pub fn verify(doc: &Document<'_>, base_dir: &Path, out: &mut Vec<Diagnostic>) {
                 }),
             ),
             Err(e) => out.push(Diagnostic::error(unreadable, format!("cannot read {shown}: {e}"), loc, path)),
+        }
+    }
+}
+
+/// An `xs:int` attribute's value: XML whitespace and a leading `+` removed (SREP 84).
+fn xs_int(n: Node, attr: &str) -> Option<i32> {
+    let v = n.attribute(attr)?.trim_matches([' ', '\t', '\r', '\n']);
+    v.strip_prefix('+').unwrap_or(v).parse().ok()
+}
+
+/// TF1 for an ephemeris asset's local file, then the clauses of TF4 and TF5 that read its bodies: every object3D
+/// placed from it holds a body of the file, and the space's origin and frameBody are in the file or the barycentre 0.
+fn ephemeris(n: Node, path: &Path, out: &mut Vec<Diagnostic>) {
+    // a digest that is not "sha256:" and 64 lowercase hex digits is the structure stage's S06, as a malformed
+    // @sha256 is not A02
+    let digest = n.attribute("digest").filter(|d| {
+        d.strip_prefix("sha256:")
+            .is_some_and(|h| h.len() == 64 && h.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')))
+    });
+    let Some(digest) = digest else { return };
+    let spk = match sr_space::Spk::open(path, Some(digest)) {
+        Ok(spk) => spk,
+        Err(e) => {
+            out.push(Diagnostic::error(
+                "TF1",
+                format!("ephemeris {:?}: {e} (resolved to {})", n.attribute("src").unwrap_or_default(), path.display()),
+                attr_loc(n, "src"),
+                element_path(n),
+            ));
+            return;
+        }
+    };
+    let id = n.attribute("id");
+    let root = n.document().root_element();
+    let Some(space) = root.children().find(|s| s.has_tag_name("space") && s.attribute("ephemeris") == id) else {
+        return;
+    };
+    let held = |b: i32| b == 0 || spk.has_body(b);
+    for attr in ["origin", "frameBody"] {
+        if let Some(b) = xs_int(space, attr).filter(|&b| !held(b)) {
+            out.push(Diagnostic::error(
+                "TF5",
+                format!("space/@{attr} {b} is not a body of the ephemeris {:?}", id.unwrap_or_default()),
+                attr_loc(space, attr),
+                element_path(space),
+            ));
+        }
+    }
+    for o in
+        root.descendants().filter(|o| o.has_tag_name("object3D") && o.attribute("positionFrom") == Some("ephemeris"))
+    {
+        if let Some(b) = xs_int(o, "body").filter(|&b| !held(b)) {
+            out.push(Diagnostic::error(
+                "TF4",
+                format!("object3D/@body {b} is not a body of the ephemeris {:?}", id.unwrap_or_default()),
+                attr_loc(o, "body"),
+                element_path(o),
+            ));
         }
     }
 }

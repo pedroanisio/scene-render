@@ -1365,6 +1365,12 @@
     "stp1-not-a-shader.scene.xml": [
       "STP1"
     ],
+    "tf1-digest.scene.xml": [
+      "TF1"
+    ],
+    "tf1-not-spk.scene.xml": [
+      "TF1"
+    ],
     "tf2-approximate-year.scene.xml": [
       "TF2"
     ],
@@ -1395,6 +1401,9 @@
     "tf4-approximate-moon.scene.xml": [
       "TF4"
     ],
+    "tf4-body-not-in-file.scene.xml": [
+      "TF4"
+    ],
     "tf4-no-body.scene.xml": [
       "TF4"
     ],
@@ -1405,6 +1414,9 @@
       "TF4"
     ],
     "tf5-approximate-origin.scene.xml": [
+      "TF5"
+    ],
+    "tf5-origin-not-in-file.scene.xml": [
       "TF5"
     ],
     "tf5-rate-inf.scene.xml": [

@@ -19,6 +19,7 @@ rayon.workspace = true
 image.workspace = true
 sr-media.workspace = true
 sr-volume.workspace = true
+sr-space.workspace = true
 sr-wasm.workspace = true
 serde_json.workspace = true
 
