@@ -70,6 +70,44 @@ pub fn same_device(a: &str, b: &str) -> bool {
     a == b || suffixed(a, b) || suffixed(b, a) || mesa(a, b) || mesa(b, a)
 }
 
+/// Why a name given to `--rate` names no one device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameError {
+    /// No adapter's name contains it.
+    NoAdapter,
+    /// It is no adapter's whole name, and the adapters whose names contain it are more than one device.
+    Several,
+}
+
+impl std::fmt::Display for NameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            NameError::NoAdapter => "names no adapter",
+            NameError::Several => "names more than one adapter",
+        })
+    }
+}
+
+/// The adapters a name given to `--rate` names, ignoring case: those whose whole name it is, else those whose names
+/// contain it, when they are one device; with that device's adapters on the other backends, since [`distinct`] keeps
+/// the one ranked first. A whole name wins over the longer names that contain it, so `NVIDIA GeForce RTX 3050` names
+/// that device beside an `NVIDIA GeForce RTX 3050 Ti`.
+pub fn named(adapters: &[Adapter], name: &str) -> Result<Vec<usize>, NameError> {
+    let name = name.trim().to_lowercase();
+    if name.is_empty() {
+        return Err(NameError::NoAdapter);
+    }
+    let names: Vec<String> = adapters.iter().map(|a| a.name.to_lowercase()).collect();
+    let whole: Vec<usize> = (0..names.len()).filter(|&i| names[i] == name).collect();
+    let hit = if whole.is_empty() { (0..names.len()).filter(|&i| names[i].contains(&name)).collect() } else { whole };
+    let same = |i: usize, k: usize| same_device(&adapters[i].name, &adapters[k].name);
+    match hit.iter().filter(|&&i| !hit.iter().any(|&k| k < i && same(k, i))).count() {
+        0 => Err(NameError::NoAdapter),
+        1 => Ok((0..adapters.len()).filter(|&i| hit.iter().any(|&h| same(h, i))).collect()),
+        _ => Err(NameError::Several),
+    }
+}
+
 /// Splits `frames` frames of `segments` path segments each across `adapters` (see the module documentation). The
 /// shares are in rendering order and cover `0..frames` exactly once; an adapter without frames has no share.
 pub fn schedule(adapters: &[Adapter], frames: u64, segments: u64) -> Result<Vec<Share>, ScheduleError> {
@@ -260,6 +298,36 @@ mod tests {
         assert!(!same_device("Mesa Intel(R) Arc(tm) Graphics (MTL)", "Mesa Intel(R) Arc(tm) Graphics"));
         // the device renders every frame, rather than half of them on each backend as if it were two
         assert_eq!(schedule(&arc, 10, 1).unwrap(), vec![Share { adapter: 0, frames: 0..10, seconds: Some(5.0) }]);
+    }
+
+    #[test]
+    fn a_rate_names_a_device_by_its_whole_name_or_by_part_of_one_on_every_backend() {
+        let list = [
+            gpu("NVIDIA GeForce RTX 3050 Ti", "Vulkan", false, true, None),
+            gpu("NVIDIA GeForce RTX 3050", "Vulkan", false, true, None),
+            gpu("Intel(R) Arc(tm) Graphics (MTL)", "Vulkan", false, true, None),
+            gpu("NVIDIA GeForce RTX 3050 Ti/PCIe/SSE2", "Gl", false, false, None),
+            gpu("NVIDIA GeForce RTX 3050/PCIe/SSE2", "Gl", false, false, None),
+            gpu("Mesa Intel(R) Arc(tm) Graphics (MTL)", "Gl", false, false, None),
+        ];
+        // a whole name, in any case, names its device, though the names of another device contain it
+        assert_eq!(named(&list, "nvidia geforce rtx 3050"), Ok(vec![1, 4]));
+        assert_eq!(named(&list, "NVIDIA GeForce RTX 3050 Ti"), Ok(vec![0, 3]));
+        assert_eq!(named(&list, "intel(r) arc(tm) graphics (mtl)"), Ok(vec![2, 5]));
+        // part of a name names the one device whose names contain it, on the backends whose names do not too
+        assert_eq!(named(&list, " Arc "), Ok(vec![2, 5]));
+        assert_eq!(named(&list, "mesa"), Ok(vec![2, 5]));
+        assert_eq!(named(&list, "ti/pcie"), Ok(vec![0, 3]));
+        assert_eq!(named(&list, "rtx 3050"), Err(NameError::Several));
+        assert_eq!(named(&list, "sse2"), Err(NameError::Several));
+        assert_eq!(named(&list, "no-such-gpu"), Err(NameError::NoAdapter));
+        assert_eq!(named(&list, " "), Err(NameError::NoAdapter));
+        // the rate a GL name is given reaches the Vulkan adapter, which is the one `distinct` keeps
+        let mut rated = list.clone();
+        for i in named(&list, "mesa").unwrap() {
+            rated[i].rate = Some(2.0);
+        }
+        assert_eq!(schedule(&rated, 10, 1).unwrap(), vec![Share { adapter: 2, frames: 0..10, seconds: Some(5.0) }]);
     }
 
     #[test]
