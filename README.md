@@ -47,7 +47,7 @@ The production handbook defines rollout: newly started films use this contract; 
 
 - **Schema tables** — all simple types with their facets and all complex types with attribute declarations and content particles. `xsd::structure` interprets them.
 - **Typed model** (~20,000 lines) — 134 enums for the enumerations, 18 checked newtypes for the numeric restrictions (`UnitDecimal::new(1.5)` fails), one struct per complex type with defaults applied, and shared enums for the model groups (`Node`, `Animation`, `NodeBehaviour`, `BodyBehaviour`).
-- **Assert catalogue** — id, context, test and message of all <!-- facts:sch-asserts -->341<!-- /facts --> Schematron asserts, used by `scene-render explain`.
+- **Assert catalogue** — id, context, test and message of all <!-- facts:sch-asserts -->342<!-- /facts --> Schematron asserts, used by `scene-render explain`.
 
 The generator accepts exactly the XSD subset the schema uses and aborts the build on anything else, so an unsupported construct cannot be ignored silently.
 
@@ -72,7 +72,7 @@ Structure and rules always both run, so one pass reports every problem. The mode
 
 `tools/oracle.py` validates with libxml2's XSD validator and ISO Schematron on libxslt, the engines the schema names. Two results follow from it:
 
-- **Corpus** — `tools/build_corpus.py` writes <!-- facts:corpus-total -->706<!-- /facts --> documents into `tests/corpus`: a kitchen-sink document that exercises every section, one mutation per Schematron assert (all <!-- facts:sch-asserts -->341<!-- /facts --> ids, including every paint and colour attribute of the `R24`, `R25`, `R30` and `R31` families), one per structural and asset code, and the oracle's verdict for each. `cargo test` requires the Rust validator to produce exactly the manifest's codes for every document.
+- **Corpus** — `tools/build_corpus.py` writes <!-- facts:corpus-total -->710<!-- /facts --> documents into `tests/corpus`: a kitchen-sink document that exercises every section, one mutation per Schematron assert (all <!-- facts:sch-asserts -->342<!-- /facts --> ids, including every paint and colour attribute of the `R24`, `R25`, `R30` and `R31` families), one per structural and asset code, and the oracle's verdict for each. `cargo test` requires the Rust validator to produce exactly the manifest's codes for every document.
 - **Differential fuzzing** — `tools/oracle_diff.py COUNT SEED` mutates the kitchen sink at random and compares the XSD verdict and the multiset of (assert id, line) pairs. Seeds 1–4 (7,000 mutants, about 5,300 failed asserts) produce zero disagreements.
 
 sr-model is stricter than libxml2 in three places, each required by XSD 1.0: it resolves `xs:IDREF` values (`S10`), rejects whitespace-only `xs:IDREFS`, and rejects `1e` as an `xs:double`. XPath `number()` follows libxml2, which parses exponent forms (`2.4e1` compares as 24), because the Schematron file names libxslt as its engine.

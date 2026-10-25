@@ -1,5 +1,5 @@
 //! The fields draft (schema/UPSTREAM): the field node with its sources and presentations, the Schematron rules FLD1
-//! to FLD4, and its clause of V17, the one version gate of the 1.8 drafts.
+//! to FLD6, and its clause of V17, the one version gate of the 1.8 drafts.
 
 fn codes(version: &str, composition: &str) -> Vec<String> {
     let xml = format!(
@@ -14,6 +14,9 @@ fn field(attrs: &str, children: &str) -> String {
 }
 
 const ROTATION: &str = r#"u="-y" v="x""#;
+
+/// Shot 2: a loop of two wires of opposite charge carrying the current round it, with Poynting arrows.
+const SHOT2: &str = r#"<wire x1="-1" y1="0.5" x2="1" y2="0.5" q="1" i="1"/><wire x1="1" y1="-0.5" x2="-1" y2="-0.5" q="-1" i="1"/><arrows cols="9" rows="9" show="poynting"/>"#;
 
 #[track_caller]
 fn valid(composition: &str) {
@@ -44,6 +47,8 @@ fn fields_of_every_source_and_presentation_are_valid_at_1_8() {
         r#"<charge x="-0.5" y="0" q="1"/><charge x="0.5" y="0" q="-1"/><lines perCharge="12" radius="0.02" step="0.005" maxSteps="4000"/><arrows/>"#,
     ));
     valid(&field("", r#"<current x="0" y="0" i="2"/><dipole x="0.3" y="0" mx="0" my="1"/><streamlines/>"#));
+    valid(&field("", SHOT2));
+    valid(&field("", r#"<wire x1="0" y1="0" x2="1" y2="0" q="2"/><arrows show="field"/>"#));
     // in an axes, the box is the axes' and the field needs no width or height
     valid(&format!(
         r#"<axes id="ax" width="40" height="30" xMin="-2" xMax="2"><field id="g" {ROTATION}><arrows/></field></axes>"#
@@ -73,6 +78,31 @@ fn a_field_has_exactly_one_source_fld1() {
     }
     valid(&field(r#"kind="vector" u="x" v="y""#, ""));
     valid(&field("", r#"<charge x="0" y="0" q="1"/><current x="1" y="0" i="1"/>"#));
+    // a wire is a source child like the others
+    refused(&field(ROTATION, r#"<wire x1="0" y1="0" x2="1" y2="0" i="1"/>"#), "FLD1");
+    refused(&field(r#"kind="scalar""#, r#"<wire x1="0" y1="0" x2="1" y2="0" q="1"/>"#), "FLD1");
+    valid(&field("", r#"<wire x1="0" y1="0" x2="1" y2="0"/>"#));
+}
+
+#[test]
+fn poynting_arrows_need_a_current_carrying_wire_and_a_charge_fld6() {
+    let wire = |q: &str, i: &str| format!(r#"<wire x1="0" y1="0" x2="1" y2="0" q="{q}" i="{i}"/>"#);
+    let poynting = r#"<arrows show="poynting"/>"#;
+    for bad in [
+        // no wire carries a current
+        format!(r#"<charge x="0" y="1" q="1"/>{}{poynting}"#, wire("1", "0")),
+        format!(r#"<charge x="0" y="1" q="1"/><current x="0" y="0" i="1"/>{poynting}"#),
+        // the current flows but nothing is charged
+        format!("{}{poynting}", wire("0", "1")),
+        format!(r#"<current x="0" y="2" i="1"/>{}{poynting}"#, wire("0", "1")),
+    ] {
+        refused(&field("", &bad), "FLD6");
+    }
+    valid(&field("", &format!("{}{poynting}", wire("1", "1"))));
+    valid(&field("", &format!(r#"<charge x="0" y="1" q="1"/>{}{poynting}"#, wire("0", "1"))));
+    valid(&field("", &format!(r#"<dipole x="0" y="1" mx="1" my="0"/>{}{poynting}"#, wire("0", "-2"))));
+    // arrows of the field itself need neither
+    valid(&field(ROTATION, r#"<arrows show="field"/>"#));
 }
 
 #[test]
@@ -178,6 +208,9 @@ fn the_schema_types_refuse_values_outside_their_ranges() {
         field("", r#"<charge x="0" y="0"/>"#),
         field("", r#"<current x="0" i="1"/>"#),
         field("", r#"<dipole x="0" y="0" mx="1"/>"#),
+        field("", r#"<wire x1="0" y1="0" x2="1" i="1"/>"#),
+        field("", r#"<wire x1="0" y1="0" x2="1" y2="0" q="a"/>"#),
+        field(ROTATION, r#"<arrows show="flux"/>"#),
         field("", r#"<charge x="0" y="0" q="1"/><lines perCharge="0"/>"#),
         // sources come before presentations
         field("", r#"<arrows/><charge x="0" y="0" q="1"/>"#),

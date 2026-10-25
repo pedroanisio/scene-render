@@ -1163,9 +1163,9 @@ impl<'a> Eval<'a> {
         // the fields draft (p-srep-fields)
         if local == "field" {
             let sources = ["u", "function", "w", "grid", "forceField"].iter().filter(|k| has(k)).count()
-                + usize::from(["charge", "current", "dipole"].iter().any(|k| has_kid(n, k)));
+                + usize::from(["charge", "current", "dipole", "wire"].iter().any(|k| has_kid(n, k)));
             let v_ok = !has("v") || (has("u") && matches!(a("kind"), None | Some("vector")));
-            let kids = ["charge", "current", "dipole"].iter().any(|k| has_kid(n, k));
+            let kids = ["charge", "current", "dipole", "wire"].iter().any(|k| has_kid(n, k));
             let fits = match a("kind") {
                 Some("scalar") => (has("u") && !has("v")) || has("grid"),
                 Some("complex") => has("function") || has("w"),
@@ -1177,7 +1177,7 @@ impl<'a> Eval<'a> {
             let coefficients_ok = (coefficients.is_none() || mobius) && (!mobius || coefficients == Some(8));
             self.check(sources == 1 && v_ok && fits && coefficients_ok, n, "FLD1", || {
                 "a field has exactly one source, fitting its kind: a vector field u with v, grid, forceField, or \
-                 charge, current and dipole children; a scalar field u alone or grid; a complex field function or \
+                 charge, current, dipole and wire children; a scalar field u alone or grid; a complex field function or \
                  w; coefficients go with function=\"mobius\" only, eight of them."
                     .into()
             });
@@ -1200,6 +1200,18 @@ impl<'a> Eval<'a> {
             };
             self.check(ok, n, "FLD3", || {
                 "a portrait needs a complex field, contours a scalar field, and lines a field with charges.".into()
+            });
+        }
+        if let Some(field) =
+            n.parent_element().filter(|p| is(*p, "field") && local == "arrows" && a("show") == Some("poynting"))
+        {
+            // ../wire[@k != 0]: an absent attribute compares false, a present one as a number (NaN != 0)
+            let wire_with = |k: &str| {
+                field.children().any(|w| is(w, "wire") && w.attribute(k).is_some_and(|v| xs_number(v) != 0.0))
+            };
+            let charged = has_kid(field, "charge") || has_kid(field, "dipole") || wire_with("q");
+            self.check(wire_with("i") && charged, n, "FLD6", || {
+                "Poynting arrows need a current-carrying wire and a charge.".into()
             });
         }
         if parent_is("field") && matches!(local, "streamlines" | "lines") {

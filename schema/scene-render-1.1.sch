@@ -893,13 +893,16 @@
   </sch:pattern>
   <sch:pattern id="p-srep-fields">
     <sch:rule context="field">
-      <sch:assert id="FLD1" test="count(@u | @function | @w | @grid | @forceField) + number(boolean(charge | current | dipole)) = 1 and (not(@v) or (@u and (not(@kind) or @kind='vector'))) and ((@kind='scalar' and ((@u and not(@v)) or @grid)) or (@kind='complex' and (@function or @w)) or ((not(@kind) or @kind='vector') and ((@u and @v) or @grid or @forceField or charge or current or dipole))) and (not(@coefficients) or @function='mobius') and (not(@function='mobius') or count(str:tokenize(normalize-space(@coefficients), ' '))=8)">a field has exactly one source, fitting its kind: a vector field u with v, grid, forceField, or charge, current and dipole children; a scalar field u alone or grid; a complex field function or w; coefficients go with function="mobius" only, eight of them.</sch:assert>
+      <sch:assert id="FLD1" test="count(@u | @function | @w | @grid | @forceField) + number(boolean(charge | current | dipole | wire)) = 1 and (not(@v) or (@u and (not(@kind) or @kind='vector'))) and ((@kind='scalar' and ((@u and not(@v)) or @grid)) or (@kind='complex' and (@function or @w)) or ((not(@kind) or @kind='vector') and ((@u and @v) or @grid or @forceField or charge or current or dipole or wire))) and (not(@coefficients) or @function='mobius') and (not(@function='mobius') or count(str:tokenize(normalize-space(@coefficients), ' '))=8)">a field has exactly one source, fitting its kind: a vector field u with v, grid, forceField, or charge, current, dipole and wire children; a scalar field u alone or grid; a complex field function or w; coefficients go with function="mobius" only, eight of them.</sch:assert>
       <sch:assert id="FLD2" test="(not(@xMin and @xMax) or number(@xMin) &lt; number(@xMax)) and (not(@yMin and @yMax) or number(@yMin) &lt; number(@yMax))">each given min of a field is below its max.</sch:assert>
       <sch:assert id="FLD5" test="ancestor::axes or (@width and @height)">a field outside an axes states its box: width and height.</sch:assert>
     </sch:rule>
     <sch:rule context="field/portrait | field/contours | field/lines | field/streamlines">
       <sch:assert id="FLD3" test="(not(self::portrait) or ../@kind='complex') and (not(self::contours) or ../@kind='scalar') and (not(self::lines) or ../charge)">a portrait needs a complex field, contours a scalar field, and lines a field with charges.</sch:assert>
       <sch:assert id="FLD4" test="(not(@test) or number(@test) &lt;= sum(@separation) + 20*number(not(@separation))) and not(@maxSteps &gt; 1000000) and not(@maxLines &gt; 1000000)">a streamlines test is at most its separation, and maxSteps and maxLines are at most 1000000.</sch:assert>
+    </sch:rule>
+    <sch:rule context="field/arrows[@show='poynting']">
+      <sch:assert id="FLD6" test="../wire[@i != 0] and (../charge or ../dipole or ../wire[@q != 0])">Poynting arrows need a current-carrying wire and a charge.</sch:assert>
     </sch:rule>
   </sch:pattern>
 </sch:schema>

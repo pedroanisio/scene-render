@@ -901,6 +901,8 @@ FIELDS = ('<scene version="1.8"><project width="64" height="64" fps="24" duratio
     '<field id="g" grid="flow" width="32" height="32" xMin="0" xMax="1" yMin="0" yMax="1"><arrows cols="2" rows="2"/></field>'
     '<field id="mob" kind="complex" function="mobius" coefficients="1 0 0 0 0 0 1 0" width="32" height="32"><portrait base="3"/></field>'
     '<axes id="ax" width="32" height="32"><field id="inax" u="1" v="0"><arrows cols="2" rows="2"/></field></axes>'
+    '<field id="loop" width="64" height="32"><wire x1="-1" y1="0.5" x2="1" y2="0.5" q="1" i="1"/>'
+    '<wire x1="1" y1="-0.5" x2="-1" y2="-0.5" q="-1" i="1"/><arrows cols="9" rows="9" show="poynting"/><arrows show="field"/></field>'
     '</composition></scene>\n')
 VALID["fields"] = FIELDS
 CASES += [
@@ -920,6 +922,10 @@ CASES += [
     ("field-portrait-base", ["S06"], lambda _: FIELDS.replace('<portrait base="3"/>', '<portrait base="1"/>')),
     ("field-kind-enum", ["S06", "FLD1", "FLD3"], lambda _: FIELDS.replace('kind="complex" function="square"', 'kind="tensor" function="square"')),
     ("field-arrows-bound", ["S06"], lambda _: FIELDS.replace('cols="8"', 'cols="1001"')),
+    ("fld6-no-current", ["FLD6"], lambda _: FIELDS.replace('q="-1" i="1"/>', 'q="-1"/>').replace('q="1" i="1"/>', 'q="1" i="0"/>')),
+    ("fld6-no-charge", ["FLD6"], lambda _: FIELDS.replace('q="-1" i="1"/>', 'i="1"/>').replace('q="1" i="1"/>', 'q="0" i="1"/>')),
+    ("fld1-wire-with-u", ["FLD1"], lambda _: FIELDS.replace('<field id="loop" width="64" height="32">', '<field id="loop" u="x" v="y" width="64" height="32">')),
+    ("field-arrows-show-enum", ["S06"], lambda _: FIELDS.replace('show="poynting"', 'show="flux"')),
     ("field-source-order", ["S02"], lambda _: FIELDS.replace('<charge x="0.5" y="0" q="-1"/><lines perCharge="6"/>', '<lines perCharge="6"/><charge x="0.5" y="0" q="-1"/>')),
 ]
 CASES += [

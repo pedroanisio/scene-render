@@ -3472,7 +3472,7 @@
     <xs:annotation><xs:documentation>A field over a data box, drawn by its presentation children: a vector field (u, v), a
     scalar field (u alone) or a complex field (function, or w as "re; im"), each an expression of the data coordinates x
     and y; or rows of a data source on a regular lattice (grid), a forceField of physics, or the sum of its charge,
-    current and dipole children. In an axes the box is the axes'; elsewhere it is width x height pixels at the node's
+    current, dipole and wire children. In an axes the box is the axes'; elsewhere it is width x height pixels at the node's
     origin with the data ranges xMin to xMax and yMin to yMax (+y up). The fields draft of sr-core
     (srep/srep-0000-fields.md).</xs:documentation></xs:annotation>
     <xs:sequence>
@@ -3481,6 +3481,7 @@
         <xs:element name="charge" type="fieldChargeType"/>
         <xs:element name="current" type="fieldCurrentType"/>
         <xs:element name="dipole" type="fieldDipoleType"/>
+        <xs:element name="wire" type="fieldWireType"/>
       </xs:choice>
       <xs:choice minOccurs="0" maxOccurs="unbounded">
         <xs:element name="arrows" type="fieldArrowsType"/>
@@ -3541,14 +3542,28 @@
     <xs:attribute name="mx" type="xs:double" use="required"/>
     <xs:attribute name="my" type="xs:double" use="required"/>
   </xs:complexType>
+  <xs:complexType name="fieldWireType">
+    <xs:annotation><xs:documentation>A straight wire in the plane from (x1, y1) to (x2, y2) carrying the charge q per unit length and the current i from the first point to the second.</xs:documentation></xs:annotation>
+    <xs:attribute name="x1" type="xs:double" use="required"/>
+    <xs:attribute name="y1" type="xs:double" use="required"/>
+    <xs:attribute name="x2" type="xs:double" use="required"/>
+    <xs:attribute name="y2" type="xs:double" use="required"/>
+    <xs:attribute name="q" type="xs:double" default="0"/>
+    <xs:attribute name="i" type="xs:double" default="0"/>
+  </xs:complexType>
   <xs:simpleType name="fieldCountType">
     <xs:restriction base="xs:positiveInteger"><xs:maxInclusive value="1000"/></xs:restriction>
   </xs:simpleType>
   <xs:complexType name="fieldArrowsType">
-    <xs:annotation><xs:documentation>Arrow glyphs at the centres of a cols x rows grid of the box; stroke and strokeWidth default to the field's.</xs:documentation></xs:annotation>
+    <xs:annotation><xs:documentation>Arrow glyphs at the centres of a cols x rows grid of the box, along the field or (show="poynting") its Poynting vector; stroke and strokeWidth default to the field's.</xs:documentation></xs:annotation>
     <xs:attributeGroup ref="strokeStyle"/>
     <xs:attribute name="cols" type="fieldCountType" default="10"/>
     <xs:attribute name="rows" type="fieldCountType" default="10"/>
+    <xs:attribute name="show" default="field">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="field"/><xs:enumeration value="poynting"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
     <xs:attribute name="scale" type="positiveDecimal" default="1"/>
     <xs:attribute name="maxLength" type="positiveDecimal" default="40"/>
     <xs:attribute name="headLength" type="positiveDecimal" default="0.3"/>

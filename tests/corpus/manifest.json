@@ -453,6 +453,9 @@
     "field-arrows-bound.scene.xml": [
       "S06"
     ],
+    "field-arrows-show-enum.scene.xml": [
+      "S06"
+    ],
     "field-kind-enum.scene.xml": [
       "S06",
       "FLD1",
@@ -479,6 +482,9 @@
     "fld1-vector-u-alone.scene.xml": [
       "FLD1"
     ],
+    "fld1-wire-with-u.scene.xml": [
+      "FLD1"
+    ],
     "fld1.scene.xml": [
       "FLD1"
     ],
@@ -499,6 +505,12 @@
     ],
     "fld5.scene.xml": [
       "FLD5"
+    ],
+    "fld6-no-charge.scene.xml": [
+      "FLD6"
+    ],
+    "fld6-no-current.scene.xml": [
+      "FLD6"
     ],
     "formula-animator-part-required.scene.xml": [
       "S05"
