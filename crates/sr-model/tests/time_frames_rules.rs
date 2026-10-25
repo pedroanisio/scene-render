@@ -217,3 +217,17 @@ fn before_1_8_spaces_ephemerides_and_placed_bodies_are_refused_v17() {
     let got = codes_at("1.7", "", &body(""), "");
     assert!(!got.iter().any(|k| k == "V17"), "{got:?}");
 }
+
+#[test]
+fn an_ephemeris_position_ignores_the_objects_x_y_and_z_w16() {
+    let sp = space("2451545.0", r#" timeScale="tdb" origin="399" ephemeris="de""#);
+    for attrs in [r#" x="10""#, r#" y="0""#, r#" z="-3""#, r#" x="1" y="2" z="3""#] {
+        let got = codes(&sp, &body(&format!(r#" body="301" positionFrom="ephemeris"{attrs}"#)));
+        assert_eq!(got, ["W16"], "{attrs}");
+    }
+    // without positionFrom, or with orientation alone, the object's place is its own
+    for attrs in [r#" body="301" x="10""#, r#" body="301" orientation="bodyFixed" x="10" y="2" z="3""#] {
+        valid(&sp, &body(attrs));
+    }
+    valid(&sp, &body(r#" body="301" positionFrom="ephemeris" rotation="30" scaleX="2""#));
+}

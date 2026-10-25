@@ -564,6 +564,8 @@ WARN_CASES = [
     ("w14-path-samples", ["W14"], lambda _: BLACKHOLE.replace('geodesics="true"', 'geodesics="true" pathSamples="5000"')),
     # 1920 × 1080 at 320 samples and 20 bounces: 6.25 times the 256 samples and 4 bounces W15 starts past
     ("w15-path-cost", ["W15"], lambda _: '<scene version="1.3"><project width="1920" height="1080" fps="24" duration="1"/><composition><camera id="eye" z="-10" renderer="pathtrace" pathSamples="320" maxBounces="20"/><object3D id="ball" primitive="sphere" radius="1"/></composition></scene>\n'),
+    # the time-frames draft, rule 7: an ephemeris position replaces the object's own
+    ("w16-ephemeris-xyz", ["W16"], lambda _: TF.replace('positionFrom="ephemeris"', 'positionFrom="ephemeris" x="12" z="-3"')),
     ("w05-lights", ["W05"], lambda _: BLACKHOLE.replace('</composition>', '</composition><lights><light id="sun" type="directional"/></lights>')),
     ("w06-foam-material", ["W06"], lambda _: OCEAN.replace('</composition>', '<camera id="cam" renderer="pathtrace"/></composition>').replace('</ocean>', '<whitewater foamMode="albedo" foamMaterial="foam"/></ocean>').replace('<composition>', '<materials><material id="foam"/></materials><composition>')),
     ("w08-foam-unlit", ["W08"], lambda _: OCEAN.replace('</composition>', '<camera id="cam" renderer="pathtrace"/></composition>').replace('<ocean id="sea" ', '<ocean id="sea" material="glow" ').replace('</ocean>', '<whitewater foamMode="albedo"/></ocean>').replace('<composition>', '<materials><material id="glow" unlit="true"/></materials><composition>')),

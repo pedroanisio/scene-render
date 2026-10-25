@@ -1957,6 +1957,9 @@
     ],
     "w15-path-cost.scene.xml": [
       "W15"
+    ],
+    "w16-ephemeris-xyz.scene.xml": [
+      "W16"
     ]
   }
 }

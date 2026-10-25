@@ -109,6 +109,11 @@ const FIXED: &[(&str, &str, &str)] = &[
         "rules",
         "A camera with renderer=\"pathtrace\" traces more than 1920 × 1080 × 256 × 4 path segments per frame (its frame's width × height × pathSamples × maxBounces, the frame being its viewport3D's or the project's): the frame takes far longer than the defaults, so the value is named before a render starts.",
     ),
+    (
+        "W16",
+        "rules",
+        "An object3D with positionFrom=\"ephemeris\" also sets x, y or z: it stands at its body's position about the space's origin, so those attributes are ignored (the time-frames draft, rule 7).",
+    ),
     ("A01", "assets", "A referenced input file does not exist."),
     ("A02", "assets", "A file's SHA-256 digest differs from the declared sha256 or cacheSha256."),
     ("A03", "assets", "A remote input (http, https, s3, …) could not be verified offline."),

@@ -1278,6 +1278,20 @@ impl<'a> Eval<'a> {
                     .into()
             });
         }
+        if local == "object3D" && a("positionFrom") == Some("ephemeris") {
+            let set: Vec<&str> = ["x", "y", "z"].into_iter().filter(|k| has(k)).collect();
+            if !set.is_empty() {
+                self.warn(
+                    n,
+                    "W16",
+                    format!(
+                        "positionFrom=\"ephemeris\" places the object at its body's position: its {} {} ignored.",
+                        set.join(", "),
+                        if set.len() == 1 { "is" } else { "are" }
+                    ),
+                );
+            }
+        }
         // the fields draft (p-srep-fields)
         if local == "field" {
             let sources = ["u", "function", "w", "grid", "forceField"].iter().filter(|k| has(k)).count()
