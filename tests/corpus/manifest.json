@@ -1177,6 +1177,12 @@
     "r9.scene.xml": [
       "R9"
     ],
+    "rv1-update-without-step.scene.xml": [
+      "RV1"
+    ],
+    "rv2-linear-index-fold.scene.xml": [
+      "RV2"
+    ],
     "s01-root.scene.xml": [
       "S01"
     ],
@@ -1323,6 +1329,9 @@
     "v17-part.scene.xml": [
       "V17"
     ],
+    "v17-reactive-values.scene.xml": [
+      "V17"
+    ],
     "v17-semantic-tex.scene.xml": [
       "V17"
     ],
@@ -1364,6 +1373,9 @@
     ],
     "v9.scene.xml": [
       "V9"
+    ],
+    "value-count-bound.scene.xml": [
+      "S06"
     ],
     "vol-light-grid-cell.scene.xml": [
       "S06"
@@ -1640,6 +1652,7 @@
     "r15-has-audio-padded-1.scene.xml": [],
     "r15-has-audio-padded-true.scene.xml": [],
     "r48-threed-0.scene.xml": [],
+    "reactive-values.scene.xml": [],
     "repeat-points-neutral-steps.scene.xml": [],
     "repeat-points.scene.xml": [],
     "semantic-tex.scene.xml": [],

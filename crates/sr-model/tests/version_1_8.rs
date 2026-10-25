@@ -73,7 +73,9 @@ fn the_corpus_validates_alike_at_1_7_and_1_8() {
                 || ["<axes ", "<plot ", "<axes3D ", "<plot3D ", "primitive=\"axes\""].iter().any(|k| xml.contains(k))
                 || ["matrix", "map", "complex"].iter().any(|t| xml.contains(&format!("<modifier type=\"{t}\"")))
                 // and the semantic-tex draft's animator, morph asset, shape/@morph and \part tag
-                || ["<formulaAnimator", "<formulaMorph", " morph=\"", "\\part{"].iter().any(|k| xml.contains(k));
+                || ["<formulaAnimator", "<formulaMorph", " morph=\"", "\\part{"].iter().any(|k| xml.contains(k))
+                // and the reactive-values draft's value asset
+                || xml.contains("<value id=");
             let plot_gated = at_1_7.iter().any(|c| c == "V17");
             at_1_7.retain(|c| c != "V17");
             assert_eq!(plot_gated, plotted && !codes(&b).iter().any(|c| c == "S01"), "{}", f.display());

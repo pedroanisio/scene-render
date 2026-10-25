@@ -878,6 +878,19 @@ CASES += [
     ("formula-morph-match-enum", ["S06"], lambda _: TEX.replace('match="name"', 'match="glyph"')),
     ("formula-animator-part-required", ["S05"], lambda _: TEX.replace('<formulaAnimator part="b"', '<formulaAnimator')),
 ]
+RV = ('<scene version="1.8"><project width="64" height="64" fps="24" duration="1" background="#000000FF"/><assets>'
+    '<value id="x" step="0.25" update="value + 2 * dt" between="linear"/>'
+    '<value id="m" count="8" update="value + draw(0, index) / count" seed="3"/>'
+    '<value id="k"><animate property="value"><key time="0" value="0"/><key time="1" value="4"/></animate></value>'
+    '<chart id="c" kind="counter" width="64" height="32"><series name="x" values="0"><link property="values" source="x.value"/></series></chart>'
+    '</assets><composition><layer id="lc" asset="c"/></composition></scene>\n')
+VALID["reactive-values"] = RV
+CASES += [
+    ("v17-reactive-values", ["V17"], lambda _: RV.replace('version="1.8"', 'version="1.7"').replace('<link property="values" source="x.value"/>', '')),
+    ("rv1-update-without-step", ["RV1"], lambda _: RV.replace(' step="0.25" update="value + 2 * dt" between="linear"', ' update="value + 2 * dt"')),
+    ("rv2-linear-index-fold", ["RV2"], lambda _: RV.replace('count="8"', 'count="8" between="linear"')),
+    ("value-count-bound", ["S06"], lambda _: RV.replace('count="8"', 'count="1000001"')),
+]
 CASES += [
     ("v16-fractal", ["V16"], lambda _: FRACTAL.replace('version="1.6"', 'version="1.5"')),
     ("frc1-julia-without-c", ["FRC1"], lambda _: FRACTAL.replace(' juliaX="-0.8" juliaY="0.156"', ' juliaX="-0.8"')),

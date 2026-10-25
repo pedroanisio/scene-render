@@ -1124,6 +1124,12 @@
     </xs:attribute>
   </xs:complexType>
   <xs:complexType name="chartSeriesType">
+    <xs:annotation><xs:documentation>
+      A data series. Its values may carry keys, an expression or a link (reactive-values draft, version 1.8),
+      so that a chart follows a value asset.
+    </xs:documentation></xs:annotation>
+    <!-- reactive-values draft, version 1.8 -->
+    <xs:group ref="animationElements" minOccurs="0" maxOccurs="unbounded"/>
     <xs:attribute name="name" type="xs:string" use="required"/>
     <xs:attribute name="values" type="numberListType" use="required"/>
     <xs:attribute name="color" type="paintType"/>
@@ -1215,6 +1221,29 @@
     <xs:attribute name="height" type="xs:positiveInteger" use="required"/>
     <xs:attribute name="size" type="positiveDecimal" default="48"/>
     <xs:attribute name="color" type="paintType" default="#FFFFFFFF"/>
+  </xs:complexType>
+  <xs:complexType name="valueAssetType">
+    <xs:annotation><xs:documentation>
+      A named number that draws nothing, read by prop("id.value"), propAtTime and link source="id.value".
+      With step and update it advances in fixed steps from start (a time fold); with count and update
+      its update runs count times at every frame (an index fold); otherwise its keys, expression or link
+      give it, as any property. Reactive-values draft, version 1.8.
+    </xs:documentation></xs:annotation>
+    <xs:group ref="animationElements" minOccurs="0" maxOccurs="unbounded"/>
+    <xs:attribute name="id" type="xs:ID" use="required"/>
+    <xs:attribute name="value" type="numberListType" default="0"/>
+    <xs:attribute name="start" type="nonNegativeDecimal" default="0"/>
+    <xs:attribute name="step" type="positiveDecimal"/>
+    <xs:attribute name="count">
+      <xs:simpleType><xs:restriction base="xs:positiveInteger"><xs:maxInclusive value="1000000"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="update" type="expressionString"/>
+    <xs:attribute name="between" default="hold">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="hold"/><xs:enumeration value="linear"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="seed" type="xs:unsignedLong"/>
   </xs:complexType>
   <xs:complexType name="generatedAssetType">
     <xs:annotation><xs:documentation>
@@ -1531,6 +1560,8 @@
       <xs:element name="formula" type="formulaAssetType"/>
       <!-- semantic-tex draft, version 1.8 -->
       <xs:element name="formulaMorph" type="formulaMorphType"/>
+      <!-- reactive-values draft, version 1.8 -->
+      <xs:element name="value" type="valueAssetType"/>
       <xs:element name="generated" type="generatedAssetType"/>
       <xs:element name="geo" type="geoAssetType"/>
       <xs:element name="tiles" type="tilesAssetType"/>

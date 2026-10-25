@@ -1145,16 +1145,25 @@ impl<'a> Eval<'a> {
                     || is(d, "formulaAnimator")
                     || (is(d, "shape") && d.attribute("morph").is_some())
             });
-            // the semantic-tex draft's assets: formulaMorph, and \part in a formula's TeX
+            // the semantic-tex draft's assets: formulaMorph, and \part in a formula's TeX; the reactive-values
+            // draft's value assets
             let mut assets = kids(n, "assets").flat_map(|s| s.children().filter(|c| c.is_element()));
             let uses = uses
                 || assets.any(|d| {
                     is(d, "formulaMorph")
                         || (is(d, "formula") && d.attribute("tex").is_some_and(|t| t.contains("\\part{")))
+                        || is(d, "value")
                 });
             self.check(!uses, n, "V17", || {
-                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph and \\part in a formula need version=\"1.8\".".into()
+                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula and value assets need version=\"1.8\".".into()
             });
+        }
+        // the reactive-values draft (p-srep-reactive)
+        if local == "value" && parent_is("assets") {
+            let ok = has("update") == (has("step") || has("count")) && !(has("step") && has("count"));
+            self.check(ok, n, "RV1", || "a value has update with exactly one of step and count.".into());
+            let ok = a("between") != Some("linear") || has("step");
+            self.check(ok, n, "RV2", || "between applies to a time fold.".into());
         }
         if local == "formulaMorph" && parent_is("assets") {
             let ok = contains(&self.sets.formula_assets, a("from")) && contains(&self.sets.formula_assets, a("to"));
