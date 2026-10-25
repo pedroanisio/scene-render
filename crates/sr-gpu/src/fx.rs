@@ -2804,8 +2804,9 @@ impl Builder<'_> {
             "matte-choke" => {
                 let position = a.str("position");
                 let centered = position.as_deref() == Some("center");
-                // Positive amounts place the changed band on the requested side; negative amounts reverse it.
-                let erode = (position.as_deref() == Some("inside")) != (amount < 0.0);
+                // SREP 29: a positive amount erodes and a negative one dilates, whatever the position; `center` puts
+                // the band on both sides of the edge.
+                let erode = amount > 0.0;
                 let radius = amount.abs() * px;
                 v[0] = [radius as f32, erode as u8 as f32, 0.0, centered as u8 as f32];
                 let aux = self.morph_field(input, radius, centered || !erode, centered || erode, &mut v);

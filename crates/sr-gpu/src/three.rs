@@ -41,6 +41,24 @@ const TILE: u32 = 16;
 const MAX_PER_TILE: usize = 63;
 const UNIFORM_ALIGN: u64 = 256;
 const SHADOW_BUDGET: u64 = 512 << 20;
+/// The largest shadow map a software rasteriser draws: it shades every shadow texel on the CPU, and a 2048² map
+/// costs four times a 1024² one.
+const SOFTWARE_SHADOW_MAP: u32 = 1024;
+
+/// The side of the shadow maps of `layers` views asked at `asked` texels: halved while the array exceeds
+/// [`SHADOW_BUDGET`] (down to 64), and at most [`SOFTWARE_SHADOW_MAP`] on a software adapter.
+fn shadow_map_size(asked: u32, layers: u32, software: bool) -> u32 {
+    let mut size = asked;
+    while size > 64 && (size as u64).pow(2) * 4 * layers as u64 > SHADOW_BUDGET {
+        size /= 2;
+    }
+    if software {
+        size.min(SOFTWARE_SHADOW_MAP)
+    } else {
+        size
+    }
+}
+
 /// Bytes of meshes and textures a frame does not draw that the engine keeps for a later frame, each kind apart.
 pub const IDLE_ASSET_BUDGET: u64 = 256 << 20;
 /// The blurred occlusion: one channel, as filterable as the colour targets.
@@ -2608,11 +2626,8 @@ impl ThreeEngine {
         if lights_u.is_empty() {
             lights_u.push(LightU::zeroed());
         }
-        // shadow map budget
         let layers = shadow_mats.len().max(1) as u32;
-        while map_size > 64 && (map_size as u64).pow(2) * 4 * layers as u64 > SHADOW_BUDGET {
-            map_size /= 2;
-        }
+        let map_size = shadow_map_size(map_size, layers, self.software_adapter);
         stats.shadow_views = shadow_mats.len();
         let mut timer = self.time_gpu.then(|| crate::fx::Timer::new(&d, shadow_mats.len() as u32 + 32));
         // ------------------------------------------------ tiles
@@ -3768,6 +3783,20 @@ pub(crate) fn assert_translates_to_glsl(name: &str, src: &str, constants: &[(&st
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_software_adapter_draws_shadow_maps_of_at_most_1024_texels_within_the_budget() {
+        use super::shadow_map_size;
+        // the asked size on a GPU, within the 512 MiB budget: four 8192² layers halve once
+        assert_eq!(shadow_map_size(2048, 1, false), 2048);
+        assert_eq!(shadow_map_size(8192, 4, false), 4096);
+        assert_eq!(shadow_map_size(8192, 64, false), 1024);
+        // a software rasteriser shades every shadow texel on the CPU: at most 1024, never more than asked
+        assert_eq!(shadow_map_size(2048, 1, true), 1024);
+        assert_eq!(shadow_map_size(8192, 4, true), 1024);
+        assert_eq!(shadow_map_size(512, 1, true), 512);
+        assert_eq!(shadow_map_size(8192, 2048, true), 256, "the budget still binds below the cap");
+    }
+
     #[test]
     fn idle_meshes_and_textures_beyond_the_engine_budget_are_dropped() {
         let gpu = sr_testkit::require_gpu!(

@@ -844,6 +844,21 @@ mod tests {
     }
 
     #[test]
+    fn the_atrous_taps_read_what_the_prep_pass_divided_once_per_pixel() {
+        let shader = include_str!("pathtrace.wgsl");
+        let body = |name: &str| {
+            let start = shader.find(&format!("fn {name}(")).unwrap_or_else(|| panic!("the shader has {name}"));
+            let len = shader[start..].find("\n}\n").expect("the function ends");
+            &shader[start..start + len]
+        };
+        let prep = body("cs_denoise_prep");
+        assert!(prep.contains("/ g.w"), "the prep pass divides the guide sums by their count");
+        let atrous = body("cs_atrous");
+        assert!(!atrous.contains("denoise_colour(") && !atrous.contains("denoise_variance("), "no tap demodulates");
+        assert!(!atrous.contains("/ gq") && !atrous.contains("/ gp.w"), "no per-tap division of the guides");
+    }
+
+    #[test]
     fn foam_alone_selects_the_foam_variant_and_never_the_water_one_and_every_variant_has_its_own_pipeline_slot() {
         let plain = sr_3d::MaterialParams::default();
         let glass = sr_3d::MaterialParams { transmission: 1.0, ..Default::default() };
@@ -1867,6 +1882,9 @@ struct Pipelines {
     bgl_grid: wgpu::BindGroupLayout,
     grid: std::sync::OnceLock<GridPipelines>,
     trace_grid: [std::sync::OnceLock<wgpu::ComputePipeline>; 2],
+    /// The denoiser: the pass that turns a tile's sums into its colours, variances and mean guides, then one
+    /// à-trous pass.
+    denoise_prep: wgpu::ComputePipeline,
     atrous: wgpu::ComputePipeline,
     /// The kernel that counts the samples an adaptive pass traced, with its group-1 layout (built on first use).
     bgl_count: wgpu::BindGroupLayout,
@@ -2149,6 +2167,7 @@ impl Pipelines {
             })
         };
         let trace = compute("cs_trace", &layout(&[&bgl0]));
+        let denoise_prep = compute("cs_denoise_prep", &layout(&[&bgl0]));
         let atrous = compute("cs_atrous", &layout(&[&bgl0, &bgl_pair]));
         let output = {
             let _creation = crate::gpu::creation_lock();
@@ -2185,6 +2204,7 @@ impl Pipelines {
             bgl_grid,
             grid: std::sync::OnceLock::new(),
             trace_grid: std::array::from_fn(|_| std::sync::OnceLock::new()),
+            denoise_prep,
             atrous,
             bgl_count,
             count: std::sync::OnceLock::new(),
@@ -2889,9 +2909,13 @@ pub(crate) fn render_cached(
                     end_of_pass_write_index: Some(a + 1),
                 }),
             });
+            // each pixel's sums → its colour, variance and mean guides, in place
+            cp.set_pipeline(&pt.pipelines.denoise_prep);
+            cp.set_bind_group(0, &g_trace, &[(chunks as u64 * SLOT) as u32]);
+            cp.dispatch_workgroups(groups[0], groups[1], 1);
             cp.set_pipeline(&pt.pipelines.atrous);
             for k in 0..PASSES {
-                // sums → ping, then ping → pong and back
+                // the prepared sums → ping, then ping → pong and back
                 let pair = if k == 0 { 0 } else { 1 + (k as usize + 1) % 2 };
                 cp.set_bind_group(0, &g_read, &[((chunks + k) as u64 * SLOT) as u32]);
                 cp.set_bind_group(1, &halves.pairs[pair], &[]);

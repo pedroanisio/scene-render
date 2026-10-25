@@ -370,37 +370,35 @@ fn cubic_weights(t: f32, mitchell: bool) -> vec4<f32> {
   return vec4(t * (-0.5 + t * (1.0 - 0.5 * t)), 1.0 + t * t * (-2.5 + 1.5 * t), t * (0.5 + t * (2.0 - 1.5 * t)), t * t * (-0.5 + 0.5 * t));
 }
 
-// A layer sample with Catmull-Rom or Mitchell weights where the texture is magnified (nine bilinear fetches), clamped to
-// the range of the four nearest texels; where it is minified, the trilinear sample every layer gets.
+// A layer sample with Catmull-Rom or Mitchell weights where the texture is magnified (the sixteen texels read with
+// their exact weights, SREP 32 §4), clamped to the range of the four nearest texels; where it is minified, the trilinear
+// sample every layer gets.
 fn resample_cubic(uv: vec2<f32>, mitchell: bool) -> vec4<f32> {
   let dims = vec2<f32>(textureDimensions(src, 0));
   let dx = dpdx(uv) * dims;
   let dy = dpdy(uv) * dims;
   let plain = textureSample(src, samp, uv);
   if (max(length(dx), length(dy)) > 1.0) { return plain; }
-  let pos = uv * dims;
-  let tc = floor(pos - 0.5) + 0.5;
-  let f = pos - tc;
+  // i = floor(pos - 0.5): the interpolated uv lands a few ulp either side of a texel centre, so a position within
+  // 1/1024 texel of one is that centre (t = 0), and the clamp pair is that texel and its right/lower neighbour
+  let s = uv * dims - 0.5;
+  let near = round(s);
+  let i = select(floor(s), near, abs(s - near) < vec2(1.0 / 1024.0));
+  let f = max(s - i, vec2(0.0));
   let wx = cubic_weights(f.x, mitchell);
   let wy = cubic_weights(f.y, mitchell);
-  let w12x = wx.y + wx.z;
-  let w12y = wy.y + wy.z;
-  let o12 = vec2(wx.z / w12x, wy.z / w12y);
-  let t0 = (tc - 1.0) / dims;
-  let t3 = (tc + 2.0) / dims;
-  let t12 = (tc + o12) / dims;
-  var c = textureSampleLevel(src, samp, vec2(t0.x, t0.y), 0.0) * (wx.x * wy.x);
-  c += textureSampleLevel(src, samp, vec2(t12.x, t0.y), 0.0) * (w12x * wy.x);
-  c += textureSampleLevel(src, samp, vec2(t3.x, t0.y), 0.0) * (wx.w * wy.x);
-  c += textureSampleLevel(src, samp, vec2(t0.x, t12.y), 0.0) * (wx.x * w12y);
-  c += textureSampleLevel(src, samp, vec2(t12.x, t12.y), 0.0) * (w12x * w12y);
-  c += textureSampleLevel(src, samp, vec2(t3.x, t12.y), 0.0) * (wx.w * w12y);
-  c += textureSampleLevel(src, samp, vec2(t0.x, t3.y), 0.0) * (wx.x * wy.w);
-  c += textureSampleLevel(src, samp, vec2(t12.x, t3.y), 0.0) * (w12x * wy.w);
-  c += textureSampleLevel(src, samp, vec2(t3.x, t3.y), 0.0) * (wx.w * wy.w);
-  // the four nearest texels bound the result (no ringing); texel coordinates clamp to the edge
+  // texel coordinates clamp to the edge
   let hi = vec2<i32>(dims) - vec2(1);
-  let b = vec2<i32>(floor(pos - 0.5));
+  let b = vec2<i32>(i);
+  var c = vec4(0.0);
+  for (var k = 0; k < 4; k++) {
+    var r = vec4(0.0);
+    for (var j = 0; j < 4; j++) {
+      r += textureLoad(src, clamp(b + vec2(j - 1, k - 1), vec2(0), hi), 0) * wx[j];
+    }
+    c += r * wy[k];
+  }
+  // the four nearest texels bound the result (no ringing)
   let a00 = textureLoad(src, clamp(b, vec2(0), hi), 0);
   let a10 = textureLoad(src, clamp(b + vec2(1, 0), vec2(0), hi), 0);
   let a01 = textureLoad(src, clamp(b + vec2(0, 1), vec2(0), hi), 0);

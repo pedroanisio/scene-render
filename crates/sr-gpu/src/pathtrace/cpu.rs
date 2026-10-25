@@ -135,6 +135,22 @@ fn tri_hit(
     let p0 = xyz(&scene.pos[k * 3]);
     let e1 = sub(xyz(&scene.pos[k * 3 + 1]), p0);
     let e2 = sub(xyz(&scene.pos[k * 3 + 2]), p0);
+    tri_hit_edges([p0, e1, e2], k as u32, o, d, tmax, h, instance, determinant_scale);
+}
+
+/// `tri_hit` past the material check, from the first corner and the two edges it computes.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn tri_hit_edges(
+    [p0, e1, e2]: [[f32; 3]; 3],
+    k: u32,
+    o: [f32; 3],
+    d: [f32; 3],
+    tmax: f32,
+    h: &mut Hit,
+    instance: u32,
+    determinant_scale: f32,
+) {
     let pv = cross(d, e2);
     let det = dot(e1, pv);
     if (det * determinant_scale).abs() < 1e-12 {
@@ -153,7 +169,7 @@ fn tri_hit(
     }
     let t = dot(e2, q) * inv;
     if t > 1e-4 && t < tmax.min(h.t) {
-        *h = Hit { t, u, v, tri: k as u32, instance };
+        *h = Hit { t, u, v, tri: k, instance };
     }
 }
 
@@ -182,10 +198,101 @@ pub(crate) struct Top {
     pixels: Vec<u32>,
     records: Vec<[[f32; 4]; 24]>,
     slot: Vec<u32>,
-    /// The CPU's own top-level BVH (binned SAH): leaves `nodes[i].a .. + b` index `order`, inner nodes have their
-    /// children at `a` and `a + 1`. It is empty when the scene has no top-level primitive.
-    nodes: Vec<PtNode>,
+    /// The CPU's own top-level BVH: a binned-SAH binary tree collapsed into nodes of four children, whose leaves
+    /// index `order` and `leaves`. It is empty when the scene has no top-level primitive.
+    wide: Vec<Wide>,
     order: Vec<u32>,
+    /// `order`'s primitives as the walk reads them, side by side: a loose triangle's first corner and edges, or a
+    /// prototype proxy.
+    leaves: Vec<Leaf>,
+}
+
+/// A node of the top-level tree: its four children's boxes side by side per axis, so one pass of lane arithmetic
+/// tests them all. Lane `l` is a leaf of `count[l]` primitives from `leaves[child[l]]`, an inner node `wide[child[l]]`
+/// when `count[l]` is 0, or nothing when `child[l]` is `EMPTY`.
+#[derive(Clone, Copy)]
+struct Wide {
+    lo: [[f32; 4]; 3],
+    hi: [[f32; 4]; 3],
+    child: [u32; 4],
+    count: [u8; 4],
+}
+
+const EMPTY: u32 = u32::MAX;
+const EMPTY_WIDE: Wide = Wide { lo: [[0.0; 4]; 3], hi: [[0.0; 4]; 3], child: [EMPTY; 4], count: [0; 4] };
+
+/// The binary tree `nodes` (children at `a` and `a + 1`) as a tree of `Wide` nodes: each takes the children of a
+/// binary node and opens the inner one of largest area among them until it holds four, or only leaves remain.
+fn widen(nodes: &[PtNode]) -> Vec<Wide> {
+    let mut wide = Vec::new();
+    if nodes.is_empty() {
+        return wide;
+    }
+    wide.push(EMPTY_WIDE);
+    let mut todo = vec![(0usize, 0usize)];
+    while let Some((b, w)) = todo.pop() {
+        let n = &nodes[b];
+        let mut kids = if n.b > 0 { vec![b] } else { vec![n.a as usize, n.a as usize + 1] };
+        while kids.len() < 4 {
+            let open = (0..kids.len()).filter(|&i| nodes[kids[i]].b == 0).max_by(|&i, &j| {
+                let area = |k: usize| box_area(nodes[k].lo, nodes[k].hi);
+                area(kids[i]).total_cmp(&area(kids[j]))
+            });
+            let Some(i) = open else { break };
+            let a = nodes[kids[i]].a as usize;
+            kids[i] = a;
+            kids.push(a + 1);
+        }
+        for (l, &k) in kids.iter().enumerate() {
+            let c = &nodes[k];
+            for axis in 0..3 {
+                wide[w].lo[axis][l] = c.lo[axis];
+                wide[w].hi[axis][l] = c.hi[axis];
+            }
+            if c.b > 0 {
+                wide[w].child[l] = c.a;
+                wide[w].count[l] = c.b as u8;
+            } else {
+                wide[w].child[l] = wide.len() as u32;
+                todo.push((k, wide.len()));
+                wide.push(EMPTY_WIDE);
+            }
+        }
+    }
+    wide
+}
+
+/// The entry distance of the ray into each of `n`'s child boxes, or infinity for a box it misses within `tmax` (or no
+/// child): the shader's `box_hit` on four boxes at once.
+#[inline(always)]
+fn wide_hit(n: &Wide, o: [f32; 3], inv: [f32; 3], tmax: f32) -> [f32; 4] {
+    // `<` and `>` rather than `min` and `max`, which also handle NaN and so keep the lanes from vectorizing
+    let (mn, mx) = (|a: f32, b: f32| if a < b { a } else { b }, |a: f32, b: f32| if a > b { a } else { b });
+    let mut tn = [f32::MIN; 4];
+    let mut tf = [f32::MAX; 4];
+    for axis in 0..3 {
+        for l in 0..4 {
+            let t0 = (n.lo[axis][l] - o[axis]) * inv[axis];
+            let t1 = (n.hi[axis][l] - o[axis]) * inv[axis];
+            tn[l] = mx(tn[l], mn(t0, t1));
+            tf[l] = mn(tf[l], mx(t0, t1));
+        }
+    }
+    let mut entry = [f32::INFINITY; 4];
+    for l in 0..4 {
+        let near = mx(tn[l], 0.0);
+        if tf[l] >= near && tn[l] < tmax && n.child[l] != EMPTY {
+            entry[l] = near;
+        }
+    }
+    entry
+}
+
+#[derive(Clone, Copy)]
+struct Leaf {
+    corner_edges: [[f32; 3]; 3],
+    k: u32,
+    prototype: bool,
 }
 
 impl Top {
@@ -200,7 +307,18 @@ impl Top {
             records.push(scene.instances[&k]);
         }
         let (nodes, order) = sah_bvh(top_level_prims(scene));
-        Top { pixels: scene.atlas_pixels(), records, slot, nodes, order }
+        let wide = widen(&nodes);
+        let leaves = order
+            .iter()
+            .map(|&k| {
+                let p = |c: usize| xyz(&scene.pos[k as usize * 3 + c]);
+                let p0 = p(0);
+                let prototype = scene.tri_mat[k as usize] == PROTOTYPE;
+                let corner_edges = if prototype { [[0.0; 3]; 3] } else { [p0, sub(p(1), p0), sub(p(2), p0)] };
+                Leaf { corner_edges, k, prototype }
+            })
+            .collect();
+        Top { pixels: scene.atlas_pixels(), records, slot, wide, order, leaves }
     }
 
     /// The bytes this holds, for the tracer's budget.
@@ -208,8 +326,9 @@ impl Top {
         self.pixels.len() * 4
             + self.records.len() * std::mem::size_of::<[[f32; 4]; 24]>()
             + self.slot.len() * 4
-            + self.nodes.len() * std::mem::size_of::<PtNode>()
+            + self.wide.len() * std::mem::size_of::<Wide>()
             + self.order.len() * 4
+            + self.leaves.len() * std::mem::size_of::<Leaf>()
     }
 }
 
@@ -217,6 +336,9 @@ impl Top {
 pub(crate) struct Dense<'a> {
     scene: &'a PtScene,
     top: std::sync::Arc<Top>,
+    /// Every material casts shadows and lets no light through (opacity 1 without an alpha map): any caster on a
+    /// shadow ray then makes it 0, so the ray needs any hit, not the nearest.
+    pub(crate) opaque_casters: bool,
 }
 
 impl<'a> Dense<'a> {
@@ -226,7 +348,9 @@ impl<'a> Dense<'a> {
 
     /// `scene` with a `top` built from it, or from a scene with the same geometry, instances and atlas.
     pub(crate) fn with(scene: &'a PtScene, top: std::sync::Arc<Top>) -> Self {
-        Dense { scene, top }
+        let opaque_casters = !scene.mats.is_empty()
+            && scene.mats.iter().all(|m| m.extra[1] > 0.5 && m.texture_params[1] == 0.0 && m.base[3] >= 1.0);
+        Dense { scene, top, opaque_casters }
     }
 
     /// The record of instance `k`; panics like the map index when `k` is not an instance.
@@ -244,8 +368,16 @@ impl std::ops::Deref for Dense<'_> {
     }
 }
 
-/// The shader's `prototype_hit`: the ray in the instance's local space, walking the shared prototype BVH.
-fn prototype_hit(scene: &Dense, instance: usize, world_o: [f32; 3], world_d: [f32; 3], tmax: f32, h: &mut Hit) {
+/// The shader's `prototype_hit`: the ray in the instance's local space, walking the shared prototype BVH. `ANY`
+/// returns at the first hit instead of the nearest.
+fn prototype_hit<const ANY: bool>(
+    scene: &Dense,
+    instance: usize,
+    world_o: [f32; 3],
+    world_d: [f32; 3],
+    tmax: f32,
+    h: &mut Hit,
+) {
     let record = scene.record(instance);
     let inverse = &record[5..9];
     let o = transform(inverse, world_o, 1.0);
@@ -264,44 +396,93 @@ fn prototype_hit(scene: &Dense, instance: usize, world_o: [f32; 3], world_d: [f3
         if n.b > 0 {
             for k in n.a..n.a + n.b {
                 tri_hit(scene, k as usize, o, d, tmax, h, instance as u32, record[13][2]);
+                if ANY && h.tri != NONE {
+                    return;
+                }
             }
         } else if sp < 62 {
-            stack[sp] = n.a;
-            stack[sp + 1] = n.a - 1;
+            (stack[sp], stack[sp + 1]) = far_then_near(&scene.nodes, n.a, n.a - 1, d);
             sp += 2;
         }
     }
 }
 
+/// An inner node's children `a` and `b` in the order a walk pushes them, `b` popped first unless `a`'s box centre lies
+/// nearer along `d`: the nearer child is walked first, so its hit prunes the farther one's boxes. Only which of two
+/// hits at exactly the same distance is kept depends on it.
+#[inline(always)]
+fn far_then_near(nodes: &[PtNode], a: u32, b: u32, d: [f32; 3]) -> (u32, u32) {
+    let (x, y) = (&nodes[a as usize], &nodes[b as usize]);
+    let along = (0..3).map(|i| (x.lo[i] + x.hi[i] - y.lo[i] - y.hi[i]) * d[i]).sum::<f32>();
+    if along >= 0.0 {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
 /// The shader's `trace`: the nearest hit along the ray within `tmax` (`tri == 0xffffffff` when there is none).
 pub(crate) fn trace(scene: &Dense, o: [f32; 3], d: [f32; 3], tmax: f32) -> Hit {
+    walk::<false>(scene, o, d, tmax)
+}
+
+/// Whether anything is hit along the ray within `tmax`: the walk of `trace`, ended at the first hit. A ray `trace`
+/// finds nothing on finds nothing here, since a walk prunes by the nearest hit so far and here there is none.
+pub(crate) fn occluded(scene: &Dense, o: [f32; 3], d: [f32; 3], tmax: f32) -> bool {
+    walk::<true>(scene, o, d, tmax).tri != NONE
+}
+
+fn walk<const ANY: bool>(scene: &Dense, o: [f32; 3], d: [f32; 3], tmax: f32) -> Hit {
     let mut h = Hit { t: tmax, u: 0.0, v: 0.0, tri: NONE, instance: NONE };
     // the shared scene's slices, read once for the walk
-    let (nodes, order) = (&scene.top.nodes[..], &scene.top.order[..]);
-    if nodes.is_empty() {
+    let (wide, leaves) = (&scene.top.wide[..], &scene.top.leaves[..]);
+    if wide.is_empty() {
         return h;
     }
     let inv = reciprocal(d);
-    let mut stack = [0u32; 64];
+    // (child, count, entry distance) as in a `Wide` lane. The SAH build stops splitting at depth 48 and a node pushes
+    // at most four lanes for the one it pops, so the stack never holds more than 3 * 48 + 4.
+    let mut stack = [(0u32, 0u8, 0f32); 160];
     let mut sp = 1usize;
     while sp > 0 {
         sp -= 1;
-        let n = &nodes[stack[sp] as usize];
-        if !box_hit(n, o, inv, h.t) {
+        let (child, count, entry) = stack[sp];
+        // a hit found since the lane was pushed may lie before its box
+        if entry >= h.t {
             continue;
         }
-        if n.b > 0 {
-            for &k in &order[n.a as usize..(n.a + n.b) as usize] {
-                if scene.tri_mat[k as usize] == PROTOTYPE {
-                    prototype_hit(scene, k as usize, o, d, tmax, &mut h);
+        if count > 0 {
+            for leaf in &leaves[child as usize..child as usize + count as usize] {
+                if leaf.prototype {
+                    prototype_hit::<ANY>(scene, leaf.k as usize, o, d, tmax, &mut h);
                 } else {
-                    tri_hit(scene, k as usize, o, d, tmax, &mut h, NONE, 1.0);
+                    tri_hit_edges(leaf.corner_edges, leaf.k, o, d, tmax, &mut h, NONE, 1.0);
+                }
+                if ANY && h.tri != NONE {
+                    return h;
                 }
             }
-        } else if sp < 62 {
-            stack[sp] = n.a;
-            stack[sp + 1] = n.a + 1;
-            sp += 2;
+            continue;
+        }
+        let n = &wide[child as usize];
+        let t = wide_hit(n, o, inv, h.t);
+        // the lanes hit, farthest first, so the nearest is popped first and its hits prune the others
+        let mut lanes = [0usize; 4];
+        let mut hits = 0;
+        for l in 0..4 {
+            if t[l] < f32::INFINITY {
+                let mut i = hits;
+                while i > 0 && t[lanes[i - 1]] < t[l] {
+                    lanes[i] = lanes[i - 1];
+                    i -= 1;
+                }
+                lanes[i] = l;
+                hits += 1;
+            }
+        }
+        for &l in &lanes[..hits] {
+            stack[sp] = (n.child[l], n.count[l], t[l]);
+            sp += 1;
         }
     }
     h
@@ -889,7 +1070,7 @@ mod tests {
         assert!(hits > 200, "the rays should hit often enough to mean something: {hits}");
     }
 
-    fn random_scene(count: usize) -> PtScene {
+    pub(super) fn random_scene(count: usize) -> PtScene {
         let mut rng = Rng(11);
         let mut r = move |lo: f32, hi: f32| lo + (hi - lo) * rng.rnd();
         let mut tris = Vec::new();
@@ -912,14 +1093,14 @@ mod tests {
     #[test]
     fn sah_leaves_cover_every_primitive_once_inside_their_parents() {
         let s = random_scene(1000);
-        let d = Dense::new(&s);
+        let (nodes, order) = sah_bvh(top_level_prims(&s));
         let mut seen = vec![0u32; 1000];
         let mut stack = vec![0usize];
         while let Some(i) = stack.pop() {
-            let n = d.top.nodes[i];
+            let n = nodes[i];
             if n.b > 0 {
                 assert!(n.b as usize <= SAH_LEAF);
-                for &k in &d.top.order[n.a as usize..(n.a + n.b) as usize] {
+                for &k in &order[n.a as usize..(n.a + n.b) as usize] {
                     seen[k as usize] += 1;
                     for c in 0..3 {
                         let p = xyz(&s.pos[k as usize * 3 + c]);
@@ -928,14 +1109,71 @@ mod tests {
                 }
             } else {
                 for child in [n.a as usize, n.a as usize + 1] {
-                    let c = d.top.nodes[child];
+                    let c = nodes[child];
                     assert!((0..3).all(|a| n.lo[a] <= c.lo[a] && c.hi[a] <= n.hi[a]));
                     stack.push(child);
                 }
             }
         }
         assert!(seen.iter().all(|&c| c == 1));
-        assert_eq!(d.top.order.len(), 1000);
+        assert_eq!(order.len(), 1000);
+    }
+
+    #[test]
+    fn wide_nodes_hold_every_primitive_once_inside_their_lane_boxes_with_four_children_wherever_the_tree_allows() {
+        let s = random_scene(1000);
+        let d = Dense::new(&s);
+        let wide = &d.top.wide;
+        let (binary, _) = sah_bvh(top_level_prims(&s));
+        // collapsing pairs of levels leaves about a third of the binary tree's inner nodes
+        assert!(wide.len() * 2 < binary.len() / 2, "{} wide nodes from {} binary ones", wide.len(), binary.len());
+        let mut seen = vec![0u32; 1000];
+        let mut stack = vec![0usize];
+        while let Some(i) = stack.pop() {
+            let n = &wide[i];
+            let lanes = (0..4).filter(|&l| n.child[l] != EMPTY).count();
+            // only a root over fewer than four leaves, or a subtree of fewer leaves, has empty lanes
+            assert!(lanes >= 2 || (i == 0 && lanes == 1), "node {i} has {lanes} children");
+            for l in 0..4 {
+                if n.child[l] == EMPTY {
+                    assert_eq!(n.count[l], 0);
+                    continue;
+                }
+                let (lo, hi) = ([0, 1, 2].map(|a| n.lo[a][l]), [0, 1, 2].map(|a| n.hi[a][l]));
+                if n.count[l] > 0 {
+                    assert!(n.count[l] as usize <= SAH_LEAF);
+                    for leaf in &d.top.leaves[n.child[l] as usize..(n.child[l] + n.count[l] as u32) as usize] {
+                        seen[leaf.k as usize] += 1;
+                        for c in 0..3 {
+                            let p = xyz(&s.pos[leaf.k as usize * 3 + c]);
+                            assert!((0..3).all(|a| lo[a] <= p[a] && p[a] <= hi[a]));
+                        }
+                    }
+                } else {
+                    let c = &wide[n.child[l] as usize];
+                    for cl in (0..4).filter(|&cl| c.child[cl] != EMPTY) {
+                        assert!((0..3).all(|a| lo[a] <= c.lo[a][cl] && c.hi[a][cl] <= hi[a]));
+                    }
+                    stack.push(n.child[l] as usize);
+                }
+            }
+        }
+        assert!(seen.iter().all(|&c| c == 1));
+    }
+
+    #[test]
+    fn a_scene_of_one_triangle_is_a_root_with_one_leaf_lane_the_walk_hits() {
+        let s = random_scene(1);
+        let d = Dense::new(&s);
+        assert_eq!(d.top.wide.len(), 1);
+        assert_eq!(d.top.wide[0].count, [1, 0, 0, 0]);
+        let c = (0..3).map(|i| xyz(&s.pos[i])).fold([0.0; 3], |a, p| add(a, scale(p, 1.0 / 3.0)));
+        let o = add(c, [0.0, 0.0, -200.0]);
+        let toward = |p: [f32; 3]| normalize(sub(p, o));
+        let h = trace(&d, o, toward(c), 1000.0);
+        assert_eq!(h.tri, 0);
+        assert!(occluded(&d, o, toward(c), 1000.0));
+        assert!(!occluded(&d, o, toward(c), h.t * 0.5));
     }
 
     #[test]
@@ -943,7 +1181,7 @@ mod tests {
         let s = random_scene(20_000);
         let clock = std::time::Instant::now();
         let d = Dense::new(&s);
-        eprintln!("SAH build of 20000 triangles: {:?}, {} nodes", clock.elapsed(), d.top.nodes.len());
+        eprintln!("SAH build of 20000 triangles: {:?}, {} wide nodes", clock.elapsed(), d.top.wide.len());
         assert_eq!(d.top.order.len(), 20_000);
     }
 }
@@ -1414,8 +1652,18 @@ fn env_term(env: &EnvMap, p: &RadianceParams, d: [f32; 3]) -> [f32; 3] {
     }
 }
 
-/// The shader's `visibility`: transmittance of casters along `d` for `dist`.
+/// The shader's `visibility`: transmittance of casters along `d` for `dist`. Among opaque casters only (see
+/// `Dense::opaque_casters`) the nearest hit's walk returns 0 at the first caster and 1 without one, so any hit
+/// answers it.
 pub(crate) fn visibility(scene: &Dense, o: [f32; 3], d: [f32; 3], dist: f32) -> f32 {
+    if scene.opaque_casters {
+        return if occluded(scene, o, d, dist) { 0.0 } else { 1.0 };
+    }
+    visibility_by_nearest_hits(scene, o, d, dist)
+}
+
+/// `visibility` as the shader walks it: from each caster's nearest hit to the next.
+fn visibility_by_nearest_hits(scene: &Dense, o: [f32; 3], d: [f32; 3], dist: f32) -> f32 {
     let mut o = o;
     let mut remaining = dist;
     let mut result = 1.0f32;
@@ -1669,6 +1917,47 @@ mod radiance_tests {
             assert_eq!(d.record(*k), r);
         }
         assert!(Dense::new(&PtScene::default()).top.slot.is_empty());
+    }
+
+    #[test]
+    fn shadow_rays_among_opaque_casters_stop_at_the_first_hit_with_the_nearest_hit_loops_answer() {
+        let mut s = super::tests::random_scene(2000);
+        s.mats = vec![material([0.8, 0.6, 0.4, 1.0], 1.0, 1.0)];
+        // what the reference loop's shading reads at each corner
+        s.uv = vec![[[0.0; 2]; 6]; s.pos.len()];
+        s.colors = vec![[1.0; 4]; s.pos.len()];
+        let d = Dense::new(&s);
+        assert!(d.opaque_casters, "every material casts and lets nothing through");
+        let mut rng = Rng(3);
+        let mut r = move |lo: f32, hi: f32| lo + (hi - lo) * rng.rnd();
+        let (mut blocked, mut clear) = (0, 0);
+        for _ in 0..4000 {
+            let o = [r(-60.0, 60.0), r(-60.0, 60.0), r(-60.0, 60.0)];
+            // towards a random corner, nudged, so many rays meet a caster within their distance and many do not
+            let k = (r(0.0, s.pos.len() as f32) as usize).min(s.pos.len() - 1);
+            let aim =
+                glam::Vec3::from_slice(&s.pos[k][..3]) + glam::Vec3::new(r(-0.5, 0.5), r(-0.5, 0.5), r(-0.5, 0.5));
+            let dir = (aim - glam::Vec3::from(o)).normalize().to_array();
+            let dist = r(1.0, 150.0);
+            let want = visibility_by_nearest_hits(&d, o, dir, dist);
+            assert_eq!(visibility(&d, o, dir, dist).to_bits(), want.to_bits());
+            if want == 0.0 {
+                blocked += 1
+            } else {
+                clear += 1
+            }
+        }
+        assert!(blocked > 200 && clear > 200, "both answers occur often: {blocked} blocked, {clear} clear");
+        for other in [material([0.8, 0.6, 0.4, 0.5], 1.0, 1.0), material([0.8, 0.6, 0.4, 1.0], 0.0, 1.0), {
+            let mut cut = material([0.8, 0.6, 0.4, 1.0], 1.0, 1.0);
+            cut.texture_params[1] = 1.0;
+            cut
+        }] {
+            s.mats = vec![s.mats[0], other];
+            assert!(!Dense::new(&s).opaque_casters, "a material that lets light through keeps the nearest-hit loop");
+        }
+        s.mats.clear();
+        assert!(!Dense::new(&s).opaque_casters);
     }
 
     #[test]
