@@ -166,6 +166,7 @@
     <sch:rule context="layer">
       <sch:assert id="R1" test="/scene/assets/*[@id=current()/@asset]">layer "<sch:value-of select="@id"/>": @asset must reference an element of assets.</sch:assert>
       <sch:assert id="R2" test="not(textAnimator or textPath) or /scene/assets/text[@id=current()/@asset]">textAnimator and textPath need a text asset.</sch:assert>
+      <sch:assert id="FRM1" test="not(formulaAnimator) or /scene/assets/formula[@id=current()/@asset]">formulaAnimator needs a formula asset.</sch:assert>
       <sch:assert id="R3" test="not(@audioBus) or /scene/audioMix/bus[@id=current()/@audioBus]">layer/@audioBus must name a bus.</sch:assert>
     </sch:rule>
   </sch:pattern>
@@ -867,7 +868,8 @@
   </sch:pattern>
   <sch:pattern id="p-v17">
     <sch:rule context="/scene[@version='1.0' or @version='1.1' or @version='1.2' or @version='1.3' or @version='1.4' or @version='1.5' or @version='1.6' or @version='1.7']">
-      <sch:assert id="V17" test="not(.//axes or .//plot or .//object3D[@primitive='axes'] or .//axes3D or .//plot3D or .//modifier[@type='matrix' or @type='map' or @type='complex'] or .//group/deform)">axes, plot, axes3D, plot3D, primitive="axes", the modifier types matrix, map and complex and a group's deform need version="1.8".</sch:assert>
+      <sch:let name="partTag" value="'\part{'"/>
+      <sch:assert id="V17" test="not(.//axes or .//plot or .//object3D[@primitive='axes'] or .//axes3D or .//plot3D or .//modifier[@type='matrix' or @type='map' or @type='complex'] or .//group/deform or .//formulaAnimator or assets/formulaMorph or .//shape[@morph] or assets/formula[contains(@tex, $partTag)])">axes, plot, axes3D, plot3D, primitive="axes", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph and \part in a formula need version="1.8".</sch:assert>
     </sch:rule>
   </sch:pattern>
   <sch:pattern id="p-srep-plots">
@@ -876,6 +878,11 @@
     </sch:rule>
     <sch:rule context="axes | axes3D">
       <sch:assert id="PLT2" test="(sum(@xMin) - 1*number(not(@xMin))) &lt; (sum(@xMax) + 1*number(not(@xMax))) and (sum(@yMin) - 1*number(not(@yMin))) &lt; (sum(@yMax) + 1*number(not(@yMax))) and (not(self::axes3D) or (sum(@zMin) - 1*number(not(@zMin))) &lt; (sum(@zMax) + 1*number(not(@zMax))))">each min of an axes or axes3D is below its max.</sch:assert>
+    </sch:rule>
+  </sch:pattern>
+  <sch:pattern id="p-srep-semantic-tex">
+    <sch:rule context="assets/formulaMorph">
+      <sch:assert id="FRM2" test="/scene/assets/formula[@id=current()/@from] and /scene/assets/formula[@id=current()/@to]">formulaMorph/@from and @to name formula assets.</sch:assert>
     </sch:rule>
   </sch:pattern>
 </sch:schema>

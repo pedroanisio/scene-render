@@ -9,7 +9,7 @@
 //!    attribute declarations, simple-type facets, `xs:ID` uniqueness and
 //!    `xs:IDREF` resolution. The rules are tables generated from
 //!    `schema/scene-render-1.1.xsd` at build time.
-//! 2. **Rules** ([`rules`]): the <!-- facts:sch-patterns -->100<!-- /facts --> Schematron patterns of
+//! 2. **Rules** ([`rules`]): the <!-- facts:sch-patterns -->101<!-- /facts --> Schematron patterns of
 //!    `schema/scene-render-1.1.sch`, including the 1.0/1.1 version gate,
 //!    evaluated with XPath 1.0 semantics.
 //! 3. **Assets** ([`assets`]): existence of every referenced input file and

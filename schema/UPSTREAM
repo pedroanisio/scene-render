@@ -8,19 +8,26 @@ the cinematic-volume pattern, after V8's rule, so a 1.0 to 1.2 document gets V8 
 + the diff of sr-core srep/srep-0000-plots.md (draft, Schema-Version 1.8, as of sr-core 26d7621): the axes node, the plot
 element, primitive="axes" with the object3D children axes3D and plot3D, the Schematron rules PLT1 and PLT2 and the
 version gate V17's clause, and PLT3 (in p-srep70's object3D rule, beside PAR2);
-+ the diff of sr-core srep/srep-0000-space-transforms.md (draft, Schema-Version 1.8, as of sr-core c39eb1b): the modifier
++ the diff of sr-core srep/srep-0000-space-transforms.md (draft, Schema-Version 1.8, as of sr-core e438104, which writes
+out SPT1's XPath as asserted here; c39eb1b to e438104 changed no other schema text): the modifier
 types matrix, map and complex with the attributes a to f, x, y, function, coefficients, unit and tolerance, deform in a
-group's child choice, the Schematron rules SPT1 and SPT2 (in p14's modifier rule, after C26) and V17's clause.
+group's child choice, the Schematron rules SPT1 and SPT2 (in p14's modifier rule, after C26) and V17's clause;
++ the diff of sr-core srep/srep-0000-semantic-tex.md (draft, Schema-Version 1.8, as of sr-core 0d56389): \part in a
+formula's TeX, the layer child formulaAnimator (formulaAnimatorType), the formulaMorph asset (formulaMorphType),
+shape/@morph, FRM1 (in p25's layer rule, after R2), FRM2 (pattern p-srep-semantic-tex, last) and V17's clause. The
+draft states the clause as "no \part{ in a formula's tex"; the ISO skeleton copies an assert's test into an attribute
+value template, where a literal brace does not compile, so the rule binds the string to a sch:let (partTag) and the
+test reads contains(@tex, $partTag).
 V17 is SREP 12's one shared 1.8 gate: one pattern, p-v17 (after p-srep75), whose one assert is the conjunction of
 the drafts' clauses.
 The branch merges when those SREPs are accepted; this file then names the schema-1.8.0 tag.
 Source: https://github.com/pedroanisio/sr-core
 
-Canonical upstream files (SHA-256; the files of that tag with the four drafts' diffs; at the tag the .xsd is
+Canonical upstream files (SHA-256; the files of that tag with the five drafts' diffs; at the tag the .xsd is
 5ef91e6ca9a6d860047f2a5347c59fa17423cb99ef7535b7ceaca16619f8ce2c and the .sch, as in sr-core's schema/SHA256SUMS,
 868863e9ea4caf04e7f0bd9873c23ce5f723205714178349a4f385c4778fd368):
-  scene-render.xsd: bc6fe3512137c8f577335f4b1d49496f37d2fc162ad3201ec6785e6591ba1afb
-  scene-render.sch: 3c658920ce1d463b685762ac06f8e7c70d63e5e8dd14704f8919103d02ca6a7c
+  scene-render.xsd: 483f8037460e3ea0fe62c2fe5c85c8c8096d9315f68ad5f78e7526967ec63ef1
+  scene-render.sch: 6ebb3010a82c5c5e8f07170ef85ca9f9ac5408f753468f3598385dc6f9ff1eaf
   capabilities-1.schema.json: 6cb35c8ec6d37df32c9a0ad12eb33332d2abe4f11ac6000a9311d9891ec2e8b3
 
 scene-render-1.1.xsd, scene-render-1.1.sch and capabilities-1.schema.json are byte-identical to these files. Local
@@ -33,11 +40,11 @@ native OCN7 refuses an animated tracking on an ocean collider, as P3D6 and PYRO8
 document (corpus case ocn7-text-tracking, a native-only rule case). It is an erratum of sr-core's OCN7 for an SREP to
 settle. The warnings W05, W11 and W12 (SREP 76) and the program diagnostics are native only, as the SREPs define them.
 
-Document version 1.8 (sr_model::SCHEMA_VERSION is "1.8") is the random-streams, media, plots and space-transforms drafts', a local addition
+Document version 1.8 (sr_model::SCHEMA_VERSION is "1.8") is the random-streams, media, plots, space-transforms and semantic-tex drafts', a local addition
 on this branch: a 1.8 document is a 1.7 document whose simulations draw from the D24 streams of the random-streams
-draft's section 5, whose media may name a phase function and which may hold axes, plots and the space transforms (MED4 refuses the media
-attributes and V17 the plots elements and space transforms before 1.8; crates/sr-model/tests/version_1_8.rs, plots_rules.rs and
-space_rules.rs). Document version 1.7 is schema 1.7.0's. It adds no syntax and has no version
+draft's section 5, whose media may name a phase function and which may hold axes, plots, the space transforms, tagged formula parts and morphs (MED4 refuses the media
+attributes and V17 the plots elements, space transforms and semantic-tex syntax before 1.8; crates/sr-model/tests/version_1_8.rs,
+plots_rules.rs, space_rules.rs and semantic_tex_rules.rs). Document version 1.7 is schema 1.7.0's. It adds no syntax and has no version
 gate: SREP 87's scoping applies to documents of every version, and a 1.7 document validates and renders as the same
 document at 1.6 (crates/sr-model/tests/version_1_7.rs). Document version 1.6 is schema 1.6.0's. A 1.6 document holding
 1.5 content

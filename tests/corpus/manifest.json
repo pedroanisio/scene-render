@@ -450,11 +450,23 @@
     "crt9-capture-without-source.scene.xml": [
       "CRT9"
     ],
+    "formula-animator-part-required.scene.xml": [
+      "S05"
+    ],
+    "formula-morph-match-enum.scene.xml": [
+      "S06"
+    ],
     "frc1-julia-without-c.scene.xml": [
       "FRC1"
     ],
     "frc1-mandelbrot-with-c.scene.xml": [
       "FRC1"
+    ],
+    "frm1.scene.xml": [
+      "FRM1"
+    ],
+    "frm2.scene.xml": [
+      "FRM2"
     ],
     "frx1.scene.xml": [
       "FRX1"
@@ -1308,6 +1320,12 @@
     "v17-axes3d.scene.xml": [
       "V17"
     ],
+    "v17-part.scene.xml": [
+      "V17"
+    ],
+    "v17-semantic-tex.scene.xml": [
+      "V17"
+    ],
     "v17-space.scene.xml": [
       "V17"
     ],
@@ -1624,6 +1642,7 @@
     "r48-threed-0.scene.xml": [],
     "repeat-points-neutral-steps.scene.xml": [],
     "repeat-points.scene.xml": [],
+    "semantic-tex.scene.xml": [],
     "solid-colliders.scene.xml": [],
     "space-transforms.scene.xml": [],
     "srep71-subsurface-sky-maps.scene.xml": [],

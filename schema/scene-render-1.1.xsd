@@ -1196,6 +1196,26 @@
     <xs:attribute name="size" type="positiveDecimal" default="48"/>
     <xs:attribute name="color" type="paintType" default="#FFFFFFFF"/>
   </xs:complexType>
+  <xs:complexType name="formulaMorphType">
+    <xs:annotation><xs:documentation>
+      One formula turned into another by matching tagged parts (semantic-tex draft): pairs of equal TeX move,
+      pairs of different TeX morph their glyph outlines, the rest fade. Shown by a layer as a formula is. Version 1.8.
+    </xs:documentation></xs:annotation>
+    <xs:group ref="animationElements" minOccurs="0" maxOccurs="unbounded"/>
+    <xs:attribute name="id" type="xs:ID" use="required"/>
+    <xs:attribute name="from" type="xs:IDREF" use="required"/>
+    <xs:attribute name="to" type="xs:IDREF" use="required"/>
+    <xs:attribute name="match" default="name">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="name"/><xs:enumeration value="tex"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="progress" type="unitDecimal" default="0"/>
+    <xs:attribute name="width" type="xs:positiveInteger" use="required"/>
+    <xs:attribute name="height" type="xs:positiveInteger" use="required"/>
+    <xs:attribute name="size" type="positiveDecimal" default="48"/>
+    <xs:attribute name="color" type="paintType" default="#FFFFFFFF"/>
+  </xs:complexType>
   <xs:complexType name="generatedAssetType">
     <xs:annotation><xs:documentation>
       Media produced by an external generator (text-to-speech, image, video or
@@ -1509,6 +1529,8 @@
       <xs:element name="audiogram" type="audiogramAssetType"/>
       <xs:element name="code" type="codeAssetType"/>
       <xs:element name="formula" type="formulaAssetType"/>
+      <!-- semantic-tex draft, version 1.8 -->
+      <xs:element name="formulaMorph" type="formulaMorphType"/>
       <xs:element name="generated" type="generatedAssetType"/>
       <xs:element name="geo" type="geoAssetType"/>
       <xs:element name="tiles" type="tilesAssetType"/>
@@ -2052,6 +2074,28 @@
     <xs:attribute name="anchorX" type="xs:double"/>
     <xs:attribute name="anchorY" type="xs:double"/>
   </xs:complexType>
+  <xs:complexType name="formulaAnimatorType">
+    <xs:annotation><xs:documentation>
+      Offsets applied to the glyphs of one tagged part of the layer's formula, about the part's box centre (or
+      anchorX/anchorY from its top-left), as a textAnimator with a selection amount of 1 applies them to a character
+      (semantic-tex draft). Version 1.8.
+    </xs:documentation></xs:annotation>
+    <xs:group ref="animationElements" minOccurs="0" maxOccurs="unbounded"/>
+    <xs:attribute name="part" type="xs:NMTOKEN" use="required"/>
+    <xs:attribute name="x" type="xs:double"/>
+    <xs:attribute name="y" type="xs:double"/>
+    <xs:attribute name="scale" type="xs:double"/>
+    <xs:attribute name="scaleX" type="xs:double"/>
+    <xs:attribute name="scaleY" type="xs:double"/>
+    <xs:attribute name="rotation" type="xs:double"/>
+    <xs:attribute name="opacity" type="unitDecimal"/>
+    <xs:attribute name="fill" type="paintType"/>
+    <xs:attribute name="stroke" type="paintType"/>
+    <xs:attribute name="strokeWidth" type="nonNegativeDecimal"/>
+    <xs:attribute name="blur" type="nonNegativeDecimal"/>
+    <xs:attribute name="anchorX" type="xs:double"/>
+    <xs:attribute name="anchorY" type="xs:double"/>
+  </xs:complexType>
   <xs:complexType name="textPathType">
     <xs:group ref="animationElements" minOccurs="0" maxOccurs="unbounded"/>
     <xs:attribute name="path" type="xs:string" use="required"/>
@@ -2136,6 +2180,8 @@
       <xs:element name="timeRemap" type="timeRemapType"/>
       <xs:element name="textAnimator" type="textAnimatorType"/>
       <xs:element name="textPath" type="textPathType"/>
+      <!-- semantic-tex draft, version 1.8 -->
+      <xs:element name="formulaAnimator" type="formulaAnimatorType"/>
     </xs:choice>
     <xs:attributeGroup ref="nodeAttributes"/>
     <xs:attribute name="asset" type="xs:IDREF" use="required"/>
@@ -2255,6 +2301,9 @@
     <xs:attribute name="strokeFont" type="xs:IDREF"/>
     <xs:attribute name="fontSize" type="positiveDecimal" default="48"/>
     <xs:attribute name="fillRule" type="fillRuleType" default="nonzero"/>
+    <xs:attribute name="morph" type="xs:boolean" default="false">
+      <xs:annotation><xs:documentation>With true, the keys of an animate property="path" interpolate by resampling, alignment and sub-path matching (semantic-tex draft); with false they hold. Version 1.8.</xs:documentation></xs:annotation>
+    </xs:attribute>
     <xs:attribute name="radius" type="nonNegativeDecimal" default="0"/>
     <xs:attribute name="cornerRadii" type="numberListType">
       <xs:annotation><xs:documentation>Per-corner radii TL TR BR BL; overrides radius.</xs:documentation></xs:annotation>

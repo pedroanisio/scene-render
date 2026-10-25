@@ -262,6 +262,7 @@ fn between(s: &str, open: &str) -> String {
 struct Sets<'a> {
     assets: HashSet<&'a str>,
     text_assets: HashSet<&'a str>,
+    formula_assets: HashSet<&'a str>,
     font_assets: HashSet<&'a str>,
     stroke_font_assets: HashSet<&'a str>,
     mesh_assets: HashSet<&'a str>,
@@ -421,6 +422,8 @@ fn build_sets<'a>(scene: Option<Node<'a, '_>>) -> Sets<'a> {
             }
             if is(a, "text") {
                 s.text_assets.insert(i);
+            } else if is(a, "formula") {
+                s.formula_assets.insert(i);
             } else if is(a, "font") {
                 s.font_assets.insert(i);
             } else if is(a, "strokeFont") {
@@ -1139,10 +1142,23 @@ impl<'a> Eval<'a> {
                     || (is(d, "object3D") && d.attribute("primitive") == Some("axes"))
                     || (is(d, "modifier") && matches!(d.attribute("type"), Some("matrix" | "map" | "complex")))
                     || (is(d, "deform") && d.parent_element().is_some_and(|g| is(g, "group")))
+                    || is(d, "formulaAnimator")
+                    || (is(d, "shape") && d.attribute("morph").is_some())
             });
+            // the semantic-tex draft's assets: formulaMorph, and \part in a formula's TeX
+            let mut assets = kids(n, "assets").flat_map(|s| s.children().filter(|c| c.is_element()));
+            let uses = uses
+                || assets.any(|d| {
+                    is(d, "formulaMorph")
+                        || (is(d, "formula") && d.attribute("tex").is_some_and(|t| t.contains("\\part{")))
+                });
             self.check(!uses, n, "V17", || {
-                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex and a group's deform need version=\"1.8\".".into()
+                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph and \\part in a formula need version=\"1.8\".".into()
             });
+        }
+        if local == "formulaMorph" && parent_is("assets") {
+            let ok = contains(&self.sets.formula_assets, a("from")) && contains(&self.sets.formula_assets, a("to"));
+            self.check(ok, n, "FRM2", || "formulaMorph/@from and @to name formula assets.".into());
         }
         if local == "plot" {
             let only = |want: &[&str]| ["x", "y", "r", "f"].iter().all(|e| has(e) == want.contains(e));
@@ -2693,6 +2709,8 @@ impl<'a> Eval<'a> {
             let r2 =
                 !(has_kid(n, "textAnimator") || has_kid(n, "textPath")) || contains(&self.sets.text_assets, a("asset"));
             self.check(r2, n, "R2", || "textAnimator and textPath need a text asset.".into());
+            let frm1 = !has_kid(n, "formulaAnimator") || contains(&self.sets.formula_assets, a("asset"));
+            self.check(frm1, n, "FRM1", || "formulaAnimator needs a formula asset.".into());
             self.check(!has("audioBus") || contains(&self.sets.buses, a("audioBus")), n, "R3", || {
                 "layer/@audioBus must name a bus.".into()
             });

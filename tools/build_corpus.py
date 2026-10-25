@@ -861,6 +861,23 @@ CASES += [
     ("space-function-enum", ["S06"], lambda _: SPACE.replace('function="square"', 'function="tan"')),
     ("space-group-body", ["S02"], lambda _: SPACE.replace('<group id="g"><deform>', '<group id="g"><rigidBody/><deform>')),
 ]
+TEX = ('<scene version="1.8"><project width="64" height="64" fps="24" duration="1" background="#000000FF"/><assets>'
+    '<formula id="f" tex="\\part{a}{x^2} + \\part{b}{2x} + \\part{c}{1}" width="64" height="32"/>'
+    '<formula id="g" tex="\\part{a}{x^2} + \\part{d}{2x + 1}" width="64" height="32"/>'
+    '<formulaMorph id="m" from="f" to="g" match="name" width="64" height="32"><animate property="progress"><key time="0" value="0"/><key time="1" value="1"/></animate></formulaMorph>'
+    '</assets><composition><layer id="lf" asset="f"><formulaAnimator part="b" y="-4"/></layer><layer id="lm" asset="m"/>'
+    '<shape id="s" shape="path" morph="true" width="20" height="20" path="M 0 0 L 20 0 L 20 20 L 0 20 Z" fill="#FF0000FF">'
+    '<animate property="path"><key time="0" value="M 0 0 L 20 0 L 20 20 L 0 20 Z"/><key time="1" value="M 0 0 L 20 0 L 10 16 Z"/></animate></shape>'
+    '</composition></scene>\n')
+VALID["semantic-tex"] = TEX
+CASES += [
+    ("v17-semantic-tex", ["V17"], lambda _: TEX.replace('version="1.8"', 'version="1.7"')),
+    ("v17-part", ["V17"], lambda _: TEX.replace('version="1.8"', 'version="1.7"').split('<formulaMorph')[0] + '</assets><composition/></scene>\n'),
+    ("frm1", ["FRM1"], lambda _: TEX.replace('<layer id="lm" asset="m"/>', '<layer id="lm" asset="m"><formulaAnimator part="a"/></layer>')),
+    ("frm2", ["FRM2"], lambda _: TEX.replace('<formulaMorph id="m" from="f"', '<formulaMorph id="m" from="lf"')),
+    ("formula-morph-match-enum", ["S06"], lambda _: TEX.replace('match="name"', 'match="glyph"')),
+    ("formula-animator-part-required", ["S05"], lambda _: TEX.replace('<formulaAnimator part="b"', '<formulaAnimator')),
+]
 CASES += [
     ("v16-fractal", ["V16"], lambda _: FRACTAL.replace('version="1.6"', 'version="1.5"')),
     ("frc1-julia-without-c", ["FRC1"], lambda _: FRACTAL.replace(' juliaX="-0.8" juliaY="0.156"', ' juliaX="-0.8"')),

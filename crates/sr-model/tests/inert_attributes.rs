@@ -165,3 +165,34 @@ fn a6_i17_margin_and_align_to_need_an_alignment() {
     // centring ignores the margin, which is documented, and is not reported
     assert!(codes("", &shape(r#"margin="8" alignX="center" alignY="middle""#)).is_empty());
 }
+
+#[test]
+fn i18_morph_without_path_keys() {
+    // the semantic-tex draft: shape/@morph is read only by the keys of an animate property="path"
+    let at_1_8 = |shape: &str| -> Vec<String> {
+        let xml = format!(
+            r#"<scene version="1.8"><project width="64" height="64" fps="24" duration="2"/><composition>{shape}</composition></scene>"#
+        );
+        let report = validate_str(&xml, &LoadOptions::without_assets());
+        assert!(!report.has_errors(), "the document must be valid:\n{report}");
+        report.diagnostics.into_iter().filter(|d| d.code.starts_with("INERT-")).map(|d| d.code).collect()
+    };
+    let keys = r#"<animate property="path"><key time="0" value="M 0 0 L 9 0 L 9 9 Z"/><key time="1" value="M 0 0 L 9 9 L 0 9 Z"/></animate>"#;
+    let path = |attrs: &str, kids: &str| {
+        format!(
+            r#"<shape id="s" shape="path" width="10" height="10" path="M 0 0 L 9 0 L 9 9 Z" {attrs}>{kids}</shape>"#
+        )
+    };
+    assert_eq!(at_1_8(&path(r#"morph="true""#, "")), ["INERT-I18"]);
+    assert_eq!(at_1_8(&path(r#"morph="false""#, "")), ["INERT-I18"]);
+    // another property's keys do not make it read
+    assert_eq!(
+        at_1_8(&path(
+            r#"morph="true""#,
+            r#"<animate property="x"><key time="0" value="0"/><key time="1" value="5"/></animate>"#
+        )),
+        ["INERT-I18"]
+    );
+    assert!(at_1_8(&path(r#"morph="true""#, keys)).is_empty());
+    assert!(at_1_8(&path("", "")).is_empty());
+}

@@ -55,6 +55,9 @@ pub const I16: &str = "INERT-I16";
 /// without `threeD="true"`, or `margin` / `alignTo` of a node with neither `alignX` nor `alignY`: the renderer reads them
 /// only with those switches.
 pub const I17: &str = "INERT-I17";
+/// `INERT-I18` (the semantic-tex draft of sr-core, Syntax 4): `shape/@morph` without an `animate property="path"`, whose
+/// keys are all it reads.
+pub const I18: &str = "INERT-I18";
 /// `MASK-MISS` (SREP 34): a rect or ellipse mask that adds or intersects and lies wholly outside its node's box, so
 /// the node shows nothing. A warning, not an inert finding: the mask has the strongest effect possible.
 pub const MASK_MISS: &str = "MASK-MISS";
@@ -76,6 +79,7 @@ pub const RULES: &[(&str, &str)] = &[
     (I13, "An `effect` carrying an attribute its `type` does not read (`id`, `type`, `enabled` and `mix` are read by every type) (information, SREP 34)."),
     (I16, "A `flock` with `orientToVelocity=\"false\"` whose `shape` is `streak` (the default): a streak is drawn along the velocity whatever the value (information, SREP 73)."),
     (I17, "A node with `zDepth`, `rotationX` or `rotationY` and without `threeD=\"true\"` (they place a node in camera space only then), or with `margin` or `alignTo` and neither `alignX` nor `alignY` (the alignment needs one of them) (information)."),
+    (I18, "A `shape` with `morph` and no `animate property=\"path\"` child: only path keys morph (information, semantic-tex draft)."),
     (MASK_MISS, "A `mask` of type rect or ellipse, mode add or intersect, not inverted, whose box lies entirely outside the box of the node it masks, in the node's own coordinates: the node shows nothing (warning, SREP 34; `measured` is how far outside, in pixels)."),
 ];
 
@@ -256,6 +260,10 @@ impl<'a> Cx<'a> {
         }
         if kind != "path" && n.has_attribute("path") && !self.dynamic(n, "path") {
             push(out, I5, n, format!("@path on shape {kind:?}, which only shape \"path\" reads"));
+        }
+        let keyed = n.children().any(|c| c.tag_name().name() == "animate" && c.attribute("property") == Some("path"));
+        if n.tag_name().name() == "shape" && n.has_attribute("morph") && !keyed && !self.dynamic(n, "morph") {
+            push(out, I18, n, "@morph without an animate property=\"path\", whose keys are all it reads".into());
         }
     }
 
