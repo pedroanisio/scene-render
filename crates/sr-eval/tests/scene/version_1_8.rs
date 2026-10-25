@@ -113,3 +113,33 @@ fn flocks_slimes_and_erosion_draw_from_the_streams_at_1_8_only_and_seek_to_the_p
         assert_ne!(at_1_8, shown(&doc("1.7"), id, &played), "{id}: 1.8 draws the same as 1.7");
     }
 }
+
+/// The ids and lifetimes of a burst of four 3D particles of `lifetime="10" lifetimeVariance="0.5"`.
+fn lifetimes3d(version: &str, attrs: &str) -> Vec<(u64, f64)> {
+    let xml = format!(
+        r#"<scene version="{version}"><project width="64" height="64" fps="10" duration="2" seed="5"/><composition>
+        <particles3D id="d" rate="0" dt="0.1" lifetime="10" lifetimeVariance="0.5"{attrs}><burst time="0" count="4"/></particles3D>
+        </composition></scene>"#
+    );
+    let doc = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
+    let f = Evaluator::new(&doc, &EvalOptions::default()).unwrap().evaluate(0.3);
+    assert!(f.problems.is_empty(), "{:?}", f.problems);
+    let p = f.nodes.iter().find(|n| &*n.id == "d").unwrap().particles3d.as_ref().unwrap();
+    p.frame.particles.iter().map(|p| (p.id, p.lifetime)).collect()
+}
+
+#[test]
+fn a_1_8_particles3d_draws_from_the_streams_and_a_1_7_one_from_its_seed() {
+    // `@seed` defaults to 0 in the schema, so an emitter without one reads E(…, "0", "stream")
+    for (attrs, seed) in [("", 0), (r#" seed="3""#, 3)] {
+        let e = element_seed(5, "d", Some(seed), "stream");
+        let got = lifetimes3d("1.8", attrs);
+        assert_eq!(got.len(), 4);
+        for (id, life) in &got {
+            assert!((life - (10.0 + 0.5 * sr_vector::d24::stream_signed(e, 4, 0, *id))).abs() < 1e-12, "{id} {life}");
+        }
+        for (id, life) in lifetimes3d("1.7", attrs) {
+            assert!((life - (10.0 + 0.5 * sr_sim::rng::signed(seed, id, 4))).abs() < 1e-12, "{id} {life}");
+        }
+    }
+}

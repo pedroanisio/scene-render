@@ -59,7 +59,7 @@ fn spec() -> Spec {
         restitution: 0.3,
         friction: 0.2,
         max_particles: 200,
-        seed: 11,
+        draws: sr_sim::rng::Draws::Legacy(11),
         bursts: vec![sr_sim::particles3d::Burst { time: 0.0, count: 60, repeat: 0, interval: 1.0 }],
         ..Default::default()
     }

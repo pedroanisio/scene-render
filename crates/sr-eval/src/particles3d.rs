@@ -238,8 +238,9 @@ fn build(
     }
     let debris = reposed.pop().map(|(crater, repose)| (crate::debris::Config { crater, repose }, Default::default()));
     let rest_speed = REST_SPEED * p.scene.physics.as_ref().map_or(100.0, |ph| ph.pixels_per_meter.get());
+    // `@seed` has a schema default, so the defaulted value is the `@seed` of the element seed.
     let spec = sim::Spec {
-        seed: e.seed,
+        draws: crate::rng::sim_draws(p.version(n.doc), p.seed, &n.seed_id, Some(e.seed), || e.seed),
         start: number("emissionStart", 0.),
         end: e.emission_end.map(|_| number("emissionEnd", 0.)),
         step: number("dt", 1. / 60.),

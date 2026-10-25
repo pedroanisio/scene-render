@@ -3,7 +3,7 @@
 //! trajectory. Geometry drivers provide continuous sphere sweeps in scene axes.
 
 pub use crate::particles::Burst;
-use crate::rng;
+use crate::rng::Draws;
 use std::{
     cmp::{Ordering, Reverse},
     collections::{BTreeMap, BinaryHeap, VecDeque},
@@ -30,7 +30,9 @@ pub enum Shape {
 
 #[derive(Clone, Debug)]
 pub struct Spec {
-    pub seed: u64,
+    /// The draws of the particles: particle `id` reads purpose 11 to 13 for its point, 1 and 2 for its direction, 3
+    /// speed, 31 to 33 rotation, 34 to 36 spin, 37 scale, 4 lifetime, and a mesh shape 21 to 23.
+    pub draws: Draws,
     pub start: f64,
     pub end: Option<f64>,
     pub step: f64,
@@ -78,7 +80,7 @@ pub struct Spec {
 impl Default for Spec {
     fn default() -> Self {
         Self {
-            seed: 0,
+            draws: Draws::Legacy(0),
             start: 0.,
             end: None,
             step: 1. / 60.,
@@ -673,12 +675,12 @@ fn emission(d: &mut dyn Driver, t: f64) -> Result<Emission, Error> {
 }
 fn spawn(s: &Spec, e: &Emission, id: u64, birth: f64) -> Result<Particle, Error> {
     use rapier3d_f64::parry::math::{Rotation, Vector};
-    let u = |k| rng::unit(s.seed, id, k);
+    let u = |p| s.draws.unit(p, id);
     let point = match &s.shape {
         Shape::Point => [0.; 3],
-        Shape::Box { size } => std::array::from_fn(|i| (u(11 + i as u64) - 0.5) * size[i]),
+        Shape::Box { size } => std::array::from_fn(|i| (u(11 + i as u32) - 0.5) * size[i]),
         Shape::Sphere { radius } => scale(unit_sphere(u(11), u(12)), radius * u(13).cbrt()),
-        Shape::Mesh(mesh) => mesh.sample(s.seed, id),
+        Shape::Mesh(mesh) => mesh.sample(s.draws, id),
     };
     let dir = normalize(s.direction);
     let axis = if dir[2].abs() < 0.9 { [0., 0., 1.] } else { [0., 1., 0.] };
@@ -691,7 +693,7 @@ fn spawn(s: &Spec, e: &Emission, id: u64, birth: f64) -> Result<Particle, Error>
         s.velocity,
         scale(
             add(scale(dir, cos), add(scale(x, sin * phi.cos()), scale(y, sin * phi.sin()))),
-            s.speed + s.speed_variance * rng::signed(s.seed, id, 3),
+            s.speed + s.speed_variance * s.draws.signed(3, id),
         ),
     );
     let m = e.transform.columns();
@@ -700,9 +702,9 @@ fn spawn(s: &Spec, e: &Emission, id: u64, birth: f64) -> Result<Particle, Error>
         e.inherited_velocity,
     );
     let rotation: [f64; 3] =
-        std::array::from_fn(|i| s.rotation[i] + s.rotation_variance[i] * rng::signed(s.seed, id, 31 + i as u64));
+        std::array::from_fn(|i| s.rotation[i] + s.rotation_variance[i] * s.draws.signed(31 + i as u32, id));
     let angular_velocity = std::array::from_fn(|i| {
-        s.angular_velocity[i] + s.angular_velocity_variance[i] * rng::signed(s.seed, id, 34 + i as u64)
+        s.angular_velocity[i] + s.angular_velocity_variance[i] * s.draws.signed(34 + i as u32, id)
     });
     if !finite(rotation) || !finite(angular_velocity) {
         return Err(Error::Invalid("nonfinite birth rotation or spin"));
@@ -711,7 +713,7 @@ fn spawn(s: &Spec, e: &Emission, id: u64, birth: f64) -> Result<Particle, Error>
     let rotation = Rotation::from_axis_angle(Vector::Z, rotation[2])
         * Rotation::from_axis_angle(Vector::Y, rotation[1])
         * Rotation::from_axis_angle(Vector::X, rotation[0]);
-    let size = 1. + s.scale_variance * rng::signed(s.seed, id, 37);
+    let size = 1. + s.scale_variance * s.draws.signed(37, id);
     let basis = [Vector::X, Vector::Y, Vector::Z].map(|axis| {
         let v = (rotation * axis).to_array();
         std::array::from_fn(|i| (m[i] * v[0] + m[4 + i] * v[1] + m[8 + i] * v[2]) * size)
@@ -719,7 +721,7 @@ fn spawn(s: &Spec, e: &Emission, id: u64, birth: f64) -> Result<Particle, Error>
     let p = Particle {
         id,
         birth,
-        lifetime: s.lifetime + s.lifetime_variance * rng::signed(s.seed, id, 4),
+        lifetime: s.lifetime + s.lifetime_variance * s.draws.signed(4, id),
         position: e.transform.index_to_world(point),
         velocity,
         basis,

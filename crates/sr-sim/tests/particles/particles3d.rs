@@ -100,7 +100,7 @@ fn rate_carry_caps_and_expiry_are_deterministic_across_seeks() {
     s.max_particles = 2;
     s.lifetime = 0.125;
     s.bursts = vec![burst(0.02, 1000)];
-    s.seed = u64::MAX;
+    s.draws = sr_sim::rng::Draws::Legacy(u64::MAX);
     s.speed = 3.;
     s.spread = 180.;
     let mut e = Emitter::new(s).unwrap();
@@ -259,7 +259,10 @@ fn unused_mesh_vertices_do_not_change_area_sampling_or_reject_valid_faces() {
     let original = Mesh::new(&points, &[[0, 1, 2]], 4096).unwrap();
     let padded = Mesh::new(&extra, &[[0, 1, 2]], 4096).unwrap();
     for id in 0..100 {
-        assert_eq!(original.sample(42, id), padded.sample(42, id));
+        assert_eq!(
+            original.sample(sr_sim::rng::Draws::Legacy(42), id),
+            padded.sample(sr_sim::rng::Draws::Legacy(42), id)
+        );
     }
 }
 
@@ -357,7 +360,7 @@ fn dense_ejecta_replays_identically_after_scrubbing_with_evicted_checkpoints() {
     s.angular_velocity_variance = [120.; 3];
     s.checkpoint_bytes = 400_000;
     s.bursts = vec![Burst { time: 0., count: 700, repeat: 8, interval: 0.4 }];
-    s.seed = u64::MAX - 41;
+    s.draws = sr_sim::rng::Draws::Legacy(u64::MAX - 41);
     let mut sequential = Emitter::new(s.clone()).unwrap();
     let mut d = Scene { rate: 27., ..Default::default() };
     let times = [0., 0.237, 1.25, 2.337, 3.21];
@@ -394,7 +397,7 @@ fn spherical_emission_and_cone_spread_are_three_dimensional_and_seeded() {
     s.speed = 3.;
     s.direction = [0., 0., 1.];
     s.spread = 60.;
-    s.seed = 9007199254740993;
+    s.draws = sr_sim::rng::Draws::Legacy(9007199254740993);
     let mut a = Emitter::new(s.clone()).unwrap();
     let first = a.at(0., &mut Scene::default()).unwrap().clone();
     for p in &first.particles {
@@ -403,7 +406,7 @@ fn spherical_emission_and_cone_spread_are_three_dimensional_and_seeded() {
         assert!(p.velocity[2] >= 3. * 30f64.to_radians().cos() - 1e-12);
     }
     assert!(first.particles.iter().any(|p| p.position[2].abs() > 0.5));
-    s.seed -= 1;
+    s.draws = sr_sim::rng::Draws::Legacy(9007199254740992);
     let mut b = Emitter::new(s).unwrap();
     assert_ne!(first, b.at(0., &mut Scene::default()).unwrap().clone());
 }
@@ -648,4 +651,24 @@ fn a_frame_holds_room_for_its_particles_not_for_the_cap() {
     let f = e.at(1.0, &mut Scene { rate: 20., ..Default::default() }).unwrap();
     assert_eq!(f.particles.len(), 20);
     assert!(f.particles.capacity() <= 64, "capacity {} for {} particles", f.particles.capacity(), f.particles.len());
+}
+
+#[test]
+fn a_stream_emitter_births_particle_k_from_its_draws_of_the_legacy_numbers_as_purposes() {
+    use sr_vector::d24::{stream, stream_signed};
+    let e = 856627436;
+    let mut s = spec();
+    s.bursts = vec![burst(0., 5)];
+    s.shape = Shape::Box { size: [2., 4., 6.] };
+    s.lifetime_variance = 0.5;
+    s.draws = sr_sim::rng::Draws::Stream(e);
+    let f = Emitter::new(s.clone()).unwrap().at(0., &mut Scene::default()).unwrap().clone();
+    assert_eq!(f.particles.len(), 5);
+    for p in &f.particles {
+        let point: [f64; 3] = std::array::from_fn(|i| (stream(e, 11 + i as u32, 0, p.id) - 0.5) * [2., 4., 6.][i]);
+        assert_eq!(p.position, point);
+        assert_eq!(p.lifetime, 10. + 0.5 * stream_signed(e, 4, 0, p.id));
+    }
+    s.draws = sr_sim::rng::Draws::Legacy(e);
+    assert_ne!(f, Emitter::new(s).unwrap().at(0., &mut Scene::default()).unwrap().clone());
 }

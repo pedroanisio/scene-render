@@ -2,7 +2,7 @@
 //! solid collision/source regions, an emitting surface need not be closed.
 
 use super::{cross, finite, length, Error};
-use crate::rng;
+use crate::rng::Draws;
 
 #[derive(Debug)]
 pub struct Mesh {
@@ -70,12 +70,12 @@ impl Mesh {
     pub fn bytes(&self) -> usize {
         self.bytes
     }
-    pub fn sample(&self, seed: u64, id: u64) -> [f64; 3] {
-        let target = rng::unit(seed, id, 21) * self.area.last().expect("nonempty mesh");
+    pub fn sample(&self, draws: Draws, id: u64) -> [f64; 3] {
+        let target = draws.unit(21, id) * self.area.last().expect("nonempty mesh");
         let i = self.area.partition_point(|&a| a <= target).min(self.area.len() - 1);
         let [a, b, c] = self.triangles[i].map(|i| self.points[i as usize]);
-        let u = rng::unit(seed, id, 22).sqrt();
-        let v = rng::unit(seed, id, 23);
+        let u = draws.unit(22, id).sqrt();
+        let v = draws.unit(23, id);
         std::array::from_fn(|i| a[i] * (1. - u) + b[i] * (u * (1. - v)) + c[i] * (u * v))
     }
 }

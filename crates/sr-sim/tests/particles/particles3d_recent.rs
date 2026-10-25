@@ -33,7 +33,7 @@ fn emitter(checkpoint_bytes: usize) -> Emitter {
         spread: 90.0,
         max_particles: 4000,
         checkpoint_bytes,
-        seed: 5,
+        draws: sr_sim::rng::Draws::Legacy(5),
         ..Default::default()
     })
     .unwrap()
