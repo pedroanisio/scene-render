@@ -75,12 +75,13 @@ impl Draws {
     }
 
     /// A draw read once per step: S(e, p, step, k), or what `legacy` draws from the legacy seed, whose
-    /// simulations each addressed their step draws their own way.
+    /// simulations each addressed their step draws their own way. The channel p + step · 2³² is a 64-bit integer
+    /// like every integer of the SREP, so a step is read modulo 2³².
     #[inline]
-    pub fn at_step(self, p: u32, step: u32, k: u64, legacy: impl FnOnce(u64) -> f64) -> f64 {
+    pub fn at_step(self, p: u32, step: u64, k: u64, legacy: impl FnOnce(u64) -> f64) -> f64 {
         match self {
             Draws::Legacy(seed) => legacy(seed),
-            Draws::Stream(e) => sr_vector::d24::stream(e, p, step, k),
+            Draws::Stream(e) => sr_vector::d24::stream(e, p, step as u32, k),
         }
     }
 

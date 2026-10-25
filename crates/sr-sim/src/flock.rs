@@ -4,7 +4,14 @@
 //! Neighbours come from a uniform grid of cells at least `perception` wide, visited in a fixed order,
 //! and every agent updates from the previous step's state, so a run is deterministic.
 
-use crate::rng;
+use crate::rng::Draws;
+
+/// The purposes of a flock's draws (the random-streams SREP, section 5), read once per agent with its ordinal.
+pub mod purpose {
+    pub const X: u32 = 1;
+    pub const Y: u32 = 2;
+    pub const HEADING: u32 = 3;
+}
 use crate::timeline::State;
 
 /// How agents stay in their box.
@@ -19,7 +26,7 @@ pub enum Bounds {
 /// Flock parameters, in box pixels, seconds and pixels per second.
 #[derive(Clone, Debug)]
 pub struct FlockSpec {
-    pub seed: u64,
+    pub draws: Draws,
     pub count: usize,
     pub size: [f64; 2],
     /// Cruise speed: agents never slow below it.
@@ -54,9 +61,9 @@ impl State for Agents {
 pub fn init(s: &FlockSpec) -> Agents {
     let mut a = Agents::default();
     for k in 0..s.count as u64 {
-        a.x.push(rng::unit(s.seed, k, 1) * s.size[0]);
-        a.y.push(rng::unit(s.seed, k, 2) * s.size[1]);
-        let dir = rng::unit(s.seed, k, 3) * std::f64::consts::TAU;
+        a.x.push(s.draws.unit(purpose::X, k) * s.size[0]);
+        a.y.push(s.draws.unit(purpose::Y, k) * s.size[1]);
+        let dir = s.draws.unit(purpose::HEADING, k) * std::f64::consts::TAU;
         let v = s.speed.max(s.max_speed * 0.5);
         a.vx.push(dir.cos() * v);
         a.vy.push(dir.sin() * v);
@@ -215,9 +222,21 @@ pub fn step(s: &FlockSpec, a: &mut Agents, dt: f64, extra: &mut dyn FnMut([f64; 
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_stream_flock_places_agent_k_at_its_draws_of_purposes_1_to_3() {
+        let e = sr_vector::d24::element_seed(0, "p1", None, "stream");
+        let s = FlockSpec { draws: Draws::Stream(e), ..spec() };
+        let a = init(&s);
+        for k in 0..s.count as u64 {
+            assert_eq!(a.x[k as usize], sr_vector::d24::stream(e, purpose::X, 0, k) * s.size[0]);
+            assert_eq!(a.y[k as usize], sr_vector::d24::stream(e, purpose::Y, 0, k) * s.size[1]);
+        }
+        assert_ne!(init(&spec()).x, a.x);
+    }
+
     fn spec() -> FlockSpec {
         FlockSpec {
-            seed: 7,
+            draws: Draws::Legacy(7),
             count: 150,
             size: [600.0, 400.0],
             speed: 60.0,

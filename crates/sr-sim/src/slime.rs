@@ -7,7 +7,17 @@
 
 use rayon::prelude::*;
 
-use crate::rng;
+use crate::rng::{self, Draws};
+
+/// The purposes of a slime's draws (the random-streams SREP, section 5): 1 to 3 once per agent with its ordinal,
+/// 4 and 5 once per step with the step and the agent's ordinal (before 1.8, the seed XORed with 0x51A1 and 0xB0A1).
+pub mod purpose {
+    pub const X: u32 = 1;
+    pub const Y: u32 = 2;
+    pub const HEADING: u32 = 3;
+    pub const TURN: u32 = 4;
+    pub const BOUNCE: u32 = 5;
+}
 use crate::timeline::State;
 
 /// Where the agents start.
@@ -24,7 +34,7 @@ pub enum Spawn {
 
 #[derive(Clone, Debug)]
 pub struct SlimeSpec {
-    pub seed: u64,
+    pub draws: Draws,
     pub size: [f64; 2],
     /// Trail cells along the longer side.
     pub resolution: usize,
@@ -75,7 +85,7 @@ pub fn init(s: &SlimeSpec) -> Slime {
     let r = nx.min(ny) as f64 * 0.35;
     let mut sl = Slime { nx, ny, h, trail: vec![0.0; nx * ny], x: Vec::new(), y: Vec::new(), heading: Vec::new() };
     for k in 0..s.agents as u64 {
-        let (u, w, a) = (rng::unit(s.seed, k, 1), rng::unit(s.seed, k, 2), rng::unit(s.seed, k, 3));
+        let (u, w, a) = (s.draws.unit(purpose::X, k), s.draws.unit(purpose::Y, k), s.draws.unit(purpose::HEADING, k));
         let ang = a * std::f64::consts::TAU;
         let (x, y, hd) = match s.spawn {
             Spawn::Random => (u * nx as f64, w * ny as f64, ang),
@@ -119,7 +129,9 @@ pub fn step(s: &SlimeSpec, sl: &mut Slime, step_index: u64, dt: f64) {
             let mut nh = hd;
             if f >= l && f >= r {
             } else if f < l && f < r {
-                let coin = rng::unit(s.seed ^ 0x51A1, i as u64, step_index) < 0.5;
+                let coin = s.draws.at_step(purpose::TURN, step_index, i as u64, |seed| {
+                    rng::unit(seed ^ 0x51A1, i as u64, step_index)
+                }) < 0.5;
                 nh += if coin { ta } else { -ta };
             } else if l > r {
                 nh -= ta;
@@ -131,7 +143,10 @@ pub fn step(s: &SlimeSpec, sl: &mut Slime, step_index: u64, dt: f64) {
             if nx_ < 0.0 || nx_ >= w || ny_ < 0.0 || ny_ >= hgt {
                 nx_ = nx_.clamp(0.0, w - 1e-3);
                 ny_ = ny_.clamp(0.0, hgt - 1e-3);
-                nh = (rng::unit(s.seed ^ 0xB0A1, i as u64, step_index) * std::f64::consts::TAU) as f32;
+                let u = s.draws.at_step(purpose::BOUNCE, step_index, i as u64, |seed| {
+                    rng::unit(seed ^ 0xB0A1, i as u64, step_index)
+                });
+                nh = (u * std::f64::consts::TAU) as f32;
             }
             (nx_, ny_, nh)
         })
@@ -177,9 +192,31 @@ pub fn image(sl: &Slime, saturation: f64, low: [f32; 4], high: [f32; 4]) -> Vec<
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_stream_slime_spawns_from_its_draws_and_steps_with_draws_addressed_by_step() {
+        let e = sr_vector::d24::element_seed(0, "p1", None, "stream");
+        let s = SlimeSpec { draws: Draws::Stream(e), spawn: Spawn::Random, ..spec() };
+        let sl = init(&s);
+        let (nx, ny, _) = s.grid();
+        for k in 0..sl.x.len() as u64 {
+            assert_eq!(sl.x[k as usize], (sr_vector::d24::stream(e, purpose::X, 0, k) * nx as f64) as f32);
+            assert_eq!(sl.y[k as usize], (sr_vector::d24::stream(e, purpose::Y, 0, k) * ny as f64) as f32);
+        }
+        // stepping is a function of the step's address: two runs agree, and differ from the legacy seed's
+        let run = |s: &SlimeSpec| {
+            let mut sl = init(s);
+            for t in 0..20 {
+                step(s, &mut sl, t, 1.0 / 30.0);
+            }
+            sl.trail
+        };
+        assert_eq!(run(&s), run(&s));
+        assert_ne!(run(&s), run(&SlimeSpec { spawn: Spawn::Random, ..spec() }));
+    }
+
     fn spec() -> SlimeSpec {
         SlimeSpec {
-            seed: 5,
+            draws: Draws::Legacy(5),
             size: [256.0, 256.0],
             resolution: 128,
             agents: 6000,

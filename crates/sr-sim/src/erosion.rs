@@ -6,12 +6,21 @@
 //! (a normalised cone brush). Its speed follows the height change under gravity and its water
 //! evaporates. Heights run from 0 to 1.
 
-use crate::rng;
+use crate::rng::{self, Draws};
+
+/// The purposes of erosion's draws (the random-streams SREP, section 5): a droplet's start once per droplet with its
+/// ordinal (before 1.8, the seed XORed with 0xD20F), and octave `o` of the initial terrain's value noise at
+/// `TERRAIN + o` over the lattice pack(i, j, 0) (before 1.8, the seed plus 7919 o at channel 9).
+pub mod purpose {
+    pub const DROP_X: u32 = 1;
+    pub const DROP_Y: u32 = 2;
+    pub const TERRAIN: u32 = 64;
+}
 use crate::timeline::State;
 
 #[derive(Clone, Debug)]
 pub struct ErosionSpec {
-    pub seed: u64,
+    pub draws: Draws,
     pub size: [f64; 2],
     /// Cells along the longer side.
     pub resolution: usize,
@@ -54,11 +63,20 @@ impl State for Terrain {
     }
 }
 
-fn value_noise(seed: u64, x: f64, y: f64) -> f64 {
+fn value_noise(draws: Draws, octave: u32, x: f64, y: f64) -> f64 {
     let (x0, y0) = (x.floor(), y.floor());
     let (fx, fy) = (x - x0, y - y0);
     let s = |t: f64| t * t * (3.0 - 2.0 * t);
-    let at = |i: f64, j: f64| rng::unit(seed, ((i as i64 as u64) << 32) ^ (j as i64 as u64 & 0xFFFF_FFFF), 9);
+    let at = |i: f64, j: f64| match draws {
+        Draws::Legacy(seed) => rng::unit(
+            seed.wrapping_add(octave as u64 * 7919),
+            ((i as i64 as u64) << 32) ^ (j as i64 as u64 & 0xFFFF_FFFF),
+            9,
+        ),
+        Draws::Stream(e) => {
+            sr_vector::d24::stream(e, purpose::TERRAIN + octave, 0, sr_vector::d24::pack(i as i64, j as i64, 0))
+        }
+    };
     let (a, b, c, d) = (at(x0, y0), at(x0 + 1.0, y0), at(x0, y0 + 1.0), at(x0 + 1.0, y0 + 1.0));
     let (u, v) = (s(fx), s(fy));
     a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v
@@ -81,7 +99,7 @@ pub fn init(s: &ErosionSpec, from: Option<(usize, usize, Vec<f32>)>) -> Terrain 
             for i in 0..nx {
                 let (mut amp, mut f, mut v) = (1.0, s.frequency / long, 0.0);
                 for o in 0..s.octaves.max(1) {
-                    v += amp * value_noise(s.seed.wrapping_add(o as u64 * 7919), i as f64 * f, j as f64 * f);
+                    v += amp * value_noise(s.draws, o, i as f64 * f, j as f64 * f);
                     amp *= 0.5;
                     f *= 2.0;
                 }
@@ -110,8 +128,8 @@ fn sample(t: &Terrain, x: f64, y: f64) -> (f64, [f64; 2]) {
 /// Runs one droplet. Returns the net height it moved (eroded minus deposited) for tests.
 fn droplet(s: &ErosionSpec, t: &mut Terrain, k: u64, brush: &[(i64, i64, f64)]) -> f64 {
     let (nx, ny) = (t.nx, t.ny);
-    let mut x = rng::unit(s.seed ^ 0xD20F, k, 1) * (nx - 1) as f64;
-    let mut y = rng::unit(s.seed ^ 0xD20F, k, 2) * (ny - 1) as f64;
+    let mut x = s.draws.salted(0xD20F).unit(purpose::DROP_X, k) * (nx - 1) as f64;
+    let mut y = s.draws.salted(0xD20F).unit(purpose::DROP_Y, k) * (ny - 1) as f64;
     let (mut dx, mut dy) = (0.0f64, 0.0f64);
     let (mut speed, mut water, mut sediment) = (1.0f64, 1.0f64, 0.0f64);
     let mut moved = 0.0;
@@ -234,9 +252,25 @@ pub fn image(t: &Terrain, relief: f64, azimuth: f64, elevation: f64, low: [f32; 
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_stream_terrain_reads_one_lattice_purpose_per_octave() {
+        let e = sr_vector::d24::element_seed(0, "p1", None, "stream");
+        let d = Draws::Stream(e);
+        // exact at lattice points: the draw of the octave's purpose at pack(i, j, 0)
+        for (o, i, j) in [(0, 0, 0), (2, 3, 5), (4, 7, 1)] {
+            assert_eq!(
+                value_noise(d, o, i as f64, j as f64),
+                sr_vector::d24::stream(e, purpose::TERRAIN + o, 0, sr_vector::d24::pack(i, j, 0))
+            );
+        }
+        let s = ErosionSpec { draws: d, ..spec() };
+        assert_eq!(init(&s, None).height, init(&s, None).height);
+        assert_ne!(init(&s, None).height, init(&spec(), None).height);
+    }
+
     fn spec() -> ErosionSpec {
         ErosionSpec {
-            seed: 11,
+            draws: Draws::Legacy(11),
             size: [128.0, 128.0],
             resolution: 128,
             octaves: 5,

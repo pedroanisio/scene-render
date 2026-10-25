@@ -72,3 +72,44 @@ fn a_1_8_emitter_rendered_alone_at_a_frame_equals_the_played_frame() {
     assert!(p.len() > 8);
     assert_eq!(p, pos(&alone));
 }
+
+/// What a 2D simulation node shows at time `t`: its particles' positions, else its picture's pixels, as bits.
+fn shown(xml: &str, id: &str, times: &[f64]) -> Vec<u32> {
+    let doc = sr_model::load_str(xml, &sr_model::LoadOptions::without_assets()).unwrap();
+    let ev = Evaluator::new(&doc, &EvalOptions::default()).unwrap();
+    let mut last = None;
+    for &t in times {
+        last = Some(ev.evaluate(t));
+    }
+    let f = last.unwrap();
+    let n = f.nodes.iter().find(|n| &*n.id == id).unwrap();
+    if let Some(p) = &n.particles {
+        p.pos.iter().flatten().map(|v| v.to_bits()).collect()
+    } else {
+        n.sim_image.as_ref().expect("a picture").rgba.iter().flatten().map(|v| v.to_bits()).collect()
+    }
+}
+
+#[test]
+fn flocks_slimes_and_erosion_draw_from_the_streams_at_1_8_only_and_seek_to_the_played_frame() {
+    let sims = [
+        (
+            "birds",
+            r##"<flock id="birds" width="160" height="120" count="60" seed="7" size="2" color="#FFFFFF" speed="90"/>"##,
+        ),
+        ("net", r##"<slime id="net" width="96" height="64" resolution="48" agents="600" seed="3" spawn="random"/>"##),
+        ("land", r##"<erosion id="land" width="64" height="64" resolution="32" seed="5" droplets="400"/>"##),
+    ];
+    for (id, body) in sims {
+        let doc = |v: &str| {
+            format!(
+                r#"<scene version="{v}"><project width="200" height="140" fps="30" duration="2"/><composition>{body}</composition></scene>"#
+            )
+        };
+        let played: Vec<f64> = (0..=12).map(|f| f as f64 / 30.0).collect();
+        let at_1_8 = shown(&doc("1.8"), id, &played);
+        assert!(!at_1_8.is_empty(), "{id}");
+        assert_eq!(at_1_8, shown(&doc("1.8"), id, &[0.4]), "{id}: frame 12 alone differs from the played one");
+        assert_ne!(at_1_8, shown(&doc("1.7"), id, &played), "{id}: 1.8 draws the same as 1.7");
+    }
+}

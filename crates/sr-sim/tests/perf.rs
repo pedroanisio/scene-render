@@ -32,7 +32,7 @@ fn timed(steps: u64, mut run: impl FnMut(u64) + Send) -> (f64, f64, bool) {
 #[test]
 fn a_60000_agent_physarum_steps_on_every_core() {
     let s = slime::SlimeSpec {
-        seed: 3,
+        draws: sr_sim::rng::Draws::Legacy(3),
         size: [384.0, 480.0],
         resolution: 384,
         agents: 60_000,

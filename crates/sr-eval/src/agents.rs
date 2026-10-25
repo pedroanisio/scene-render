@@ -113,16 +113,26 @@ fn seed(e: &dyn Element, id: &str) -> u64 {
     }
 }
 
+/// The draws of a flock, slime or erosion: the D24 streams from 1.8, else [`seed`].
+fn draws(p: &Program, n: &FrameNode) -> sr_sim::rng::Draws {
+    let e: &dyn Element = &*n.elem;
+    let attr = match e.get_attr("seed") {
+        Some(sr_model::element::AttrValue::Num(v)) => Some(v as u64),
+        _ => None,
+    };
+    crate::rng::sim_draws(p.version(n.doc), p.seed, &n.seed_id, attr, || seed(e, &n.seed_id))
+}
+
 fn build(p: &Program, n: &FrameNode, problems: &mut Vec<String>) -> Sim {
     let e: &dyn Element = &*n.elem;
     let size = [num(e, "width", 1.0), num(e, "height", 1.0)];
-    let sd = seed(e, &n.seed_id);
+    let sd = draws(p, n);
     let fields = crate::sim::field_names(e);
     let kind = match n.kind {
         "program" => Kind::Program(Box::new(StepProgram::build(p, n))),
         "flock" => {
             let spec = flock::FlockSpec {
-                seed: sd,
+                draws: sd,
                 count: num(e, "count", 200.0).clamp(1.0, 100_000.0) as usize,
                 size,
                 speed: num(e, "speed", 120.0),
@@ -202,7 +212,7 @@ fn build(p: &Program, n: &FrameNode, problems: &mut Vec<String>) -> Sim {
         }
         "slime" => {
             let spec = slime::SlimeSpec {
-                seed: sd,
+                draws: sd,
                 size,
                 resolution: num(e, "resolution", 256.0).clamp(8.0, 2048.0) as usize,
                 agents: num(e, "agents", 20000.0).clamp(1.0, 2_000_000.0) as usize,
@@ -231,7 +241,7 @@ fn build(p: &Program, n: &FrameNode, problems: &mut Vec<String>) -> Sim {
         }
         _ => {
             let spec = erosion::ErosionSpec {
-                seed: sd,
+                draws: sd,
                 size,
                 resolution: num(e, "resolution", 256.0).clamp(16.0, 2048.0) as usize,
                 octaves: num(e, "octaves", 6.0).clamp(1.0, 12.0) as u32,
