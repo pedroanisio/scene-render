@@ -311,8 +311,8 @@ pub fn lic_size(b: &FieldBox, resolution: Option<usize>) -> [usize; 2] {
     [cols, side(cols as f64 * b.height / b.width)]
 }
 
-/// Rule 7: the lic raster over the D24 noise U(seed, row, column) (rows from yMin), as grey pixels from the box's
-/// top; `length` and `step` in pixels.
+/// Rule 7: the lic raster over the seeded uniform noise U(seed, row, column) of `d24_unit` (rows from yMin), as grey
+/// pixels from the box's top; `length` and `step` in pixels.
 pub fn lic_raster(
     f: impl Fn(f64, f64) -> [f64; 2],
     b: &FieldBox,
