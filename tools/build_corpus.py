@@ -891,6 +891,29 @@ CASES += [
     ("rv2-linear-index-fold", ["RV2"], lambda _: RV.replace('count="8"', 'count="8" between="linear"')),
     ("value-count-bound", ["S06"], lambda _: RV.replace('count="8"', 'count="1000001"')),
 ]
+FIELDS = ('<scene version="1.8"><project width="64" height="64" fps="24" duration="1" background="#000000FF"/>'
+    '<parameters><data id="flow" format="csv">x,y,u,v\n0,0,1,0\n1,0,1,1\n0,1,0,1\n1,1,-1,1</data></parameters><composition>'
+    '<field id="rot" u="-y" v="x" width="64" height="64" xMin="-2" xMax="2" yMin="-2" yMax="2">'
+    '<arrows cols="8" rows="8"/><streamlines separation="12" maxLines="50"/><lic length="6" resolution="32" seed="5" opacity="0.5"/></field>'
+    '<field id="sq" kind="complex" function="square" width="32" height="32"><portrait/></field>'
+    '<field id="sad" kind="scalar" u="x * x - y * y" width="32" height="32"><contours levels="-0.5 0 0.5"/></field>'
+    '<field id="pair" width="64" height="32"><charge x="-0.5" y="0" q="1"/><charge x="0.5" y="0" q="-1"/><lines perCharge="6"/></field>'
+    '<field id="g" grid="flow" width="32" height="32" xMin="0" xMax="1" yMin="0" yMax="1"><arrows cols="2" rows="2"/></field>'
+    '</composition></scene>\n')
+VALID["fields"] = FIELDS
+CASES += [
+    ("v17-fields", ["V17"], lambda _: FIELDS.replace('version="1.8"', 'version="1.7"')),
+    ("fld1", ["FLD1"], lambda _: FIELDS.replace('function="square"', 'function="square" w="x; y"')),
+    ("fld1-v-scalar", ["FLD1"], lambda _: FIELDS.replace('u="x * x - y * y"', 'u="x * x - y * y" v="x"')),
+    ("fld2", ["FLD2"], lambda _: FIELDS.replace('yMin="-2" yMax="2"', 'yMin="2" yMax="-2"')),
+    ("fld3", ["FLD3"], lambda _: FIELDS.replace('<arrows cols="8" rows="8"/>', '<arrows cols="8" rows="8"/><portrait/>')),
+    ("fld3-lines", ["FLD3"], lambda _: FIELDS.replace('<charge x="0.5" y="0" q="-1"/>', '').replace('<charge x="-0.5" y="0" q="1"/>', '<dipole x="0" y="0" mx="1" my="0"/>')),
+    ("fld4", ["FLD4"], lambda _: FIELDS.replace('separation="12"', 'separation="12" test="13"')),
+    ("fld4-max-steps", ["FLD4"], lambda _: FIELDS.replace('<lines perCharge="6"/>', '<lines perCharge="6" maxSteps="2000000"/>')),
+    ("field-kind-enum", ["S06", "FLD3"], lambda _: FIELDS.replace('kind="complex"', 'kind="tensor"')),
+    ("field-arrows-bound", ["S06"], lambda _: FIELDS.replace('cols="8"', 'cols="1001"')),
+    ("field-source-order", ["S02"], lambda _: FIELDS.replace('<charge x="0.5" y="0" q="-1"/><lines perCharge="6"/>', '<lines perCharge="6"/><charge x="0.5" y="0" q="-1"/>')),
+]
 CASES += [
     ("v16-fractal", ["V16"], lambda _: FRACTAL.replace('version="1.6"', 'version="1.5"')),
     ("frc1-julia-without-c", ["FRC1"], lambda _: FRACTAL.replace(' juliaX="-0.8" juliaY="0.156"', ' juliaX="-0.8"')),

@@ -3368,6 +3368,8 @@
       <xs:element name="viewport3D" type="viewport3DType"/>
       <!-- the plots draft, version 1.8 -->
       <xs:element name="axes" type="axesType"/>
+      <!-- the fields draft, version 1.8 -->
+      <xs:element name="field" type="fieldType"/>
     </xs:choice>
   </xs:group>
   <!-- ===================================================== SREP 74: a 3D scene with its own camera, as a node -->
@@ -3464,6 +3466,146 @@
     <xs:attribute name="stroke" type="paintType" default="#FFCC00FF"/>
     <xs:attribute name="strokeWidth" type="positiveDecimal" default="3"/>
     <xs:attribute name="fill" type="paintType"/>
+  </xs:complexType>
+  <!-- ===================================================== the fields draft: vector, scalar and complex fields (version 1.8) -->
+  <xs:complexType name="fieldType">
+    <xs:annotation><xs:documentation>A field over a data box, drawn by its presentation children: a vector field (u, v), a
+    scalar field (u alone) or a complex field (function, or w as "re; im"), each an expression of the data coordinates x
+    and y; or rows of a data source on a regular lattice (grid), a forceField of physics, or the sum of its charge,
+    current and dipole children. In an axes the box is the axes'; elsewhere it is width x height pixels at the node's
+    origin with the data ranges xMin to xMax and yMin to yMax (+y up). The fields draft of sr-core
+    (srep/srep-0000-fields.md).</xs:documentation></xs:annotation>
+    <xs:sequence>
+      <xs:group ref="nodeBehaviour" minOccurs="0" maxOccurs="unbounded"/>
+      <xs:choice minOccurs="0" maxOccurs="unbounded">
+        <xs:element name="charge" type="fieldChargeType"/>
+        <xs:element name="current" type="fieldCurrentType"/>
+        <xs:element name="dipole" type="fieldDipoleType"/>
+      </xs:choice>
+      <xs:choice minOccurs="0" maxOccurs="unbounded">
+        <xs:element name="arrows" type="fieldArrowsType"/>
+        <xs:element name="streamlines" type="fieldStreamlinesType"/>
+        <xs:element name="lic" type="fieldLicType"/>
+        <xs:element name="portrait" type="fieldPortraitType"/>
+        <xs:element name="lines" type="fieldLinesType"/>
+        <xs:element name="contours" type="fieldContoursType"/>
+      </xs:choice>
+    </xs:sequence>
+    <xs:attributeGroup ref="nodeAttributes"/>
+    <xs:attributeGroup ref="strokeStyle"/>
+    <xs:attribute name="kind" default="vector">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="vector"/><xs:enumeration value="scalar"/><xs:enumeration value="complex"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="u" type="expressionString"/>
+    <xs:attribute name="v" type="expressionString"/>
+    <xs:attribute name="function">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="square"/><xs:enumeration value="cube"/><xs:enumeration value="inverse"/>
+        <xs:enumeration value="exp"/><xs:enumeration value="log"/><xs:enumeration value="sqrt"/>
+        <xs:enumeration value="sin"/><xs:enumeration value="cos"/><xs:enumeration value="mobius"/>
+        <xs:enumeration value="joukowski"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="coefficients" type="numberListType">
+      <xs:annotation><xs:documentation>function="mobius": eight numbers, a, b, c and d of (a z + b)/(c z + d), each as its real and imaginary parts.</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="w" type="expressionString"/>
+    <xs:attribute name="grid" type="xs:IDREF"/>
+    <xs:attribute name="forceField" type="xs:IDREF"/>
+    <xs:attribute name="xMin" type="xs:double"/>
+    <xs:attribute name="xMax" type="xs:double"/>
+    <xs:attribute name="yMin" type="xs:double"/>
+    <xs:attribute name="yMax" type="xs:double"/>
+    <xs:attribute name="width" type="positiveDecimal"/>
+    <xs:attribute name="height" type="positiveDecimal"/>
+    <xs:attribute name="stroke" type="paintType" default="#FFFFFFFF"/>
+    <xs:attribute name="strokeWidth" type="positiveDecimal" default="2"/>
+    <xs:attribute name="blend" type="blendType" default="normal"/>
+    <xs:attribute name="effects" type="xs:IDREFS"/>
+  </xs:complexType>
+  <xs:complexType name="fieldChargeType">
+    <xs:attribute name="x" type="xs:double" use="required"/>
+    <xs:attribute name="y" type="xs:double" use="required"/>
+    <xs:attribute name="q" type="xs:double" use="required"/>
+  </xs:complexType>
+  <xs:complexType name="fieldCurrentType">
+    <xs:attribute name="x" type="xs:double" use="required"/>
+    <xs:attribute name="y" type="xs:double" use="required"/>
+    <xs:attribute name="i" type="xs:double" use="required"/>
+  </xs:complexType>
+  <xs:complexType name="fieldDipoleType">
+    <xs:attribute name="x" type="xs:double" use="required"/>
+    <xs:attribute name="y" type="xs:double" use="required"/>
+    <xs:attribute name="mx" type="xs:double" use="required"/>
+    <xs:attribute name="my" type="xs:double" use="required"/>
+  </xs:complexType>
+  <xs:simpleType name="fieldCountType">
+    <xs:restriction base="xs:positiveInteger"><xs:maxInclusive value="1000"/></xs:restriction>
+  </xs:simpleType>
+  <xs:complexType name="fieldArrowsType">
+    <xs:annotation><xs:documentation>Arrow glyphs at the centres of a cols x rows grid of the box; stroke and strokeWidth default to the field's.</xs:documentation></xs:annotation>
+    <xs:attributeGroup ref="strokeStyle"/>
+    <xs:attribute name="cols" type="fieldCountType" default="10"/>
+    <xs:attribute name="rows" type="fieldCountType" default="10"/>
+    <xs:attribute name="scale" type="positiveDecimal" default="1"/>
+    <xs:attribute name="maxLength" type="positiveDecimal" default="40"/>
+    <xs:attribute name="headLength" type="positiveDecimal" default="0.3"/>
+    <xs:attribute name="headWidth" type="positiveDecimal" default="0.5"/>
+    <xs:attribute name="stroke" type="paintType"/>
+    <xs:attribute name="strokeWidth" type="positiveDecimal"/>
+  </xs:complexType>
+  <xs:complexType name="fieldStreamlinesType">
+    <xs:annotation><xs:documentation>Evenly spaced streamlines (Jobard and Lefer): separation, test and step in pixels; test defaults to separation / 2 and step to separation / 4.</xs:documentation></xs:annotation>
+    <xs:attributeGroup ref="strokeStyle"/>
+    <xs:attributeGroup ref="strokeMarkers"/>
+    <xs:attribute name="separation" type="positiveDecimal" default="20"/>
+    <xs:attribute name="test" type="positiveDecimal"/>
+    <xs:attribute name="step" type="positiveDecimal"/>
+    <xs:attribute name="maxSteps" type="xs:positiveInteger" default="10000"/>
+    <xs:attribute name="maxLines" type="xs:positiveInteger" default="10000"/>
+    <xs:attribute name="seedX" type="xs:double"/>
+    <xs:attribute name="seedY" type="xs:double"/>
+    <xs:attribute name="stroke" type="paintType"/>
+    <xs:attribute name="strokeWidth" type="positiveDecimal"/>
+  </xs:complexType>
+  <xs:complexType name="fieldLicType">
+    <xs:annotation><xs:documentation>Line integral convolution of white noise along the field: a box kernel of length pixels each way over a noise raster of resolution pixels across the box (default the box's width in pixels), its rows in the box's proportion.</xs:documentation></xs:annotation>
+    <xs:attribute name="length" type="positiveDecimal" default="10"/>
+    <xs:attribute name="step" type="positiveDecimal" default="1"/>
+    <xs:attribute name="resolution">
+      <xs:simpleType><xs:restriction base="xs:positiveInteger"><xs:maxInclusive value="4096"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="seed" type="xs:unsignedLong" default="0"/>
+    <xs:attribute name="opacity" type="unitDecimal" default="1"/>
+  </xs:complexType>
+  <xs:complexType name="fieldPortraitType">
+    <xs:annotation><xs:documentation>The phase portrait of a complex field: hue by arg w, shaded by the fractional part of log_base |w| when modulus is true.</xs:documentation></xs:annotation>
+    <xs:attribute name="modulus" type="xs:boolean" default="true"/>
+    <xs:attribute name="base" type="positiveDecimal" default="2"/>
+    <xs:attribute name="opacity" type="unitDecimal" default="1"/>
+  </xs:complexType>
+  <xs:complexType name="fieldLinesType">
+    <xs:annotation><xs:documentation>Field lines of the charge children: perCharge lines from each positive charge, started at radius data units and traced forward until they come within radius of a negative charge, leave the box or reach maxSteps; no line leaves a negative charge.</xs:documentation></xs:annotation>
+    <xs:attributeGroup ref="strokeStyle"/>
+    <xs:attributeGroup ref="strokeMarkers"/>
+    <xs:attribute name="perCharge" type="fieldCountType" default="8"/>
+    <xs:attribute name="radius" type="positiveDecimal" default="0.05"/>
+    <xs:attribute name="step" type="positiveDecimal"/>
+    <xs:attribute name="maxSteps" type="xs:positiveInteger" default="10000"/>
+    <xs:attribute name="stroke" type="paintType"/>
+    <xs:attribute name="strokeWidth" type="positiveDecimal"/>
+  </xs:complexType>
+  <xs:complexType name="fieldContoursType">
+    <xs:annotation><xs:documentation>The level curves of a scalar field at each of levels, by marching squares on a resolution x resolution grid (the plots draft's implicit rule).</xs:documentation></xs:annotation>
+    <xs:attributeGroup ref="strokeStyle"/>
+    <xs:attribute name="levels" type="numberListType" use="required"/>
+    <xs:attribute name="resolution" default="64">
+      <xs:simpleType><xs:restriction base="xs:positiveInteger"><xs:maxInclusive value="4096"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="stroke" type="paintType"/>
+    <xs:attribute name="strokeWidth" type="positiveDecimal"/>
   </xs:complexType>
   <xs:complexType name="axes3DType">
     <xs:annotation><xs:documentation>The 3D coordinate system of an object3D with primitive="axes": maps the data ranges onto

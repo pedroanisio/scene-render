@@ -869,7 +869,7 @@
   <sch:pattern id="p-v17">
     <sch:rule context="/scene[@version='1.0' or @version='1.1' or @version='1.2' or @version='1.3' or @version='1.4' or @version='1.5' or @version='1.6' or @version='1.7']">
       <sch:let name="partTag" value="'\part{'"/>
-      <sch:assert id="V17" test="not(.//axes or .//plot or .//object3D[@primitive='axes'] or .//axes3D or .//plot3D or .//modifier[@type='matrix' or @type='map' or @type='complex'] or .//group/deform or .//formulaAnimator or assets/formulaMorph or .//shape[@morph] or assets/formula[contains(@tex, $partTag)] or assets/value)">axes, plot, axes3D, plot3D, primitive="axes", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \part in a formula and value assets need version="1.8".</sch:assert>
+      <sch:assert id="V17" test="not(.//axes or .//plot or .//object3D[@primitive='axes'] or .//axes3D or .//plot3D or .//modifier[@type='matrix' or @type='map' or @type='complex'] or .//group/deform or .//formulaAnimator or assets/formulaMorph or .//shape[@morph] or assets/formula[contains(@tex, $partTag)] or assets/value or .//field)">axes, plot, axes3D, plot3D, primitive="axes", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \part in a formula, value assets and field nodes need version="1.8".</sch:assert>
     </sch:rule>
   </sch:pattern>
   <sch:pattern id="p-srep-plots">
@@ -889,6 +889,16 @@
     <sch:rule context="assets/value">
       <sch:assert id="RV1" test="boolean(@update) = (boolean(@step) or boolean(@count)) and not(@step and @count)">a value has update with exactly one of step and count.</sch:assert>
       <sch:assert id="RV2" test="not(@between = 'linear') or boolean(@step)">between applies to a time fold.</sch:assert>
+    </sch:rule>
+  </sch:pattern>
+  <sch:pattern id="p-srep-fields">
+    <sch:rule context="field">
+      <sch:assert id="FLD1" test="count(@u | @function | @w | @grid | @forceField) + number(boolean(charge | current | dipole)) = 1 and (not(@v) or (@u and (not(@kind) or @kind='vector')))">a field has exactly one source: u, function, w, grid, forceField, or charge, current and dipole children; v goes with u in a vector field.</sch:assert>
+      <sch:assert id="FLD2" test="(not(@xMin and @xMax) or number(@xMin) &lt; number(@xMax)) and (not(@yMin and @yMax) or number(@yMin) &lt; number(@yMax))">each given min of a field is below its max.</sch:assert>
+    </sch:rule>
+    <sch:rule context="field/portrait | field/contours | field/lines | field/streamlines">
+      <sch:assert id="FLD3" test="(not(self::portrait) or ../@kind='complex') and (not(self::contours) or ../@kind='scalar') and (not(self::lines) or ../charge)">a portrait needs a complex field, contours a scalar field, and lines a field with charges.</sch:assert>
+      <sch:assert id="FLD4" test="(not(@test) or number(@test) &lt;= sum(@separation) + 20*number(not(@separation))) and not(@maxSteps &gt; 1000000) and not(@maxLines &gt; 1000000)">a streamlines test is at most its separation, and maxSteps and maxLines are at most 1000000.</sch:assert>
     </sch:rule>
   </sch:pattern>
 </sch:schema>

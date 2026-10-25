@@ -450,6 +450,37 @@
     "crt9-capture-without-source.scene.xml": [
       "CRT9"
     ],
+    "field-arrows-bound.scene.xml": [
+      "S06"
+    ],
+    "field-kind-enum.scene.xml": [
+      "S06",
+      "FLD3"
+    ],
+    "field-source-order.scene.xml": [
+      "S02"
+    ],
+    "fld1-v-scalar.scene.xml": [
+      "FLD1"
+    ],
+    "fld1.scene.xml": [
+      "FLD1"
+    ],
+    "fld2.scene.xml": [
+      "FLD2"
+    ],
+    "fld3-lines.scene.xml": [
+      "FLD3"
+    ],
+    "fld3.scene.xml": [
+      "FLD3"
+    ],
+    "fld4-max-steps.scene.xml": [
+      "FLD4"
+    ],
+    "fld4.scene.xml": [
+      "FLD4"
+    ],
     "formula-animator-part-required.scene.xml": [
       "S05"
     ],
@@ -1326,6 +1357,9 @@
     "v17-axes3d.scene.xml": [
       "V17"
     ],
+    "v17-fields.scene.xml": [
+      "V17"
+    ],
     "v17-part.scene.xml": [
       "V17"
     ],
@@ -1571,6 +1605,7 @@
     "crater-version-1.6.scene.xml": [],
     "crater.scene.xml": [],
     "ejecta-crater.scene.xml": [],
+    "fields.scene.xml": [],
     "flock-upright.scene.xml": [],
     "fractal.scene.xml": [],
     "fracture-contact-tuned.scene.xml": [],

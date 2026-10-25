@@ -1154,8 +1154,46 @@ impl<'a> Eval<'a> {
                         || (is(d, "formula") && d.attribute("tex").is_some_and(|t| t.contains("\\part{")))
                         || is(d, "value")
                 });
+            // the fields draft's field node
+            let uses = uses || n.descendants().any(|d| is(d, "field"));
             self.check(!uses, n, "V17", || {
-                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula and value assets need version=\"1.8\".".into()
+                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula, value assets and field nodes need version=\"1.8\".".into()
+            });
+        }
+        // the fields draft (p-srep-fields)
+        if local == "field" {
+            let sources = ["u", "function", "w", "grid", "forceField"].iter().filter(|k| has(k)).count()
+                + usize::from(["charge", "current", "dipole"].iter().any(|k| has_kid(n, k)));
+            let v_ok = !has("v") || (has("u") && matches!(a("kind"), None | Some("vector")));
+            self.check(sources == 1 && v_ok, n, "FLD1", || {
+                "a field has exactly one source: u, function, w, grid, forceField, or charge, current and dipole \
+                 children; v goes with u in a vector field."
+                    .into()
+            });
+            let below = |lo: &str, hi: &str| !(has(lo) && has(hi)) || num(n, lo) < num(n, hi);
+            self.check(below("xMin", "xMax") && below("yMin", "yMax"), n, "FLD2", || {
+                "each given min of a field is below its max.".into()
+            });
+        }
+        if let Some(field) =
+            n.parent_element().filter(|p| is(*p, "field") && matches!(local, "portrait" | "contours" | "lines"))
+        {
+            let ok = match local {
+                "portrait" => field.attribute("kind") == Some("complex"),
+                "contours" => field.attribute("kind") == Some("scalar"),
+                _ => has_kid(field, "charge"),
+            };
+            self.check(ok, n, "FLD3", || {
+                "a portrait needs a complex field, contours a scalar field, and lines a field with charges.".into()
+            });
+        }
+        if parent_is("field") && matches!(local, "streamlines" | "lines") {
+            // number(@test) <= the separation, 20 when absent; NaN compares false, as in XPath
+            let separation = a("separation").map_or(20.0, xs_number);
+            let test_ok = !has("test") || num(n, "test") <= separation;
+            let bounded = |k: &str| num(n, k).partial_cmp(&1_000_000.0) != Some(std::cmp::Ordering::Greater);
+            self.check(test_ok && bounded("maxSteps") && bounded("maxLines"), n, "FLD4", || {
+                "a streamlines test is at most its separation, and maxSteps and maxLines are at most 1000000.".into()
             });
         }
         // the reactive-values draft (p-srep-reactive)

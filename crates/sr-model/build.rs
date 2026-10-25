@@ -881,6 +881,21 @@ fn emit_tables(s: &Schema) -> String {
 
 // ------------------------------------------------------------------ model emission
 
+/// A choice of elements and groups, or a sequence of groups and such choices: content held as one list of children.
+fn is_child_list(p: &Particle) -> bool {
+    match p {
+        Particle::Choice { items, .. } => {
+            items.iter().all(|i| matches!(i, Particle::Element { .. } | Particle::Group { .. }))
+        }
+        Particle::Seq { items, .. } => items.iter().all(|i| match i {
+            Particle::Group { .. } => true,
+            choice @ Particle::Choice { .. } => is_child_list(choice),
+            _ => false,
+        }),
+        _ => false,
+    }
+}
+
 struct Model<'s> {
     s: &'s Schema,
     n: &'s Names,
@@ -919,7 +934,9 @@ impl<'s> Model<'s> {
                     )
                 }
                 Particle::Group { name, .. } => Shape::GroupVec(group_enum_name(name)),
-                Particle::Choice { .. } => {
+                // a sequence of groups and choices (fieldType: behaviours, then sources, then presentations) holds
+                // one child list; the order is the structure stage's to check
+                Particle::Choice { .. } | Particle::Seq { min: 1, max: 1, .. } if is_child_list(p) => {
                     let owner = match &c.base {
                         Some(b) => self.n.complex_rust[self.s.complex_by_name[b]].clone(),
                         None => self.n.complex_rust[ci].clone(),
@@ -941,6 +958,17 @@ impl<'s> Model<'s> {
         let mut groups = Vec::new();
         let items = match p {
             Particle::Choice { items, .. } => items,
+            Particle::Seq { items, .. } if is_child_list(p) => {
+                for it in items {
+                    let (e, g) = match it {
+                        Particle::Group { name, .. } => (Vec::new(), vec![name.clone()]),
+                        choice => self.choice_alts(choice),
+                    };
+                    els.extend(e);
+                    groups.extend(g);
+                }
+                return (els, groups);
+            }
             other => panic!("expected choice, got {other:?}"),
         };
         for it in items {

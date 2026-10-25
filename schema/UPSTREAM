@@ -20,17 +20,28 @@ value template, where a literal brace does not compile, so the rule binds the st
 test reads contains(@tex, $partTag);
 + the diff of sr-core srep/srep-0000-reactive-values.md (draft, Schema-Version 1.8, as of sr-core 082efff): the value
 asset (valueAssetType: an animatable number list value, start, step, count up to 1000000, update, between, seed), the
-animation children of a chart series, RV1 and RV2 (pattern p-srep-reactive, last) and V17's clause.
+animation children of a chart series, RV1 and RV2 (pattern p-srep-reactive, last) and V17's clause;
++ the diff of sr-core srep/srep-0000-fields.md (draft, Schema-Version 1.8, as of sr-core 9d2e75a): the field node
+(fieldType) in nodeChoice with its source children charge, current and dipole and its presentation children arrows,
+streamlines, lic, portrait, lines and contours, FLD1 to FLD4 (pattern p-srep-fields, last) and V17's clause. A
+Schematron pattern tests each node by its first matching rule only, so FLD3 and FLD4, which the draft states on the
+overlapping contexts field/lines, share one rule (field/portrait | field/contours | field/lines | field/streamlines).
+Local to this branch and not in the draft's table: stroke and strokeWidth on the field (defaults #FFFFFFFF and 2)
+and on its stroked presentations (defaulting to the field's), the field's coefficients (for function="mobius", as on
+the complex modifier), blend and effects (as on axes); cols, rows and perCharge at most 1000 and a lic's resolution at
+most 4096 (the deterministic bounds of what they multiply into); a lic's seed defaults to 0; contours/@levels is
+required. The typed model holds fieldType's sequence of choices as one child list (crates/sr-model/build.rs,
+is_child_list); the structure stage checks the order.
 V17 is SREP 12's one shared 1.8 gate: one pattern, p-v17 (after p-srep75), whose one assert is the conjunction of
 the drafts' clauses.
 The branch merges when those SREPs are accepted; this file then names the schema-1.8.0 tag.
 Source: https://github.com/pedroanisio/sr-core
 
-Canonical upstream files (SHA-256; the files of that tag with the six drafts' diffs; at the tag the .xsd is
+Canonical upstream files (SHA-256; the files of that tag with the seven drafts' diffs; at the tag the .xsd is
 5ef91e6ca9a6d860047f2a5347c59fa17423cb99ef7535b7ceaca16619f8ce2c and the .sch, as in sr-core's schema/SHA256SUMS,
 868863e9ea4caf04e7f0bd9873c23ce5f723205714178349a4f385c4778fd368):
-  scene-render.xsd: 4014582bfd364ed728867b2675327aaa9fba47db2fa5699d0160df9cb49879d4
-  scene-render.sch: 26fa961bed43335998a0008be6ddee756acddc1c08ebe4c47d43ae3e08faaa8b
+  scene-render.xsd: c69a99edd9219c377414d7050d72ece35b95653c4970d1789157b1feece75739
+  scene-render.sch: 6ccf22b6e6e0708fea778f35b614478c158c5f0cf884e1406d5cd52312f19189
   capabilities-1.schema.json: 6cb35c8ec6d37df32c9a0ad12eb33332d2abe4f11ac6000a9311d9891ec2e8b3
 
 scene-render-1.1.xsd, scene-render-1.1.sch and capabilities-1.schema.json are byte-identical to these files. Local
@@ -43,11 +54,11 @@ native OCN7 refuses an animated tracking on an ocean collider, as P3D6 and PYRO8
 document (corpus case ocn7-text-tracking, a native-only rule case). It is an erratum of sr-core's OCN7 for an SREP to
 settle. The warnings W05, W11 and W12 (SREP 76) and the program diagnostics are native only, as the SREPs define them.
 
-Document version 1.8 (sr_model::SCHEMA_VERSION is "1.8") is the random-streams, media, plots, space-transforms, semantic-tex and reactive-values drafts', a local addition
+Document version 1.8 (sr_model::SCHEMA_VERSION is "1.8") is the random-streams, media, plots, space-transforms, semantic-tex, reactive-values and fields drafts', a local addition
 on this branch: a 1.8 document is a 1.7 document whose simulations draw from the D24 streams of the random-streams
-draft's section 5, whose media may name a phase function and which may hold axes, plots, the space transforms, tagged formula parts and morphs, and value assets (MED4 refuses the media
-attributes and V17 the plots elements, space transforms, semantic-tex syntax and value assets before 1.8; crates/sr-model/tests/version_1_8.rs,
-plots_rules.rs, space_rules.rs, semantic_tex_rules.rs and reactive_values_rules.rs). Document version 1.7 is schema 1.7.0's. It adds no syntax and has no version
+draft's section 5, whose media may name a phase function and which may hold axes, plots, the space transforms, tagged formula parts and morphs, value assets and fields (MED4 refuses the media
+attributes and V17 the plots elements, space transforms, semantic-tex syntax, value assets and fields before 1.8; crates/sr-model/tests/version_1_8.rs,
+plots_rules.rs, space_rules.rs, semantic_tex_rules.rs, reactive_values_rules.rs and fields_rules.rs). Document version 1.7 is schema 1.7.0's. It adds no syntax and has no version
 gate: SREP 87's scoping applies to documents of every version, and a 1.7 document validates and renders as the same
 document at 1.6 (crates/sr-model/tests/version_1_7.rs). Document version 1.6 is schema 1.6.0's. A 1.6 document holding
 1.5 content
