@@ -23,8 +23,9 @@ pub use elements::{
     approximate_position, approximate_relative, element_table, solve_kepler, ElementTable, AU_KM, MAX_KEPLER_ITERATIONS,
 };
 pub use frames::{
-    body_fixed_from_icrf, determinant, ecliptic_from_icrf, mat_apply, mat_mul, place_body, pole_icrf,
-    rotation_elements, rotation_known, transpose, Frame, Mat3, Placement, ROTATION_EARTH_W1, SCENE_FROM_ICRF_AXES,
+    body_fixed_from_icrf, determinant, ecliptic_from_icrf, mat_apply, mat_mul, place_at, place_body, pole_icrf,
+    rotation_elements, rotation_known, transpose, Frame, Mat3, Placement, Positions, ROTATION_EARTH_W1,
+    SCENE_FROM_ICRF_AXES,
 };
 pub use spk::{apparent_position, chebyshev, chebyshev_derivative, Segment, Spk, C_KM_S, MAX_LIGHT_TIME_ITERATIONS};
 pub use time::{

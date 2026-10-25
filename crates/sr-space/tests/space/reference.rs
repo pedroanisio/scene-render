@@ -3,8 +3,8 @@
 use sr_space::{
     apparent_position, approximate_position, approximate_relative, body_fixed_from_icrf, calendar, chebyshev,
     chebyshev_derivative, determinant, ecliptic_from_icrf, element_table, et_from_utc, julian_day, leap_seconds,
-    mat_apply, parse_utc, place_body, pole_icrf, rotation_elements, solve_kepler, tdb_minus_tt, ElementTable, Frame,
-    Space, Spk, TimeScale, LEAP_SECONDS, ROTATION_EARTH_W1, SCENE_FROM_ICRF_AXES, TT_MINUS_TAI,
+    mat_apply, parse_utc, place_at, place_body, pole_icrf, rotation_elements, solve_kepler, tdb_minus_tt, ElementTable,
+    Frame, Positions, Space, Spk, TimeScale, LEAP_SECONDS, ROTATION_EARTH_W1, SCENE_FROM_ICRF_AXES, TT_MINUS_TAI,
 };
 
 pub const EXCERPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/space/fixtures/de440s-excerpt.bsp");
@@ -196,4 +196,30 @@ fn seek_row() {
     let again = place_body(&spk, &s, 4, 40, 24.0, 1e-9).unwrap();
     assert_eq!(first, again);
     assert_eq!(first.et, s.et0 + 40.0 / 24.0 * 3600.0);
+}
+
+#[test]
+fn place_at_rows() {
+    // a scene time in seconds is the frame clock's time of frame / fps
+    let s = Space::new("2451545.0", TimeScale::Tdb, 3600.0, 399, Frame::Icrf).unwrap();
+    assert_eq!(s.time_at(30.0 / 24.0).unwrap(), s.frame_time(30, 24.0).unwrap());
+    assert!(s.time_at(f64::NAN).is_err());
+    assert!(s.time_at(f64::INFINITY).is_err());
+    // the file's placement is place_body's at the frame's time
+    let spk = excerpt();
+    let et = s.frame_time(30, 24.0).unwrap();
+    assert_eq!(
+        place_at(Positions::File(&spk), &s, 301, et, 1e-6).unwrap(),
+        place_body(&spk, &s, 301, 30, 24.0, 1e-6).unwrap()
+    );
+    // the approximate elements place a planet about a planet or the Sun
+    let helio = Space::new("2451545.0", TimeScale::Tdb, 1.0, 3, Frame::EclipticJ2000).unwrap();
+    let got = place_at(Positions::Approximate, &helio, 4, 0.0, 1e-9).unwrap();
+    let want = helio.scene_from_icrf(approximate_relative(4, 3, 0.0).unwrap(), [0.0; 3], 1e-9, 0.0).unwrap();
+    assert_eq!(got.position, want);
+    assert_eq!(got.et, 0.0);
+    assert_eq!(Positions::Approximate.position(4, 3, 0.0).unwrap(), approximate_relative(4, 3, 0.0).unwrap());
+    assert_eq!(Positions::File(&spk).position(301, 399, 0.0).unwrap(), spk.position(301, 399, 0.0).unwrap());
+    assert!(place_at(Positions::Approximate, &helio, 301, 0.0, 1e-9).is_err());
+    assert!(place_at(Positions::File(&spk), &s, 499, 0.0, 1e-6).is_err());
 }

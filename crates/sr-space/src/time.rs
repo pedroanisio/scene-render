@@ -264,6 +264,14 @@ impl Space {
         if !(fps > 0.0 && fps.is_finite()) {
             return Err(SpaceError::Time(format!("fps is positive, not {fps}")));
         }
-        Ok(self.et0 + frame as f64 / fps * self.rate)
+        self.time_at(frame as f64 / fps)
+    }
+
+    /// Ephemeris time at `seconds` of scene time: epoch + seconds × rate.
+    pub fn time_at(&self, seconds: f64) -> Result<f64, SpaceError> {
+        if !seconds.is_finite() {
+            return Err(SpaceError::Time(format!("scene time is finite, not {seconds}")));
+        }
+        Ok(self.et0 + seconds * self.rate)
     }
 }

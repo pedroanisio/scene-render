@@ -1,6 +1,7 @@
 //! Rules 6 and 7: the ICRF, the ecliptic of J2000 and the body-fixed frames of the IAU 2009 rotation elements
 //! (NAIF `pck00010.tpc`), the mapping into scene pixels (SREP 14 rule 4), and bodies placed at a frame's time.
 
+use super::elements::approximate_relative;
 use super::spk::Spk;
 use super::time::Space;
 use super::{SpaceError, OBLIQUITY_J2000};
@@ -175,6 +176,23 @@ pub struct Placement {
     pub orientation: Mat3,
 }
 
+/// Where a space's positions come from: an ephemeris file (rule 4) or the approximate elements (rule 5).
+#[derive(Debug, Clone, Copy)]
+pub enum Positions<'a> {
+    File(&'a Spk),
+    Approximate,
+}
+
+impl Positions<'_> {
+    /// A body's position about the origin in km, ICRF axes, at ephemeris time et.
+    pub fn position(&self, body: i32, origin: i32, et: f64) -> Result<[f64; 3], SpaceError> {
+        match self {
+            Positions::File(spk) => spk.position(body, origin, et),
+            Positions::Approximate => approximate_relative(body, origin, et),
+        }
+    }
+}
+
 /// Rule 7: a body's position and body-fixed orientation in the space at a frame.
 pub fn place_body(
     spk: &Spk,
@@ -184,8 +202,18 @@ pub fn place_body(
     fps: f64,
     pixels_per_meter: f64,
 ) -> Result<Placement, SpaceError> {
-    let et = space.frame_time(frame, fps)?;
-    let p = spk.position(body, space.origin, et)?;
+    place_at(Positions::File(spk), space, body, space.frame_time(frame, fps)?, pixels_per_meter)
+}
+
+/// Rule 7 at ephemeris time et, with the positions of either source.
+pub fn place_at(
+    positions: Positions<'_>,
+    space: &Space,
+    body: i32,
+    et: f64,
+    pixels_per_meter: f64,
+) -> Result<Placement, SpaceError> {
+    let p = positions.position(body, space.origin, et)?;
     let position = space.scene_from_icrf(p, [0.0; 3], pixels_per_meter, et)?;
     let f = space.frame_matrix(et)?;
     let axes = if rotation_known(body) { mat_mul(&f, &transpose(&body_fixed_from_icrf(body, et)?)) } else { f };
