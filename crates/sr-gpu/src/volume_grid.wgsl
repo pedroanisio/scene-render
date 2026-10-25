@@ -122,7 +122,7 @@ fn volume_grid_contains(p: vec3<f32>) -> bool {
 }
 // In-scattered radiance at `p` of the domain at `base` (rgb, w 1) from the grids when that domain asks for them and
 // `p` is on the lattice; else w is 0, and volume_scattering marches it.
-fn volume_incident_grid(p: vec3<f32>, outgoing: vec3<f32>, g: f32, shadows: bool, base: u32) -> vec4<f32> {
+fn volume_incident_grid(p: vec3<f32>, outgoing: vec3<f32>, g: vec4<f32>, shadows: bool, base: u32) -> vec4<f32> {
     if (tverts[base+13u].z<0.5 || !shadows || !volume_grid_contains(p)) { return vec4(0.0); }
     var light=vec3(0.0);
     for (var i=0u; i<u32(pp.ambient.w); i++) {
@@ -134,8 +134,8 @@ fn volume_incident_grid(p: vec3<f32>, outgoing: vec3<f32>, g: f32, shadows: bool
     }
     if (pp.env.x>0.5) {
         let flags=bitcast<u32>(lgrid[1].w);
-        // isotropic scattering reads the pre-integrated radiance
-        if (tverts[base+6u].w==0.0 && (flags&1u)!=0u) { return vec4(light+volume_grid_dome(p).rgb,1.0); }
+        // isotropic scattering (hg with g = 0: a zero phase row) reads the pre-integrated radiance
+        if (all(g==vec4(0.0)) && (flags&1u)!=0u) { return vec4(light+volume_grid_dome(p).rgb,1.0); }
         // otherwise one of the fixed directions, each with its own grid
         let info=bitcast<vec4<u32>>(lgrid[2]);
         let k=min(u32(rnd()*f32(info.z)),info.z-1u);

@@ -1209,7 +1209,7 @@ impl Renderer {
     }
 
     fn volume_draw(&mut self, ctx: &Ctx, j: usize, opacity: f32) -> Result<Option<crate::volume::VolumeDraw>, String> {
-        use sr_volume::medium::{Bounds, March, Medium, Optical};
+        use sr_volume::medium::{Bounds, March, Medium, Optical, Phase};
         use sr_volume::sequence::{FramePair, Interpolation, MissingFrame, Sequence, TimedFramePair};
         let n = &ctx.g.nodes[j];
         let a = attrs(n);
@@ -1386,7 +1386,13 @@ impl Renderer {
                 extinction: a.num("extinction", 1.0),
                 albedo: std::array::from_fn(|i| f64::from(albedo[i])),
                 emission: std::array::from_fn(|i| f64::from(emission[i]) * a.num("emissionScale", 0.0)),
-                phase: sr_volume::medium::Phase::Hg { g: a.num("anisotropy", 0.0) },
+                phase: match a.str("phase").as_deref() {
+                    None | Some("hg") => Phase::Hg { g: a.num("anisotropy", 0.0) },
+                    Some("rayleigh") => Phase::Rayleigh,
+                    Some("draine") => Phase::Draine { g: a.num("anisotropy", 0.0), alpha: a.num("phaseAlpha", 1.0) },
+                    Some("fog") => Phase::Fog { diameter: a.num("dropletDiameter", 10.0) },
+                    Some(other) => return Err(format!("medium phase=\"{other}\" is not a phase function")),
+                },
                 scatter_bounces: a.num("scatterBounces", 1.0) as u32,
             };
             march = March { step_size: a.num("stepSize", 1.0), max_steps: a.num("maxSteps", 2048.0) as u32 };

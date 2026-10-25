@@ -858,19 +858,14 @@ mod tests {
         );
         assert_eq!((all.first(), all.last(), all.len()), (Some(&0), Some(&39), 40));
         // the text: without scattering the base is not touched, by any of the additions
-        let base = format!("{}\n{}", include_str!("pathtrace.wgsl"), include_str!("volume.wgsl"));
+        let base = format!("{}\n{}", include_str!("pathtrace.wgsl"), VOLUME_WGSL);
         assert_eq!(variant_source(&base, false, false, false), base);
         assert_eq!(variant_source(&base, true, false, false), variant_source_without_scatter(&base, true, false));
     }
 
     #[test]
     fn every_variant_translates_to_the_glsl_opengl_compiles() {
-        let plain = format!(
-            "{}\n{}\n{}",
-            include_str!("sampling.wgsl"),
-            include_str!("pathtrace.wgsl"),
-            include_str!("volume.wgsl")
-        );
+        let plain = format!("{}\n{}\n{}", include_str!("sampling.wgsl"), include_str!("pathtrace.wgsl"), VOLUME_WGSL);
         for base in [plain, grid_source()] {
             for water in [false, true] {
                 for foam in [false, true] {
@@ -1096,12 +1091,7 @@ mod tests {
 
     #[test]
     fn scatter_shader_validates_with_water_foam_and_grid_combinations() {
-        let plain = format!(
-            "{}\n{}\n{}",
-            include_str!("sampling.wgsl"),
-            include_str!("pathtrace.wgsl"),
-            include_str!("volume.wgsl")
-        );
+        let plain = format!("{}\n{}\n{}", include_str!("sampling.wgsl"), include_str!("pathtrace.wgsl"), VOLUME_WGSL);
         for base in [plain, grid_source()] {
             for water in [false, true] {
                 for foam in [false, true] {
@@ -1123,12 +1113,7 @@ mod tests {
 
     #[test]
     fn every_trace_shader_validates_with_hardware_traversal_in_place_of_the_bvh_walk() {
-        let plain = format!(
-            "{}\n{}\n{}",
-            include_str!("sampling.wgsl"),
-            include_str!("pathtrace.wgsl"),
-            include_str!("volume.wgsl")
-        );
+        let plain = format!("{}\n{}\n{}", include_str!("sampling.wgsl"), include_str!("pathtrace.wgsl"), VOLUME_WGSL);
         for base in [plain, grid_source()] {
             for water in [false, true] {
                 for foam in [false, true] {
@@ -1152,12 +1137,7 @@ mod tests {
 
     #[test]
     fn a_variant_pipeline_is_given_water_only_for_water_and_foam_only_for_foam() {
-        let plain = format!(
-            "{}\n{}\n{}",
-            include_str!("sampling.wgsl"),
-            include_str!("pathtrace.wgsl"),
-            include_str!("volume.wgsl")
-        );
+        let plain = format!("{}\n{}\n{}", include_str!("sampling.wgsl"), include_str!("pathtrace.wgsl"), VOLUME_WGSL);
         let names = |c: Vec<(&str, f64)>| c.into_iter().map(|(n, v)| (n.to_string(), v)).collect::<Vec<_>>();
         // foam alone: the media constants, and neither WATER nor FOAM (the module has no FOAM override to give a value to)
         assert_eq!(
@@ -1190,12 +1170,7 @@ mod tests {
 
     #[test]
     fn the_foam_hook_changes_the_surface_at_the_hit_and_brings_in_no_refracted_shadow_ray() {
-        let plain = format!(
-            "{}\n{}\n{}",
-            include_str!("sampling.wgsl"),
-            include_str!("pathtrace.wgsl"),
-            include_str!("volume.wgsl")
-        );
+        let plain = format!("{}\n{}\n{}", include_str!("sampling.wgsl"), include_str!("pathtrace.wgsl"), VOLUME_WGSL);
         assert!(!plain.contains("foam_u"), "scenes without foam keep their shader text");
         for base in [plain.clone(), grid_source(), water_source(&plain)] {
             let foamy = foam_source(&base);
@@ -1210,12 +1185,7 @@ mod tests {
 
     #[test]
     fn the_water_shader_adds_the_refracted_shadow_ray_and_the_plain_one_does_not_have_it() {
-        let plain = format!(
-            "{}\n{}\n{}",
-            include_str!("sampling.wgsl"),
-            include_str!("pathtrace.wgsl"),
-            include_str!("volume.wgsl")
-        );
+        let plain = format!("{}\n{}\n{}", include_str!("sampling.wgsl"), include_str!("pathtrace.wgsl"), VOLUME_WGSL);
         assert!(!plain.contains("light_through"), "scenes without transmissive materials keep their shader text");
         for base in [plain.clone(), grid_source()] {
             let water = water_source(&base);
@@ -1257,7 +1227,7 @@ mod tests {
     #[test]
     fn the_grid_shader_reads_a_lit_domains_light_from_its_grids_and_leaves_the_rest() {
         let source = grid_source();
-        let plain = include_str!("volume.wgsl");
+        let plain = VOLUME_WGSL;
         assert_eq!(source.matches("fn volume_incident_grid(").count(), 1, "one function reads a domain's light");
         assert_eq!(plain.matches("fn volume_incident_grid(").count(), 1, "the shader without grids has its own");
         let body = |text: &str, name: &str| {
@@ -1470,12 +1440,15 @@ struct GridPipelines {
     dome: wgpu::ComputePipeline,
 }
 
+/// The media's shader functions: the phase functions (`volume_phase.wgsl`) and the march (`volume.wgsl`).
+const VOLUME_WGSL: &str = concat!(include_str!("volume_phase.wgsl"), "\n", include_str!("volume.wgsl"));
+
 /// The shader with light grids: the function the media's walk asks for a lit domain's light from grids is the one
 /// that reads them, everything else is the shader without grids.
 fn grid_source() -> String {
     const BEGIN: &str = "//@incident-grid-begin\n";
     const END: &str = "//@incident-grid-end\n";
-    let volume = include_str!("volume.wgsl");
+    let volume = VOLUME_WGSL;
     let (a, b) = (volume.find(BEGIN).expect("grid begin marker"), volume.find(END).expect("grid end marker"));
     // the function that reads no grids goes; volume_grid.wgsl brings the one that reads them
     let shared = format!("{}{}", &volume[..a], &volume[b + END.len()..]);
@@ -1679,12 +1652,7 @@ fn trace_shader(
     let base = if media && grid {
         grid_source()
     } else {
-        format!(
-            "{}\n{}\n{}",
-            include_str!("sampling.wgsl"),
-            include_str!("pathtrace.wgsl"),
-            include_str!("volume.wgsl")
-        )
+        format!("{}\n{}\n{}", include_str!("sampling.wgsl"), include_str!("pathtrace.wgsl"), VOLUME_WGSL)
     };
     let (source, constants) = if water || foam || scatter {
         (variant_source(&base, water, foam, scatter), variant_constants(media, lighting, water, foam))

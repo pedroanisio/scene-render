@@ -130,10 +130,6 @@ fn volume_sample(base: u32, point: vec3<f32>, emission: bool) -> vec4<f32> {
     return vec4(value.x*tverts[base+4u].w,rgb);
 }
 fn volume_density(base: u32, point: vec3<f32>) -> f32 { return volume_sample(base,point,false).x; }
-fn volume_phase(cosine: f32, g: f32) -> f32 {
-    let denom=1.0+g*g-2.0*g*clamp(cosine,-1.0,1.0);
-    return (1.0-g*g)/(4.0*PI*denom*sqrt(denom));
-}
 // Skip map of a domain's density grid (see volume.rs): the cell holding `point` in 4-voxel cells
 // of grid index space. Returns the ray parameter where the ray leaves that cell when it holds only
 // negligible density, else -1. The caller must have checked that the domain has no advection and
@@ -195,7 +191,7 @@ fn volume_transmittance(o: vec3<f32>, d: vec3<f32>, distance: f32) -> f32 {
 //@incident-grid-begin
 // Without light grids every lit domain's light is marched (w is 0). The shader with grids takes this out for
 // volume_grid.wgsl's function (grid_source in pathtrace.rs), which reads them where they apply.
-fn volume_incident_grid(p: vec3<f32>, outgoing: vec3<f32>, g: f32, shadows: bool, base: u32) -> vec4<f32> {
+fn volume_incident_grid(p: vec3<f32>, outgoing: vec3<f32>, g: vec4<f32>, shadows: bool, base: u32) -> vec4<f32> {
     return vec4(0.0);
 }
 //@incident-grid-end
@@ -222,7 +218,7 @@ fn volume_scattering(point: vec3<f32>, outgoing: vec3<f32>, single: u32) -> vec4
     var sigma=0.0; var source=vec3(0.0);
     var event=VOLUME_DOMAIN; var i=0u; var base=0u;
     // the lit domain: what its light is scaled by, its phase asymmetry, whether it is shadowed, the light so far
-    var scatter=vec3(0.0); var g=0.0; var shadows=false; var light=vec3(0.0);
+    var scatter=vec3(0.0); var g=vec4(0.0); var shadows=false; var light=vec3(0.0);
     // the slot: the direction and reach of its shadow ray, the light it brings, whether surfaces cast shadows, the phase
     let lights=u32(pp.ambient.w); let slots=lights+select(0u,1u,pp.env.x>0.5);
     var slot=0u; var dir=vec3(0.0); var reach=0.0; var arriving=vec3(0.0); var casts=false; var phase=0.0;
@@ -232,7 +228,7 @@ fn volume_scattering(point: vec3<f32>, outgoing: vec3<f32>, single: u32) -> vec4
     // the shadow ray's walk past surfaces (as visibility does): where it is, how far it has left, what gets through
     var at_surface=vec3(0.0); var remaining=0.0; var through=1.0; var crossings=0u;
     if (MEDIUM_LIGHTING && single!=NO_DOMAIN) {
-        base=single; scatter=vec3(1.0); g=tverts[base+6u].w; shadows=tverts[base+13u].y>0.5; event=VOLUME_LIT;
+        base=single; scatter=vec3(1.0); g=tverts[base+30u]; shadows=tverts[base+13u].y>0.5; event=VOLUME_LIT;
     }
     loop {
         if (MEDIUM_LIGHTING && event==VOLUME_LIT) {
@@ -347,7 +343,7 @@ fn volume_scattering(point: vec3<f32>, outgoing: vec3<f32>, single: u32) -> vec4
         sigma+=extinction; source+=density*sampled.yzw;
         let albedo=tverts[base+6u];
         if (MEDIUM_LIGHTING && any(albedo.rgb>vec3(0.0))) {
-            scatter=extinction*albedo.rgb; g=albedo.w; shadows=tverts[base+13u].y>0.5; event=VOLUME_LIT;
+            scatter=extinction*albedo.rgb; g=tverts[base+30u]; shadows=tverts[base+13u].y>0.5; event=VOLUME_LIT;
             continue;
         }
         i++;

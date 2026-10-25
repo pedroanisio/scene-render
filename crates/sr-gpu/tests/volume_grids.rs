@@ -4,5 +4,7 @@ mod common;
 
 #[path = "volume_grids/light_grid.rs"]
 mod light_grid;
+#[path = "volume_grids/phase.rs"]
+mod phase;
 #[path = "volume_grids/volume.rs"]
 mod volume;

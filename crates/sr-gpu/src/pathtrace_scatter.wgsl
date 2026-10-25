@@ -24,14 +24,12 @@ fn scatter_offer(reservoir: ptr<function, ScatterReservoir>, point: vec3<f32>, w
         }
     }
 }
-// Sample the direction of incoming propagation about the outgoing direction.
-fn scatter_direction(outgoing: vec3<f32>, g: f32) -> vec3<f32> {
-    let u=rnd();
-    var c=1.0-2.0*u;
-    if (abs(g)>=1e-3) {
-        let s=(1.0-g*g)/(1.0-g+2.0*g*u);
-        c=clamp((1.0+g*g-s*s)/(2.0*g),-1.0,1.0);
-    }
+// Sample the direction of incoming propagation about the outgoing direction from the medium's phase row (rule 18 to
+// 20): a lobe draw only for a mixture, so hg, rayleigh and draine media draw as many numbers as before.
+fn scatter_direction(outgoing: vec3<f32>, phase: vec4<f32>) -> vec3<f32> {
+    var lobe=0.0;
+    if (phase.w>0.0 && phase.w<1.0) { lobe=rnd(); }
+    let c=phase_sample(lobe,rnd(),phase);
     let a=2.0*PI*rnd(); let s=sqrt(max(0.0,1.0-c*c));
     let axis=select(vec3(0.0,0.0,1.0),vec3(1.0,0.0,0.0),abs(outgoing.z)>0.9);
     let x=normalize(cross(outgoing,axis)); let y=cross(outgoing,x);
@@ -97,7 +95,7 @@ fn scatter_walk(reservoir: ScatterReservoir, toward_viewer: vec3<f32>, sigma_wat
     var color=vec3(0.0);
     var limit=min(32u,u32(tverts[base+13u].w));
     for (var bounce=1u; bounce<limit; bounce++) {
-        let direction=scatter_direction(outgoing,tverts[base+6u].w);
+        let direction=scatter_direction(outgoing,tverts[base+30u]);
         let hit=scatter_flight(point,direction,sigma_water);
         color+=beta*hit.emission;
         if (hit.base==0xffffffffu) { break; }

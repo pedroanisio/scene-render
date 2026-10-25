@@ -131,11 +131,20 @@ pub struct VolumeDraw {
     light_grid: Option<LightGridRequest>,
 }
 
-/// The g of a Henyey–Greenstein phase, the one phase function the GPU media evaluate.
-fn hg_asymmetry(phase: Phase) -> Option<f64> {
+/// The phase functions of the media, as the shader reads a record's row 30: [`phase_row`].
+pub const PHASE_WGSL: &str = include_str!("volume_phase.wgsl");
+
+/// A medium's phase as the mixture `volume_phase.wgsl` evaluates, (g_hg, g_d, alpha, w):
+/// (1 − w) HG(g_hg) + w Draine(g_d, alpha). Henyey–Greenstein with g = 0 is the zero row (rule 17).
+pub fn phase_row(phase: Phase) -> [f32; 4] {
     match phase {
-        Phase::Hg { g } => Some(g),
-        _ => None,
+        Phase::Hg { g } => [g as f32, 0.0, 0.0, 0.0],
+        Phase::Rayleigh => [0.0, 0.0, 1.0, 1.0],
+        Phase::Draine { g, alpha } => [0.0, g as f32, alpha as f32, 1.0],
+        Phase::Fog { diameter } => {
+            let p = sr_volume::medium::fog_parameters(diameter);
+            [p.g_hg as f32, p.g_d as f32, p.alpha as f32, p.w_d as f32]
+        }
     }
 }
 
@@ -195,13 +204,15 @@ impl VolumeDraw {
             }
         }
         let optical = medium.optical();
-        let Some(g) = hg_asymmetry(optical.phase) else {
-            return Err("the GPU volume renderer evaluates only phase=\"hg\"".into());
-        };
-        let mut scalars = vec![optical.density_scale, optical.extinction, g];
+        let phase = phase_row(optical.phase);
+        let mut scalars = vec![optical.density_scale, optical.extinction];
         scalars.extend(optical.albedo);
         scalars.extend(optical.emission);
-        if scalars.into_iter().any(|v| !f32_ok(v)) || (g as f32).abs() >= 1.0 {
+        if scalars.into_iter().any(|v| !f32_ok(v))
+            || phase.iter().any(|v| !v.is_finite())
+            || phase[0].abs() >= 1.0
+            || phase[1].abs() >= 1.0
+        {
             return Err("volume optical coefficients exceed GPU precision".into());
         }
         let peak = density_peak(&medium);
@@ -412,8 +423,7 @@ pub(crate) fn pack(out: &mut Vec<[f32; 4]>, volumes: &[VolumeDraw]) -> [u32; 4] 
         let hi = bounds.map_or([0.0; 3], |b| b.max());
         out[base + 4] = [lo[0] as f32, lo[1] as f32, lo[2] as f32, o.density_scale as f32];
         out[base + 5] = [hi[0] as f32, hi[1] as f32, hi[2] as f32, o.extinction as f32];
-        out[base + 6] =
-            [o.albedo[0] as f32, o.albedo[1] as f32, o.albedo[2] as f32, hg_asymmetry(o.phase).unwrap_or(0.0) as f32];
+        out[base + 6] = [o.albedo[0] as f32, o.albedo[1] as f32, o.albedo[2] as f32, 0.0];
         out[base + 7] = [o.emission[0] as f32, o.emission[1] as f32, o.emission[2] as f32, 0.0];
         out[base + 8..base + 12].copy_from_slice(&(world * index).inverse().as_mat4().to_cols_array_2d());
         out[base + 12] = pack_grid(out, m.density());
@@ -424,6 +434,7 @@ pub(crate) fn pack(out: &mut Vec<[f32; 4]>, volumes: &[VolumeDraw]) -> [u32; 4] 
             volume.light_grid.is_some() as u8 as f32,
             o.scatter_bounces as f32,
         ];
+        out[base + 30] = phase_row(o.phase);
         if let Some(next) = m.next_density() {
             let index = DMat4::from_cols_array(&next.transform().columns());
             out[base + 24..base + 28].copy_from_slice(&(world * index).inverse().as_mat4().to_cols_array_2d());
@@ -744,18 +755,50 @@ mod tests {
         }
     }
 
+    fn phased(phase: Phase, grid: Option<(u32, u32, u64)>) -> VolumeDraw {
+        let medium = Medium::new(
+            Arc::new(ball(1.0)),
+            Some(sr_volume::medium::Bounds::new([0.0; 3], [8.0; 3]).unwrap()),
+            Transform::identity(),
+            sr_volume::medium::Optical { phase, ..Default::default() },
+        )
+        .unwrap();
+        let draw = VolumeDraw::new(Arc::new(medium), March::default()).unwrap();
+        match grid {
+            Some((cell, directions, mib)) => draw.with_light_grid(cell, directions, mib).unwrap(),
+            None => draw,
+        }
+    }
+
     #[test]
-    fn a_phase_other_than_hg_is_refused_before_upload() {
-        for phase in [Phase::Rayleigh, Phase::Draine { g: 0.5, alpha: 1.0 }, Phase::Fog { diameter: 10.0 }] {
-            let medium = Medium::new(
-                Arc::new(ball(1.0)),
-                Some(sr_volume::medium::Bounds::new([0.0; 3], [8.0; 3]).unwrap()),
-                Transform::identity(),
-                sr_volume::medium::Optical { phase, ..Default::default() },
-            )
-            .unwrap();
-            let err = VolumeDraw::new(Arc::new(medium), March::default()).err();
-            assert!(err.as_deref().is_some_and(|e| e.contains("phase=\"hg\"")), "{phase:?}: {err:?}");
+    fn the_phase_of_a_medium_is_packed_as_a_mixture_of_its_lobes() {
+        let row = |phase| {
+            let mut out = Vec::new();
+            pack(&mut out, &[phased(phase, None)]);
+            out[30]
+        };
+        assert_eq!(row(Phase::Hg { g: 0.6 }), [0.6, 0.0, 0.0, 0.0]);
+        assert_eq!(row(Phase::Rayleigh), [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(row(Phase::Draine { g: -0.5, alpha: 2.0 }), [0.0, -0.5, 2.0, 1.0]);
+        let fit = sr_volume::medium::fog_parameters(10.0);
+        assert_eq!(
+            row(Phase::Fog { diameter: 10.0 }),
+            [fit.g_hg as f32, fit.g_d as f32, fit.alpha as f32, fit.w_d as f32]
+        );
+        assert_eq!(phase_row(Phase::Hg { g: 0.6 }), row(Phase::Hg { g: 0.6 }));
+    }
+
+    #[test]
+    fn a_medium_whose_phase_is_not_isotropic_hg_takes_the_dome_directions() {
+        for (phase, isotropic) in [
+            (Phase::Hg { g: 0.0 }, true),
+            (Phase::Hg { g: 0.2 }, false),
+            (Phase::Rayleigh, false),
+            (Phase::Draine { g: 0.0, alpha: 0.0 }, false),
+            (Phase::Fog { diameter: 10.0 }, false),
+        ] {
+            let plan = plan_light_grid(&[phased(phase, Some((1, 64, 128)))], 1, true).unwrap().unwrap();
+            assert_eq!((plan.radiance, plan.directional), (isotropic, !isotropic), "{phase:?}");
         }
     }
 

@@ -516,3 +516,41 @@ fn grid_lighting_of_thick_smoke_says_it_bands() {
     );
     assert!(mean(&thick) > 0.0, "the frame is still rendered");
 }
+
+/// medium/@phase, @phaseAlpha and @dropletDiameter (version 1.8) reach the path tracer: Draine with alpha 0 is
+/// Henyey–Greenstein with the same g, Rayleigh and fog are not; a phase other than hg asks for the dome's directions.
+#[test]
+fn the_phase_attributes_of_a_document_reach_the_path_tracer() {
+    let Some(gpu) = common::gpu() else { return };
+    let cache = ball_cache("grid_ball.srvol", [0.0; 3], 6.0, 1.0);
+    let render = |medium: &str| {
+        let s = Setup { medium, ..Default::default() };
+        let doc = sr_model::load_str(
+            &xml(&cache, &s).replace(r#"version="1.3""#, r#"version="1.8""#),
+            &sr_model::LoadOptions { verify_assets: true, base_dir: Some(common::fixtures()) },
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        let shot = common::render_times_on(gpu.clone(), &doc, &[0.0]).unwrap();
+        assert!(shot.stats.errors.is_empty(), "{:?}", shot.stats.errors);
+        shot
+    };
+    let medium = |attrs: &str| {
+        format!(r##"<medium extinction="0.6" albedo="#FFFFFF" {attrs} stepSize="0.5" maxSteps="2048"/>"##)
+    };
+    let hg = render(&medium(r#"anisotropy="0.5""#));
+    let draine = render(&medium(r#"phase="draine" anisotropy="0.5" phaseAlpha="0""#));
+    assert!(mean(&hg) > 0.01, "the medium is lit: {}", mean(&hg));
+    let same = common::psnr(&hg.px, &draine.px);
+    assert!(same >= 50.0, "draine with alpha 0 renders as hg: {same:.1} dB");
+    for attrs in [
+        r#"phase="rayleigh""#,
+        r#"phase="fog" dropletDiameter="20""#,
+        r#"phase="draine" anisotropy="0.5" phaseAlpha="3""#,
+    ] {
+        let other = render(&medium(attrs));
+        // dark images agree in PSNR whatever their phase, so the light they scatter is compared (single_scattering_
+        // is_weighted_by_the_media_phase in phase.rs checks its value)
+        let ratio = mean(&other) / mean(&hg);
+        assert!((ratio - 1.0).abs() > 0.25, "{attrs} renders as hg: {ratio} of its light");
+    }
+}
