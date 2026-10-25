@@ -775,6 +775,54 @@ fn bvh(tris: &[[Vec3; 3]], nodes: &mut Vec<PtNode>) -> Vec<usize> {
 mod tests {
     use super::*;
 
+    /// Measures how long the adapter takes to compile and link one trace variant, named by `SR_PT_VARIANT` as
+    /// space-separated flags out of `media grid lighting water foam scatter` (the README's cold-start figures).
+    /// Run it once per variant in its own process, with the driver's shader cache off, cold or warm.
+    #[test]
+    #[ignore = "a measurement: set SR_PT_VARIANT and run in its own process"]
+    fn link_one_trace_variant() {
+        let names = std::env::var("SR_PT_VARIANT").expect("SR_PT_VARIANT, e.g. \"media grid lighting\"");
+        let flags: Vec<&str> = names.split_whitespace().collect();
+        let known = ["media", "grid", "lighting", "water", "foam", "scatter"];
+        assert!(flags.iter().all(|f| known.contains(f)), "{names:?} names a flag out of {known:?}");
+        let on = |f: &str| flags.contains(&f);
+        let gpu = sr_testkit::require_gpu!(crate::gpu::test_gpu(), "link_one_trace_variant");
+        println!("adapter {} {:?}", gpu.info.name, gpu.info.backend);
+        let d = &gpu.device;
+        let pt = PtGpu::new(d, crate::resources::FORMAT);
+        let start = std::time::Instant::now();
+        let (media, grid) = (on("media"), on("grid"));
+        let (source, constants) = trace_shader(media, on("lighting"), grid, on("water"), on("foam"), on("scatter"));
+        let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let plain;
+        let layout = if media && grid {
+            &pt.pipelines.grid_pipelines(d).layout
+        } else {
+            plain = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[Some(&pt.pipelines.bgl0)],
+                immediate_size: 0,
+            });
+            &plain
+        };
+        let scope = d.push_error_scope(wgpu::ErrorFilter::Validation);
+        let _pipeline = d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            layout: Some(layout),
+            module: &module,
+            entry_point: Some("cs_trace"),
+            compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
+            cache: None,
+        });
+        let error = pollster::block_on(scope.pop());
+        d.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        println!("link {:.3} s", start.elapsed().as_secs_f64());
+        assert!(error.is_none(), "{names}: {error:?}");
+    }
+
     #[test]
     fn tracers_on_one_device_share_its_pipelines_and_keep_their_own_settings() {
         let gpu = sr_testkit::require_gpu!(
