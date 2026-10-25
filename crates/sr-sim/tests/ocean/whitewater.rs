@@ -55,7 +55,10 @@ fn spray_flies_ballistically_then_becomes_surface_foam() {
 
 #[test]
 fn replay_fractional_queries_and_all_seed_bits_are_deterministic() {
-    let make = |seed| Whitewater::new(grid(), vec![2.; 32], Settings { seed, ..settings() }).unwrap();
+    let make = |seed| {
+        Whitewater::new(grid(), vec![2.; 32], Settings { draws: sr_sim::rng::Draws::Legacy(seed), ..settings() })
+            .unwrap()
+    };
     let mut a = make(9_007_199_254_740_992);
     let expected = a.at(0.85, |t| water(t, [2., 0.])).unwrap().clone();
     a.at(0.23, |t| water(t, [2., 0.])).unwrap();
@@ -228,4 +231,40 @@ fn a_failed_request_leaves_the_published_frame_and_the_canonical_state_alone() {
     // The retry from the retained state matches a clean run.
     let mut clean = Whitewater::new(grid(), vec![2.; 32], with_checkpoints(0)).unwrap();
     assert_eq!(sim.at(4.0, varying).unwrap(), clean.at(4.0, varying).unwrap());
+}
+
+#[test]
+fn stream_tracers_of_cell_x_z_at_tick_t_read_their_draws_at_pack_x_z_ordinal() {
+    use sr_sim::ocean::whitewater::purpose;
+    use sr_vector::d24::{pack, stream};
+    let e = 856627436;
+    let cfg = Settings { draws: sr_sim::rng::Draws::Stream(e), ..settings() };
+    let f = Whitewater::new(grid(), vec![2.; 32], cfg).unwrap().at(0.1, |t| water(t, [2., 0.])).unwrap().clone();
+    assert!(!f.particles.is_empty());
+    let mut ordinals = std::collections::HashMap::new();
+    for p in &f.particles {
+        let (x, z) = (p.position[0].floor(), p.position[2].floor());
+        let ordinal = ordinals.entry((x as i64, z as i64)).or_insert(0);
+        let at = pack(x as i64, z as i64, *ordinal);
+        assert!((p.position[0] - x - stream(e, purpose::X, 1, at)).abs() < 1e-12, "{x} {z} {ordinal}");
+        assert!((p.position[2] - z - stream(e, purpose::Z, 1, at)).abs() < 1e-12, "{x} {z} {ordinal}");
+        *ordinal += 1;
+    }
+    // the water is uniform, so every cell expects the same count and its count draw alone adds the one more
+    let counts: Vec<(i64, f64)> = (0..32)
+        .map(|c| {
+            let (x, z) = (c % 8, c / 8);
+            (*ordinals.get(&(x, z)).unwrap_or(&0), stream(e, purpose::COUNT, 1, pack(x, z, 0)))
+        })
+        .collect();
+    let low = counts.iter().map(|c| c.0).min().unwrap();
+    let (more, fewer): (Vec<&(i64, f64)>, Vec<_>) = counts.iter().partition(|c| c.0 > low);
+    assert!(!more.is_empty() && !fewer.is_empty() && more.iter().all(|c| c.0 == low + 1), "{counts:?}");
+    assert!(more.iter().map(|c| c.1).fold(0., f64::max) < fewer.iter().map(|c| c.1).fold(1., f64::min), "{counts:?}");
+    let legacy = Whitewater::new(grid(), vec![2.; 32], Settings { draws: sr_sim::rng::Draws::Legacy(e), ..settings() })
+        .unwrap()
+        .at(0.1, |t| water(t, [2., 0.]))
+        .unwrap()
+        .clone();
+    assert_ne!(f, legacy);
 }

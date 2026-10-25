@@ -256,3 +256,31 @@ fn whitewater_work_allowance_above_one_billion_reaches_the_tracers_without_loss(
     assert!(frame.problems.is_empty(), "{:?}", frame.problems);
     assert!(frame.nodes[0].sim_ocean.as_ref().unwrap().whitewater.is_some());
 }
+
+#[test]
+fn whitewater_of_a_1_8_document_draws_from_the_streams_of_the_project_and_scrubs_alike() {
+    let tracers = |version: &str, project: &str| {
+        let xml = format!(
+            r#"<scene version="{version}"><project width="64" height="64" fps="10" duration="2"{project}/><composition>
+            <ocean id="sea" width="8" depth="8" cellSize="0.5" bottomDepth="2" dt="0.05"><waterImpulse time="0.1" radius="2" amplitude="0.5"/>
+            <whitewater emissionRate="40" threshold="0.01" maxParticles="100000" lifetime="2" seed="3"/></ocean>
+            </composition></scene>"#
+        );
+        let d = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
+        let ev = sr_eval::Evaluator::new(&d, &Default::default()).unwrap();
+        let get = |t| {
+            let f = ev.evaluate(t);
+            assert!(f.problems.is_empty(), "{:?}", f.problems);
+            let sea = f.nodes.iter().find(|n| &*n.id == "sea").unwrap().sim_ocean.clone().unwrap();
+            sea.whitewater.clone().unwrap().particles.iter().map(|p| p.position).collect::<Vec<_>>()
+        };
+        let a = get(0.6);
+        assert!(!a.is_empty(), "{version}: the impulse raises foam");
+        get(0.2);
+        assert_eq!(get(0.6), a, "{version}: scrubbing back gives the same tracers");
+        a
+    };
+    assert_eq!(tracers("1.7", ""), tracers("1.7", r#" seed="5""#));
+    assert_ne!(tracers("1.8", ""), tracers("1.8", r#" seed="5""#));
+    assert_ne!(tracers("1.7", ""), tracers("1.8", ""));
+}

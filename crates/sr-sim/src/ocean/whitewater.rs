@@ -1,10 +1,21 @@
 //! Cinematic secondary water particles. The depth field is read-only: these
 //! tracers do not exchange mass or momentum with the shallow-water solver.
 use super::{Boundary, Error, Frame as Water, Spec};
+use crate::rng::Draws;
+
+/// The purposes of the stream draws of the tracers (random-streams SREP, section 5), read once per tick t: cell
+/// (x, z) reads its count at pack(x, z, 0) and its tracer of ordinal o its place and kind at pack(x, z, o).
+pub mod purpose {
+    pub const COUNT: u32 = 1;
+    pub const X: u32 = 2;
+    pub const Z: u32 = 3;
+    pub const KIND: u32 = 4;
+}
 
 #[derive(Clone, Debug)]
 pub struct Settings {
-    pub seed: u64,
+    /// The draws of the tracers; a legacy seed reads hash(seed, tick, cell) as the seed of a cell's draws.
+    pub draws: Draws,
     /// Expected particles per cell per second per unit of excess activity.
     pub rate: f64,
     /// Threshold of max(surface slope, horizontal Froude number).
@@ -27,7 +38,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            seed: 0,
+            draws: Draws::Legacy(0),
             rate: 10.,
             threshold: 0.5,
             start: 0.,
@@ -416,14 +427,25 @@ impl Whitewater {
             if !expected.is_finite() || expected > self.cfg.max_particles as f64 {
                 return Err(Error::Limit("whitewater particle emission"));
             }
-            let seed = crate::rng::hash(self.cfg.seed, tick, i as u64);
-            let count = expected.floor() as usize + usize::from(crate::rng::unit(seed, 0, 0) < expected.fract());
+            let cell_seed = |seed| crate::rng::hash(seed, tick, i as u64);
+            let (cx, cz) = (x as i64, z as i64);
+            let address = |ordinal: usize| sr_vector::d24::pack(cx, cz, ordinal as i64);
+            let draw = |p: u32, ordinal: usize, channel: u64| {
+                self.cfg.draws.at_step(p, tick, address(ordinal), |seed| {
+                    crate::rng::unit(cell_seed(seed), ordinal as u64, channel)
+                })
+            };
+            let count = expected.floor() as usize + usize::from(draw(purpose::COUNT, 0, 0) < expected.fract());
+            // a lattice index of pack holds 21 signed bits: a stream cannot address a cell or tracer past them
+            if matches!(self.cfg.draws, Draws::Stream(_)) && cx.max(cz).max(count as i64) >= 1 << 20 {
+                return Err(Error::Limit("whitewater stream address"));
+            }
             charge(work, count.saturating_mul(8))?;
             if state.frame.particles.len().saturating_add(count) > self.cfg.max_particles {
                 return Err(Error::Limit("whitewater particle count"));
             }
             for ordinal in 0..count {
-                let random = |channel| crate::rng::unit(seed, ordinal as u64, channel);
+                let random = |channel| draw(purpose::COUNT + channel as u32, ordinal, channel);
                 let pos = [
                     self.grid.origin[0] + (x as f64 + random(1)) * self.grid.cell_size,
                     y - self.cfg.radius * 0.2,

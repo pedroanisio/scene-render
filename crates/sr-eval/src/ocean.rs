@@ -215,7 +215,15 @@ fn build(p: &Program, n: &FrameNode) -> Result<Runtime, String> {
         .map(|c| {
             let f = |k, d| num(c, k, d);
             let cfg = sim::whitewater::Settings {
-                seed: c.seed,
+                // a whitewater has no id: its seed is its ocean's, under the derived purpose `stream:whitewater`
+                draws: crate::rng::derived_draws(
+                    p.version(n.doc),
+                    p.seed,
+                    &n.seed_id,
+                    Some(c.seed),
+                    "stream:whitewater",
+                    || c.seed,
+                ),
                 rate: f("emissionRate", 10.),
                 threshold: f("threshold", 0.5),
                 start: f("start", 0.),
