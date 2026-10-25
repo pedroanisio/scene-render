@@ -6,6 +6,10 @@
 /// The samples per sub-path of a morph (rule 6).
 pub const MORPH_SAMPLES: usize = 64;
 
+/// The flatness, in pixels, a path key is flattened with before it is resampled (rule 6: the engine's flatness, the
+/// one path masks are flattened with).
+pub const MORPH_FLATNESS: f64 = 0.25;
+
 fn clamp(p: f64) -> f64 {
     p.clamp(0.0, 1.0)
 }
@@ -210,4 +214,30 @@ pub fn morph_path(a: &[Vec<[f64; 2]>], b: &[Vec<[f64; 2]>], p: f64, n: usize) ->
         })
         .collect();
     Some(out)
+}
+
+/// Rules 6 to 9 on path data: `a` and `b` parsed and flattened at [`MORPH_FLATNESS`], morphed by [`morph_path`] at
+/// progress `p` with [`MORPH_SAMPLES`] samples, and written back as path data of closed polygons. `None` when either
+/// does not parse or has no sub-path, so the key holds.
+pub fn morph_path_data(a: &str, b: &str, p: f64) -> Option<String> {
+    let subs = |d: &str| -> Option<Vec<Vec<[f64; 2]>>> {
+        let path = crate::Path::parse(d).ok()?;
+        Some(
+            path.flatten(MORPH_FLATNESS)
+                .into_iter()
+                .filter(|q| !q.pts.is_empty())
+                .map(|q| q.pts.iter().map(|r| [r.x, r.y]).collect())
+                .collect(),
+        )
+    };
+    let m = morph_path(&subs(a)?, &subs(b)?, p, MORPH_SAMPLES)?;
+    let mut out = String::new();
+    for poly in &m {
+        for (i, q) in poly.iter().enumerate() {
+            let cmd = if i == 0 { "M" } else { "L" };
+            out.push_str(&format!("{cmd} {} {} ", q[0], q[1]));
+        }
+        out.push_str("Z ");
+    }
+    Some(out.trim_end().to_string())
 }

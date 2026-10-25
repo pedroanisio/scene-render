@@ -38,6 +38,8 @@ pub struct Channel {
     pub additive: bool,
     /// Time base of key times.
     pub time_base: TimeBase,
+    /// Path-data keys morph into each other (`shape/@morph`, the semantic-tex draft) instead of holding.
+    pub morph: bool,
 }
 
 /// Inputs for compiling a channel.
@@ -120,7 +122,14 @@ impl Channel {
         retime_roving(&mut keys, spec.keys);
         tangents(&mut keys, spec.keys);
         spatial(&mut keys, spec.keys);
-        Ok(Channel { keys, before: spec.before, after: spec.after, additive: spec.additive, time_base: spec.time_base })
+        Ok(Channel {
+            keys,
+            before: spec.before,
+            after: spec.after,
+            additive: spec.additive,
+            time_base: spec.time_base,
+            morph: false,
+        })
     }
 
     /// First and last key time.
@@ -212,7 +221,8 @@ impl Channel {
             return b.v.clone();
         }
         let u = ((t - a.t) / d).clamp(0.0, 1.0);
-        if let (Ease::Spring { stiffness, damping, mass }, true, true) = (a.ease, a.carry, i > 0) {
+        let morph = self.morph && matches!((&a.v, &b.v), (Value::Str(_), Value::Str(_)));
+        if let (Ease::Spring { stiffness, damping, mass }, true, true, false) = (a.ease, a.carry, i > 0, morph) {
             if a.spatial.is_none() {
                 return self.carried_spring(i, t, stiffness, damping, mass);
             }
@@ -220,7 +230,7 @@ impl Channel {
         let e = match a.ease {
             Ease::Spring { stiffness, damping, mass } => curve::spring_segment(t - a.t, d, stiffness, damping, mass),
             Ease::CatmullRom | Ease::Tcb => {
-                if let (Some(m0), Some(m1)) = (&a.tan_out, &b.tan_in) {
+                if let (Some(m0), Some(m1), false) = (&a.tan_out, &b.tan_in, morph) {
                     let [h00, h10, h01, h11] = curve::hermite(u);
                     return Value::weighted(&[(&a.v, h00), (m0, h10), (&b.v, h01), (m1, h11)]);
                 }
@@ -228,6 +238,14 @@ impl Channel {
             }
             other => other.apply(u),
         };
+        if let (true, Value::Str(x), Value::Str(y)) = (morph, &a.v, &b.v) {
+            // each key exactly at its own progress; between, the path morph, or the hold when it has none
+            if e > 0.0 && e < 1.0 {
+                if let Some(d) = sr_vector::morph::morph_path_data(x, y, e) {
+                    return Value::Str(d.into());
+                }
+            }
+        }
         if let Some(sp) = &a.spatial {
             let (p, _) = sp.sample(e, true);
             if let (Value::Pair(pa), Value::Pair(_)) = (&a.v, &b.v) {

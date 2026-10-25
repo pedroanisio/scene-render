@@ -2907,7 +2907,13 @@ impl Builder {
             match c.element_name() {
                 "animate" => {
                     let a = c.as_any().downcast_ref::<m::Animate>().expect("animate");
+                    let compiled = self.channels.len();
                     self.animate_one(owner, a, doc, who);
+                    // the semantic-tex draft: a shape's path keys morph with morph="true"
+                    let morph = e.as_any().downcast_ref::<m::Shape>().is_some_and(|s| s.morph);
+                    if morph && a.property == "path" && self.channels.len() > compiled {
+                        self.channels[compiled].morph = true;
+                    }
                 }
                 "expression" => {
                     let x = c.as_any().downcast_ref::<m::Expression>().expect("expression");
