@@ -389,7 +389,10 @@ fn build_fields(p: &Program) -> FieldSrc {
             radius: opt(e, "radius"),
             scale: num(e, "scale", 1.0),
             path: text(e, "path").map(|d| path_points(&d, 0.5).into_iter().flatten().collect()).unwrap_or_default(),
-            seed: opt(e, "seed").map(|s| s as u64).unwrap_or_else(|| crate::rng::hash_str(&f.id)),
+            // the physics of the main document holds the fields
+            draws: crate::rng::sim_draws(p.version(0), p.seed, &f.id, opt(e, "seed").map(|s| s as u64), || {
+                opt(e, "seed").map(|s| s as u64).unwrap_or_else(|| crate::rng::hash_str(&f.id))
+            }),
             bodies: affects != "particles",
             particles: affects != "bodies",
             z: num(e, "z", 0.0),

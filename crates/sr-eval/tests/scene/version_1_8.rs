@@ -143,3 +143,23 @@ fn a_1_8_particles3d_draws_from_the_streams_and_a_1_7_one_from_its_seed() {
         }
     }
 }
+
+/// Where a particle at rest is blown to by a gusting wind of `@seed="4"`: its own draws do not move it.
+fn blown(version: &str, project_seed: u64) -> [f64; 3] {
+    let xml = format!(
+        r#"<scene version="{version}"><project width="64" height="64" fps="10" duration="2" seed="{project_seed}"/><composition>
+        <particles3D id="d" forceFields="wind" rate="0" dt="0.05" seed="3"><burst time="0" count="1"/></particles3D>
+        </composition><physics pixelsPerMeter="1"><forceField id="wind" type="wind" forceX="2" forceZ="1" scale="0.5" seed="4" affects="particles"/></physics></scene>"#
+    );
+    let doc = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
+    let f = Evaluator::new(&doc, &EvalOptions::default()).unwrap().evaluate(1.0);
+    assert!(f.problems.is_empty(), "{:?}", f.problems);
+    f.nodes[0].particles3d.as_ref().unwrap().frame.particles[0].position
+}
+
+#[test]
+fn a_1_8_force_field_draws_its_noise_from_the_streams_of_the_project() {
+    assert_eq!(blown("1.7", 0), blown("1.7", 5));
+    assert_ne!(blown("1.8", 0), blown("1.8", 5));
+    assert_ne!(blown("1.7", 0), blown("1.8", 0));
+}

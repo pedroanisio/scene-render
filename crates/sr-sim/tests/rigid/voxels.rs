@@ -188,7 +188,7 @@ fn a_field_acts_on_a_body_of_cells_where_its_centre_of_mass_is_and_not_where_its
         radius: Some(3.0),
         scale: 1.0,
         path: vec![],
-        seed: 0,
+        draws: sr_sim::rng::Draws::Legacy(0),
         bodies: true,
         particles: false,
         z: 0.5,

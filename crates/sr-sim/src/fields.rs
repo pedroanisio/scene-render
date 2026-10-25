@@ -3,7 +3,15 @@
 //! bodies. Documents give fields in m/s² with +y up and radii in metres;
 //! `sr-eval` converts them to this pixel space.
 
-use crate::rng;
+use crate::rng::Draws;
+
+/// The purposes of the stream draws of a field (random-streams SREP, section 5): lattices read at t = 0.
+pub mod purpose {
+    /// The value noise of the gusts of a wind field.
+    pub const WIND: u32 = 1;
+    /// The value noise whose curl a turbulence field is.
+    pub const TURBULENCE: u32 = 2;
+}
 
 /// Field kinds of the schema.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,7 +42,8 @@ pub struct Field {
     pub scale: f64,
     /// Polyline (attractor-path).
     pub path: Vec<[f64; 2]>,
-    pub seed: u64,
+    /// The noise draws of wind and turbulence.
+    pub draws: Draws,
     pub bodies: bool,
     pub particles: bool,
     /// Centre depth (px, scene z) for 3D bodies (radial).
@@ -62,7 +71,7 @@ impl Field {
         match self.kind {
             FieldKind::Directional => self.force,
             FieldKind::Wind => {
-                let g = 1.0 + 0.5 * rng::noise2(self.seed, t * 0.7, p[1] / self.scale.max(1e-6) * 0.1);
+                let g = 1.0 + 0.5 * self.draws.noise2(purpose::WIND, t * 0.7, p[1] / self.scale.max(1e-6) * 0.1);
                 [self.force[0] * g, self.force[1] * g]
             }
             FieldKind::Radial | FieldKind::Vortex => {
@@ -80,7 +89,7 @@ impl Field {
             }
             FieldKind::Turbulence => {
                 let s = self.scale.max(1e-6) * 100.0;
-                let c = rng::curl2(self.seed, p[0] / s + t * 0.3, p[1] / s);
+                let c = self.draws.curl2(purpose::TURBULENCE, p[0] / s + t * 0.3, p[1] / s);
                 let w = self.weight(((p[0] - self.pos[0]).powi(2) + (p[1] - self.pos[1]).powi(2)).sqrt());
                 let w = if self.radius.is_some() { w } else { 1.0 };
                 [c[0] * self.strength * w * 2.0, c[1] * self.strength * w * 2.0]
@@ -159,7 +168,7 @@ pub fn total3_for(fields: &[Field], p: [f64; 3], v: [f64; 3], t: f64, particles:
                     FieldKind::Directional => f.force_z,
                     // the same gusts as the xy part
                     FieldKind::Wind => {
-                        f.force_z * (1.0 + 0.5 * rng::noise2(f.seed, t * 0.7, p[1] / f.scale.max(1e-6) * 0.1))
+                        f.force_z * (1.0 + 0.5 * f.draws.noise2(purpose::WIND, t * 0.7, p[1] / f.scale.max(1e-6) * 0.1))
                     }
                     _ => 0.0,
                 };
@@ -177,4 +186,49 @@ pub fn total(fields: &[Field], p: [f64; 2], v: [f64; 2], t: f64, particles: bool
         a[1] += d[1];
     }
     a
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rng;
+
+    fn field(kind: FieldKind, draws: Draws) -> Field {
+        Field {
+            kind,
+            pos: [0.0; 2],
+            force: [3.0, -2.0],
+            strength: 5.0,
+            falloff: 0.0,
+            radius: None,
+            scale: 40.0,
+            path: vec![],
+            draws,
+            bodies: true,
+            particles: true,
+            z: 0.0,
+            force_z: 1.5,
+        }
+    }
+
+    #[test]
+    fn stream_fields_read_purpose_1_for_gusts_and_2_for_turbulence_and_legacy_fields_their_seed() {
+        let (p, t) = ([130.0, 270.0], 0.9);
+        let (x, y) = (t * 0.7, p[1] / 40.0 * 0.1);
+        let (cx, cy) = (p[0] / 4000.0 + t * 0.3, p[1] / 4000.0);
+        for (draws, gust, curl) in [
+            (
+                Draws::Stream(91),
+                Draws::Stream(91).noise2(purpose::WIND, x, y),
+                Draws::Stream(91).curl2(purpose::TURBULENCE, cx, cy),
+            ),
+            (Draws::Legacy(91), rng::noise2(91, x, y), rng::curl2(91, cx, cy)),
+        ] {
+            let g = 1.0 + 0.5 * gust;
+            assert_eq!(field(FieldKind::Wind, draws).accel(p, [0.0; 2], t), [3.0 * g, -2.0 * g]);
+            assert_eq!(total3_for(&[field(FieldKind::Wind, draws)], [p[0], p[1], 0.0], [0.0; 3], t, true)[2], 1.5 * g);
+            assert_eq!(field(FieldKind::Turbulence, draws).accel(p, [0.0; 2], t), [curl[0] * 10.0, curl[1] * 10.0]);
+        }
+        assert_ne!(Draws::Stream(91).noise2(purpose::WIND, x, y), Draws::Stream(91).noise2(purpose::TURBULENCE, x, y));
+    }
 }
