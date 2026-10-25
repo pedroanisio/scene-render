@@ -3572,6 +3572,34 @@ impl Renderer {
                     Err(e) => plan.stats.errors.push(format!("{}: {e}", n.id)),
                 }
             }
+            // the plots draft: the tick labels of the parent axes, in its stroke colour at its labelSize
+            "axesLabels" => {
+                let (Some(af), Some(parent)) = (n.axes.clone(), n.parent.map(|k| &g.nodes[k as usize])) else {
+                    return;
+                };
+                let sr_model::model::Node::Axes(a) = &*parent.elem else { return };
+                let clock = std::time::Instant::now();
+                let scale = Xf(space.xform.then(&n.world).0).max_scale().max(1e-6);
+                let tol = 0.05 / scale;
+                let at = crate::vector::Attrs { e: a, props: Some(&parent.props) };
+                let size = at.num("labelSize", a.label_size.get());
+                let bx = [0.0, 0.0, af.axes.width, af.axes.height];
+                let color = {
+                    let p = ctx.p;
+                    at.paint("stroke").and_then(|v| self.vector_paint(plan, p, g, &v, bx, &n.id))
+                }
+                .unwrap_or(sr_vector::Paint::Solid { rgba: [1.0; 4], srgb: false });
+                let mut tc = std::mem::take(&mut self.text);
+                let built = crate::text::axes_labels(&mut tc, &af.labels, size, color, tol);
+                self.text = tc;
+                match built {
+                    Ok(scene) => {
+                        plan.stats.vector_seconds += clock.elapsed().as_secs_f64();
+                        self.emit_vector(plan, ctx, i, space, op, blend, seed, cmds, root_hash, scene);
+                    }
+                    Err(e) => plan.stats.errors.push(format!("{}: {e}", n.id)),
+                }
+            }
             "connector" => {
                 let clock = std::time::Instant::now();
                 let scale = Xf(space.xform.then(&n.world).0).max_scale().max(1e-6);

@@ -1396,3 +1396,28 @@ pub fn outline_polygons(
     sr_text::extrusion::outline_polygons_tracked(tc.lib(), text, family, size, tracking, tol, usize::MAX)
         .unwrap_or_default()
 }
+
+/// The plots draft (Semantics 5 and 9): an `axes`' labels, each typeset as a formula asset typesets its `tex`, at
+/// `size` px in `color`, and placed on its point by its alignment, in the box's pixel space.
+pub(crate) fn axes_labels(
+    tc: &mut TextCache,
+    labels: &[sr_eval::axes::Label],
+    size: f64,
+    color: Paint,
+    tol: f64,
+) -> Result<sr_vector::Scene, String> {
+    use sr_eval::axes::Align;
+    let mut scene = sr_vector::Scene::default();
+    for l in labels {
+        let [w, h] = formula::measure(tc.lib(), &l.tex, size)?;
+        let d = formula::draw(tc.lib(), &l.tex, size, [w, h], color.clone(), tol)?;
+        let [x, y] = match l.align {
+            Align::Below => [l.at[0] - w * 0.5, l.at[1]],
+            Align::Left => [l.at[0] - w, l.at[1] - h * 0.5],
+            Align::AboveLeft => [l.at[0] - w, l.at[1] - h],
+            Align::BelowRight => l.at,
+        };
+        scene.extend(d.scene.transformed(&Xf::translate(x, y)));
+    }
+    Ok(scene)
+}
