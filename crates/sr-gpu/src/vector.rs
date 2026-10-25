@@ -7,7 +7,7 @@ use std::sync::Arc;
 use sr_eval::{FrameGraph, FrameNode, Props, Value};
 use sr_model::element::{children, AttrValue, Element};
 use sr_vector::arap::{Pin, PinKind, Puppet};
-use sr_vector::deform::{Axis, Deformer};
+use sr_vector::deform::{deform_polys, path_tolerance, Axis, Deformer, PointMap};
 use sr_vector::geom::{p, Xf, P};
 use sr_vector::markers::{self, Marker};
 use sr_vector::measure::{self, TrimMode};
@@ -256,7 +256,10 @@ fn modifier_of(a: &Attrs) -> Option<Modifier> {
 }
 
 /// Builds a shape node's scene in node-local space; `tol` is the local flattening tolerance.
-pub fn shape_scene(n: &FrameNode, paint: &mut PaintFn, tol: f64) -> Result<Scene, String> {
+/// The scene of a shape node under the deform chain `ds` ([`node_deformers`]): with one of the space-transforms
+/// draft's types in the chain, the chain maps the outline before trim, fill and stroke (Semantics 4 and 5);
+/// otherwise it deforms the drawn scene ([`deform_scene`]).
+pub fn shape_scene(n: &FrameNode, paint: &mut PaintFn, tol: f64, ds: &[Deformer]) -> Result<Scene, String> {
     let e: &dyn Element = &*n.elem;
     let a = Attrs { e, props: Some(&n.props) };
     let [w, h] = n.size.unwrap_or([a.num("width", 0.0), a.num("height", 0.0)]);
@@ -301,8 +304,13 @@ pub fn shape_scene(n: &FrameNode, paint: &mut PaintFn, tol: f64) -> Result<Scene
     let mut scene = Scene::default();
     // per item: fill and stroke geometry
     let mut per_item: Vec<(Item, Vec<Poly>, Vec<Poly>)> = Vec::new();
+    let path_tol = path_tolerance(ds);
+    let mapped = |polys: Vec<Poly>| match path_tol {
+        Some(pt) => deform_polys(ds, &polys, pt),
+        None => polys,
+    };
     let all_polys: Vec<Vec<Poly>> =
-        items.iter().map(|it| it.parts.iter().flat_map(|(pa, _)| pa.flatten(tol)).collect()).collect();
+        items.iter().map(|it| mapped(it.parts.iter().flat_map(|(pa, _)| pa.flatten(tol)).collect())).collect();
     let trimmed_all = if trimmed && trim_mode == TrimMode::Sequential {
         let flat: Vec<Poly> = all_polys.iter().flatten().cloned().collect();
         Some(measure::trim(&flat, ts, te, to / 360.0, TrimMode::Sequential))
@@ -341,7 +349,7 @@ pub fn shape_scene(n: &FrameNode, paint: &mut PaintFn, tol: f64) -> Result<Scene
             );
             for (pa, op) in &it.parts {
                 scene.cmds.push(Cmd::Mask {
-                    polys: pa.flatten(tol),
+                    polys: mapped(pa.flatten(tol)),
                     rule: rule_,
                     op: *op,
                     opacity: 1.0,
@@ -373,6 +381,9 @@ pub fn shape_scene(n: &FrameNode, paint: &mut PaintFn, tol: f64) -> Result<Scene
     };
     for (it, fp, outline) in &per_item {
         paint_in_order(&mut scene, stroke_first, |s| draw_fill(s, it, fp), |s| draw_stroke(s, it, fp, outline));
+    }
+    if path_tol.is_none() {
+        deform_scene(&mut scene, ds, tol);
     }
     Ok(scene)
 }
@@ -579,10 +590,15 @@ pub fn vector_asset_scene(a: &Attrs, paint: &mut PaintFn, tol: f64) -> Result<Sc
 }
 
 /// Deformers of a node for this frame, over its `w`×`h` box.
-pub fn deformers(n: &FrameNode, g: &FrameGraph, size: [f64; 2]) -> Vec<Deformer> {
+pub fn deformers(n: &FrameNode, g: &FrameGraph, size: [f64; 2]) -> Result<Vec<Deformer>, String> {
+    deformers_in(n, g, [0.0, 0.0, size[0], size[1]])
+}
+
+/// [`deformers`] of a node whose box is `rect` (`[x0, y0, x1, y1]`): a group's is the union of its children's.
+fn deformers_in(n: &FrameNode, g: &FrameGraph, rect: [f64; 4]) -> Result<Vec<Deformer>, String> {
     let e: &dyn Element = &*n.elem;
     let mut out = Vec::new();
-    let [w, h] = size;
+    let [w, h] = [rect[2] - rect[0], rect[3] - rect[1]];
     let mut di = 0;
     for d in children(e) {
         if !is(d, "deform") {
@@ -598,7 +614,10 @@ pub fn deformers(n: &FrameNode, g: &FrameGraph, size: [f64; 2]) -> Vec<Deformer>
             let mkey = format!("{dkey}/{}[{mi}]", m.element_name());
             mi += 1;
             let a = Attrs { e: m, props: part(n, &mkey) };
-            let center = p(a.opt("centerX").unwrap_or(w * 0.5), a.opt("centerY").unwrap_or(h * 0.5));
+            let center = p(
+                a.opt("centerX").unwrap_or((rect[0] + rect[2]) * 0.5),
+                a.opt("centerY").unwrap_or((rect[1] + rect[3]) * 0.5),
+            );
             let radius = a.opt("radius").unwrap_or(w.min(h) * 0.5);
             let axis = if a.str("axis").as_deref() == Some("x") { Axis::X } else { Axis::Y };
             let amount = a.num("amount", 0.0);
@@ -703,6 +722,46 @@ pub fn deformers(n: &FrameNode, g: &FrameGraph, size: [f64; 2]) -> Vec<Deformer>
                         None => continue,
                     }
                 }
+                // the space-transforms draft
+                "matrix" => Deformer::Matrix {
+                    m: [
+                        a.num("a", 1.0),
+                        a.num("b", 0.0),
+                        a.num("c", 0.0),
+                        a.num("d", 1.0),
+                        a.num("e", 0.0),
+                        a.num("f", 0.0),
+                    ],
+                    center,
+                    tol: a.num("tolerance", sr_vector::space::DEFAULT_TOLERANCE),
+                },
+                "complex" => {
+                    let f = a
+                        .str("function")
+                        .and_then(|f| sr_vector::space::ComplexFn::parse(&f))
+                        .ok_or_else(|| format!("{mkey}: a complex modifier needs a function"))?;
+                    Deformer::Complex {
+                        f,
+                        coefficients: a.nums("coefficients").unwrap_or_default(),
+                        center,
+                        unit: a.num("unit", 1.0),
+                        tol: a.num("tolerance", sr_vector::space::DEFAULT_TOLERANCE),
+                    }
+                }
+                "map" => {
+                    let spec = n
+                        .deform_maps
+                        .iter()
+                        .find(|(k, _)| **k == *mkey)
+                        .map(|(_, s)| s)
+                        .ok_or_else(|| format!("{mkey}: the map's expressions were not compiled"))?;
+                    Deformer::Map {
+                        f: PointMap::new(g.point_map(spec)?),
+                        center,
+                        unit: a.num("unit", 1.0),
+                        tol: a.num("tolerance", sr_vector::space::DEFAULT_TOLERANCE),
+                    }
+                }
                 _ => continue,
             };
             out.push(def);
@@ -717,12 +776,75 @@ pub fn deformers(n: &FrameNode, g: &FrameGraph, size: [f64; 2]) -> Vec<Deformer>
             offsets: sw.offsets.iter().map(|o| p(o[0], o[1])).collect(),
         });
     }
-    out
+    Ok(out)
 }
 
-/// Applies deformers to a local-space scene.
+/// Whether a node has a `deform` child.
+pub fn has_deform(n: &FrameNode) -> bool {
+    children(&*n.elem).iter().any(|c| is(*c, "deform"))
+}
+
+/// The deform chain of node `i` of `g` whose box is `size`: its own modifiers, then each enclosing group's that has
+/// a `deform`, nearest first, acting in that group's space (the space-transforms draft, Syntax 2 and Semantics 9).
+/// A group whose transform has no inverse draws nothing and adds nothing.
+pub fn node_deformers(i: usize, g: &FrameGraph, size: [f64; 2]) -> Result<Vec<Deformer>, String> {
+    let n = &g.nodes[i];
+    let mut ds = deformers(n, g, size)?;
+    let mut up = n.parent;
+    while let Some(k) = up {
+        let anc = &g.nodes[k as usize];
+        if has_deform(anc) {
+            if let Some(inv) = anc.world.inverse() {
+                let inner = deformers_in(anc, g, group_box(g, k as usize))?;
+                if let Some(d) = Deformer::within(Xf(inv.then(&n.world).0), inner) {
+                    ds.push(d);
+                }
+            }
+        }
+        up = anc.parent;
+    }
+    Ok(ds)
+}
+
+/// The box of group `k` in its own space (Semantics 9): the union of its children's undeformed boxes, a child group's
+/// its own union; `[0, 0, 0, 0]` when it has none.
+fn group_box(g: &FrameGraph, k: usize) -> [f64; 4] {
+    let Some(inv) = g.nodes[k].world.inverse() else { return [0.0; 4] };
+    let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for (j, c) in g.nodes.iter().enumerate().filter(|(_, c)| c.parent == Some(k as u32)) {
+        let r = if c.kind == "group" {
+            group_box(g, j)
+        } else {
+            let a = Attrs { e: &*c.elem, props: Some(&c.props) };
+            match c.param_box {
+                Some(pb) => pb,
+                None => {
+                    let [w, h] = c.size.unwrap_or([a.num("width", 0.0), a.num("height", 0.0)]);
+                    [0.0, 0.0, w, h]
+                }
+            }
+        };
+        let to = Xf(inv.then(&c.world).0);
+        for q in [p(r[0], r[1]), p(r[2], r[1]), p(r[2], r[3]), p(r[0], r[3])] {
+            let q = to.apply(q);
+            b = [b[0].min(q.x), b[1].min(q.y), b[2].max(q.x), b[3].max(q.y)];
+        }
+    }
+    if b[0] <= b[2] {
+        b
+    } else {
+        [0.0; 4]
+    }
+}
+
+/// Applies deformers to a local-space scene: with one of the space-transforms draft's types in the chain, as a path
+/// map of every outline (rules 4 and 5); otherwise by subdividing edges and mapping their points.
 pub fn deform_scene(s: &mut Scene, ds: &[Deformer], tol: f64) {
     if ds.is_empty() {
+        return;
+    }
+    if let Some(pt) = path_tolerance(ds) {
+        s.map_polys(&|polys: &[Poly]| deform_polys(ds, polys, pt));
         return;
     }
     // subdivide so straight edges bend: a few pixels on screen

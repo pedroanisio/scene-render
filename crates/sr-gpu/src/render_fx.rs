@@ -548,9 +548,8 @@ impl Renderer {
             let mut pf = |v: &Value, _b: [f64; 4]| {
                 (v == &target).then_some(sr_vector::Paint::Solid { rgba: [1.0; 4], srgb: false })
             };
-            let Ok(mut scene) = crate::vector::shape_scene(n, &mut pf, tol) else { continue };
-            let ds = crate::vector::deformers(n, ctx.g, n.size.unwrap_or([0.0, 0.0]));
-            crate::vector::deform_scene(&mut scene, &ds, tol);
+            let Ok(ds) = crate::vector::node_deformers(i, ctx.g, n.size.unwrap_or([0.0, 0.0])) else { continue };
+            let Ok(scene) = crate::vector::shape_scene(n, &mut pf, tol, &ds) else { continue };
             let lb = scene.bounds().0;
             if !(lb[2] > lb[0] && lb[3] > lb[1]) {
                 continue;

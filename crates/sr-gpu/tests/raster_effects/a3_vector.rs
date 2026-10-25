@@ -142,7 +142,7 @@ fn mesh_warp_caps_unvalidated_dimensions_before_allocating() {
     let modifier = shape.parts.iter_mut().find(|p| p.key.contains("modifier")).unwrap();
     modifier.props.0 = vec![("rows".into(), sr_eval::Value::Num(1000.0)), ("cols".into(), sr_eval::Value::Num(1000.0))];
     let shape = g.nodes.iter().find(|n| &*n.id == "s").unwrap();
-    let ds = sr_gpu::vector::deformers(shape, &g, [64.0, 32.0]);
+    let ds = sr_gpu::vector::deformers(shape, &g, [64.0, 32.0]).unwrap();
     let sr_vector::deform::Deformer::MeshWarp { rows, cols, offsets, .. } = &ds[0] else { panic!("mesh warp") };
     assert_eq!((*rows, *cols, offsets.len()), (16, 16, 256));
 }

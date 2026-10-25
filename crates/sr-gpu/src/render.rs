@@ -2702,6 +2702,30 @@ impl Renderer {
             })
     }
 
+    /// The state of the deforms of the groups enclosing `n`: their animated values, times and transforms; 13 when
+    /// none has one.
+    fn ancestor_deforms_hash(ctx: &Ctx, n: &FrameNode) -> u64 {
+        let mut words = Vec::new();
+        let mut up = n.parent;
+        while let Some(k) = up {
+            let anc = &ctx.g.nodes[k as usize];
+            if crate::vector::has_deform(anc) {
+                words.extend([
+                    k as u64,
+                    props_hash(&anc.props, &anc.parts),
+                    hf(anc.local_time),
+                    affine_hash(&anc.world),
+                ]);
+            }
+            up = anc.parent;
+        }
+        if words.is_empty() {
+            13
+        } else {
+            h(&words)
+        }
+    }
+
     fn node_hash(ctx: &Ctx, n: &FrameNode, rel: &Affine) -> u64 {
         let props = if n.props.0.is_empty() && n.parts.is_empty() { 0 } else { props_hash(&n.props, &n.parts) };
         let asset = n.asset.as_deref();
@@ -2741,6 +2765,8 @@ impl Renderer {
                 .unwrap_or(7),
             // a connector's path follows its ends, which may move while it stays put
             n.connector.as_ref().map(|c| fnv_f64s(c.path.iter().flatten().copied().chain(c.bounds))).unwrap_or(12),
+            // an enclosing group's deform maps the node without changing it (the space-transforms draft)
+            Self::ancestor_deforms_hash(ctx, n),
         ]);
         // the cells of an object that a simulation cuts change without an attribute of the node changing: a group that holds it and is
         // kept between frames must be drawn again after a cut. Nodes without them hash as they did.
@@ -3460,8 +3486,13 @@ impl Renderer {
                                     .size
                                     .unwrap_or([content.dest[2] - content.dest[0], content.dest[3] - content.dest[1]]);
                                 let tol = 0.05 / Xf(space.xform.then(&n.world).0).max_scale().max(1e-6);
-                                let ds = crate::vector::deformers(n, g, size);
-                                crate::vector::deform_scene(&mut scene, &ds, tol);
+                                match crate::vector::node_deformers(i, g, size) {
+                                    Ok(ds) => crate::vector::deform_scene(&mut scene, &ds, tol),
+                                    Err(e) => {
+                                        plan.stats.errors.push(format!("{}: {e}", n.id));
+                                        return;
+                                    }
+                                }
                                 plan.stats.vector_seconds += clock.elapsed().as_secs_f64();
                                 for b in bitmaps.iter().filter(|b| b.below) {
                                     self.draw_bitmap(plan, ctx, i, space, op, blend, seed, cmds, root_hash, b);
@@ -3544,7 +3575,13 @@ impl Renderer {
                             false,
                         );
                         let bx = n.size.unwrap_or([content.dest[2], content.dest[3]]);
-                        let ds = crate::vector::deformers(n, g, bx);
+                        let ds = match crate::vector::node_deformers(i, g, bx) {
+                            Ok(ds) => ds,
+                            Err(e) => {
+                                plan.stats.errors.push(format!("{}: {e}", n.id));
+                                Vec::new()
+                            }
+                        };
                         if !ds.is_empty() && n.three_d.is_none() {
                             Self::meshify(plan, cmds, space, &n.world, content.dest, content.uv, &ds);
                         }
@@ -3555,16 +3592,13 @@ impl Renderer {
                 let clock = std::time::Instant::now();
                 let scale = Xf(space.xform.then(&n.world).0).max_scale().max(1e-6);
                 let tol = 0.05 / scale;
-                let built = {
+                let built = crate::vector::node_deformers(i, g, n.size.unwrap_or([0.0, 0.0])).and_then(|ds| {
                     let (p, g) = (ctx.p, ctx.g);
                     let mut pf = |v: &Value, b: [f64; 4]| self.vector_paint(plan, p, g, v, b, &n.id);
-                    crate::vector::shape_scene(n, &mut pf, tol)
-                };
+                    crate::vector::shape_scene(n, &mut pf, tol, &ds)
+                });
                 match built {
-                    Ok(mut scene) => {
-                        let size = n.size.unwrap_or([0.0, 0.0]);
-                        let ds = crate::vector::deformers(n, g, size);
-                        crate::vector::deform_scene(&mut scene, &ds, tol);
+                    Ok(scene) => {
                         plan.stats.vector_seconds += clock.elapsed().as_secs_f64();
                         self.emit_vector(plan, ctx, i, space, op, blend, seed, cmds, root_hash, scene);
                         self.pattern_fills(plan, ctx, i, space, op, blend, seed, cmds, root_hash);
