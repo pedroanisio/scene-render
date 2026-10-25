@@ -1008,7 +1008,8 @@ crates/sr-vector/src/       geom, path, shapes, measure (trim, dash), stroke, mo
                             morphing, the semantic-tex draft)
 crates/sr-text/src/         font, style, layout, glyph (outlines, COLR, bitmaps), animate (animators, presets,
                             text on a path), captions, chart, audiogram, code, formula, parts (tagged formula
-                            parts, the semantic-tex draft); extrusion (glyph outlines for solid extrusion)
+                            parts, the semantic-tex draft), formula_anim (part animators and formula morphs);
+                            extrusion (glyph outlines for solid extrusion)
 crates/sr-media/src/        probe, decode (video look-ahead, audio), encode (codecs, containers, hardware, stills),
                             spherical (360 metadata), still (image formats, orientation), icc (colour profiles),
                             heif (HEIF colour boxes), scopes (waveform, parade, histogram, vectorscope, levels QA)

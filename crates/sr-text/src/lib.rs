@@ -18,6 +18,7 @@ pub mod code;
 pub mod extrusion;
 pub mod font;
 pub mod formula;
+pub mod formula_anim;
 pub mod glyph;
 pub mod layout;
 pub mod parts;

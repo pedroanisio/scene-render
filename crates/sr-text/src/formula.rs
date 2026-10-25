@@ -886,7 +886,7 @@ pub fn draw(
     tol: f64,
 ) -> Result<Drawing, String> {
     let (face, b) = typeset(lib, tex, size)?;
-    let place = placement(&b, size_box);
+    let place = placement(&b, size_box, fit_of(&b, size_box));
     let mut path = Path::default();
     for it in &b.items {
         path.extend(&item_path(lib, face, it, &place));
@@ -896,10 +896,14 @@ pub fn draw(
     Ok(d)
 }
 
-/// The layout centred in a `size_box` box and scaled down to fit.
-fn placement(b: &B, size_box: [f64; 2]) -> Xf {
+/// The scale that fits the layout in a `size_box` box, at most 1.
+fn fit_of(b: &B, size_box: [f64; 2]) -> f64 {
+    (size_box[0] / b.w.max(1e-9)).min(size_box[1] / (b.asc + b.desc).max(1e-9)).min(1.0)
+}
+
+/// The layout centred in a `size_box` box and scaled by `fit`.
+fn placement(b: &B, size_box: [f64; 2], fit: f64) -> Xf {
     let (w, h) = (b.w, b.asc + b.desc);
-    let fit = (size_box[0] / w.max(1e-9)).min(size_box[1] / h.max(1e-9)).min(1.0);
     Xf::translate(size_box[0] * 0.5, size_box[1] * 0.5)
         .mul(&Xf::scale(fit, fit))
         // the layout's box spans [−asc, desc] about its baseline (y down): its middle is (desc − asc)/2
@@ -954,9 +958,33 @@ impl Parted {
 /// it by `\part` (the semantic-tex draft, Semantics 1); `tol` is the flatness of the outlines the boxes are measured
 /// on.
 pub fn typeset_parts(lib: &mut FontLib, tex: &str, size: f64, size_box: [f64; 2], tol: f64) -> Result<Parted, String> {
+    typeset_parts_at(lib, tex, size, size_box, None, tol)
+}
+
+/// [`typeset_parts`] centred in `size_box` and scaled by `fit` in place of the formula's own fit (a morph's two
+/// formulas share the fit of their union box).
+pub fn typeset_parts_fit(
+    lib: &mut FontLib,
+    tex: &str,
+    size: f64,
+    size_box: [f64; 2],
+    fit: f64,
+    tol: f64,
+) -> Result<Parted, String> {
+    typeset_parts_at(lib, tex, size, size_box, Some(fit), tol)
+}
+
+fn typeset_parts_at(
+    lib: &mut FontLib,
+    tex: &str,
+    size: f64,
+    size_box: [f64; 2],
+    fit: Option<f64>,
+    tol: f64,
+) -> Result<Parted, String> {
     let parts = crate::parts::parts(tex)?;
     let (face, b) = typeset(lib, tex, size)?;
-    let place = placement(&b, size_box);
+    let place = placement(&b, size_box, fit.unwrap_or_else(|| fit_of(&b, size_box)));
     let pieces: Vec<Piece> = b
         .items
         .iter()
