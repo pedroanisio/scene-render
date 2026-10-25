@@ -3719,8 +3719,8 @@ impl Builder {
 
     /// The fields draft: each pending field's source, with its expressions compiled in x and y, and its
     /// presentations. A source that does not fit the field's kind, a field with no box, a mobius function without
-    /// its eight coefficients, a portrait base of at most 1 and a grid that is not a data source of a regular
-    /// lattice are FLDE1.
+    /// its eight coefficients, a portrait base of at most 1, Poynting arrows without a current-carrying wire and a
+    /// charge, and a grid that is not a data source of a regular lattice are FLDE1.
     fn compile_fields(&mut self) {
         use crate::field_node::{FieldInst, Kind, Part, Source};
         const XY: &[&str] = &["x", "y"];
@@ -3760,15 +3760,25 @@ impl Builder {
             let mut charges = Vec::new();
             let mut currents = Vec::new();
             let mut dipoles = Vec::new();
+            let mut wires = Vec::new();
             for c in &fl.children {
                 match c {
                     m::FieldChild::Charge(q) => charges.push([q.x, q.y, q.q]),
                     m::FieldChild::Current(q) => currents.push([q.x, q.y, q.i]),
                     m::FieldChild::Dipole(q) => dipoles.push([q.x, q.y, q.mx, q.my]),
+                    m::FieldChild::Wire(w) => wires.push([w.x1, w.y1, w.x2, w.y2, w.q, w.i]),
                     _ => {}
                 }
             }
-            let held = !(charges.is_empty() && currents.is_empty() && dipoles.is_empty());
+            let held = !(charges.is_empty() && currents.is_empty() && dipoles.is_empty() && wires.is_empty());
+            // FLD6: Poynting arrows need a current-carrying wire and a charge
+            let poynting =
+                fl.children.iter().any(|c| matches!(c, m::FieldChild::Arrows(a) if a.show == m::Show::Poynting));
+            let current = wires.iter().any(|w| w[5] != 0.0);
+            let charged = !charges.is_empty() || !dipoles.is_empty() || wires.iter().any(|w| w[4] != 0.0);
+            if poynting && !(current && charged) {
+                problems.push("show=\"poynting\" needs a wire carrying a current and a charge".into());
+            }
             let fits = |ok: bool, what: &str, problems: &mut Vec<String>| {
                 if !ok {
                     problems.push(format!("{what} does not fit kind=\"{}\"", fl.kind.as_str()));
@@ -3828,8 +3838,8 @@ impl Builder {
                 }
                 Some(Source::ForceField(ff.as_str().into()))
             } else if held {
-                fits(kind == Kind::Vector, "charge, current and dipole children", &mut problems);
-                Some(Source::Sources { charges, currents, dipoles })
+                fits(kind == Kind::Vector, "charge, current, dipole and wire children", &mut problems);
+                Some(Source::Sources { charges, currents, dipoles, wires })
             } else {
                 problems.push("a field has no source".into());
                 None
@@ -3846,6 +3856,7 @@ impl Builder {
                             head_length: a.head_length.get(),
                             head_width: a.head_width.get(),
                         },
+                        poynting: a.show == m::Show::Poynting,
                     },
                     m::FieldChild::Streamlines(a) => Part::Streamlines {
                         separation: a.separation.get(),

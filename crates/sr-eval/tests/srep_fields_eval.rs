@@ -191,6 +191,53 @@ fn currents_and_dipoles_sum_with_the_charges() {
 }
 
 #[test]
+fn a_charged_wire_adds_its_line_field_to_the_sources() {
+    let ev = evaluator(&format!(
+        r#"<field {BOX}><charge x="0" y="0.5" q="1"/><wire x1="-1" y1="0" x2="1" y2="0" q="0.5" i="3"/><arrows cols="4" rows="3"/></field>"#
+    ));
+    let g = frame(&ev, 0.0);
+    let f = |x, y| {
+        let (c, w) = (
+            fields::charge_field(&[[0.0, 0.5, 1.0]], [x, y]),
+            fields::line_field([x, y], [-1.0, 0.0, 1.0, 0.0, 0.5, 3.0]),
+        );
+        [c[0] + w[0], c[1] + w[1]]
+    };
+    let style = ArrowStyle { max_length: 40.0 / PPU, ..ArrowStyle::default() };
+    let want = arrow_polylines(&fields::arrow_grid(f, RANGES, 4, 3, &style).unwrap());
+    same_polylines(&subpaths(&path_of(node(&g, "f/arrows0"))), &want);
+}
+
+#[test]
+fn poynting_arrows_follow_e_cross_b_of_the_sources() {
+    // shot 2: a loop of two wires of opposite charge carrying the current round it, and a dipole that adds to E only
+    let ev = evaluator(&format!(
+        r#"<field {BOX}><dipole x="1.5" y="0.8" mx="0.2" my="0"/><wire x1="-1" y1="0.5" x2="1" y2="0.5" q="1" i="1"/><wire x1="1" y1="-0.5" x2="-1" y2="-0.5" q="-1" i="1"/><arrows cols="9" rows="9" show="poynting" scale="0.1"/><arrows cols="9" rows="9"/></field>"#
+    ));
+    let g = frame(&ev, 0.0);
+    let wires = [[-1.0, 0.5, 1.0, 0.5, 1.0, 1.0], [1.0, -0.5, -1.0, -0.5, -1.0, 1.0]];
+    let s = |x, y| fields::poynting_at([x, y], &[], &[[1.5, 0.8, 0.2, 0.0]], &wires);
+    let style = ArrowStyle { scale: 0.1, max_length: 40.0 / PPU, ..ArrowStyle::default() };
+    let want = arrow_polylines(&fields::arrow_grid(s, RANGES, 9, 9, &style).unwrap());
+    same_polylines(&subpaths(&path_of(node(&g, "f/arrows0"))), &want);
+    // between the wires S runs along the loop from the source toward the load: +x
+    let centre = s(0.0, 0.0);
+    assert!(centre[0] > 0.0 && centre[1].abs() < 0.1 * centre[0], "{centre:?}");
+    // the field's own arrows draw E, not S
+    let e = |x, y| {
+        let mut f = fields::dipole_field([x, y], [0.2, 0.0], [1.5, 0.8]);
+        for w in wires {
+            let l = fields::line_field([x, y], w);
+            f = [f[0] + l[0], f[1] + l[1]];
+        }
+        f
+    };
+    let style = ArrowStyle { max_length: 40.0 / PPU, ..ArrowStyle::default() };
+    let want = arrow_polylines(&fields::arrow_grid(e, RANGES, 9, 9, &style).unwrap());
+    same_polylines(&subpaths(&path_of(node(&g, "f/arrows1"))), &want);
+}
+
+#[test]
 fn a_complex_function_and_its_w_expressions_draw_alike() {
     let style = ArrowStyle { max_length: 40.0 / PPU, ..ArrowStyle::default() };
     let square = |x: f64, y: f64| [x * x - y * y, 2.0 * x * y];
@@ -388,6 +435,9 @@ fn fields_changed_past_the_schematron_are_flde1() {
     let charges = format!(r#"<field {BOX}><charge x="0" y="0" q="1"/><arrows/></field>"#);
     let mobius =
         format!(r#"<field {BOX} kind="complex" function="mobius" coefficients="1 0 0 0 0 0 1 0"><portrait/></field>"#);
+    let loop_ = format!(
+        r#"<field {BOX}><wire x1="-1" y1="0.5" x2="1" y2="0.5" q="1" i="1"/><arrows show="poynting"/></field>"#
+    );
     let cases: Vec<(&str, String)> = vec![
         ("a vector u without v", refused_after(&vector, |f| f.v = None)),
         ("a function in a vector field", refused_after(&complex, kind("vector"))),
@@ -406,6 +456,26 @@ fn fields_changed_past_the_schematron_are_flde1() {
             }),
         ),
         ("no box outside an axes", refused_after(&vector, |f| f.width = None)),
+        (
+            "poynting arrows with no current",
+            refused_after(&loop_, |f| {
+                for c in &mut f.children {
+                    if let sr_model::model::FieldChild::Wire(w) = c {
+                        w.i = 0.0;
+                    }
+                }
+            }),
+        ),
+        (
+            "poynting arrows with nothing charged",
+            refused_after(&loop_, |f| {
+                for c in &mut f.children {
+                    if let sr_model::model::FieldChild::Wire(w) = c {
+                        w.q = 0.0;
+                    }
+                }
+            }),
+        ),
     ];
     for (what, err) in cases {
         assert!(err.contains("FLDE1"), "{what}: {err}");

@@ -147,6 +147,46 @@ pub fn poynting(e: [f64; 2], b: f64) -> [f64; 2] {
     [e[1] * b, -e[0] * b]
 }
 
+/// A straight wire in the plane, `[x1, y1, x2, y2, q, i]`, carrying the charge q per unit length and the current i
+/// from the first point to the second: the in-plane E of the finite line charge (Griffiths example 2.1) and the
+/// out-of-plane B of the segment (Biot–Savart, Griffiths example 5.5), constant 1, as [E_x, E_y, B_z]; zero on the
+/// wire's line. With t̂ the direction of the wire, n̂ its left normal, s the position along it and d the signed
+/// distance from its line, φ = ((L − s)/√((L − s)² + d²) + s/√(s² + d²)) / d, E = q (φ n̂ + (1/√(s² + d²) −
+/// 1/√((L − s)² + d²)) t̂) and B_z = i φ / 4π, so a long wire gives i / (2π d).
+pub fn line_field(p: [f64; 2], wire: [f64; 6]) -> [f64; 3] {
+    let [x1, y1, x2, y2, q, i] = wire;
+    let (tx, ty) = (x2 - x1, y2 - y1);
+    let length = tx.hypot(ty);
+    let (tx, ty) = (tx / length, ty / length);
+    let (nx, ny) = (-ty, tx);
+    let (px, py) = (p[0] - x1, p[1] - y1);
+    let (s, d) = (px * tx + py * ty, px * nx + py * ny);
+    if d == 0.0 {
+        return [0.0, 0.0, 0.0];
+    }
+    let (r1, r2) = ((s * s + d * d).sqrt(), ((length - s) * (length - s) + d * d).sqrt());
+    let perp = ((length - s) / r2 + s / r1) / d;
+    let par = 1.0 / r1 - 1.0 / r2;
+    [q * (perp * nx + par * tx), q * (perp * ny + par * ty), i * perp / (4.0 * PI)]
+}
+
+/// The Poynting vector at `p`: E the sum of the charges `[x, y, q]`, the dipoles `[x, y, mx, my]` and the wires' line
+/// charges, B_z the sum of the wires' currents ([`line_field`]).
+pub fn poynting_at(p: [f64; 2], charges: &[[f64; 3]], dipoles: &[[f64; 4]], wires: &[[f64; 6]]) -> [f64; 2] {
+    let mut e = charge_field(charges, p);
+    for &[x, y, mx, my] in dipoles {
+        let d = dipole_field(p, [mx, my], [x, y]);
+        e = [e[0] + d[0], e[1] + d[1]];
+    }
+    let mut b = 0.0;
+    for &w in wires {
+        let [wx, wy, wb] = line_field(p, w);
+        e = [e[0] + wx, e[1] + wy];
+        b += wb;
+    }
+    poynting(e, b)
+}
+
 // --- rule 3: operators ----------------------------------------------------------------------------------------------
 
 /// ∂u/∂x + ∂v/∂y by central differences of step [`DIFF_H`].

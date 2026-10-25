@@ -6,8 +6,8 @@
 use sr_eval::fields::{
     arrow, arrow_grid, charge_field, charge_lines, complex_sampler, curl, dipole_field, dipole_line_constant,
     dipole_line_deviation, divergence, evenly_spaced_streamlines, grid_sampler, inside_box, lic, line_ends_on,
-    min_separation, modulus_shade, phase_hue, poynting, rk4_step, source_field, streamline, winding_number, wire_field,
-    ArrowStyle, ChargeLines, FieldError, Spacing, Trace,
+    line_field, min_separation, modulus_shade, phase_hue, poynting, poynting_at, rk4_step, source_field, streamline,
+    winding_number, wire_field, ArrowStyle, ChargeLines, FieldError, Spacing, Trace,
 };
 
 fn close(a: f64, b: f64) -> bool {
@@ -86,6 +86,45 @@ fn analytic_sources() {
     let w = wire_field([2.0, 0.0], 1.0, [0.0, 0.0]);
     same([round(w[0], 12) + 0.0, round(w[1], 12)], [0.0, 0.079577471546]);
     same(poynting([1.0, 0.0], 1.0), [0.0, -1.0]);
+}
+
+/// Shot 2: the top wire charged +1 carries the current 1 to the right, the bottom one charged -1 carries it back, as
+/// [x1, y1, x2, y2, q, i].
+const SHOT2_WIRES: [[f64; 6]; 2] = [[-1.0, 0.5, 1.0, 0.5, 1.0, 1.0], [1.0, -0.5, -1.0, -0.5, -1.0, 1.0]];
+
+#[test]
+#[allow(clippy::approx_constant)] // 1.414213562373 is the draft's row, rounded to 12 places
+fn wires_and_the_poynting_vector() {
+    let unit = |q, i| [-1.0, 0.0, 1.0, 0.0, q, i];
+    let r = |v: f64, d| round(v, d) + 0.0;
+    assert_eq!(r(line_field([0.0, 1.0], unit(0.0, 1.0))[2], 12), 0.11253953952);
+    let e = line_field([0.0, 1.0], unit(1.0, 0.0));
+    assert_eq!([r(e[0], 12), r(e[1], 12)], [0.0, 1.414213562373]);
+    assert_eq!(r(line_field([0.0, 1.0], [-1e9, 0.0, 1e9, 0.0, 0.0, 1.0])[2], 12), 0.159154943092);
+    let below = line_field([0.0, -1.0], unit(1.0, 1.0));
+    assert_eq!([r(below[0], 12), r(below[1], 12), r(below[2], 12)], [0.0, -1.414213562373, -0.11253953952]);
+    assert_eq!(line_field([0.5, 0.0], unit(1.0, 1.0)), [0.0, 0.0, 0.0]);
+    let s = poynting_at([0.0, 0.0], &[], &[], &SHOT2_WIRES);
+    assert_eq!([r(s[0], 6), r(s[1], 6)], [4.074367, 0.0]);
+    let mut worst = 0.0_f64;
+    for x in [-0.5, -0.25, 0.0, 0.25, 0.5] {
+        for y in [-0.25, 0.0, 0.25] {
+            let s = poynting_at([x, y], &[], &[], &SHOT2_WIRES);
+            worst = worst.max(s[1].atan2(s[0]).to_degrees().abs());
+        }
+    }
+    assert_eq!(round(worst, 6), 3.740344);
+}
+
+#[test]
+fn the_poynting_vector_sums_charges_dipoles_and_charged_wires() {
+    let (p, wire) = ([0.3, 0.7], [-1.0, 0.0, 1.0, 0.0, 0.5, 2.0]);
+    let (charges, dipoles) = ([[0.0, 2.0, 1.0]], [[1.0, 1.0, 0.0, 1.0]]);
+    let w = line_field(p, wire);
+    let d = dipole_field(p, [0.0, 1.0], [1.0, 1.0]);
+    let c = charge_field(&charges, p);
+    let want = poynting([c[0] + d[0] + w[0], c[1] + d[1] + w[1]], w[2]);
+    same(poynting_at(p, &charges, &dipoles, &[wire]), want);
 }
 
 #[test]

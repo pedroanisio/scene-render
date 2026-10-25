@@ -1289,7 +1289,7 @@ impl<'p> Frame<'p> {
                 }
                 None => Box::new(|_, _| [0.0, 0.0]),
             },
-            (Source::Sources { charges, currents, dipoles }, _) => Box::new(move |x, y| {
+            (Source::Sources { charges, currents, dipoles, wires }, _) => Box::new(move |x, y| {
                 let mut f = crate::fields::charge_field(charges, [x, y]);
                 for c in currents {
                     let w = crate::fields::wire_field([x, y], c[2], [c[0], c[1]]);
@@ -1299,6 +1299,11 @@ impl<'p> Frame<'p> {
                     let w = crate::fields::dipole_field([x, y], [d[2], d[3]], [d[0], d[1]]);
                     f = [f[0] + w[0], f[1] + w[1]];
                 }
+                // a wire's line charge is in the plane; its current's field is out of it (rule 2)
+                for &w in wires {
+                    let l = crate::fields::line_field([x, y], w);
+                    f = [f[0] + l[0], f[1] + l[1]];
+                }
                 f
             }),
         };
@@ -1306,7 +1311,12 @@ impl<'p> Frame<'p> {
         let drawn = fi.kind != Kind::Scalar;
         let d = match &fi.parts[j as usize] {
             Part::Arrows { .. } | Part::Streamlines { .. } | Part::Lines { .. } if !drawn => String::new(),
-            Part::Arrows { cols, rows, style } => {
+            Part::Arrows { cols, rows, style, poynting: true } => {
+                let Source::Sources { charges, dipoles, wires, .. } = &fi.source else { return Ok(()) };
+                let s = |x, y| crate::fields::poynting_at([x, y], charges, dipoles, wires);
+                fnode::arrows_path(s, &b, *cols, *rows, style).map_err(|e| e.to_string())?
+            }
+            Part::Arrows { cols, rows, style, poynting: false } => {
                 fnode::arrows_path(&vector, &b, *cols, *rows, style).map_err(|e| e.to_string())?
             }
             &Part::Streamlines { separation, test, step, max_steps, max_lines, seed } => {

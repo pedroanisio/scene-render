@@ -35,8 +35,9 @@ pub enum Source {
     Grid { lattice: Lattice, ranges: [f64; 4] },
     /// A `forceField` of physics, by its element key.
     ForceField(Arc<str>),
-    /// The sum of the charge [x, y, q], current [x, y, i] and dipole [x, y, mx, my] children.
-    Sources { charges: Vec<[f64; 3]>, currents: Vec<[f64; 3]>, dipoles: Vec<[f64; 4]> },
+    /// The sum of the charge [x, y, q], current [x, y, i], dipole [x, y, mx, my] and wire [x1, y1, x2, y2, q, i]
+    /// children.
+    Sources { charges: Vec<[f64; 3]>, currents: Vec<[f64; 3]>, dipoles: Vec<[f64; 4]>, wires: Vec<[f64; 6]> },
 }
 
 /// A presentation child, with its attributes; lengths are in pixels as written.
@@ -46,6 +47,8 @@ pub enum Part {
         cols: usize,
         rows: usize,
         style: fields::ArrowStyle,
+        /// Along the Poynting vector of the sources (`show="poynting"`) rather than the field.
+        poynting: bool,
     },
     Streamlines {
         separation: f64,
