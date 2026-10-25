@@ -232,3 +232,91 @@ fn a_range_that_closes_at_a_frame_is_a_problem_and_draws_nothing() {
     // the child is left in pixels: x = 0.5 px from the box's left
     assert!((node(&g, "dot").world.0[4] - 10.5).abs() < 1e-9);
 }
+
+const HELIX3D: &str = r#"<object3D id="o" primitive="axes"><axes3D width="2" height="2" depth="2" xMin="-1" xMax="1" yMin="-1" yMax="1" zMin="0" zMax="2"/><plot3D x="Math.cos(t)" y="Math.sin(t)" z="t / Math.PI" t1="6.283185307179586" samples="32" tubeRadius="0.05" tubeSegments="6"/></object3D>"#;
+
+fn linear(v: f32) -> f32 {
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+#[test]
+fn an_axes_object_is_its_axis_cylinders_and_its_plots_tubes() {
+    let ev = evaluator(HELIX3D);
+    let g = frame(&ev, 0.0);
+    let o = node(&g, "o");
+    let mesh = &o.param_mesh.as_ref().expect("the axes object's mesh").mesh;
+    let yellow = [1.0, linear(0.8), 0.0, 1.0];
+    let tube: Vec<[f32; 3]> = mesh.vertices.iter().filter(|v| v.color == yellow).map(|v| v.pos).collect();
+    // rule 11: samples × tubeSegments vertices, each tubeRadius from its point of the mapped curve (rule 10)
+    assert_eq!(tube.len(), 32 * 6);
+    let a = plots::Axes3D::new([-1.0, 1.0], [-1.0, 1.0], [0.0, 2.0], [2.0, 2.0, 2.0]).unwrap();
+    let curve: Vec<[f64; 3]> = plots::grid(0.0, std::f64::consts::TAU, 32, false)
+        .unwrap()
+        .iter()
+        .map(|&t| plots::to_scene(&a, t.cos(), t.sin(), t / std::f64::consts::PI))
+        .collect();
+    for v in &tube {
+        let d = curve
+            .iter()
+            .map(|c| (0..3).map(|k| (v[k] as f64 - c[k]).powi(2)).sum::<f64>().sqrt())
+            .fold(f64::INFINITY, f64::min);
+        assert!((d - 0.05).abs() < 1e-4, "{v:?} is {d} from the curve");
+    }
+    // the axis lines and ticks are white, and every vertex is finite
+    let white = mesh.vertices.iter().filter(|v| v.color == [1.0; 4]).count();
+    assert!(white > 0 && white + tube.len() == mesh.vertices.len(), "{white} {}", mesh.vertices.len());
+    assert!(mesh.vertices.iter().all(|v| v.pos.iter().all(|c| c.is_finite())));
+    // the x axis runs through data y = 0 (scene y 0) and z = 0, the z range's lower end (scene z −1)
+    assert!(mesh
+        .vertices
+        .iter()
+        .any(|v| v.color == [1.0; 4] && (v.pos[0] - 1.0).abs() < 1e-6 && (v.pos[2] + 1.0).abs() < 0.03));
+}
+
+#[test]
+fn a_plot3d_expression_that_does_not_compile_is_an_e01() {
+    let xml = format!(
+        r##"<scene version="1.8"><project width="64" height="64" fps="24" duration="1" background="#000000FF"/><composition>{}</composition></scene>"##,
+        HELIX3D.replace(r#"z="t / Math.PI""#, r#"z="t /""#)
+    );
+    let doc = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
+    let err = match Evaluator::new(&doc, &Default::default()) {
+        Ok(_) => panic!("a broken plot3D expression compiles"),
+        Err(e) => e.to_string(),
+    };
+    assert!(err.contains("E01") && err.contains("o/plot3D[0]@z"), "{err}");
+}
+
+#[test]
+fn a_plot3d_with_a_material_is_a_part_of_its_own() {
+    // plot3D's `material` is as the object's other children have it (the draft's syntax 3): such a plot leaves the
+    // object's mesh for a part drawn with that material; plots without one stay in the object's mesh
+    let xml = format!(
+        r##"<scene version="1.8"><project width="640" height="360" fps="24" duration="2" background="#000000FF" seed="1"/>
+  <materials><material id="gold" baseColor="#FFD700FF"/></materials>
+  <composition>{}</composition></scene>"##,
+        HELIX3D.replace(
+            "</object3D>",
+            r#"<plot3D x="t" y="0" z="1" t0="-1" t1="1" samples="8" tubeSegments="4" material="gold"/><plot3D x="0" y="t" z="1" t0="-1" t1="1" samples="8" tubeSegments="4" material="gold"/></object3D>"#
+        )
+    );
+    let doc = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap_or_else(|e| panic!("{e}"));
+    let ev = Evaluator::new(&doc, &Default::default()).unwrap_or_else(|e| panic!("{e}"));
+    let g = frame(&ev, 0.0);
+    let o = node(&g, "o");
+    let mesh = &o.param_mesh.as_ref().expect("the axes object's mesh").mesh;
+    let yellow = [1.0, linear(0.8), 0.0, 1.0];
+    let white = mesh.vertices.iter().filter(|v| v.color == [1.0; 4]).count();
+    assert_eq!(mesh.vertices.iter().filter(|v| v.color == yellow).count(), 32 * 6);
+    assert_eq!(white + 32 * 6, mesh.vertices.len(), "the object's mesh holds only the axes and the helix");
+    // the two gold plots are one part of 2 × 8 × 4 vertices, in their colour, the default yellow
+    assert_eq!(o.param_parts.len(), 1, "{:?}", o.param_parts.iter().map(|p| &p.0).collect::<Vec<_>>());
+    let (material, part) = &o.param_parts[0];
+    assert_eq!(&**material, "gold");
+    assert_eq!(part.mesh.vertices.len(), 2 * 8 * 4);
+    assert!(part.mesh.vertices.iter().all(|v| v.color == yellow));
+}

@@ -272,6 +272,9 @@ pub struct FrameNode {
     /// The mesh of a parametric surface or heightfield at this time (SREP 70), in the object's local space.
     #[serde(skip)]
     pub param_mesh: Option<Arc<crate::parametric::ParamMesh>>,
+    /// The meshes an axes object draws with other materials than its own (the plots draft): (material id, mesh).
+    #[serde(skip)]
+    pub param_parts: Vec<(Arc<str>, Arc<crate::parametric::ParamMesh>)>,
     /// A clay object's surface at this time, extracted ahead of rendering ([`crate::solid::attach_clay`]); None when
     /// the renderer extracts it itself.
     #[serde(skip)]
@@ -1488,6 +1491,7 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
             joints: None,
             connector: None,
             param_mesh: None,
+            param_parts: Vec::new(),
             clay_mesh: None,
             param_box: None,
             elem: node.elem.clone(),
@@ -1500,6 +1504,17 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
         if let Some((a, part)) = node.axes_part {
             if let Some(out) = o.nodes.last_mut() {
                 f.axes_part(n, a, part, out, &mut o.problems);
+            }
+        }
+        if let Some(k) = node.axes3d {
+            if let Some(out) = o.nodes.last_mut() {
+                match crate::axes::axes3d_mesh(f, n, &p.axes3d[k as usize], &mut o.problems, &node.id) {
+                    Ok(m) => {
+                        out.param_mesh = Some(Arc::new(m.own));
+                        out.param_parts = m.parts.into_iter().map(|(id, mesh)| (id, Arc::new(mesh))).collect();
+                    }
+                    Err(e) => o.problems.push(format!("{}: {e}", node.id)),
+                }
             }
         }
         if node.name == "shape" {

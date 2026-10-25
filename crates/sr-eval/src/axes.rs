@@ -358,3 +358,179 @@ pub(crate) fn plot_path(
     };
     Ok(path_data(&subpaths))
 }
+
+/// An `object3D primitive="axes"` (rules 10 and 11): its `axes3D` and its `plot3D` children with their compiled
+/// expressions.
+#[derive(Debug, Clone)]
+pub struct Axes3DInst {
+    pub axes: m::Axes3D,
+    pub plots: Vec<Plot3DInst>,
+}
+
+/// A `plot3D` with its x, y and z expressions (indices into `Program::exprs`).
+#[derive(Debug, Clone)]
+pub struct Plot3DInst {
+    pub exprs: [u32; 3],
+    pub t: [f64; 2],
+    pub samples: usize,
+    pub closed: bool,
+    pub radius: Option<f64>,
+    pub segments: usize,
+    /// Linear RGBA, which multiplies the material colour.
+    pub color: [f32; 4],
+    /// The id of the material the tube is drawn with, instead of the object's.
+    pub material: Option<std::sync::Arc<str>>,
+}
+
+impl Plot3DInst {
+    pub(crate) fn new(p: &m::Plot3D, exprs: [u32; 3]) -> Plot3DInst {
+        Plot3DInst {
+            exprs,
+            t: [p.t0, p.t1],
+            samples: usize::try_from(p.samples).unwrap_or(usize::MAX),
+            closed: p.closed,
+            radius: p.tube_radius.map(|r| r.get()),
+            segments: usize::try_from(p.tube_segments).unwrap_or(usize::MAX),
+            color: linear(&p.color),
+            material: p.material.as_deref().map(Into::into),
+        }
+    }
+}
+
+/// The linear RGBA of a literal colour. A token or paint reference has no colour the evaluator can read: it is
+/// white, so the object's material colour shows unchanged.
+pub(crate) fn linear(p: &sr_model::values::Paint) -> [f32; 4] {
+    use sr_model::values::{Color, Paint};
+    let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    match p {
+        Paint::Color(Color::Rgba(c)) => [lin(c.r), lin(c.g), lin(c.b), c.a],
+        _ => [1.0; 4],
+    }
+}
+
+/// Segments around an axis line or tick.
+const LINE_SEGMENTS: usize = 8;
+
+/// The grid mesh of rule 11 from the points of a curve: the rings of [`plots::tube`] around its finite points, a
+/// non-finite point's ring left non-finite so the grid drops it with its two cells.
+fn tube_mesh(points: &[[f64; 3]], radius: f64, segments: usize, closed: bool) -> Result<sr_3d::Primitive, PlotError> {
+    let finite: Vec<[f64; 3]> = points.iter().copied().filter(|p| p.iter().all(|c| c.is_finite())).collect();
+    let mut rings = plots::tube(&finite, radius, segments)?.into_iter();
+    let gap = vec![[f64::NAN; 3]; segments];
+    let rings: Vec<Vec<[f64; 3]>> = points
+        .iter()
+        .map(
+            |p| if p.iter().all(|c| c.is_finite()) { rings.next().unwrap_or_else(|| gap.clone()) } else { gap.clone() },
+        )
+        .collect();
+    let nu = rings.len();
+    let mut grid = Vec::with_capacity(nu * segments);
+    let mut uvs = Vec::with_capacity(nu * segments);
+    for j in 0..segments {
+        for (i, ring) in rings.iter().enumerate() {
+            grid.push(ring[j]);
+            uvs.push([i as f32 / (nu - 1).max(1) as f32, j as f32 / segments as f32]);
+        }
+    }
+    Ok(sr_3d::prim::parametric_grid(&grid, &uvs, nu, segments, [closed, true]))
+}
+
+/// The meshes of an axes object at this frame, in the object's local space.
+#[derive(Debug)]
+pub struct Axes3DMeshes {
+    /// What the object's material draws: the axis lines, the ticks and the tubes of the plots without a `material`.
+    pub own: crate::parametric::ParamMesh,
+    /// The tubes of the plots with a `material`, one mesh per material id, in the order the plots first name it.
+    pub parts: Vec<(std::sync::Arc<str>, crate::parametric::ParamMesh)>,
+}
+
+/// A primitive and the linear colour of its vertices.
+type Tinted = (sr_3d::Primitive, [f32; 4]);
+
+/// Merges primitives into one, each vertex coloured with its primitive's colour, and keys the result by its content.
+fn merge(parts: Vec<Tinted>) -> crate::parametric::ParamMesh {
+    let mut mesh = sr_3d::Primitive::default();
+    let mut words: Vec<u64> = Vec::new();
+    for (part, c) in parts {
+        let base = mesh.vertices.len() as u32;
+        mesh.indices.extend(part.indices.iter().map(|k| k + base));
+        for mut v in part.vertices {
+            v.color = c;
+            words.extend(v.pos.iter().chain(&v.color).map(|x| x.to_bits() as u64));
+            mesh.vertices.push(v);
+        }
+        words.push(u64::MAX);
+    }
+    crate::parametric::ParamMesh { key: crate::rng::hash(&words), mesh }
+}
+
+/// The meshes of an axes object at this frame (rules 10 and 11): its three axis lines and their ticks as cylinders
+/// of `lineWidth` in the `axes3D`'s `color`, and each plot's tube in its `color`, as vertex colours. A plot whose
+/// curve makes no tube (fewer than two distinct finite points) is left out, with a problem.
+pub(crate) fn axes3d_mesh(
+    f: &mut crate::eval::Frame,
+    n: u32,
+    inst: &Axes3DInst,
+    problems: &mut Vec<String>,
+    who: &str,
+) -> Result<Axes3DMeshes, PlotError> {
+    let a = &inst.axes;
+    let size = [a.width.get(), a.height.get(), a.depth.get()];
+    let ranges = [[a.x_min, a.x_max], [a.y_min, a.y_max], [a.z_min, a.z_max]];
+    let ax = plots::Axes3D::new(ranges[0], ranges[1], ranges[2], size)?;
+    let least = size[0].min(size[1]).min(size[2]);
+    let radius = a.line_width.map(|w| w.get()).unwrap_or(0.01 * least) / 2.0;
+    let tick = a.tick_length.map(|t| t.get()).unwrap_or(0.02 * least);
+    let steps = [a.x_step, a.y_step, a.z_step];
+    let color = linear(&a.color);
+    let at = |d: [f64; 3]| plots::to_scene(&ax, d[0], d[1], d[2]);
+    let origin = ranges.map(|r| plots::axis_position(r[0], r[1]));
+    let mut parts: Vec<Tinted> = Vec::new();
+    let mut by_material: Vec<(std::sync::Arc<str>, Vec<Tinted>)> = Vec::new();
+    for k in 0..3 {
+        let (mut lo, mut hi) = (origin, origin);
+        (lo[k], hi[k]) = (ranges[k][0], ranges[k][1]);
+        parts.push((tube_mesh(&[at(lo), at(hi)], radius, LINE_SEGMENTS, false)?, color));
+        if !a.ticks {
+            continue;
+        }
+        let step = match steps[k] {
+            Some(s) => s.get(),
+            None => plots::nice_step(ranges[k][0], ranges[k][1])?,
+        };
+        // a tick crosses its axis upright, a y tick along x
+        let dir = if k == 1 { [tick / 2.0, 0.0, 0.0] } else { [0.0, tick / 2.0, 0.0] };
+        for v in plots::ticks(ranges[k][0], ranges[k][1], step)? {
+            let mut d = origin;
+            d[k] = v;
+            let c = at(d);
+            let ends = [[c[0] - dir[0], c[1] - dir[1], c[2] - dir[2]], [c[0] + dir[0], c[1] + dir[1], c[2] + dir[2]]];
+            parts.push((tube_mesh(&ends, radius, LINE_SEGMENTS, false)?, color));
+        }
+    }
+    for (i, p) in inst.plots.iter().enumerate() {
+        let ts: Vec<[f64; 2]> =
+            plots::grid(p.t[0], p.t[1], p.samples, p.closed)?.into_iter().map(|t| [t, 0.0]).collect();
+        let mut xyz = [Vec::new(), Vec::new(), Vec::new()];
+        for (k, v) in xyz.iter_mut().enumerate() {
+            f.sampled(n, p.exprs[k], &ts, v);
+        }
+        let pts: Vec<[f64; 3]> = (0..ts.len()).map(|s| at([xyz[0][s], xyz[1][s], xyz[2][s]])).collect();
+        let r = p.radius.unwrap_or(0.015 * least);
+        let mesh = match tube_mesh(&pts, r, p.segments, p.closed) {
+            Ok(mesh) => mesh,
+            Err(e) => {
+                problems.push(format!("{who}/plot3D[{i}]: {e}"));
+                continue;
+            }
+        };
+        match &p.material {
+            None => parts.push((mesh, p.color)),
+            Some(id) => match by_material.iter_mut().find(|(m, _)| m == id) {
+                Some((_, group)) => group.push((mesh, p.color)),
+                None => by_material.push((id.clone(), vec![(mesh, p.color)])),
+            },
+        }
+    }
+    Ok(Axes3DMeshes { own: merge(parts), parts: by_material.into_iter().map(|(id, g)| (id, merge(g))).collect() })
+}

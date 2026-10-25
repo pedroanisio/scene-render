@@ -333,6 +333,8 @@ pub struct InstNode {
     pub axes_part: Option<(u32, AxesPart)>,
     /// The plots draft: the `axes` node whose data units place this child (its x, y, anchorX and anchorY, rule 9).
     pub data_axes: Option<u32>,
+    /// The plots draft: this `object3D primitive="axes"`'s axes and plots, in `Program::axes3d`.
+    pub axes3d: Option<u32>,
 }
 
 /// The nodes an `axes` lowers to (the plots draft), in paint order: the grid, the axis lines, the ticks, each
@@ -593,6 +595,8 @@ pub struct Program {
     pub plots: Vec<crate::axes::PlotInst>,
     /// The `axes` nodes, whose frames the evaluator computes before it places their children.
     pub axes_nodes: Vec<u32>,
+    /// The 3D axes objects (the plots draft, rules 10 and 11), indexed by [`InstNode::axes3d`].
+    pub axes3d: Vec<crate::axes::Axes3DInst>,
     /// Links.
     pub links: Vec<LinkInst>,
     /// The point generators of repeats with a `points` child (SREP 26).
@@ -1296,6 +1300,9 @@ struct Builder {
     plots: Vec<crate::axes::PlotInst>,
     /// Plots waiting for their expressions to compile: (plot shape node, axes node, plot index, plot, scope, doc).
     pending_plot: Vec<(u32, u32, usize, m::Plot, Arc<str>, u16)>,
+    axes3d: Vec<crate::axes::Axes3DInst>,
+    /// 3D axes objects waiting for their plots' expressions to compile: (node, axes, plots, scope, doc).
+    pending_axes3d: Vec<(u32, m::Axes3D, Vec<m::Plot3D>, Arc<str>, u16)>,
     links: Vec<LinkInst>,
     elements: Vec<ElemTarget>,
     /// Element targets that run on an include's clock: (element, include node). See [`Slot::clock`].
@@ -1631,6 +1638,7 @@ impl Builder {
                 clip: attr_bool(e, "clip").unwrap_or(false),
                 axes_part: None,
                 data_axes: None,
+                axes3d: None,
             };
             self.nodes.push(node);
             if matches!(name, "flock" | "fluid" | "slime" | "erosion" | "compute" | "program") {
@@ -3562,6 +3570,43 @@ impl Builder {
                 self.nodes[n as usize].axes_part = Some((axes, AxesPart::Plot(k)));
             }
         }
+        // the plots draft: the x, y and z expressions of a 3D axes' plots, in t
+        for (n, axes, plots, scope, doc) in std::mem::take(&mut self.pending_axes3d) {
+            let points = self.nodes[n as usize].point.is_some();
+            let seed = self.project_seed;
+            let mut insts = Vec::with_capacity(plots.len());
+            for (i, plot) in plots.iter().enumerate() {
+                let mut exprs = [0u32; 3];
+                let mut ok = true;
+                for (k, (attr, src)) in [("x", &plot.x), ("y", &plot.y), ("z", &plot.z)].into_iter().enumerate() {
+                    let who = format!("{}/plot3D[{i}]@{attr}", self.nodes[n as usize].id);
+                    let mut res = ExprResolver { b: self, scope: scope.clone(), doc, points, sample: &["t"] };
+                    match vm::compile(src, &mut res) {
+                        Ok(code) => {
+                            self.exprs.push(ExprInst { code, slot: None, node: Some(n), doc, seed });
+                            exprs[k] = (self.exprs.len() - 1) as u32;
+                        }
+                        Err(e) => {
+                            ok = false;
+                            let excerpt: String = src.chars().skip(e.offset.saturating_sub(10)).take(30).collect();
+                            self.diags.push(err(
+                                "E01",
+                                format!("{who}: {} (near {:?})", e.message, excerpt.trim()),
+                                plot.loc,
+                                who.as_str(),
+                            ));
+                        }
+                    }
+                }
+                if ok {
+                    insts.push(crate::axes::Plot3DInst::new(plot, exprs));
+                }
+            }
+            if insts.len() == plots.len() {
+                self.axes3d.push(crate::axes::Axes3DInst { axes, plots: insts });
+                self.nodes[n as usize].axes3d = Some((self.axes3d.len() - 1) as u32);
+            }
+        }
         for (slot, l, _node, scope, doc) in std::mem::take(&mut self.pending_link) {
             let who = self.slot_name(slot);
             let source = if let Some(p) = l.source.strip_prefix("param:") {
@@ -3929,6 +3974,8 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         pending_geom: Vec::new(),
         plots: Vec::new(),
         pending_plot: Vec::new(),
+        axes3d: Vec::new(),
+        pending_axes3d: Vec::new(),
         links: Vec::new(),
         elements: Vec::new(),
         elem_clock: HashMap::new(),
@@ -3974,6 +4021,14 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         if let Some(def) = crate::parametric::definition(&*elem) {
             let seed = b.project_seed;
             b.pending_geom.push((n, def, seed, scope.clone(), doc_ix));
+        }
+        if elem.element_name() == "object3D" && attr_str(&*elem, "primitive").as_deref() == Some("axes") {
+            let kids = children(&*elem);
+            let axes = kids.iter().find_map(|c| c.as_any().downcast_ref::<m::Axes3D>()).cloned();
+            let plots = kids.iter().filter_map(|c| c.as_any().downcast_ref::<m::Plot3D>()).cloned().collect();
+            if let Some(axes) = axes {
+                b.pending_axes3d.push((n, axes, plots, scope.clone(), doc_ix));
+            }
         }
     }
     b.globals();
@@ -4130,6 +4185,7 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         geoms: b.geoms,
         plots: b.plots,
         axes_nodes,
+        axes3d: b.axes3d,
         links: b.links,
         points: b.points,
         connectors: b.connectors.into_iter().map(|(c, _, _)| c).collect(),
