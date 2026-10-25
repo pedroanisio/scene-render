@@ -243,6 +243,39 @@ fn a_non_finite_update_is_a_render_error() {
     assert!(g.failures.iter().any(|f| f.starts_with("v: ") && f.contains("non-finite")), "{:?}", g.failures);
 }
 
+/// A map modifier reading `v` one second ahead, `v` stepping by `update` each second.
+fn ahead_by(update: &str) -> Evaluator {
+    evaluator(
+        &format!(r#"<value id="v" value="1" step="1" update="{update}"/>"#),
+        &rect("s", r#"<deform><modifier type="map" x="u + propAtTime('v.value', time + 1)" y="v"/></deform>"#),
+    )
+}
+
+/// `ahead_by` with an update that fails at the first step: the map fails from 0 s.
+fn ahead() -> Evaluator {
+    ahead_by("value / 0")
+}
+
+#[test]
+fn a_fold_that_fails_where_only_a_map_modifier_reads_it_is_a_render_error() {
+    let g = ahead().evaluate(0.5);
+    assert!(g.failures.iter().any(|f| f.starts_with("v: ") && f.contains("non-finite")), "{:?}", g.failures);
+}
+
+#[test]
+fn a_map_point_that_reads_a_failed_fold_is_not_a_number() {
+    let g = ahead().evaluate(0.5);
+    let n = g.nodes.iter().find(|n| &*n.id == "s").expect("node s");
+    let (_, spec) = n.deform_maps.first().expect("the map");
+    let p = g.point_map(spec).unwrap()(2.0, 3.0);
+    assert!(p[0].is_nan() && p[1].is_nan(), "{p:?}");
+    // with a finite update the same map reads the state one step on
+    let g = ahead_by("value + 1").evaluate(0.5);
+    assert!(g.failures.is_empty(), "{:?}", g.failures);
+    let n = g.nodes.iter().find(|n| &*n.id == "s").expect("node s");
+    assert_eq!(g.point_map(&n.deform_maps[0].1).unwrap()(2.0, 3.0), [4.0, 3.0]);
+}
+
 #[test]
 fn dt_and_draw_are_names_of_an_update_only() {
     for x in ["dt", "draw(0, 0)"] {
@@ -252,4 +285,15 @@ fn dt_and_draw_are_names_of_an_update_only() {
         };
         assert!(got.iter().any(|c| c == "E01"), "{x}: {got:?}");
     }
+}
+
+#[test]
+fn a_map_modifier_reads_a_value_as_a_number() {
+    let ev = evaluator(
+        r#"<value id="w" value="5"/>"#,
+        &rect("s", r#"<deform><modifier type="map" x="prop('w.value')" y="v * prop('w.value')"/></deform>"#),
+    );
+    let g = ev.evaluate(0.5);
+    let n = g.nodes.iter().find(|n| &*n.id == "s").expect("node s");
+    assert_eq!(g.point_map(&n.deform_maps[0].1).unwrap()(2.0, 3.0), [5.0, 15.0]);
 }

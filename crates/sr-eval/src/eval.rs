@@ -407,6 +407,35 @@ pub struct MapSpec {
     t: f64,
 }
 
+impl MapSpec {
+    /// The values of `x` and `y` at (u, v), each NaN when its expression gives no number. A list of one number is
+    /// that number, as a number property reads it: a value asset's state is a list (the reactive-values draft).
+    fn point(&self, p: &Program, u: f64, v: f64, memo: &Memo) -> [f64; 2] {
+        let mut regs = Vec::new();
+        self.exprs.map(|x| {
+            let mut h = ExprHost {
+                p,
+                frame: None,
+                comp_t: self.comp_t,
+                t: self.t,
+                slot: None,
+                expr: x,
+                value: Value::Num(0.0),
+                depth: 0,
+                memo,
+                sample: [u, v],
+                fold: None,
+            };
+            let r = vm::run(&p.exprs[x as usize].code, &mut h, &mut regs);
+            match &r {
+                V::Num(_) | V::Bool(_) => r.num(),
+                V::Arr(a) if a.len() == 1 && matches!(a[0], V::Num(_) | V::Bool(_)) => a[0].num(),
+                _ => f64::NAN,
+            }
+        })
+    }
+}
+
 impl FrameGraph {
     /// The point function of a `map` modifier of this frame: (u, v) in data units to the values of its `x` and `y`,
     /// each NaN when its expression gives no number. It holds the program, so it outlives the graph and runs on any
@@ -420,27 +449,13 @@ impl FrameGraph {
         let spec = spec.clone();
         Ok(move |u: f64, v: f64| {
             let memo = Memo::default();
-            let mut regs = Vec::new();
-            spec.exprs.map(|x| {
-                let mut h = ExprHost {
-                    p: &p,
-                    frame: None,
-                    comp_t: spec.comp_t,
-                    t: spec.t,
-                    slot: None,
-                    expr: x,
-                    value: Value::Num(0.0),
-                    depth: 0,
-                    memo: &memo,
-                    sample: [u, v],
-                    fold: None,
-                };
-                let r = vm::run(&p.exprs[x as usize].code, &mut h, &mut regs);
-                match r {
-                    V::Num(_) | V::Bool(_) => r.num(),
-                    _ => f64::NAN,
-                }
-            })
+            let xy = spec.point(&p, u, v, &memo);
+            // a point that read a failed fold (a non-finite state) is no point; the frame reported the failure
+            if memo.failures.borrow().is_empty() {
+                xy
+            } else {
+                [f64::NAN; 2]
+            }
         })
     }
 
@@ -1643,7 +1658,12 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
             deform_maps: node
                 .deform_maps
                 .iter()
-                .map(|(k, x)| (k.clone(), MapSpec { key: k.clone(), exprs: *x, comp_t: f.t, t: tl }))
+                .map(|(k, x)| {
+                    let spec = MapSpec { key: k.clone(), exprs: *x, comp_t: f.t, t: tl };
+                    // one point with the frame's memo, so a fold the map reads at another time reports its failure
+                    spec.point(p, 0.0, 0.0, &f.memo);
+                    (k.clone(), spec)
+                })
                 .collect(),
             clay_mesh: None,
             param_box: None,
