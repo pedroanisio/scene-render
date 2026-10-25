@@ -129,7 +129,7 @@ pub fn parse_utc(text: &str) -> Result<Civil, SpaceError> {
         };
         let h = digits(z.get(1..3).ok_or_else(bad)?, 2).ok_or_else(bad)?;
         let m = digits(z.get(4..6).ok_or_else(bad)?, 2).ok_or_else(bad)?;
-        if z.get(3..4) != Some(":") {
+        if z.get(3..4) != Some(":") || h > 23 || m > 59 {
             return Err(bad());
         }
         (s, sign * (h as i64 * 60 + m as i64))
@@ -170,6 +170,17 @@ pub fn parse_utc(text: &str) -> Result<Civil, SpaceError> {
     let (days, mins) = (utc.div_euclid(1440), utc.rem_euclid(1440));
     let (uy, um, ud) = civil_from_days(days);
     Ok((uy as i32, um, ud, (mins / 60) as u32, (mins % 60) as u32, second))
+}
+
+/// A Julian day written as a decimal number (`xs:decimal`'s lexical form, TF2): XML whitespace around an optional
+/// sign and digits with at most one point; no exponent, infinity or NaN.
+fn julian_day_text(text: &str) -> Option<f64> {
+    let t = text.trim_matches([' ', '\t', '\r', '\n']);
+    let digits = t.strip_prefix(['+', '-']).unwrap_or(t);
+    let lexical = digits.bytes().any(|c| c.is_ascii_digit())
+        && digits.bytes().all(|c| c.is_ascii_digit() || c == b'.')
+        && digits.bytes().filter(|&c| c == b'.').count() <= 1;
+    lexical.then(|| t.parse().ok()).flatten()
 }
 
 /// TAI − UTC in whole seconds at a UTC Julian day; dates before 1972 are refused.
@@ -225,11 +236,7 @@ impl Space {
         let et0 = match scale {
             TimeScale::Utc => et_from_utc(epoch)?,
             TimeScale::Tt | TimeScale::Tdb => {
-                let jd: f64 = epoch
-                    .trim()
-                    .parse()
-                    .ok()
-                    .filter(|j: &f64| j.is_finite())
+                let jd = julian_day_text(epoch)
                     .ok_or_else(|| SpaceError::Time(format!("a TT or TDB epoch is a Julian day: {epoch:?}")))?;
                 let tt = (jd - J2000_JD) * 86400.0;
                 if scale == TimeScale::Tt {

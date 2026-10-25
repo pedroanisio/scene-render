@@ -181,12 +181,20 @@ fn time_scale_inputs_out_of_range_are_errors() {
         "2003-10-17T12:30:30+0é:0",
         "2003-10-17T12:30:30.Z",
         "0000-01-01T00:00:00Z",
+        "2003-10-17T12:30:30+24:00",
+        "2003-10-17T12:30:30+05:60",
     ] {
         assert!(matches!(parse_utc(bad), Err(SpaceError::Time(_))), "{bad}");
     }
     assert!(leap_seconds(2441317.4).is_err());
     assert!(Space::new("1971-12-31T23:59:59Z", TimeScale::Utc, 1.0, 0, Frame::Icrf).is_err());
-    assert!(Space::new("J2000", TimeScale::Tt, 1.0, 0, Frame::Icrf).is_err());
+    // a TT or TDB epoch is a decimal number, as TF2 reads it: no exponent, infinity or NaN
+    for bad in ["J2000", "2.451545e6", "inf", "NaN", "", ".", "+", "2451545 0", "0x10"] {
+        assert!(Space::new(bad, TimeScale::Tt, 1.0, 0, Frame::Icrf).is_err(), "{bad}");
+    }
+    for good in ["2451545.0", " 2451545 ", "+2451545", "-100.5", ".5", "2451545."] {
+        assert!(Space::new(good, TimeScale::Tdb, 1.0, 0, Frame::Icrf).is_ok(), "{good}");
+    }
     for rate in [-1.0, f64::NAN, f64::INFINITY] {
         assert!(Space::new("2451545.0", TimeScale::Tdb, rate, 0, Frame::Icrf).is_err(), "{rate}");
     }
