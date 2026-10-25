@@ -570,6 +570,27 @@
     "itr2-nested.scene.xml": [
       "ITR2"
     ],
+    "med-droplet-range.scene.xml": [
+      "S06"
+    ],
+    "med-phase-enum.scene.xml": [
+      "S06"
+    ],
+    "med1.scene.xml": [
+      "MED1"
+    ],
+    "med2.scene.xml": [
+      "MED2"
+    ],
+    "med3.scene.xml": [
+      "MED3"
+    ],
+    "med4-after-v8.scene.xml": [
+      "V8"
+    ],
+    "med4.scene.xml": [
+      "MED4"
+    ],
     "mov1.scene.xml": [
       "MOV1"
     ],
@@ -1493,6 +1514,8 @@
     "itr1-check-every-plus-1.scene.xml": [],
     "joint.scene.xml": [],
     "kitchen-sink.scene.xml": [],
+    "med-draine.scene.xml": [],
+    "med-fog.scene.xml": [],
     "mesh-sequence-version-1.6.scene.xml": [],
     "mesh-sequence.scene.xml": [],
     "metal-without-environment.scene.xml": [],

@@ -1200,6 +1200,19 @@ impl<'a> Eval<'a> {
                 "voxel assets and the voxels primitive require version=\"1.3\" or later.".into()
             });
         }
+        // the media draft: the phase attributes need version 1.8. Its Schematron rule follows V8's in the same pattern,
+        // so a document of 1.0 to 1.2, which V8's rule matches first, does not reach it.
+        if local == "scene"
+            && n.parent_element().is_none()
+            && matches!(a("version"), Some("1.3" | "1.4" | "1.5" | "1.6" | "1.7"))
+        {
+            let phased = n.descendants().any(|d| {
+                is(d, "medium") && ["phase", "phaseAlpha", "dropletDiameter"].iter().any(|k| d.attribute(*k).is_some())
+            });
+            self.check(!phased, n, "MED4", || {
+                "medium phase, phaseAlpha and dropletDiameter require version=\"1.8\" or later.".into()
+            });
+        }
 
         if matches!(local, "object3D" | "pyro" | "particles3D") {
             let own = local == "object3D"
@@ -2118,6 +2131,22 @@ impl<'a> Eval<'a> {
                 });
                 self.check(grid_only, n, "VOL10", || {
                     "the lightGrid* attributes of a medium apply only with lighting=\"grid\".".into()
+                });
+                // the first medium's attributes, as the Schematron's medium/@x reads them (VOL3 allows one)
+                let medium = |k: &str| kids(n, "medium").find_map(|m| m.attribute(k));
+                let phased = |k: &str| kids(n, "medium").any(|m| m.attribute(k).is_some());
+                self.check(!phased("phaseAlpha") || medium("phase") == Some("draine"), n, "MED1", || {
+                    "medium phaseAlpha applies only with phase=\"draine\".".into()
+                });
+                self.check(!phased("dropletDiameter") || medium("phase") == Some("fog"), n, "MED2", || {
+                    "medium dropletDiameter applies only with phase=\"fog\".".into()
+                });
+                let fixed = kids(n, "medium").any(|m| {
+                    matches!(m.attribute("phase"), Some("rayleigh" | "fog")) && m.attribute("anisotropy").is_some()
+                });
+                self.check(!fixed || medium("anisotropy").map(xpath_number) == Some(0.0), n, "MED3", || {
+                    "medium anisotropy is absent or 0 with phase=\"rayleigh\" and phase=\"fog\", whose shapes are fixed."
+                        .into()
                 });
                 // more bounces of a medium that scatters nothing have nothing to do (an albedo of black: the first three digits of the colour)
                 for m in kids(n, "medium") {

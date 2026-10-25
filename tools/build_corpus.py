@@ -317,6 +317,13 @@ CASES = [
     ("vol-scatter-bounces-range", ["S06"], lambda _: VOLUME.replace('<medium albedo="#000000" ', '<medium albedo="#808080" scatterBounces="33" ')),
     ("vol-scatter-bounces-fraction", ["S06"], lambda _: VOLUME.replace('<medium ', '<medium scatterBounces="1.5" ')),
     ("vol10", ["VOL10"], lambda _: VOLUME.replace('<medium ', '<medium lightGridCell="2" ')),
+    ("med1", ["MED1"], lambda _: VOLUME.replace('version="1.3"', 'version="1.8"').replace('<medium ', '<medium phaseAlpha="2" ')),
+    ("med2", ["MED2"], lambda _: VOLUME.replace('version="1.3"', 'version="1.8"').replace('<medium ', '<medium phase="draine" dropletDiameter="20" ')),
+    ("med3", ["MED3"], lambda _: VOLUME.replace('version="1.3"', 'version="1.8"').replace('<medium ', '<medium phase="rayleigh" anisotropy="0.3" ')),
+    ("med4", ["MED4"], lambda _: VOLUME.replace('version="1.3"', 'version="1.7"').replace('<medium ', '<medium phase="rayleigh" ')),
+    ("med4-after-v8", ["V8"], lambda _: VOLUME.replace('version="1.3"', 'version="1.2"').replace('<medium ', '<medium phase="rayleigh" ')),
+    ("med-phase-enum", ["S06"], lambda _: VOLUME.replace('version="1.3"', 'version="1.8"').replace('<medium ', '<medium phase="mie" ')),
+    ("med-droplet-range", ["S06"], lambda _: VOLUME.replace('version="1.3"', 'version="1.8"').replace('<medium ', '<medium phase="fog" dropletDiameter="60" ')),
     ("vol-lighting-enum", ["S06"], lambda _: VOLUME.replace('<medium ', '<medium lighting="fast" ')),
     ("vol-light-grid-cell", ["S06"], lambda _: VOLUME.replace('<medium ', '<medium lighting="grid" lightGridCell="0" ')),
     ("vol-light-grid-directions", ["S06"], lambda _: VOLUME.replace('<medium ', '<medium lighting="grid" lightGridDomeDirections="4" ')),
@@ -815,6 +822,8 @@ FRACTAL = ('<scene version="1.6"><project width="64" height="64" fps="24" durati
     '<fractal id="j" kind="julia" width="16" height="16" juliaX="-0.8" juliaY="0.156"/></assets>'
     '<composition><layer id="l" asset="f"/><layer id="m" asset="j" x="20"/></composition></scene>\n')
 VALID["fractal"] = FRACTAL
+VALID["med-fog"] = VOLUME.replace('version="1.3"', 'version="1.8"').replace('<medium ', '<medium phase="fog" dropletDiameter="20" anisotropy="0" ')
+VALID["med-draine"] = VOLUME.replace('version="1.3"', 'version="1.8"').replace('<medium ', '<medium phase="draine" anisotropy="0.5" phaseAlpha="2" ')
 CASES += [
     ("v16-fractal", ["V16"], lambda _: FRACTAL.replace('version="1.6"', 'version="1.5"')),
     ("frc1-julia-without-c", ["FRC1"], lambda _: FRACTAL.replace(' juliaX="-0.8" juliaY="0.156"', ' juliaX="-0.8"')),

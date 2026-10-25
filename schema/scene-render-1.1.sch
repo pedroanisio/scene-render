@@ -509,12 +509,18 @@
     <sch:rule context="/scene[@version='1.0' or @version='1.1' or @version='1.2']">
       <sch:assert id="V8" test="not(assets/volume|.//medium|.//pyro|.//object3D[@primitive='volume' or @volume])">volumetric assets and media require version="1.3" or later.</sch:assert>
     </sch:rule>
+    <sch:rule context="/scene[@version='1.0' or @version='1.1' or @version='1.2' or @version='1.3' or @version='1.4' or @version='1.5' or @version='1.6' or @version='1.7']">
+      <sch:assert id="MED4" test="not(.//medium[@phase or @phaseAlpha or @dropletDiameter])">medium phase, phaseAlpha and dropletDiameter require version="1.8" or later.</sch:assert>
+    </sch:rule>
     <sch:rule context="object3D">
       <sch:assert id="VOL1" test="not(@primitive='volume') or count(@volume|pyro)=1">volume primitive requires exactly one source: @volume or a pyro child.</sch:assert>
       <sch:assert id="VOL2" test="not(@volume) or /scene/assets/volume[@id=current()/@volume]">object3D/@volume must name a volume asset.</sch:assert>
       <sch:assert id="VOL3" test="count(medium)&lt;=1 and (@primitive='volume' or (not(medium) and not(@volume) and not(pyro)))">one medium child and @volume are permitted only on a volume primitive.</sch:assert>
       <sch:assert id="VOL5" test="not(medium[normalize-space(@blackbody)='true' or normalize-space(@blackbody)='1']) or pyro or /scene/assets/volume[@id=current()/@volume]/@temperatureGrid">blackbody emission requires a declared temperatureGrid on the volume asset.</sch:assert>
       <sch:assert id="VOL10" test="not(medium[@lightGridCell or @lightGridDomeDirections or @lightGridMemoryMiB]) or medium/@lighting='grid'">the lightGrid* attributes of a medium apply only with lighting="grid".</sch:assert>
+      <sch:assert id="MED1" test="not(medium/@phaseAlpha) or medium/@phase='draine'">medium phaseAlpha applies only with phase="draine".</sch:assert>
+      <sch:assert id="MED2" test="not(medium/@dropletDiameter) or medium/@phase='fog'">medium dropletDiameter applies only with phase="fog".</sch:assert>
+      <sch:assert id="MED3" test="not(medium[@phase='rayleigh' or @phase='fog']/@anisotropy) or number(medium/@anisotropy)=0">medium anisotropy is absent or 0 with phase="rayleigh" and phase="fog", whose shapes are fixed.</sch:assert>
     </sch:rule>
     <sch:rule context="pyro">
       <sch:let name="nx" value="number(substring(normalize-space(@width),1+number(starts-with(normalize-space(@width),'+')))) div number(substring(normalize-space(@voxelSize),1+number(starts-with(normalize-space(@voxelSize),'+'))))"/>

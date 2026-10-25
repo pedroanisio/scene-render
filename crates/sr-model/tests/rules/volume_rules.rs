@@ -191,3 +191,47 @@ fn more_scattering_in_a_medium_that_does_not_scatter_has_a_warning() {
         assert!(got.is_empty(), "{quiet}: {got:?}");
     }
 }
+
+/// The media draft (schema/UPSTREAM): phase, phaseAlpha and dropletDiameter, with MED1 to MED3.
+#[test]
+fn phase_functions_take_their_own_parameters() {
+    let medium = |attrs: &str| OBJECT.replace("<medium ", &format!("<medium {attrs} "));
+    for ok in [
+        r#"phase="hg" anisotropy="0.6""#,
+        r#"phase="rayleigh""#,
+        r#"phase="rayleigh" anisotropy="0""#,
+        r#"phase="draine" anisotropy="0.5" phaseAlpha="2""#,
+        r#"phase="draine" phaseAlpha="0""#,
+        r#"phase="fog" dropletDiameter="5""#,
+        r#"phase="fog" dropletDiameter="50""#,
+    ] {
+        assert!(codes("1.8", ASSET, &medium(ok)).is_empty(), "{ok}: {:?}", codes("1.8", ASSET, &medium(ok)));
+    }
+    for (bad, code) in [
+        (r#"phaseAlpha="2""#, "MED1"),
+        (r#"phase="hg" phaseAlpha="2""#, "MED1"),
+        (r#"phase="fog" phaseAlpha="2""#, "MED1"),
+        (r#"dropletDiameter="20""#, "MED2"),
+        (r#"phase="draine" dropletDiameter="20""#, "MED2"),
+        (r#"phase="rayleigh" anisotropy="0.3""#, "MED3"),
+        (r#"phase="fog" anisotropy="-0.2""#, "MED3"),
+    ] {
+        assert!(
+            codes("1.8", ASSET, &medium(bad)).contains(&code.into()),
+            "{bad}: {:?}",
+            codes("1.8", ASSET, &medium(bad))
+        );
+    }
+    for bad in [
+        r#"phase="mie""#,
+        r#"phase="draine" phaseAlpha="-1""#,
+        r#"phase="fog" dropletDiameter="4.9""#,
+        r#"phase="fog" dropletDiameter="51""#,
+    ] {
+        assert!(
+            codes("1.8", ASSET, &medium(bad)).contains(&"S06".into()),
+            "{bad}: {:?}",
+            codes("1.8", ASSET, &medium(bad))
+        );
+    }
+}

@@ -1,5 +1,6 @@
-//! Document version 1.8: the random-streams draft's (schema/UPSTREAM). It adds no syntax and no rule depends on it; it
-//! changes only the draws of simulations (crates/sr-eval/tests/scene/version_1_8.rs).
+//! Document version 1.8: the random-streams draft's (schema/UPSTREAM), which changes the draws of simulations
+//! (crates/sr-eval/tests/scene/version_1_8.rs), and the media draft's, which adds the medium attributes phase,
+//! phaseAlpha and dropletDiameter (MED4).
 
 fn load(version: &str) -> Result<sr_model::Document, sr_model::LoadError> {
     let xml = format!(
@@ -24,7 +25,8 @@ fn a_version_after_1_8_is_not() {
     }
 }
 
-/// Every document of the conformance corpus validates exactly alike at 1.7 and at 1.8: the new version gates no syntax.
+/// Every document of the conformance corpus validates alike at 1.7 and at 1.8 but for MED4, the gate of the media
+/// draft's medium attributes.
 #[test]
 fn the_corpus_validates_alike_at_1_7_and_1_8() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus");
@@ -55,9 +57,43 @@ fn the_corpus_validates_alike_at_1_7_and_1_8() {
                 c.sort();
                 c
             };
-            assert_eq!(codes(&a), codes(&b), "{}", f.display());
+            // MED4 is the one difference: a 1.7 document may not carry the phase attributes 1.8 adds
+            let phased = xml.split("<medium").skip(1).any(|tag| {
+                let tag = &tag[..tag.find('>').unwrap_or(tag.len())];
+                [" phase=", " phaseAlpha=", " dropletDiameter="].iter().any(|k| tag.contains(k))
+            });
+            let mut at_1_7 = codes(&a);
+            let gated = at_1_7.iter().any(|c| c == "MED4");
+            at_1_7.retain(|c| c != "MED4");
+            assert_eq!(gated, phased && !codes(&b).iter().any(|c| c == "S01"), "{}", f.display());
+            assert_eq!(at_1_7, codes(&b), "{}", f.display());
             compared += 1;
         }
     }
     assert!(compared > 100, "{compared} documents compared");
+}
+
+/// MED4 (the media draft): phase, phaseAlpha and dropletDiameter need version 1.8; the media of earlier versions are
+/// Henyey–Greenstein, as they were.
+#[test]
+fn the_phase_attributes_need_version_1_8() {
+    let codes = |version: &str, attrs: &str| {
+        let xml = format!(
+            r#"<scene version="{version}"><project width="32" height="32" fps="30" duration="1"/><assets><volume id="smoke" src="smoke.srvol"/></assets><composition><object3D id="v" primitive="volume" volume="smoke"><medium {attrs} extinction="0.5"/></object3D></composition></scene>"#
+        );
+        let opts = sr_model::LoadOptions { verify_assets: false, base_dir: None };
+        sr_model::validate_str(&xml, &opts).diagnostics.into_iter().map(|d| d.code).collect::<Vec<_>>()
+    };
+    for attrs in [
+        r#"phase="rayleigh""#,
+        r#"phase="hg""#,
+        r#"phase="draine" phaseAlpha="2""#,
+        r#"phase="fog" dropletDiameter="20""#,
+    ] {
+        assert!(codes("1.8", attrs).is_empty(), "{attrs}: {:?}", codes("1.8", attrs));
+        for v in ["1.3", "1.5", "1.6", "1.7"] {
+            assert!(codes(v, attrs).contains(&"MED4".to_string()), "{v} {attrs}: {:?}", codes(v, attrs));
+        }
+    }
+    assert!(codes("1.7", r#"anisotropy="0.5""#).is_empty());
 }

@@ -4678,6 +4678,17 @@
       <xs:annotation><xs:documentation>Version 1.3. The most collisions a path may have in the medium before the light reaches the camera, counting the one that is lit directly: 1 is single scattering (what the medium does without the attribute), 0 is a medium that does not scatter (absorption and emission only), and more add the light that has been scattered more than once, estimated by the path tracer by a random walk.</xs:documentation></xs:annotation>
       <xs:simpleType><xs:restriction base="xs:nonNegativeInteger"><xs:maxInclusive value="32"/></xs:restriction></xs:simpleType>
     </xs:attribute>
+    <xs:attribute name="phase" default="hg">
+      <xs:annotation><xs:documentation>Version 1.8. The phase function of the medium's scattering: hg is Henyey–Greenstein with anisotropy as its g (what the medium does without the attribute); rayleigh is Rayleigh scattering, as by air, and takes no anisotropy; draine is Draine's two-parameter function with anisotropy as its g and phaseAlpha as its alpha; fog is the Henyey–Greenstein and Draine mixture fitted to water droplets of dropletDiameter, and takes neither anisotropy nor phaseAlpha. hg when absent.</xs:documentation></xs:annotation>
+      <xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="hg"/><xs:enumeration value="rayleigh"/><xs:enumeration value="draine"/><xs:enumeration value="fog"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="phaseAlpha" type="nonNegativeDecimal" default="1">
+      <xs:annotation><xs:documentation>Version 1.8. With phase draine, the alpha of Draine's phase function: 0 is Henyey–Greenstein, 1 is Cornette–Shanks, larger values sharpen the side lobes. 1 when absent.</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="dropletDiameter" default="10">
+      <xs:annotation><xs:documentation>Version 1.8. With phase fog, the mean diameter of the water droplets in micrometres, 5 to 50, which selects the fitted phase function; it is not a scene length. 10 when absent.</xs:documentation></xs:annotation>
+      <xs:simpleType><xs:restriction base="xs:double"><xs:minInclusive value="5"/><xs:maxInclusive value="50"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
   </xs:complexType>
   <xs:complexType name="particles3DType">
     <xs:choice minOccurs="0" maxOccurs="unbounded"><xs:group ref="animationElements"/><xs:element name="transformConstraint" type="transformConstraintType"/><xs:element name="burst" type="burst3DType"/></xs:choice>
