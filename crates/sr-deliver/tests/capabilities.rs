@@ -52,10 +52,15 @@ fn the_published_manifest_is_well_formed() {
         .any(|(i, t)| !upstream[i + t.len()..].starts_with(|c: char| c.is_ascii_digit() || c == '.'));
     assert!(named, "schema {} is not the vendored release in schema/UPSTREAM", m.schema);
     // the engine accepts the vendored release's version, or the next one when schema/UPSTREAM records it as a local
-    // addition ahead of a release (document version 1.6)
+    // addition ahead of a release: the clause that names SCHEMA_VERSION, up to its colon, calls it one
+    let v = sr_model::SCHEMA_VERSION;
+    let declared = format!("Document version {v} (sr_model::SCHEMA_VERSION is \"{v}\")");
+    let local = upstream.find(&declared).is_some_and(|i| {
+        let clause = &upstream[i + declared.len()..];
+        clause[..clause.find(':').unwrap_or(clause.len())].contains("a local addition")
+    });
     assert!(
-        m.schema.starts_with(sr_model::SCHEMA_VERSION)
-            || upstream.contains(&format!("document version {} ", sr_model::SCHEMA_VERSION)),
+        m.schema.starts_with(v) || local,
         "SCHEMA_VERSION {} is neither the manifest's schema {} nor a local addition in schema/UPSTREAM",
         sr_model::SCHEMA_VERSION,
         m.schema
