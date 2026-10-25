@@ -47,7 +47,8 @@ pub(super) fn law() -> Law {
         crater_radius: c.radius,
         crater_duration: c.duration,
         particles: 4000,
-        seed: 20_261_007,
+        draws: sr_sim::rng::Draws::Legacy(20_261_007),
+        burst: 0,
         angle: 45.0,
         angle_spread: 15.0,
     })

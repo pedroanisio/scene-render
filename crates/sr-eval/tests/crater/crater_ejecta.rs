@@ -162,3 +162,24 @@ fn a_faster_body_throws_its_ejecta_faster() {
     let (slow, fast) = (speed(60.0), speed(150.0));
     assert!(slow < fast, "fastest ejecta: {slow} against {fast}");
 }
+
+#[test]
+fn ejecta_of_a_1_8_document_draw_from_the_streams_of_the_project_and_scrub_alike() {
+    let velocities = |version: &str, project: &str| {
+        let xml = Setup::default().xml().replace(
+            r#"<scene version="1.3"><project width="64""#,
+            &format!(r#"<scene version="{version}"><project{project} width="64""#),
+        );
+        let doc = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
+        let ev = Evaluator::new(&doc, &Default::default()).unwrap();
+        let a = debris(&ev, 0.6);
+        assert!(!a.frame.particles.is_empty());
+        let _ = debris(&ev, 0.1);
+        assert_eq!(debris(&ev, 0.6).key, a.key, "{version}: scrubbing back gives the same ejecta");
+        a.frame.particles.iter().map(|p| p.velocity).collect::<Vec<_>>()
+    };
+    // before 1.8 an emitter's ejecta seed is its @seed alone; from 1.8 it is E(project, id, @seed, "stream")
+    assert_eq!(velocities("1.7", ""), velocities("1.7", r#" seed="5""#));
+    assert_ne!(velocities("1.8", ""), velocities("1.8", r#" seed="5""#));
+    assert_ne!(velocities("1.7", ""), velocities("1.8", ""));
+}

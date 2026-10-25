@@ -73,7 +73,8 @@ struct Runtime {
     /// The ocean the particles fall into, if one lists the emitter.
     splash: Option<crate::splash::Emitter>,
     gas: Option<GasRt>,
-    seed: u64,
+    /// The draws of the emitter, which its crater bursts share.
+    draws: sr_sim::rng::Draws,
     /// How far above the surface the ejecta of a crater are born: the largest collision radius.
     lift: f64,
     crater_bursts: Vec<CraterBurst>,
@@ -292,7 +293,7 @@ fn build(
     Ok(Runtime {
         splash: fall.map(|(_, emitter)| emitter),
         gas: text(e, "gas").map(|id| GasRt { id: id.as_str().into(), window: Vec::new() }),
-        seed: e.seed,
+        draws: spec.draws,
         lift,
         crater_bursts,
         debris,
@@ -318,7 +319,7 @@ struct SceneDriver<'a, 'b> {
     sweeps: Vec<(u64, u64, Vec<sim::collider::Collider>)>,
     step_origin: f64,
     step: f64,
-    seed: u64,
+    draws: sr_sim::rng::Draws,
     lift: f64,
     bursts: &'a mut [CraterBurst],
     /// The smoke that drags the particles, with the emitter's drag as the coupling.
@@ -609,7 +610,14 @@ impl SceneDriver<'_, '_> {
             crater_radius: cause.law.radius,
             crater_duration: cause.law.duration,
             particles: count,
-            seed: crate::rng::hash(&[self.seed, k as u64, 0xe1ec7a]),
+            // a legacy emitter derives one seed per burst; a stream reads burst k as the step of its draws
+            draws: match self.draws {
+                sr_sim::rng::Draws::Legacy(seed) => {
+                    sr_sim::rng::Draws::Legacy(crate::rng::hash(&[seed, k as u64, 0xe1ec7a]))
+                }
+                stream => stream,
+            },
+            burst: k as u64,
             angle,
             angle_spread: spread,
         })
@@ -946,7 +954,7 @@ impl Sims {
             sweeps: Vec::new(),
             step_origin: num(&*n.elem, "emissionStart", 0.),
             step: num(&*n.elem, "dt", 1. / 60.),
-            seed: rt.seed,
+            draws: rt.draws,
             lift: rt.lift,
             bursts: &mut rt.crater_bursts,
             gas: rt.gas.as_mut().map(|gas| (gas, &mut *pyro, rt.emitter.spec().drag)),

@@ -45,7 +45,9 @@ pub fn crater_cut_of(
         crater_radius: law.radius,
         crater_duration: law.duration,
         particles: LAW_SAMPLES,
-        seed,
+        // a voxel crater is outside the random-streams SREP: its launch angles are a hash of the seed and the cell
+        draws: sr_sim::rng::Draws::Legacy(seed),
+        burst: 0,
         angle,
         angle_spread: spread,
     })?;

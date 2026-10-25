@@ -31,6 +31,7 @@
 //! without a checked mapping to each other.
 
 use super::Material;
+use crate::rng::Draws;
 use rayon::prelude::*;
 
 const NU: f64 = 0.4;
@@ -55,6 +56,13 @@ fn row(material: Material) -> Result<(f64, f64, f64, f64, f64), String> {
     })
 }
 
+/// The purposes of the stream draws of ejecta (random-streams SREP, section 5), read at step t = the burst: free
+/// in the table of the 3D emitter whose element seed the ejecta share.
+pub mod purpose {
+    pub const ELEVATION: u32 = 41;
+    pub const AZIMUTH: u32 = 42;
+}
+
 /// The impact and the crater it made.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Spec {
@@ -75,7 +83,10 @@ pub struct Spec {
     pub crater_radius: f64,
     pub crater_duration: f64,
     pub particles: usize,
-    pub seed: u64,
+    /// The launch draws: particle i of burst `burst` reads S(e, 41, burst, i) for its elevation and S(e, 42,
+    /// burst, i) for its azimuth, or, from a legacy seed, unit(seed, i, 1) and 2 whatever the burst.
+    pub draws: Draws,
+    pub burst: u64,
     /// Degrees above the tangent plane, and the half-width of the uniform spread.
     pub angle: f64,
     pub angle_spread: f64,
@@ -183,9 +194,18 @@ pub fn ejecta(spec: &Spec) -> Result<Vec<Ejecta>, String> {
         let x = (lo3 + q * (hi3 - lo3)).cbrt();
         let speed = (u * c1 * ((x / a) * ratio.powf(NU)).powf(-1.0 / mu) * (1.0 - x / x_max).powf(p)).min(u);
         let time = (duration * (x / radius).powi(3)).min(duration);
-        let elevation =
-            (spec.angle + spec.angle_spread * (2.0 * crate::rng::unit(spec.seed, i as u64, 1) - 1.0)).to_radians();
-        let az = azimuth(crate::rng::unit(spec.seed, i as u64, 2), b);
+        let elevation = (spec.angle
+            + spec.angle_spread
+                * (2.0
+                    * spec.draws.at_step(purpose::ELEVATION, spec.burst, i as u64, |seed| {
+                        crate::rng::unit(seed, i as u64, 1)
+                    })
+                    - 1.0))
+            .to_radians();
+        let az = azimuth(
+            spec.draws.at_step(purpose::AZIMUTH, spec.burst, i as u64, |seed| crate::rng::unit(seed, i as u64, 2)),
+            b,
+        );
         let direction: [f64; 3] = std::array::from_fn(|c| az.cos() * e1[c] + az.sin() * e2[c]);
         Ejecta {
             time,

@@ -21,7 +21,8 @@ fn spec(material: Material, speed: f64, theta: f64, particles: usize) -> Spec {
         crater_radius: radius,
         crater_duration: 0.8 * (volume.cbrt() / 9.81).sqrt(),
         particles,
-        seed: 20_261_003,
+        draws: sr_sim::rng::Draws::Legacy(20_261_003),
+        burst: 0,
         angle: 45.0,
         angle_spread: 15.0,
     }
@@ -196,7 +197,7 @@ fn results_do_not_depend_on_the_thread_count_and_the_seed_selects_them() {
         assert_eq!(pool.install(|| ejecta(&s).unwrap()), reference, "{threads} threads");
     }
     assert_eq!(ejecta(&s).unwrap(), reference);
-    let other = ejecta(&Spec { seed: s.seed + 1, ..s.clone() }).unwrap();
+    let other = ejecta(&Spec { draws: sr_sim::rng::Draws::Legacy(20_261_004), ..s.clone() }).unwrap();
     assert_ne!(other, reference);
     // The stratified launch radii and masses do not depend on the seed; angles and azimuths do.
     assert!(other.iter().zip(&reference).all(|(a, b)| a.mass == b.mass && (radius_of(a) - radius_of(b)).abs() < 1e-9));
@@ -263,7 +264,8 @@ fn landings(particles: usize, angle: f64, spread: f64) -> (f64, Vec<(f64, f64)>)
         crater_radius: law.radius,
         crater_duration: law.duration,
         particles,
-        seed: 20_261_006,
+        draws: sr_sim::rng::Draws::Legacy(20_261_006),
+        burst: 0,
         angle,
         angle_spread: spread,
     })
@@ -323,4 +325,24 @@ fn the_ballistic_landing_points_of_the_ejecta_make_a_mantle_that_is_measured_aga
         );
         assert!(slope.is_finite());
     }
+}
+
+#[test]
+fn stream_ejecta_of_burst_k_launch_at_their_draws_of_purpose_41_at_step_k() {
+    use sr_sim::cratering::ejecta::purpose;
+    use sr_sim::rng::Draws;
+    let e = 856627436;
+    for burst in [0, 3] {
+        let s = Spec { draws: Draws::Stream(e), burst, ..spec(Material::DrySand, 5000.0, 60.0, 64) };
+        for (i, p) in ejecta(&s).unwrap().iter().enumerate() {
+            let elevation = (p.velocity[1] / norm(p.velocity)).asin().to_degrees();
+            let want = 45.0 + 15.0 * sr_vector::d24::stream_signed(e, purpose::ELEVATION, burst as u32, i as u64);
+            assert!((elevation - want).abs() < 1e-9, "{burst} {i}: {elevation} != {want}");
+        }
+    }
+    let s = spec(Material::DrySand, 5000.0, 60.0, 64);
+    let at = |draws, burst| ejecta(&Spec { draws, burst, ..s.clone() }).unwrap();
+    assert_ne!(at(Draws::Stream(e), 0), at(Draws::Stream(e), 1));
+    // a legacy seed draws the same whatever the burst: the eval derives one seed per burst
+    assert_eq!(at(Draws::Legacy(e), 0), at(Draws::Legacy(e), 1));
 }
