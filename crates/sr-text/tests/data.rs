@@ -728,3 +728,22 @@ fn an_unknown_chart_kind_does_not_parse() {
     assert!(chart::Kind::parse("").is_none());
     assert!(chart::Kind::parse("Column").is_none());
 }
+
+#[test]
+fn a_formula_drawn_in_its_measured_box_stays_inside_it() {
+    let mut lib = lib();
+    let paint = Paint::Solid { rgba: [1.0; 4], srgb: false };
+    for tex in ["1", "x^2", "\\frac{a}{b}", "-0.5", "\\mathrm{Im}", "y_k"] {
+        let [w, h] = formula::measure(&mut lib, tex, 40.0).unwrap();
+        let d = formula::draw(&mut lib, tex, 40.0, [w, h], paint.clone(), 0.05).unwrap();
+        let [x0, y0, x1, y1] = d.scene.bounds().0;
+        // the box is the layout's: ink stays within it, and a box twice as tall centres the ink the same way
+        assert!(
+            y0 >= -0.5 && y1 <= h + 0.5 && x0 >= -0.5 && x1 <= w + 0.5,
+            "{tex}: {:?} in {w} × {h}",
+            [x0, y0, x1, y1]
+        );
+        let tall = formula::draw(&mut lib, tex, 40.0, [w, 2.0 * h], paint.clone(), 0.05).unwrap().scene.bounds().0;
+        assert!(((tall[1] + tall[3]) - (y0 + y1) - h).abs() < 1e-6, "{tex}: {tall:?}");
+    }
+}

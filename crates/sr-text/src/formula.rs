@@ -813,15 +813,8 @@ fn math_italic(c: char) -> char {
     }
 }
 
-/// Typesets `tex` at `size` px, centred in a `size_box` box and scaled down to fit.
-pub fn draw(
-    lib: &mut FontLib,
-    tex: &str,
-    size: f64,
-    size_box: [f64; 2],
-    color: Paint,
-    tol: f64,
-) -> Result<Drawing, String> {
+/// The layout of `tex` at `size` px, with the math face it is set in.
+fn typeset(lib: &mut FontLib, tex: &str, size: f64) -> Result<(usize, B), String> {
     let chars: Vec<char> = tex.chars().collect();
     let mut parser = Parser { s: &chars, i: 0, depth: 0 };
     let ast = parser.row(None)?;
@@ -835,11 +828,31 @@ pub fn draw(
             ctx.layout(&ast, size, 0, true)
         })
         .ok_or("math font does not parse")?;
+    Ok((face, b))
+}
+
+/// The width and height of `tex` typeset at `size` px: the box [`draw`] draws it in at its natural size.
+pub fn measure(lib: &mut FontLib, tex: &str, size: f64) -> Result<[f64; 2], String> {
+    let (_, b) = typeset(lib, tex, size)?;
+    Ok([b.w, b.asc + b.desc])
+}
+
+/// Typesets `tex` at `size` px, centred in a `size_box` box and scaled down to fit.
+pub fn draw(
+    lib: &mut FontLib,
+    tex: &str,
+    size: f64,
+    size_box: [f64; 2],
+    color: Paint,
+    tol: f64,
+) -> Result<Drawing, String> {
+    let (face, b) = typeset(lib, tex, size)?;
     let (w, h) = (b.w, b.asc + b.desc);
     let fit = (size_box[0] / w.max(1e-9)).min(size_box[1] / h.max(1e-9)).min(1.0);
     let place = Xf::translate(size_box[0] * 0.5, size_box[1] * 0.5)
         .mul(&Xf::scale(fit, fit))
-        .mul(&Xf::translate(-w * 0.5, -(b.asc - h * 0.5)));
+        // the layout's box spans [−asc, desc] about its baseline (y down): its middle is (desc − asc)/2
+        .mul(&Xf::translate(-w * 0.5, b.asc - h * 0.5));
     let mut path = Path::default();
     for it in &b.items {
         match *it {
