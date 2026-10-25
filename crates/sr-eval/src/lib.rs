@@ -61,6 +61,7 @@ pub mod solid;
 pub mod splash;
 pub mod stroke_font;
 pub mod terrain;
+pub mod time_frames;
 pub mod value;
 pub mod voxel;
 pub mod voxel_asset;

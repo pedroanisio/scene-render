@@ -643,6 +643,9 @@ pub struct Program {
     pub safe_area_id: Option<String>,
     /// Base directory of each document (0 = main, then includes).
     pub base_dirs: Vec<PathBuf>,
+    /// The `space` of each document (0 = main, then includes), read once, or why it cannot be read (the
+    /// time-frames draft).
+    pub skies: Vec<Option<Result<crate::time_frames::Sky, String>>>,
     /// SHA-256 of the bytes of each document (the main one first, then each include as it was loaded).
     pub source_digests: Vec<[u8; 32]>,
     /// Warnings.
@@ -4639,6 +4642,7 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
     let safe_area = resolved_safe_area.as_ref().map(crate::safe_area::insets_of).unwrap_or([0.0; 4]);
     let safe_enforce =
         resolved_safe_area.as_ref().map(|a| crate::safe_area::SafeEnforce::of(a.enforce)).unwrap_or_default();
+    let skies = b.docs.iter().map(|d| crate::time_frames::Sky::of(&d.scene, &d.base, &d.ns)).collect();
     let base_dirs = b.docs.iter().map(|d| d.base.clone()).collect();
     let source_digests = b.docs.iter().map(|d| d.digest).collect();
     Ok(Program {
@@ -4650,6 +4654,7 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         stroke_fonts: Default::default(),
         voxel_models: Default::default(),
         base_dirs,
+        skies,
         source_digests,
         safe_area,
         safe_enforce,

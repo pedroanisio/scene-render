@@ -26,6 +26,7 @@ sr-vector.workspace = true
 sr-text.workspace = true
 sr-sim = { path = "../sr-sim" }
 sr-3d = { path = "../sr-3d" }
+sr-space.workspace = true
 glam = "0.30"
 image.workspace = true
 sha2.workspace = true

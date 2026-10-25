@@ -3211,6 +3211,7 @@ dependencies = [
  "sr-media",
  "sr-model",
  "sr-sim",
+ "sr-space",
  "sr-testkit",
  "sr-text",
  "sr-vector",

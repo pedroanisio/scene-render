@@ -118,6 +118,14 @@ impl Props {
     pub fn get(&self, name: &str) -> Option<&Value> {
         self.0.iter().find(|(k, _)| &**k == name).map(|(_, v)| v)
     }
+
+    /// Sets a property to a number, adding it when the element has no slot of that name.
+    pub(crate) fn set(&mut self, name: &str, v: f64) {
+        match self.0.iter_mut().find(|(k, _)| &**k == name) {
+            Some(slot) => slot.1 = Value::Num(v),
+            None => self.0.push((Arc::from(name), Value::Num(v))),
+        }
+    }
 }
 
 impl serde::Serialize for Props {
@@ -1678,6 +1686,7 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
         world: Vec<Option<(Affine, f64)>>,
         out_ix: Vec<Option<u32>>,
         problems: Vec<String>,
+        failures: Vec<String>,
     }
     // every drawn node is alive, so the alive count bounds the output without reserving for the whole document
     let alive = f.alive.iter().filter(|&&a| a).count();
@@ -1687,6 +1696,7 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
         world: vec![None; n],
         out_ix: vec![None; n],
         problems: axes_problems,
+        failures: Vec::new(),
     };
 
     // depth-first, z-sorted, active nodes only
@@ -1781,10 +1791,14 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
                     // path replaced.
                     let turn = node.motion.as_ref().is_some_and(|m| m.auto_orient).then_some(("rotation", lc.rot));
                     for (k, v) in [("x", lc.pos[0]), ("y", lc.pos[1])].into_iter().chain(turn) {
-                        match props.0.iter_mut().find(|(name, _)| &**name == k) {
-                            Some(slot) => slot.1 = Value::Num(v),
-                            None => props.0.push((Arc::from(k), Value::Num(v))),
-                        }
+                        props.set(k, v);
+                    }
+                }
+                // the time-frames draft: a body's ephemeris position and fixed axes replace the object's own
+                if let (Node::Object3D(obj), Some(Some(sky))) = (&*node.elem, p.skies.get(node.doc as usize)) {
+                    let placed = sky.as_ref().map_err(String::clone).and_then(|sky| sky.place(obj, f.t, &mut props));
+                    if let Err(e) = placed {
+                        o.failures.push(format!("{}: {e}", node.id));
                     }
                 }
                 props
@@ -2039,6 +2053,9 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
     };
     // the reactive-values draft: a fold whose update produced a non-finite state is a render error
     for m in f.memo.failures.take() {
+        graph.fail(m);
+    }
+    for m in out.failures {
         graph.fail(m);
     }
     crate::joints::attach(p, &mut graph);
