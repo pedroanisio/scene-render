@@ -3577,7 +3577,7 @@
     <xs:attribute name="resolution">
       <xs:simpleType><xs:restriction base="xs:positiveInteger"><xs:maxInclusive value="4096"/></xs:restriction></xs:simpleType>
     </xs:attribute>
-    <xs:attribute name="seed" type="xs:unsignedLong" default="0"/>
+    <xs:attribute name="seed" type="xs:unsignedLong"/>
     <xs:attribute name="opacity" type="unitDecimal" default="1"/>
   </xs:complexType>
   <xs:complexType name="fieldPortraitType">
