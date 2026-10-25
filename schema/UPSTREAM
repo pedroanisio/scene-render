@@ -32,7 +32,7 @@ field/portrait | field/contours | field/lines | field/streamlines, FLD5, FLD6 on
 (pattern p-srep-fields, last) and V17's clause. Local to this branch and not in the draft's table: blend and effects on the field (as on axes), and
 contours/@levels is required. The typed model holds fieldType's sequence of choices as one child list
 (crates/sr-model/build.rs, is_child_list); the structure stage checks the order.
-+ the diff of sr-core srep/srep-0000-time-frames.md (draft, Schema-Version 1.8, as of sr-core 8afc5cb): the ephemeris asset
++ the diff of sr-core srep/srep-0000-time-frames.md (draft, Schema-Version 1.8, as of sr-core 5083745): the ephemeris asset
 (ephemerisType: id, src, digest "sha256:" and 64 lowercase hex digits), the space element (spaceType, after physics: epoch,
 timeScale utc|tt|tdb, rate, origin, frame icrf|eclipticJ2000|bodyFixed, frameBody, ephemeris), object3D/@body,
 @positionFrom document|ephemeris and @orientation document|bodyFixed, TF2 to TF5 (pattern p-srep-time-frames, last) and
@@ -41,9 +41,9 @@ for a sha256. The draft states TF2 to TF5 in prose; the asserts here write them 
 epoch's fields in range, February 29 in leap years, an offset to 23:59, its UTC instant (after the offset) from
 1972-01-01 on and, with the approximate elements' long table, in the year 3000 or earlier; a TT or TDB epoch a decimal number, Julian days 625332.5 to 2817152.5 with the approximate
 elements), TF3 and TF4 list rule 6's bodies with rotation elements, and integer attributes read by value (SREP 84).
-Local to this branch and not in the draft: TF5 also refuses an ephemeris that names no ephemeris asset, and, with the
-approximate elements, an origin other than 0, 10 or a planet 1 to 8 (the elements are heliocentric, so the barycentre 0
-is taken as the Sun).
+TF5 also refuses an ephemeris that names no ephemeris asset, and, with the approximate elements, an origin other than
+0, 10 or a planet 1 to 8 (the elements are heliocentric, so the barycentre 0 is taken as the Sun), as the draft states
+since 5083745.
 V17 is SREP 12's one shared 1.8 gate: one pattern, p-v17 (after p-srep75), whose one assert is the conjunction of
 the drafts' clauses.
 The branch merges when those SREPs are accepted; this file then names the schema-1.8.0 tag.
