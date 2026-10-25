@@ -27,6 +27,7 @@ pub mod data;
 mod debris;
 pub mod eval;
 pub mod expr;
+pub mod fields;
 pub mod fold;
 pub mod font_policy;
 pub mod fractal;
