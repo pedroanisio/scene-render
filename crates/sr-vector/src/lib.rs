@@ -21,6 +21,7 @@ pub mod path;
 pub mod rig;
 pub mod scene;
 pub mod shapes;
+pub mod space;
 pub mod stroke;
 pub mod svg;
 pub mod tile;

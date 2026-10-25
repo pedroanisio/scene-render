@@ -1004,7 +1004,7 @@ crates/sr-gpu/src/          gpu (device), color, drape (drawings rasterised on t
                             support: WGSL struct layouts)
 crates/sr-vector/src/       geom, path, shapes, measure (trim, dash), stroke, modifiers, deform, arap, d24 (seeded
                             hashes and noise), rig, track, scene, tile (coarse stage and CPU fine stage), svg,
-                            lottie, zip; markers (stroke markers, SREP 15)
+                            lottie, zip; markers (stroke markers, SREP 15); space (the space-transforms draft)
 crates/sr-text/src/         font, style, layout, glyph (outlines, COLR, bitmaps), animate (animators, presets,
                             text on a path), captions, chart, audiogram, code, formula; extrusion (glyph outlines for solid extrusion)
 crates/sr-media/src/        probe, decode (video look-ahead, audio), encode (codecs, containers, hardware, stills),

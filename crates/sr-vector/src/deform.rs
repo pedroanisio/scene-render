@@ -1,6 +1,10 @@
 //! The 14 deform modifiers as point maps in a node's local space. Vector
 //! content deforms its flattened outline point by point; raster content
 //! deforms a grid mesh (see [`grid`]) that the compositor draws.
+//!
+//! The space-transforms draft of sr-core adds `matrix`, `map` and `complex`
+//! ([`crate::space`]): with one of them in a chain, the chain maps the node's
+//! path before it is filled and stroked, subdivided adaptively ([`deform_polys`]).
 
 use crate::arap::Puppet;
 use crate::geom::{p, P};
@@ -11,6 +15,22 @@ use crate::modifiers::smooth_noise;
 pub enum Axis {
     X,
     Y,
+}
+
+/// The (u, v) → (u', v') expressions of a `map` modifier, in data units.
+#[derive(Clone)]
+pub struct PointMap(pub std::sync::Arc<dyn Fn(f64, f64) -> [f64; 2] + Send + Sync>);
+
+impl PointMap {
+    pub fn new(f: impl Fn(f64, f64) -> [f64; 2] + Send + Sync + 'static) -> PointMap {
+        PointMap(std::sync::Arc::new(f))
+    }
+}
+
+impl std::fmt::Debug for PointMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PointMap")
+    }
 }
 
 /// A deformer with parameters resolved for this frame.
@@ -40,6 +60,12 @@ pub enum Deformer {
     Turbulence { amount: f64, frequency: f64, phase: f64, seed: u64 },
     /// Homography taking the box corners to four points (TL, TR, BR, BL).
     CornerPin { h: [f64; 9] },
+    /// The SVG matrix (a, b, c, d, e, f) about `center` (the space-transforms draft, rule 1); `tol` is rule 4's.
+    Matrix { m: [f64; 6], center: P, tol: f64 },
+    /// Expressions of the data coordinates about `center` at `unit` pixels per data unit, +v up (rule 2).
+    Map { f: PointMap, center: P, unit: f64, tol: f64 },
+    /// A named complex function in the frame of `Map` (rule 3).
+    Complex { f: crate::space::ComplexFn, coefficients: Vec<f64>, center: P, unit: f64, tol: f64 },
 }
 
 impl Deformer {
@@ -131,8 +157,60 @@ impl Deformer {
                 let w = if w.abs() < 1e-12 { 1e-12 } else { w };
                 p((h[0] * q.x + h[1] * q.y + h[2]) / w, (h[3] * q.x + h[4] * q.y + h[5]) / w)
             }
+            Deformer::Matrix { m, center, .. } => {
+                let [x, y] = crate::space::matrix_map(*m, [q.x, q.y], [center.x, center.y]);
+                p(x, y)
+            }
+            Deformer::Map { f, center, unit, .. } => {
+                let [x, y] = crate::space::expr_map(|u, v| (f.0)(u, v), [q.x, q.y], [center.x, center.y], *unit);
+                p(x, y)
+            }
+            Deformer::Complex { f, coefficients, center, unit, .. } => {
+                let [x, y] = crate::space::complex_map(*f, coefficients, [q.x, q.y], [center.x, center.y], *unit);
+                p(x, y)
+            }
         }
     }
+
+    /// The tolerance of rule 4 for the three types of the space-transforms draft; None for the others.
+    pub fn path_tolerance(&self) -> Option<f64> {
+        match self {
+            Deformer::Matrix { tol, .. } | Deformer::Map { tol, .. } | Deformer::Complex { tol, .. } => Some(*tol),
+            _ => None,
+        }
+    }
+}
+
+/// Whether a chain maps the path before fill and stroke (the space-transforms draft): with one of its three types
+/// in the chain, the least of their tolerances.
+pub fn path_tolerance(ds: &[Deformer]) -> Option<f64> {
+    ds.iter().filter_map(Deformer::path_tolerance).reduce(f64::min)
+}
+
+/// Rule 5 of the space-transforms draft on flattened polylines: each under the chain, subdivided by rule 4 at `tol`
+/// and broken at non-finite points into open subpaths. An unbroken closed polyline stays closed; a lone point maps
+/// to itself when its image is finite.
+pub fn deform_polys(ds: &[Deformer], polys: &[crate::path::Poly], tol: f64) -> Vec<crate::path::Poly> {
+    let f = |q: [f64; 2]| {
+        let r = apply_all(ds, p(q[0], q[1]));
+        [r.x, r.y]
+    };
+    let mut out = Vec::new();
+    for poly in polys {
+        let pts: Vec<[f64; 2]> = poly.pts.iter().map(|q| [q.x, q.y]).collect();
+        let parts = crate::space::deform_polyline(f, &pts, tol, poly.closed);
+        let to_p = |v: Vec<[f64; 2]>| v.into_iter().map(|q| p(q[0], q[1])).collect::<Vec<P>>();
+        match parts.as_slice() {
+            // unbroken: the closing segment ends on the first mapped point
+            [one] if poly.closed && one.len() > 2 && one.first() == one.last() => {
+                let mut v = one.clone();
+                v.pop();
+                out.push(crate::path::Poly { pts: to_p(v), closed: true });
+            }
+            _ => out.extend(parts.into_iter().map(|v| crate::path::Poly { pts: to_p(v), closed: false })),
+        }
+    }
+    out
 }
 
 /// Applies a chain of deformers in order.
