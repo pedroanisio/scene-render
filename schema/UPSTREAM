@@ -32,7 +32,7 @@ field/portrait | field/contours | field/lines | field/streamlines, FLD5, FLD6 on
 (pattern p-srep-fields, last) and V17's clause. Local to this branch and not in the draft's table: blend and effects on the field (as on axes), and
 contours/@levels is required. The typed model holds fieldType's sequence of choices as one child list
 (crates/sr-model/build.rs, is_child_list); the structure stage checks the order.
-+ the diff of sr-core srep/srep-0000-time-frames.md (draft, Schema-Version 1.8, as of sr-core 5083745): the ephemeris asset
++ the diff of sr-core srep/srep-0000-time-frames.md (draft, Schema-Version 1.8, as of sr-core d53e31d, whose conformance/tools/time_frames_kit.py writes and measures the draft's kit cases): the ephemeris asset
 (ephemerisType: id, src, digest "sha256:" and 64 lowercase hex digits), the space element (spaceType, after physics: epoch,
 timeScale utc|tt|tdb, rate, origin, frame icrf|eclipticJ2000|bodyFixed, frameBody, ephemeris), object3D/@body,
 @positionFrom document|ephemeris and @orientation document|bodyFixed, TF2 to TF5 (pattern p-srep-time-frames, last) and
