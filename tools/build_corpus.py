@@ -824,6 +824,29 @@ FRACTAL = ('<scene version="1.6"><project width="64" height="64" fps="24" durati
 VALID["fractal"] = FRACTAL
 VALID["med-fog"] = VOLUME.replace('version="1.3"', 'version="1.8"').replace('<medium ', '<medium phase="fog" dropletDiameter="20" anisotropy="0" ')
 VALID["med-draine"] = VOLUME.replace('version="1.3"', 'version="1.8"').replace('<medium ', '<medium phase="draine" anisotropy="0.5" phaseAlpha="2" ')
+PLOTS = ('<scene version="1.8"><project width="64" height="64" fps="24" duration="1" background="#000000FF"/>'
+    '<composition><axes id="ax" width="48" height="32" x="8" y="16" xMin="-3.14" xMax="3.14" yMin="-1.5" yMax="1.5" grid="true">'
+    '<plot kind="explicit" y="Math.sin(x)"/><plot kind="parametric" x="Math.cos(t)" y="Math.sin(t)" t1="6.28" closed="true"/>'
+    '<plot kind="polar" r="0.5"/><plot kind="implicit" f="x * x + y * y - 1"/>'
+    '<shape id="dot" shape="ellipse" width="4" height="4" x="0" y="0" fill="#FF0000FF"/></axes></composition></scene>\n')
+PLOTS3D = ('<scene version="1.8"><project width="64" height="64" fps="24" duration="1" background="#000000FF"/>'
+    '<materials><material id="m" baseColor="#FFCC00FF"/></materials><composition>'
+    '<object3D id="o" primitive="axes"><axes3D width="40" height="40" depth="40"/>'
+    '<plot3D x="Math.cos(t)" y="Math.sin(t)" z="t / 6.28" t1="12.56" material="m"/></object3D></composition></scene>\n')
+VALID["plots"] = PLOTS
+VALID["plots-3d"] = PLOTS3D
+CASES += [
+    ("v17", ["V17"], lambda _: PLOTS.replace('version="1.8"', 'version="1.7"')),
+    ("v17-axes3d", ["V17"], lambda _: PLOTS3D.replace('version="1.8"', 'version="1.6"')),
+    ("plt1", ["PLT1"], lambda _: PLOTS.replace('<plot kind="polar" r="0.5"/>', '<plot kind="polar" r="0.5" y="1"/>')),
+    ("plt2", ["PLT2"], lambda _: PLOTS.replace(' yMin="-1.5" yMax="1.5"', ' yMin="2"')),
+    ("plt2-axes3d", ["PLT2"], lambda _: PLOTS3D.replace('<axes3D ', '<axes3D zMin="1" zMax="0" ')),
+    ("plt3", ["PLT3"], lambda _: PLOTS3D.replace('<axes3D width="40" height="40" depth="40"/>', '')),
+    ("plt3-plot3d", ["PLT3"], lambda _: PLOTS3D.replace('primitive="axes"><axes3D width="40" height="40" depth="40"/>', 'primitive="sphere">')),
+    ("plot-kind-enum", ["S06", "PLT1"], lambda _: PLOTS.replace('kind="explicit"', 'kind="cubic"')),
+    ("plot-resolution-range", ["S06"], lambda _: PLOTS.replace('f="x * x + y * y - 1"', 'f="x * x + y * y - 1" resolution="5000"')),
+    ("plot3d-segments-range", ["S06"], lambda _: PLOTS3D.replace('material="m"', 'material="m" tubeSegments="2"')),
+]
 CASES += [
     ("v16-fractal", ["V16"], lambda _: FRACTAL.replace('version="1.6"', 'version="1.5"')),
     ("frc1-julia-without-c", ["FRC1"], lambda _: FRACTAL.replace(' juliaX="-0.8" juliaY="0.156"', ' juliaX="-0.8"')),

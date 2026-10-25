@@ -1129,6 +1129,41 @@ impl<'a> Eval<'a> {
                 "a julia fractal has juliaX and juliaY; a mandelbrot has neither.".into()
             });
         }
+        // the plots draft (p-srep-plots)
+        if local == "scene"
+            && n.parent_element().is_none()
+            && matches!(a("version"), Some("1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7"))
+        {
+            let uses = n.descendants().any(|d| {
+                ["axes", "plot", "axes3D", "plot3D"].iter().any(|e| is(d, e))
+                    || (is(d, "object3D") && d.attribute("primitive") == Some("axes"))
+            });
+            self.check(!uses, n, "V17", || {
+                "axes, plot, axes3D, plot3D and primitive=\"axes\" need version=\"1.8\".".into()
+            });
+        }
+        if local == "plot" {
+            let only = |want: &[&str]| ["x", "y", "r", "f"].iter().all(|e| has(e) == want.contains(e));
+            let ok = match a("kind") {
+                Some("explicit") => only(&["y"]),
+                Some("parametric") => only(&["x", "y"]),
+                Some("polar") => only(&["r"]),
+                Some("implicit") => only(&["f"]),
+                _ => false,
+            };
+            self.check(ok, n, "PLT1", || {
+                "a plot has the expressions of its kind: explicit y; parametric x and y; polar r; implicit f; and no \
+                 other."
+                    .into()
+            });
+        }
+        if local == "axes" || local == "axes3D" {
+            // sum(@min) - 1 when absent, below sum(@max) + 1 when absent: the defaults -1 and 1
+            let end = |name: &str, absent: f64| a(name).map_or(absent, xpath_number);
+            let below = |lo: &str, hi: &str| end(lo, -1.0) < end(hi, 1.0);
+            let ok = below("xMin", "xMax") && below("yMin", "yMax") && (local == "axes" || below("zMin", "zMax"));
+            self.check(ok, n, "PLT2", || "each min of an axes or axes3D is below its max.".into());
+        }
         if local == "iterate" {
             // by value, whatever the sign (SREP 85's amendment of SREP 67)
             let ok = !has("checkEvery") || num(n, "checkEvery") <= num(n, "steps");
@@ -1999,6 +2034,12 @@ impl<'a> Eval<'a> {
                 self.check(par2, n, "PAR2", || {
                     "primitive=\"parametric\" has exactly one parametricSurface and primitive=\"heightfield\" exactly one \
                      heightfield; no other primitive has either."
+                        .into()
+                });
+                // the plots draft (PLT3, in p-srep70's rule)
+                let axes = a("primitive") == Some("axes");
+                self.check(axes == one("axes3D") && (axes || !has_kid(n, "plot3D")), n, "PLT3", || {
+                    "primitive=\"axes\" has exactly one axes3D, and only such an object has an axes3D or a plot3D."
                         .into()
                 });
                 let static_inputs = a("primitive") != Some("globe")

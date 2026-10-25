@@ -26,7 +26,7 @@ fn a_version_after_1_8_is_not() {
 }
 
 /// Every document of the conformance corpus validates alike at 1.7 and at 1.8 but for MED4, the gate of the media
-/// draft's medium attributes.
+/// draft's medium attributes, and V17, the gate of the plots draft's elements.
 #[test]
 fn the_corpus_validates_alike_at_1_7_and_1_8() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus");
@@ -57,7 +57,7 @@ fn the_corpus_validates_alike_at_1_7_and_1_8() {
                 c.sort();
                 c
             };
-            // MED4 is the one difference: a 1.7 document may not carry the phase attributes 1.8 adds
+            // MED4 and V17 are the differences: a 1.7 document may not carry the phase attributes or the plots 1.8 adds
             let phased = xml.split("<medium").skip(1).any(|tag| {
                 let tag = &tag[..tag.find('>').unwrap_or(tag.len())];
                 [" phase=", " phaseAlpha=", " dropletDiameter="].iter().any(|k| tag.contains(k))
@@ -66,6 +66,11 @@ fn the_corpus_validates_alike_at_1_7_and_1_8() {
             let gated = at_1_7.iter().any(|c| c == "MED4");
             at_1_7.retain(|c| c != "MED4");
             assert_eq!(gated, phased && !codes(&b).iter().any(|c| c == "S01"), "{}", f.display());
+            let plotted =
+                ["<axes ", "<plot ", "<axes3D ", "<plot3D ", "primitive=\"axes\""].iter().any(|k| xml.contains(k));
+            let plot_gated = at_1_7.iter().any(|c| c == "V17");
+            at_1_7.retain(|c| c != "V17");
+            assert_eq!(plot_gated, plotted && !codes(&b).iter().any(|c| c == "S01"), "{}", f.display());
             assert_eq!(at_1_7, codes(&b), "{}", f.display());
             compared += 1;
         }

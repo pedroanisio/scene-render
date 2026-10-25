@@ -807,6 +807,7 @@
     </sch:rule>
     <sch:rule context="object3D">
       <sch:assert id="PAR2" test="(@primitive='parametric') = (count(parametricSurface) = 1) and (@primitive='heightfield') = (count(heightfield) = 1)">primitive="parametric" has exactly one parametricSurface and primitive="heightfield" exactly one heightfield; no other primitive has either.</sch:assert>
+      <sch:assert id="PLT3" test="(@primitive='axes') = (count(axes3D) = 1) and (not(plot3D) or @primitive='axes')">primitive="axes" has exactly one axes3D, and only such an object has an axes3D or a plot3D.</sch:assert>
     </sch:rule>
   </sch:pattern>
   <sch:pattern id="p-srep71">
@@ -860,6 +861,17 @@
     </sch:rule>
     <sch:rule context="assets/fractal">
       <sch:assert id="FRC1" test="(@kind='julia') = (boolean(@juliaX) and boolean(@juliaY))">a julia fractal has juliaX and juliaY; a mandelbrot has neither.</sch:assert>
+    </sch:rule>
+  </sch:pattern>
+  <sch:pattern id="p-srep-plots">
+    <sch:rule context="/scene[@version='1.0' or @version='1.1' or @version='1.2' or @version='1.3' or @version='1.4' or @version='1.5' or @version='1.6' or @version='1.7']">
+      <sch:assert id="V17" test="not(.//axes or .//plot or .//object3D[@primitive='axes'] or .//axes3D or .//plot3D)">axes, plot, axes3D, plot3D and primitive="axes" need version="1.8".</sch:assert>
+    </sch:rule>
+    <sch:rule context="plot">
+      <sch:assert id="PLT1" test="(@kind='explicit' and @y and not(@x or @r or @f)) or (@kind='parametric' and @x and @y and not(@r or @f)) or (@kind='polar' and @r and not(@x or @y or @f)) or (@kind='implicit' and @f and not(@x or @y or @r))">a plot has the expressions of its kind: explicit y; parametric x and y; polar r; implicit f; and no other.</sch:assert>
+    </sch:rule>
+    <sch:rule context="axes | axes3D">
+      <sch:assert id="PLT2" test="(sum(@xMin) - 1*number(not(@xMin))) &lt; (sum(@xMax) + 1*number(not(@xMax))) and (sum(@yMin) - 1*number(not(@yMin))) &lt; (sum(@yMax) + 1*number(not(@yMax))) and (not(self::axes3D) or (sum(@zMin) - 1*number(not(@zMin))) &lt; (sum(@zMax) + 1*number(not(@zMax))))">each min of an axes or axes3D is below its max.</sch:assert>
     </sch:rule>
   </sch:pattern>
 </sch:schema>

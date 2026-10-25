@@ -2484,6 +2484,8 @@
       <xs:element name="rigidBody" type="rigidBody3DType"/>
       <xs:element name="parametricSurface" type="parametricSurfaceType"/>
       <xs:element name="heightfield" type="heightfieldType"/>
+      <xs:element name="axes3D" type="axes3DType"/>
+      <xs:element name="plot3D" type="plot3DType"/>
     </xs:choice>
     <xs:attribute name="id" type="xs:ID" use="required"/>
     <xs:attribute name="name" type="xs:string"/>
@@ -2497,6 +2499,7 @@
         <xs:enumeration value="clay"/><xs:enumeration value="map"/><xs:enumeration value="globe"/>
         <xs:enumeration value="volume"/><xs:enumeration value="voxels"/>
         <xs:enumeration value="parametric"/><xs:enumeration value="heightfield"/>
+        <xs:enumeration value="axes"/>
       </xs:restriction></xs:simpleType>
     </xs:attribute>
     <xs:attribute name="material" type="xs:IDREF"/>
@@ -3247,6 +3250,8 @@
       <xs:element name="program" type="programNodeType"/>
       <!-- SREP 74, version 1.6 -->
       <xs:element name="viewport3D" type="viewport3DType"/>
+      <!-- the plots draft, version 1.8 -->
+      <xs:element name="axes" type="axesType"/>
     </xs:choice>
   </xs:group>
   <!-- ===================================================== SREP 74: a 3D scene with its own camera, as a node -->
@@ -3267,6 +3272,122 @@
     <xs:attribute name="background" type="paintType" default="#00000000"/>
     <xs:attribute name="blend" type="blendType" default="normal"/>
     <xs:attribute name="effects" type="xs:IDREFS"/>
+  </xs:complexType>
+  <!-- ===================================================== the plots draft: coordinate systems and plots (version 1.8) -->
+  <xs:complexType name="axesType">
+    <xs:annotation><xs:documentation>A coordinate system: maps the data ranges [xMin, xMax] x [yMin, yMax] onto a width x
+    height pixel box whose top-left is the node's origin (data y up), and draws its axis lines, ticks, tick labels and
+    grid. Its plot children draw curves in data units; the x, y, anchorX and anchorY of its other children are read in
+    data units, their other attributes in pixels. The plots draft of sr-core (srep/srep-0000-plots.md).</xs:documentation></xs:annotation>
+    <xs:choice minOccurs="0" maxOccurs="unbounded">
+      <xs:group ref="nodeBehaviour"/>
+      <xs:element name="plot" type="plotType"/>
+      <xs:group ref="nodeChoice"/>
+    </xs:choice>
+    <xs:attributeGroup ref="nodeAttributes"/>
+    <xs:attributeGroup ref="strokeStyle"/>
+    <xs:attribute name="kind" default="cartesian">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="cartesian"/><xs:enumeration value="complex"/>
+        <xs:enumeration value="polar"/><xs:enumeration value="number-line"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="width" type="positiveDecimal" use="required"/>
+    <xs:attribute name="height" type="positiveDecimal" use="required"/>
+    <xs:attribute name="xMin" type="xs:double" default="-1"/>
+    <xs:attribute name="xMax" type="xs:double" default="1"/>
+    <xs:attribute name="yMin" type="xs:double" default="-1"/>
+    <xs:attribute name="yMax" type="xs:double" default="1"/>
+    <xs:attribute name="xStep" type="positiveDecimal"/>
+    <xs:attribute name="yStep" type="positiveDecimal"/>
+    <xs:attribute name="ticks" type="xs:boolean" default="true"/>
+    <xs:attribute name="labels" type="xs:boolean" default="true"/>
+    <xs:attribute name="grid" type="xs:boolean" default="false"/>
+    <xs:attribute name="tickLength" type="positiveDecimal" default="6"/>
+    <xs:attribute name="labelSize" type="positiveDecimal" default="14"/>
+    <xs:attribute name="stroke" type="paintType" default="#FFFFFFFF"/>
+    <xs:attribute name="strokeWidth" type="positiveDecimal" default="2"/>
+    <xs:attribute name="gridStroke" type="paintType"/>
+    <xs:attribute name="clip" type="xs:boolean" default="true"/>
+    <xs:attribute name="blend" type="blendType" default="normal"/>
+    <xs:attribute name="effects" type="xs:IDREFS"/>
+    <xs:attribute name="isolate" type="xs:boolean" default="false"/>
+  </xs:complexType>
+  <xs:complexType name="plotType">
+    <xs:annotation><xs:documentation>A curve of its axes, in data units: explicit y of x, parametric x and y of t,
+    polar r of theta (radians), or implicit f of x and y at @level (marching squares on a resolution x resolution
+    grid). Drawn as a shape="path" over the sampled points mapped by the axes. The plots draft.</xs:documentation></xs:annotation>
+    <xs:attributeGroup ref="strokeStyle"/>
+    <xs:attributeGroup ref="trimPath"/>
+    <xs:attributeGroup ref="strokeMarkers"/>
+    <xs:attribute name="id" type="xs:ID"/>
+    <xs:attribute name="kind" use="required">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="explicit"/><xs:enumeration value="parametric"/>
+        <xs:enumeration value="polar"/><xs:enumeration value="implicit"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="y" type="expressionString"/>
+    <xs:attribute name="x" type="expressionString"/>
+    <xs:attribute name="r" type="expressionString"/>
+    <xs:attribute name="f" type="expressionString"/>
+    <xs:attribute name="x0" type="xs:double"/>
+    <xs:attribute name="x1" type="xs:double"/>
+    <xs:attribute name="t0" type="xs:double" default="0"/>
+    <xs:attribute name="t1" type="xs:double" default="1"/>
+    <xs:attribute name="theta0" type="xs:double" default="0"/>
+    <xs:attribute name="theta1" type="xs:double" default="6.283185307179586"/>
+    <xs:attribute name="level" type="xs:double" default="0"/>
+    <xs:attribute name="samples" default="256">
+      <xs:simpleType><xs:restriction base="xs:positiveInteger"><xs:minInclusive value="2"/><xs:maxInclusive value="1000000"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="resolution" default="64">
+      <xs:simpleType><xs:restriction base="xs:positiveInteger"><xs:maxInclusive value="4096"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="closed" type="xs:boolean" default="false"/>
+    <xs:attribute name="stroke" type="paintType" default="#FFCC00FF"/>
+    <xs:attribute name="strokeWidth" type="positiveDecimal" default="3"/>
+    <xs:attribute name="fill" type="paintType"/>
+  </xs:complexType>
+  <xs:complexType name="axes3DType">
+    <xs:annotation><xs:documentation>The 3D coordinate system of an object3D with primitive="axes": maps the data ranges onto
+    a width x height x depth box in the object's local space, centred on its origin (+y data up), with axis lines and ticks
+    as cylinders. The plots draft.</xs:documentation></xs:annotation>
+    <xs:attribute name="xMin" type="xs:double" default="-1"/>
+    <xs:attribute name="xMax" type="xs:double" default="1"/>
+    <xs:attribute name="yMin" type="xs:double" default="-1"/>
+    <xs:attribute name="yMax" type="xs:double" default="1"/>
+    <xs:attribute name="zMin" type="xs:double" default="-1"/>
+    <xs:attribute name="zMax" type="xs:double" default="1"/>
+    <xs:attribute name="width" type="positiveDecimal" use="required"/>
+    <xs:attribute name="height" type="positiveDecimal" use="required"/>
+    <xs:attribute name="depth" type="positiveDecimal" use="required"/>
+    <xs:attribute name="xStep" type="positiveDecimal"/>
+    <xs:attribute name="yStep" type="positiveDecimal"/>
+    <xs:attribute name="zStep" type="positiveDecimal"/>
+    <xs:attribute name="ticks" type="xs:boolean" default="true"/>
+    <xs:attribute name="tickLength" type="positiveDecimal"/>
+    <xs:attribute name="lineWidth" type="positiveDecimal"/>
+    <xs:attribute name="color" type="paintType" default="#FFFFFFFF"/>
+  </xs:complexType>
+  <xs:complexType name="plot3DType">
+    <xs:annotation><xs:documentation>A curve (x, y, z)(t) of its object's axes3D, drawn as a tube of tubeRadius around the
+    sampled points (parallel-transport frames, a parametricSurface of samples x tubeSegments). The plots draft.</xs:documentation></xs:annotation>
+    <xs:attribute name="x" type="expressionString" use="required"/>
+    <xs:attribute name="y" type="expressionString" use="required"/>
+    <xs:attribute name="z" type="expressionString" use="required"/>
+    <xs:attribute name="t0" type="xs:double" default="0"/>
+    <xs:attribute name="t1" type="xs:double" default="1"/>
+    <xs:attribute name="samples" default="256">
+      <xs:simpleType><xs:restriction base="xs:positiveInteger"><xs:minInclusive value="2"/><xs:maxInclusive value="1000000"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="closed" type="xs:boolean" default="false"/>
+    <xs:attribute name="tubeRadius" type="positiveDecimal"/>
+    <xs:attribute name="tubeSegments" default="8">
+      <xs:simpleType><xs:restriction base="xs:positiveInteger"><xs:minInclusive value="3"/><xs:maxInclusive value="64"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="color" type="paintType" default="#FFCC00FF"/>
+    <xs:attribute name="material" type="xs:IDREF"/>
   </xs:complexType>
   <!-- ===================================================== SREP 67: compute accumulation, density tonemap, iterate -->
   <xs:complexType name="computeType">

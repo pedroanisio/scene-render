@@ -755,6 +755,31 @@
     "pen2.scene.xml": [
       "PEN2"
     ],
+    "plot-kind-enum.scene.xml": [
+      "S06",
+      "PLT1"
+    ],
+    "plot-resolution-range.scene.xml": [
+      "S06"
+    ],
+    "plot3d-segments-range.scene.xml": [
+      "S06"
+    ],
+    "plt1.scene.xml": [
+      "PLT1"
+    ],
+    "plt2-axes3d.scene.xml": [
+      "PLT2"
+    ],
+    "plt2.scene.xml": [
+      "PLT2"
+    ],
+    "plt3-plot3d.scene.xml": [
+      "PLT3"
+    ],
+    "plt3.scene.xml": [
+      "PLT3"
+    ],
     "prg1-param-twice.scene.xml": [
       "PRG1"
     ],
@@ -1265,6 +1290,12 @@
     "v16-fractal.scene.xml": [
       "V16"
     ],
+    "v17-axes3d.scene.xml": [
+      "V17"
+    ],
+    "v17.scene.xml": [
+      "V17"
+    ],
     "v2-outputs.scene.xml": [
       "V2"
     ],
@@ -1548,6 +1579,8 @@
     "pdf-region.scene.xml": [],
     "physics-internal-edges.scene.xml": [],
     "pinned-fonts.scene.xml": [],
+    "plots-3d.scene.xml": [],
+    "plots.scene.xml": [],
     "prec1-f32-3d.scene.xml": [],
     "programs.scene.xml": [],
     "pyc6-x-plus-1.scene.xml": [],

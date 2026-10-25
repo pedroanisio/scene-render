@@ -4,15 +4,18 @@ this branch: the value 1.8 of scene/@version, its only schema change (no element
 + the diff of sr-core srep/srep-0000-media.md (draft, Schema-Version 1.8, as of sr-core 2c81f9d; a924ab5 rewrote its Draine
 cumulative without dividing by g and changed no schema file): the medium
 attributes phase, phaseAlpha and dropletDiameter, the Schematron rules MED1 to MED3 and the version gate MED4 (in
-the cinematic-volume pattern, after V8's rule, so a 1.0 to 1.2 document gets V8 alone).
+the cinematic-volume pattern, after V8's rule, so a 1.0 to 1.2 document gets V8 alone);
++ the diff of sr-core srep/srep-0000-plots.md (draft, Schema-Version 1.8, as of sr-core 26d7621): the axes node, the plot
+element, primitive="axes" with the object3D children axes3D and plot3D, the Schematron rules PLT1 and PLT2 and the
+version gate V17 (pattern p-srep-plots, after p-srep75), and PLT3 (in p-srep70's object3D rule, beside PAR2).
 The branch merges when those SREPs are accepted; this file then names the schema-1.8.0 tag.
 Source: https://github.com/pedroanisio/sr-core
 
-Canonical upstream files (SHA-256; the files of that tag with the two drafts' diffs; at the tag the .xsd is
+Canonical upstream files (SHA-256; the files of that tag with the three drafts' diffs; at the tag the .xsd is
 5ef91e6ca9a6d860047f2a5347c59fa17423cb99ef7535b7ceaca16619f8ce2c and the .sch, as in sr-core's schema/SHA256SUMS,
 868863e9ea4caf04e7f0bd9873c23ce5f723205714178349a4f385c4778fd368):
-  scene-render.xsd: 90c4aa6104127aceef78d5d3c2ade23431a300a014115471d088fd454def6e83
-  scene-render.sch: d025467adaa1b7db0e18a06e1226765c906570544f172de58d180d4dec45e1e5
+  scene-render.xsd: ca34776b31f03b76f55fe053efb96e0c75ae16d6c24890aa5d60fc5d026fe5b8
+  scene-render.sch: 059eef43dc23931a936c9c3a076c0dac35c425840d5904be5cc2c4d23de74915
   capabilities-1.schema.json: 6cb35c8ec6d37df32c9a0ad12eb33332d2abe4f11ac6000a9311d9891ec2e8b3
 
 scene-render-1.1.xsd, scene-render-1.1.sch and capabilities-1.schema.json are byte-identical to these files. Local
@@ -25,10 +28,10 @@ native OCN7 refuses an animated tracking on an ocean collider, as P3D6 and PYRO8
 document (corpus case ocn7-text-tracking, a native-only rule case). It is an erratum of sr-core's OCN7 for an SREP to
 settle. The warnings W05, W11 and W12 (SREP 76) and the program diagnostics are native only, as the SREPs define them.
 
-Document version 1.8 (sr_model::SCHEMA_VERSION is "1.8") is the random-streams and media drafts', a local addition on
-this branch: a 1.8 document is a 1.7 document whose simulations draw from the D24 streams of the random-streams
-draft's section 5 and whose media may name a phase function (MED4 refuses the media attributes before 1.8;
-crates/sr-model/tests/version_1_8.rs). Document version 1.7 is schema 1.7.0's. It adds no syntax and has no version
+Document version 1.8 (sr_model::SCHEMA_VERSION is "1.8") is the random-streams, media and plots drafts', a local addition
+on this branch: a 1.8 document is a 1.7 document whose simulations draw from the D24 streams of the random-streams
+draft's section 5, whose media may name a phase function and which may hold axes and plots (MED4 refuses the media
+attributes and V17 the plots elements before 1.8; crates/sr-model/tests/version_1_8.rs and plots_rules.rs). Document version 1.7 is schema 1.7.0's. It adds no syntax and has no version
 gate: SREP 87's scoping applies to documents of every version, and a 1.7 document validates and renders as the same
 document at 1.6 (crates/sr-model/tests/version_1_7.rs). Document version 1.6 is schema 1.6.0's. A 1.6 document holding
 1.5 content
