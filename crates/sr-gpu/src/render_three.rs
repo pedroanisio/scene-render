@@ -959,9 +959,10 @@ impl Renderer {
         if kind == "clay" {
             return self.clay_mesh(n);
         }
-        // a parametric surface or heightfield is the mesh the evaluator sampled at this time (SREP 70); none when its
-        // expressions did not compile, which validation reports
-        if matches!(kind.as_str(), "parametric" | "heightfield") {
+        // a parametric surface or heightfield is the mesh the evaluator sampled at this time (SREP 70), and so is an
+        // axes object's axis lines and plot tubes (the plots draft); none when its expressions did not compile, which
+        // validation reports
+        if matches!(kind.as_str(), "parametric" | "heightfield" | "axes") {
             let pm = n.param_mesh.as_ref()?;
             if pm.mesh.indices.is_empty() {
                 return None;
@@ -1730,6 +1731,35 @@ impl Renderer {
                         });
                     }
                 }
+                draws.push(Draw3 {
+                    mesh: MeshSrc::Cached(mesh),
+                    model: world,
+                    material,
+                    maps,
+                    opacity,
+                    cast_shadow: cast,
+                    receive_shadow: receive,
+                    shadow_catcher: catcher,
+                });
+            }
+            // the tubes of an axes object's plots with a material of their own (the plots draft)
+            for (id, pm) in &n.param_parts {
+                let Some((material, maps)) = self.document_material(plan, ctx, n.doc, id) else {
+                    plan.stats.errors.push(format!("{}: material {id} not found", n.id));
+                    continue;
+                };
+                if pm.mesh.indices.is_empty() {
+                    continue;
+                }
+                let key: Arc<str> = format!("{}#{id}", n.id).into();
+                let mesh = match self.three_engine().param_meshes.get(&key) {
+                    Some((k, m)) if *k == pm.key => m.clone(),
+                    _ => {
+                        let m = self.three_engine().upload_mesh(&pm.mesh.vertices, &pm.mesh.indices);
+                        self.three_engine().param_meshes.insert(key, (pm.key, m.clone()));
+                        m
+                    }
+                };
                 draws.push(Draw3 {
                     mesh: MeshSrc::Cached(mesh),
                     model: world,

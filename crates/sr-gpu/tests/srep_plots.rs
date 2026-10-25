@@ -70,3 +70,46 @@ fn a_sine_on_axes_draws_in_its_box_with_labels() {
     // nothing above the axes' box is drawn: the labels of the x axis are under it
     assert!(measure(&r, |p| p[0] + p[1] + p[2] > 0.3, [0, 0, 640, 25]).is_none());
 }
+
+/// An axes object (rules 10 and 11): x and y over −1..1 in a 300 × 200 × 300 box at the frame's centre, red axis
+/// lines 4 units wide without ticks, a green tube of radius 5 along data y = 0.5 from x = −1 to 1, on a white unlit
+/// material that the vertex colours tint, and a white tube along data y = −0.5 drawn with its own blue material.
+const AXES3D: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<scene version="1.8">
+<project width="640" height="360" fps="24" duration="1" background="#000000FF" seed="1"/>
+<output id="still" path="out/frame_%04d.png" codec="png-sequence"/>
+<materials><material id="white" baseColor="#FFFFFFFF" unlit="true" doubleSided="true"/><material id="blue" baseColor="#0000FFFF" unlit="true" doubleSided="true"/></materials>
+<composition>
+<object3D id="o" primitive="axes" material="white" x="320" y="180">
+<axes3D xMin="-1" xMax="1" yMin="-1" yMax="1" zMin="-1" zMax="1" width="300" height="200" depth="300" ticks="false" lineWidth="4" color="#FF0000FF"/>
+<plot3D x="t" y="0.5" z="0" t0="-1" t1="1" samples="16" tubeRadius="5" color="#00FF00FF"/>
+<plot3D x="t" y="-0.5" z="0" t0="-1" t1="1" samples="16" tubeRadius="5" color="#FFFFFFFF" material="blue"/>
+</object3D>
+</composition>
+</scene>"##;
+
+#[test]
+fn an_axes_object_draws_its_axis_lines_and_its_plot_tubes_in_their_colours() {
+    let d = sr_model::load_str(AXES3D, &sr_model::LoadOptions::without_assets()).unwrap_or_else(|e| panic!("{e:?}"));
+    let Some(r) = render(&d) else { return };
+    assert!(
+        r.stats.errors.is_empty() && r.stats.unsupported.is_empty(),
+        "{:?} {:?}",
+        r.stats.errors,
+        r.stats.unsupported
+    );
+    // the x axis' left half: from the box's left edge, 170, along the frame's centre row, 4 units thick
+    let x = measure(&r, red, [100, 160, 300, 200]).expect("no x axis drawn");
+    assert!((x[1] - 180.0).abs() <= 1.5 && (x[2] - 130.0).abs() <= 3.0 && (x[3] - 4.0).abs() <= 1.5, "x axis {x:?}");
+    // the y axis' upper part, above the tube: from the box's top edge, 80, down the centre column
+    let y = measure(&r, red, [300, 60, 340, 120]).expect("no y axis drawn");
+    assert!((y[0] - 320.0).abs() <= 1.5 && (y[3] - 40.0).abs() <= 3.0 && (y[2] - 4.0).abs() <= 1.5, "y axis {y:?}");
+    // the tube: data y = 0.5 is 50 units up, its full 300 units of x, 10 units across
+    let t = measure(&r, green, [0, 100, 640, 160]).expect("no tube drawn");
+    let want = [320.0, 130.0, 300.0, 10.0];
+    assert!(t.iter().zip(want).all(|(g, w)| (g - w).abs() <= 2.5), "tube {t:?}, expected {want:?}");
+    // the plot with a material: 50 units down, in that material's blue
+    let b = measure(&r, blue, [0, 200, 640, 260]).expect("no tube drawn with the plot's material");
+    let want = [320.0, 230.0, 300.0, 10.0];
+    assert!(b.iter().zip(want).all(|(g, w)| (g - w).abs() <= 2.5), "tube {b:?}, expected {want:?}");
+}
