@@ -20,6 +20,7 @@ pub mod font;
 pub mod formula;
 pub mod glyph;
 pub mod layout;
+pub mod parts;
 pub mod style;
 
 pub use font::FontLib;
