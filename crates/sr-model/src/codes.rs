@@ -115,6 +115,11 @@ const FIXED: &[(&str, &str, &str)] = &[
         "An object3D with positionFrom=\"ephemeris\" also sets x, y or z: it stands at its body's position about the space's origin, so those attributes are ignored (the time-frames draft, rule 7).",
     ),
     ("A01", "assets", "A referenced input file does not exist."),
+    (
+        "TF1",
+        "assets",
+        "An ephemeris asset's file is not a DAF/SPK file whose segments are all type 2 in the ICRF, or its sha256 differs from @digest; with verified assets, a placed body, origin or frameBody that is not in the file is TF4 or TF5 (the time-frames draft).",
+    ),
     ("A02", "assets", "A file's SHA-256 digest differs from the declared sha256 or cacheSha256."),
     ("A03", "assets", "A remote input (http, https, s3, …) could not be verified offline."),
     ("A04", "assets", "Frames of an image sequence are missing; an error when missingFrame=\"error\"."),
