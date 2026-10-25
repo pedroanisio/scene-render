@@ -433,6 +433,7 @@ impl FrameGraph {
                     depth: 0,
                     memo: &memo,
                     sample: [u, v],
+                    fold: None,
                 };
                 let r = vm::run(&p.exprs[x as usize].code, &mut h, &mut regs);
                 match r {
@@ -478,7 +479,30 @@ pub(crate) struct Frame<'p> {
 
 /// Values of linked and computed slots away from the frame's own time, by slot, time and depth:
 /// what delayed and smoothed links reach, each computed once a frame however many readers it has.
-type Memo = std::cell::RefCell<std::collections::HashMap<(u32, u64, u32), Value>>;
+/// Slot values computed off the frame's own time, by (slot, composition time, depth), and the failures of the folds
+/// computed for them (the reactive-values draft: a non-finite state is a render error).
+#[derive(Default)]
+pub(crate) struct Memo {
+    values: std::cell::RefCell<std::collections::HashMap<(u32, u64, u32), Value>>,
+    failures: std::cell::RefCell<Vec<String>>,
+}
+
+impl Memo {
+    /// Records a failure once.
+    pub(crate) fn fail(&self, message: String) {
+        let mut f = self.failures.borrow_mut();
+        if !f.contains(&message) {
+            f.push(message);
+        }
+    }
+
+    /// Takes over the failures of `other`.
+    pub(crate) fn absorb(&self, other: Memo) {
+        for m in other.failures.into_inner() {
+            self.fail(m);
+        }
+    }
+}
 
 /// A node's local transform and the quantities layout needs.
 struct Local {
@@ -675,19 +699,33 @@ impl Program {
         kind.from_v(&v, template)
     }
 
-    /// Full value of a slot (keys, link, expression) at composition time
+    /// Full value of a slot (keys, link, expression, fold) at composition time
     /// `comp_t`, computed without the frame cache (link delays, smoothing).
-    fn value_at(&self, slot: u32, comp_t: f64, depth: u32, memo: &Memo) -> Value {
+    pub(crate) fn value_at(&self, slot: u32, comp_t: f64, depth: u32, memo: &Memo) -> Value {
         let s = &self.slots[slot as usize];
-        let t = self.slot_time(slot, comp_t, None);
-        let mut v = self.channels_at(slot, t);
-        if depth > 32 || (s.link.is_none() && s.expr.is_none()) {
+        if depth > 32 || (s.link.is_none() && s.expr.is_none() && s.fold.is_none()) {
+            let v = self.channels_at(slot, self.slot_time(slot, comp_t, None));
             return if depth > 32 { v } else { s.kind.clamp(v) };
         }
         let key = (slot, comp_t.to_bits(), depth);
-        if let Some(known) = memo.borrow().get(&key) {
+        if let Some(known) = memo.values.borrow().get(&key) {
             return known.clone();
         }
+        let v = match s.fold {
+            Some(f) => self.fold_value(f, comp_t, depth, memo),
+            None => self.unfolded_at(slot, comp_t, depth, memo),
+        };
+        let v = s.kind.clamp(v);
+        memo.values.borrow_mut().insert(key, v.clone());
+        v
+    }
+
+    /// The value of a slot from its keys, link and expression at composition time `comp_t`, before a fold and
+    /// unclamped: a fold's keyed value.
+    pub(crate) fn unfolded_at(&self, slot: u32, comp_t: f64, depth: u32, memo: &Memo) -> Value {
+        let s = &self.slots[slot as usize];
+        let t = self.slot_time(slot, comp_t, None);
+        let mut v = self.channels_at(slot, t);
         if let Some(l) = s.link {
             if let Some(lv) = self.link_value(slot, l, comp_t, None, depth, memo) {
                 v = lv;
@@ -706,37 +744,59 @@ impl Program {
                 depth,
                 memo,
                 sample: [0.0; 2],
+                fold: None,
             };
             let r = vm::run(&self.exprs[x as usize].code, &mut h, &mut regs);
             if let Some(nv) = s.kind.from_v(&r, &v) {
                 v = nv;
             }
         }
-        let v = s.kind.clamp(v);
-        memo.borrow_mut().insert(key, v.clone());
         v
     }
 }
 
-struct ExprHost<'a, 'f> {
-    p: &'a Program,
-    frame: Option<&'f Frame<'a>>,
-    comp_t: f64,
+pub(crate) struct ExprHost<'a, 'f> {
+    pub(crate) p: &'a Program,
+    pub(crate) frame: Option<&'f Frame<'a>>,
+    pub(crate) comp_t: f64,
     /// Time on the owner's timeline.
-    t: f64,
-    slot: Option<u32>,
-    expr: u32,
-    value: Value,
-    depth: u32,
-    memo: &'f Memo,
+    pub(crate) t: f64,
+    pub(crate) slot: Option<u32>,
+    pub(crate) expr: u32,
+    pub(crate) value: Value,
+    pub(crate) depth: u32,
+    pub(crate) memo: &'f Memo,
     /// The sampling variables of a parametric geometry expression (SREP 70).
-    sample: [f64; 2],
+    pub(crate) sample: [f64; 2],
+    /// The step of a value's `update` (the reactive-values draft).
+    pub(crate) fold: Option<FoldCx<'f>>,
+}
+
+/// What a value's `update` sees besides `value` and `time` (the reactive-values draft, Semantics 2 and 5).
+pub(crate) struct FoldCx<'f> {
+    /// The step or iteration index from 0.
+    pub(crate) index: u64,
+    /// The step number (index + 1) of a time fold, the `count` of an index fold.
+    pub(crate) count: u64,
+    /// The `step` of a time fold, 0 in an index fold.
+    pub(crate) dt: f64,
+    /// A time fold's system: its folds' slots and their states before the step, which reads of them see.
+    pub(crate) system: Option<(&'f [u32], &'f [Value])>,
 }
 
 impl Host for ExprHost<'_, '_> {
     fn var(&mut self, v: Var) -> V {
         let node = self.p.exprs[self.expr as usize].node.map(|n| &self.p.nodes[n as usize]);
+        if let Some(f) = &self.fold {
+            match v {
+                Var::Index => return V::Num(f.index as f64),
+                Var::Count => return V::Num(f.count as f64),
+                Var::Dt => return V::Num(f.dt),
+                _ => {}
+            }
+        }
         match v {
+            Var::Dt => V::Undef,
             Var::Time => V::Num(self.t),
             Var::Frame => V::Num(libm::floor(self.t * self.p.fps.as_f64() + 1e-9)),
             Var::Value => self.value.to_v(),
@@ -774,6 +834,12 @@ impl Host for ExprHost<'_, '_> {
     }
 
     fn prop(&mut self, slot: u32) -> V {
+        // a time fold reads the folds of its system before the step (gather form)
+        if let Some((slots, states)) = self.fold.as_ref().and_then(|f| f.system) {
+            if let Some(i) = slots.iter().position(|&s| s == slot) {
+                return crate::fold::shown(&states[i]);
+            }
+        }
         match self.frame {
             Some(f) if self.comp_t == f.t => f.values[slot as usize].to_v(),
             _ => self.p.value_at(slot, self.comp_t, self.depth + 1, self.memo).to_v(),
@@ -855,11 +921,22 @@ impl Host for ExprHost<'_, '_> {
     }
 
     fn random(&mut self, site: u32, component: u32) -> f64 {
+        if let Some(f) = &self.fold {
+            let index = f.index;
+            return crate::fold::random(self.noise_seed(), index, site, self.noise_channel(), component);
+        }
         // splitmix64 hash of (seed, frame, call site, property): the lattice hash of `rng`
         // with the frame as the channel; an array's component k adds k · 2⁴⁸
         let frame = libm::floor(self.t * self.p.fps.as_f64() + 1e-9) as i64;
         let index = site as u64 + (self.noise_channel() << 32) + ((component as u64) << 48);
         rng::d24_unit(self.noise_seed(), frame as u64, index)
+    }
+
+    fn draw(&mut self, channel: f64, i: f64) -> f64 {
+        match &self.fold {
+            Some(f) => crate::fold::draw(self.p.exprs[self.expr as usize].seed, f.index, channel, i),
+            None => f64::NAN,
+        }
     }
 
     fn noise_seed(&mut self) -> u64 {
@@ -968,6 +1045,7 @@ impl<'p> Frame<'p> {
                         depth: 0,
                         memo: &self.memo,
                         sample: [0.0; 2],
+                        fold: None,
                     };
                     vm::run(&p.exprs[x as usize].code, &mut h, &mut regs)
                 };
@@ -975,6 +1053,9 @@ impl<'p> Frame<'p> {
                 if let Some(nv) = slot.kind.from_v(&r, &v) {
                     v = nv;
                 }
+            }
+            if let Some(f) = slot.fold {
+                v = p.fold_value(f, self.t, 0, &self.memo);
             }
             self.values[s as usize] = slot.kind.clamp(v);
         }
@@ -996,6 +1077,7 @@ impl<'p> Frame<'p> {
                 depth: 0,
                 memo: &self.memo,
                 sample: [0.0; 2],
+                fold: None,
             };
             vm::run(&p.exprs[x as usize].code, &mut h, &mut regs)
         };
@@ -1023,6 +1105,7 @@ impl<'p> Frame<'p> {
                 depth: 0,
                 memo: &self.memo,
                 sample: *s,
+                fold: None,
             };
             let v = vm::run(&p.exprs[x as usize].code, &mut h, &mut regs);
             out.push(match v {
@@ -1775,6 +1858,10 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
         program: SharedProgram::default(),
         seed: p.seed,
     };
+    // the reactive-values draft: a fold whose update produced a non-finite state is a render error
+    for m in f.memo.failures.take() {
+        graph.fail(m);
+    }
     crate::joints::attach(p, &mut graph);
     graph
 }

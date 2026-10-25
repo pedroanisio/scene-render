@@ -125,6 +125,9 @@ pub enum Var {
     /// SREP 70: the sampling variable `k` of a parametric curve (`t`), surface (`u`, `v`) or heightfield (`x`, `z`),
     /// defined in those expressions only ([`Resolver::sample_names`]).
     Sample(u8),
+    /// The reactive-values draft: `dt`, the step of a time fold (0 in an index fold), defined in a value's `update`
+    /// only ([`Resolver::fold_names`]).
+    Dt,
 }
 
 /// `loopIn`/`loopOut` modes (After Effects names).
@@ -183,6 +186,11 @@ pub trait Host {
     fn beat(&mut self) -> f64;
     /// Uniform random in [0, 1) for a call site and component.
     fn random(&mut self, site: u32, component: u32) -> f64;
+    /// `draw(channel, i)` of a value's `update` (the reactive-values draft, Semantics 6); NaN elsewhere.
+    fn draw(&mut self, channel: f64, i: f64) -> f64 {
+        let _ = (channel, i);
+        f64::NAN
+    }
     /// Noise seed of this expression (the expression's `@seed`, else the project's).
     fn noise_seed(&mut self) -> u64;
     /// Noise channel of the property the expression computes: [`property_channel`].
@@ -249,6 +257,11 @@ pub trait Resolver {
     fn sample_names(&self) -> &'static [&'static str] {
         &[]
     }
+    /// Whether the expression is a value's `update` (the reactive-values draft), where `dt` and `draw(channel, i)`
+    /// are defined. Elsewhere they are unknown names.
+    fn fold_names(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,6 +326,8 @@ pub enum Func {
     MathRandom,
     Geo,
     GeoVisible,
+    /// `draw(channel, i)`, in a value's `update` only.
+    Draw,
 }
 
 impl Func {
@@ -377,6 +392,7 @@ impl Func {
             "Math.random" => (MathRandom, 0, 0),
             "geo" => (Geo, 3, 3),
             "geoVisible" => (GeoVisible, 3, 3),
+            "draw" => (Draw, 2, 2),
             _ => return None,
         })
     }
@@ -663,6 +679,7 @@ impl<'r> Compiler<'r> {
                     "pointAngle" if self.resolver.point_names() => Var::PointAngle,
                     "pointU" if self.resolver.point_names() => Var::PointU,
                     "pointRandom" if self.resolver.point_names() => Var::PointRandom,
+                    "dt" if self.resolver.fold_names() => Var::Dt,
                     other if self.resolver.sample_names().contains(&other) => {
                         Var::Sample(self.resolver.sample_names().iter().position(|s| *s == other).unwrap_or(0) as u8)
                     }
@@ -847,7 +864,8 @@ impl<'r> Compiler<'r> {
             }
             _ => args,
         };
-        let Some((f, lo, hi)) = Func::lookup(&name) else {
+        let found = Func::lookup(&name).filter(|(f, ..)| *f != Func::Draw || self.resolver.fold_names());
+        let Some((f, lo, hi)) = found else {
             let hint = crate::suggest(&name, FUNCTION_NAMES.iter().copied())
                 .map(|s| format!("; did you mean '{s}'?"))
                 .unwrap_or_default();
@@ -1277,6 +1295,7 @@ fn call(f: Func, args: &[V], site: u32, host: &mut dyn Host) -> V {
         Param => host.param(&args[0].to_js_string()),
         ValueAtTime => host.value_at_time(arg(args, 0)),
         PropAt => host.prop_at(arg(args, 0) as u32, arg(args, 1)),
+        Draw => V::Num(host.draw(arg(args, 0), arg(args, 1))),
         Penner => V::Num(crate::curve::progress_by_index(arg(args, 0) as usize, arg(args, 1))),
         Wiggle => {
             let (freq, amp) = (arg(args, 0), &args[1]);

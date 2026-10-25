@@ -977,7 +977,7 @@ crates/sr-eval/src/         program (templating, instantiation, compilation), ev
                             curve, expr/{parse,vm}, value, path, data, rng, rig (constraints, bones,
                             tracking, stabilisation), sim (physics and particles), sim3d (3D rigid bodies), agents (flocks, fluids,
                             slime, erosion), geo (map cameras for rendering and expressions), codes; connector (SREP 16), points (repeat points), region (pdf regions), safe_area (`enforce`), font_policy
-                            (pinned fonts), stroke_font (Hershey fonts), fractal (SREP 75), parametric (SREP 70), plots and axes (the plots draft), joints (model sockets),
+                            (pinned fonts), stroke_font (Hershey fonts), fractal (SREP 75), parametric (SREP 70), plots and axes (the plots draft), fold (reactive values), joints (model sockets),
                             local_ids (SREP 87), mesh_sequence (mesh caches), physcache (baked physics), inert (rule I8), pending (accepted
                             SREPs not implemented); the cratering and fracture family: crater, debris, splash, fracture, group (coupled
                             solvers), ocean, particles3d, pyro, terrain, solid, voxel, voxels, voxel_asset, voxel_cache, voxel_crater,

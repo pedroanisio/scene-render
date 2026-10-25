@@ -387,6 +387,8 @@ pub struct Slot {
     /// The noise channel of `wiggle` and `random` in the slot's expression: [`crate::expr::vm::property_channel`] of
     /// its property.
     pub noise_channel: u64,
+    /// The fold that gives the slot (the `value` of a value asset with `update`): an index into [`Program::folds`].
+    pub fold: Option<u32>,
 }
 
 /// An element with animated properties that is not a node.
@@ -610,6 +612,10 @@ pub struct Program {
     pub regions: Vec<crate::region::RegionInst>,
     /// Element targets.
     pub elements: Vec<ElemTarget>,
+    /// The folds of value assets with `update` (the reactive-values draft).
+    pub folds: Vec<crate::fold::Fold>,
+    /// The systems of time folds, indexed by [`crate::fold::FoldKind::Time`].
+    pub systems: Vec<crate::fold::System>,
     /// Transitions.
     pub transitions: Vec<TransitionInst>,
     /// Marker times (including generated `beat.N`/`bar.N` on demand).
@@ -1311,6 +1317,10 @@ struct Builder {
     pending_maps: Vec<(u32, Arc<str>, Arc<str>, String, String, Loc, Arc<str>, u16)>,
     links: Vec<LinkInst>,
     elements: Vec<ElemTarget>,
+    /// Value assets with `update` waiting for it to compile: (element target, asset, scope, document).
+    pending_folds: Vec<(u32, m::ValueAsset, Arc<str>, u16)>,
+    folds: Vec<crate::fold::Fold>,
+    systems: Vec<crate::fold::System>,
     /// Element targets that run on an include's clock: (element, include node). See [`Slot::clock`].
     elem_clock: HashMap<u32, u32>,
     transitions: Vec<TransitionInst>,
@@ -2789,6 +2799,7 @@ impl Builder {
             time_node,
             clock,
             noise_channel: crate::expr::vm::property_channel(&key.1),
+            fold: None,
         });
         self.slot_ix.insert(key, i);
         match owner {
@@ -3123,6 +3134,14 @@ impl Builder {
                     }
                 }
                 self.animate(Owner::Element(t), e, None, doc, &root, &key);
+            }
+            // the reactive-values draft: a value with `update` is a fold, compiled after the other expressions
+            if let Some(v) = e.as_any().downcast_ref::<m::ValueAsset>().filter(|v| v.update.is_some()) {
+                let t = match self.elements.iter().position(|x| *x.key == *key) {
+                    Some(t) => t as u32,
+                    None => self.add_element(key.as_str().into(), e, None, doc),
+                };
+                self.pending_folds.push((t, v.clone(), root.clone(), doc));
             }
             let mut counts: HashMap<&str, usize> = HashMap::new();
             for c in children(e) {
@@ -3491,6 +3510,110 @@ impl Builder {
         }
     }
 
+    /// The reactive-values draft: compiles each value's `update` with `dt` and `draw` defined, refuses a time fold
+    /// of more than [`crate::fold::MAX_STEPS`] steps at the composition's end `duration` (RVE2) and an update that
+    /// reads a fold of another `step` or `start` or an index fold (RVE1), and gathers the time folds that read each
+    /// other into systems, which step together (Semantics 5 and 8).
+    fn compile_folds(&mut self, duration: f64) {
+        use crate::fold::{steps_at, Fold, FoldKind, System, MAX_STEPS};
+        // each fold's (start, step), None for an index fold, and its source location
+        let mut timing: Vec<Option<(f64, f64)>> = Vec::new();
+        let mut locs: Vec<Loc> = Vec::new();
+        for (t, v, scope, doc) in std::mem::take(&mut self.pending_folds) {
+            let who = self.elements[t as usize].key.clone();
+            let slot = match self.slot(Owner::Element(t), "value") {
+                Ok(s) => s,
+                Err(msg) => {
+                    self.diags.push(err("E02", format!("value {who:?}: {msg}"), v.loc, &*who));
+                    continue;
+                }
+            };
+            let src = v.update.clone().unwrap_or_default();
+            let mut res = ExprResolver { b: self, scope, doc, points: false, sample: &[], fold: true };
+            let code = match vm::compile(&src, &mut res) {
+                Ok(code) => code,
+                Err(e) => {
+                    let excerpt: String = src.chars().skip(e.offset.saturating_sub(10)).take(30).collect();
+                    let msg = format!("{who}@update: {} (near {:?})", e.message, excerpt.trim());
+                    self.diags.push(err("E01", msg, v.loc, &*who));
+                    continue;
+                }
+            };
+            let (kind, time) = match (v.step, v.count) {
+                (Some(h), None) => {
+                    let (start, step) = (v.start.get(), h.get());
+                    let n = steps_at(start, step, duration);
+                    if n > MAX_STEPS {
+                        let msg = format!(
+                            "value {who:?} takes {n} steps of {step} s by the composition's end; a time fold takes at \
+                             most {MAX_STEPS}"
+                        );
+                        self.diags.push(err("RVE2", msg, v.loc, &*who));
+                        continue;
+                    }
+                    let linear = v.between == m::Between::Linear;
+                    (FoldKind::Time { system: u32::MAX, linear }, Some((start, step)))
+                }
+                (None, Some(count)) => (FoldKind::Index { count }, None),
+                // RV1 refuses the document before it is built
+                _ => continue,
+            };
+            let seed = v.seed.unwrap_or(self.project_seed);
+            self.exprs.push(ExprInst { code, slot: None, node: None, doc, seed });
+            let update = (self.exprs.len() - 1) as u32;
+            self.slots[slot as usize].fold = Some(self.folds.len() as u32);
+            self.folds.push(Fold { id: who, slot, update, kind });
+            timing.push(time);
+            locs.push(v.loc);
+        }
+        // the time folds that read each other, joined (union-find)
+        let n = self.folds.len();
+        let mut root: Vec<usize> = (0..n).collect();
+        fn find(root: &mut [usize], mut i: usize) -> usize {
+            while root[i] != i {
+                root[i] = root[root[i]];
+                i = root[i];
+            }
+            i
+        }
+        for i in 0..n {
+            let (update, who) = (self.folds[i].update, self.folds[i].id.clone());
+            for d in self.exprs[update as usize].code.deps.clone() {
+                let Some(j) = self.slots[d as usize].fold.map(|j| j as usize).filter(|&j| j != i) else { continue };
+                let other = self.folds[j].id.clone();
+                let msg = match (timing[i], timing[j]) {
+                    (_, None) => format!("value {who:?} reads the index fold {other:?} in its update"),
+                    (Some(a), Some(b)) if a != b => format!(
+                        "value {who:?} reads {other:?} in its update, a time fold of another step or start; folds \
+                         that read each other share step and start"
+                    ),
+                    (Some(_), Some(_)) => {
+                        let (a, b) = (find(&mut root, i), find(&mut root, j));
+                        root[a] = b;
+                        continue;
+                    }
+                    // an index fold reads a time fold at the frame's time
+                    (None, Some(_)) => continue,
+                };
+                self.diags.push(err("RVE1", msg, locs[i], &*who));
+            }
+        }
+        let mut system_of: HashMap<usize, u32> = HashMap::new();
+        for (i, time) in timing.iter().enumerate() {
+            let Some((start, step)) = *time else { continue };
+            let r = find(&mut root, i);
+            let k = *system_of.entry(r).or_insert_with(|| {
+                self.systems.push(System::new(start, step, Vec::new(), Vec::new()));
+                (self.systems.len() - 1) as u32
+            });
+            self.systems[k as usize].folds.push(i as u32);
+            self.systems[k as usize].slots.push(self.folds[i].slot);
+            if let FoldKind::Time { system, .. } = &mut self.folds[i].kind {
+                *system = k;
+            }
+        }
+    }
+
     fn compile_pending(&mut self) {
         for (slot, node, src, seed, loc, scope, doc) in std::mem::take(&mut self.pending_expr) {
             let who = match (slot, node) {
@@ -3499,7 +3622,7 @@ impl Builder {
                 _ => "expression".into(),
             };
             let points = node.is_some_and(|n| self.nodes[n as usize].point.is_some());
-            let mut res = ExprResolver { b: self, scope, doc, points, sample: &[] };
+            let mut res = ExprResolver { b: self, scope, doc, points, sample: &[], fold: false };
             match vm::compile(&src, &mut res) {
                 Ok(code) => {
                     self.exprs.push(ExprInst { code, slot, node, doc, seed });
@@ -3530,7 +3653,8 @@ impl Builder {
             let mut exprs = Vec::with_capacity(def.sources.len());
             for (attr, src) in &def.sources {
                 let who = format!("{}/{}@{attr}", self.nodes[n as usize].id, def.child);
-                let mut res = ExprResolver { b: self, scope: scope.clone(), doc, points, sample: def.names };
+                let mut res =
+                    ExprResolver { b: self, scope: scope.clone(), doc, points, sample: def.names, fold: false };
                 match vm::compile(src, &mut res) {
                     Ok(code) => {
                         self.exprs.push(ExprInst { code, slot: None, node: Some(n), doc, seed });
@@ -3561,7 +3685,7 @@ impl Builder {
             let mut exprs = Vec::with_capacity(sources.len());
             for (attr, src) in &sources {
                 let who = format!("{}/plot[{i}]@{attr}", self.nodes[axes as usize].id);
-                let mut res = ExprResolver { b: self, scope: scope.clone(), doc, points, sample: names };
+                let mut res = ExprResolver { b: self, scope: scope.clone(), doc, points, sample: names, fold: false };
                 match vm::compile(src, &mut res) {
                     Ok(code) => {
                         self.exprs.push(ExprInst { code, slot: None, node: Some(n), doc, seed });
@@ -3594,7 +3718,8 @@ impl Builder {
                 let mut ok = true;
                 for (k, (attr, src)) in [("x", &plot.x), ("y", &plot.y), ("z", &plot.z)].into_iter().enumerate() {
                     let who = format!("{}/plot3D[{i}]@{attr}", self.nodes[n as usize].id);
-                    let mut res = ExprResolver { b: self, scope: scope.clone(), doc, points, sample: &["t"] };
+                    let mut res =
+                        ExprResolver { b: self, scope: scope.clone(), doc, points, sample: &["t"], fold: false };
                     match vm::compile(src, &mut res) {
                         Ok(code) => {
                             self.exprs.push(ExprInst { code, slot: None, node: Some(n), doc, seed });
@@ -3629,7 +3754,8 @@ impl Builder {
             let mut ok = true;
             for (k, (attr, src)) in [("x", &x), ("y", &y)].into_iter().enumerate() {
                 let who = format!("{path}@{attr}");
-                let mut res = ExprResolver { b: self, scope: scope.clone(), doc, points, sample: &["u", "v"] };
+                let mut res =
+                    ExprResolver { b: self, scope: scope.clone(), doc, points, sample: &["u", "v"], fold: false };
                 match vm::compile(src, &mut res) {
                     Ok(code) => {
                         self.exprs.push(ExprInst { code, slot: None, node: Some(n), doc, seed });
@@ -3691,7 +3817,7 @@ impl Builder {
                     }
                 }
             } else {
-                let mut res = ExprResolver { b: self, scope, doc, points: false, sample: &[] };
+                let mut res = ExprResolver { b: self, scope, doc, points: false, sample: &[], fold: false };
                 match res.prop(&l.source) {
                     Ok(s) => Some(LinkSource::Prop(s)),
                     Err(e) => {
@@ -3928,6 +4054,8 @@ struct ExprResolver<'b> {
     points: bool,
     /// The sampling variables of a parametric geometry expression (SREP 70); none elsewhere.
     sample: &'static [&'static str],
+    /// The expression is a value's `update` (the reactive-values draft).
+    fold: bool,
 }
 
 impl Resolver for ExprResolver<'_> {
@@ -3937,6 +4065,10 @@ impl Resolver for ExprResolver<'_> {
 
     fn sample_names(&self) -> &'static [&'static str] {
         self.sample
+    }
+
+    fn fold_names(&self) -> bool {
+        self.fold
     }
 
     fn prop(&mut self, path: &str) -> Result<u32, String> {
@@ -4023,6 +4155,9 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         pending_maps: Vec::new(),
         links: Vec::new(),
         elements: Vec::new(),
+        pending_folds: Vec::new(),
+        folds: Vec::new(),
+        systems: Vec::new(),
         elem_clock: HashMap::new(),
         transitions: Vec::new(),
         ids: HashMap::new(),
@@ -4093,6 +4228,7 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
     }
     b.globals();
     b.compile_pending();
+    b.compile_folds(duration);
     let order = b.order();
     let axes_nodes = (0..b.nodes.len() as u32).filter(|&n| b.nodes[n as usize].name == "axes").collect();
     let mut slot_read = b.slot_read();
@@ -4251,6 +4387,8 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         connectors: b.connectors.into_iter().map(|(c, _, _)| c).collect(),
         regions: b.regions,
         elements: b.elements,
+        folds: b.folds,
+        systems: b.systems,
         transitions: b.transitions,
         markers,
         beat: grid,
