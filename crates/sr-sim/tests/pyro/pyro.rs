@@ -5,7 +5,7 @@ fn checkpointed_seeking_matches_fresh_replay_with_a_tight_memory_budget() {
     use sr_sim::pyro::Timeline;
     let mut s = spec();
     s.turbulence = 0.2;
-    s.seed = 17;
+    s.draws = sr_sim::rng::Draws::Legacy(17);
     let input = |_: u64, _: f64| {
         Ok(Inputs {
             sources: vec![Source {
@@ -346,7 +346,7 @@ fn buoyancy_moves_hot_smoke_up_and_seeded_turbulence_is_repeatable() {
     s.boundary = Boundary::Open;
     s.buoyancy = 0.05;
     s.turbulence = 0.1;
-    s.seed = 42;
+    s.draws = sr_sim::rng::Draws::Legacy(42);
     let input = Inputs {
         sources: vec![Source {
             density_rate: 1.0,
@@ -357,7 +357,7 @@ fn buoyancy_moves_hot_smoke_up_and_seeded_turbulence_is_repeatable() {
     };
     let mut a = Simulation::new(s.clone()).unwrap();
     let mut b = Simulation::new(s.clone()).unwrap();
-    s.seed = 43;
+    s.draws = sr_sim::rng::Draws::Legacy(43);
     let mut c = Simulation::new(s).unwrap();
     for _ in 0..5 {
         a.step(&input).unwrap();
@@ -456,7 +456,7 @@ fn timeline_revision_changes_exactly_when_the_state_is_replaced() {
     use sr_sim::pyro::Timeline;
     let mut s = spec();
     s.turbulence = 0.3;
-    s.seed = 5;
+    s.draws = sr_sim::rng::Draws::Legacy(5);
     let mut input = |_: u64, _: f64, _: &sr_sim::pyro::State| Ok(Inputs::default());
     let mut timeline = Timeline::new(s, 1 << 30).unwrap();
     let mut at = |time: f64| {

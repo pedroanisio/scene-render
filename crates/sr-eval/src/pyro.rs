@@ -100,7 +100,18 @@ fn build(p: &Program, node: u32, e: &sr_model::model::Pyro) -> Result<Runtime, S
         buoyancy: num(e, "buoyancy", 0.0),
         vorticity: num(e, "vorticity", 0.0),
         turbulence: num(e, "turbulence", 0.0),
-        seed: e.seed,
+        // a pyro has no id: its seed is its object's, under the derived purpose `stream:pyro`
+        draws: {
+            let object = &p.nodes[node as usize];
+            crate::rng::derived_draws(
+                p.version(object.doc),
+                p.seed,
+                &object.seed_id,
+                Some(e.seed),
+                "stream:pyro",
+                || e.seed,
+            )
+        },
         pressure_iterations: num(e, "pressureIterations", 200.0) as usize,
         pressure_tolerance: num(e, "pressureTolerance", 1e-6),
         solver: match text(e, "solver").as_deref() {

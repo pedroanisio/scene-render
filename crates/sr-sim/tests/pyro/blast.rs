@@ -167,7 +167,12 @@ fn bits(sim: &Simulation) -> (Vec<u64>, Vec<u64>, [Vec<u64>; 3]) {
 #[test]
 fn a_scene_with_no_blast_with_one_of_no_energy_or_one_after_the_film_is_the_scene_it_was() {
     let run = |blasts: Vec<Blast>| {
-        let spec = Spec { buoyancy: 2.0, turbulence: 0.5, seed: 9, ..domain(16, 0.5, Boundary::Open) };
+        let spec = Spec {
+            buoyancy: 2.0,
+            turbulence: 0.5,
+            draws: sr_sim::rng::Draws::Legacy(9),
+            ..domain(16, 0.5, Boundary::Open)
+        };
         let mut sim = Simulation::new(spec).unwrap();
         let puff = Impulse {
             shape: Shape::Sphere { center: [0.0, 1.0, 0.0], radius: 1.0 },
@@ -620,7 +625,7 @@ fn the_velocity_of_the_smoke_is_what_it_would_have_been_with_no_blast_to_the_bit
     // the flow of a blast is not kept in the velocity: a potential flow with open faces is not removed by a projection with no divergence, so it would
     // stay for ever (and the first design of the blast, which kept it, left 50 to 200 percent of the pulse a step after the front had stopped)
     let run = |blasts: Vec<Blast>| {
-        let spec = Spec { turbulence: 0.5, seed: 9, ..domain(32, 0.5, Boundary::Open) };
+        let spec = Spec { turbulence: 0.5, draws: sr_sim::rng::Draws::Legacy(9), ..domain(32, 0.5, Boundary::Open) };
         let mut sim = Simulation::new(spec).unwrap();
         let puff = Impulse {
             shape: Shape::Sphere { center: [0.0, 1.0, 0.0], radius: 1.0 },
@@ -791,7 +796,8 @@ fn a_collider_that_moves_is_at_rest_for_the_flow_of_the_blast_and_the_smoke_is_c
 #[test]
 fn the_identity_of_the_velocity_is_the_identity_of_a_blast_that_did_something() {
     let run = |blasts: Vec<Blast>, buoyancy: f64| {
-        let spec = Spec { buoyancy, turbulence: 0.5, seed: 9, ..domain(32, 0.5, Boundary::Open) };
+        let spec =
+            Spec { buoyancy, turbulence: 0.5, draws: sr_sim::rng::Draws::Legacy(9), ..domain(32, 0.5, Boundary::Open) };
         let mut sim = Simulation::new(spec).unwrap();
         let puff = Impulse {
             shape: Shape::Sphere { center: [4.0, 1.0, 0.0], radius: 1.5 },

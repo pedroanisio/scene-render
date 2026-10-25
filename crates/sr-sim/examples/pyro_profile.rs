@@ -50,7 +50,7 @@ fn main() {
         buoyancy: 0.003,
         vorticity: 0.5,
         turbulence: 2.0,
-        seed: 20_261_003,
+        draws: sr_sim::rng::Draws::Legacy(20_261_003),
         pressure_iterations: iterations,
         pressure_tolerance: 1e-3,
         solver,

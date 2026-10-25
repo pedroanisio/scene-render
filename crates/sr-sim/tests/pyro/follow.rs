@@ -267,7 +267,7 @@ fn a_following_window_that_the_smoke_never_nears_the_faces_of_is_bit_for_bit_not
         boundary: Boundary::Open,
         buoyancy: 1.0,
         turbulence: 0.5,
-        seed: 9,
+        draws: sr_sim::rng::Draws::Legacy(9),
         pressure_iterations: 500,
         pressure_tolerance: 1e-8,
         follow,

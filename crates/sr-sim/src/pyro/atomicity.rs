@@ -19,7 +19,7 @@ fn spec(boundary: Boundary, solver: PressureSolver) -> Spec {
         buoyancy: 0.01,
         vorticity: 0.5,
         turbulence: 1.0,
-        seed: 7,
+        draws: crate::rng::Draws::Legacy(7),
         pressure_iterations: 5000,
         pressure_tolerance: 1e-3,
         ..Spec::default()

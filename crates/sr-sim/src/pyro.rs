@@ -11,6 +11,7 @@
 //! confinement follows Fedkiw, Stam and Jensen, SIGGRAPH 2001. Obstacles are
 //! voxelized at cell centres and must be resolved by the authored grid.
 
+use crate::rng::Draws;
 use rayon::prelude::*;
 use sr_volume::{SparseGrid, Transform, Volume};
 use std::collections::BTreeMap;
@@ -153,7 +154,8 @@ pub struct Spec {
     pub vorticity: f64,
     /// Seeded acceleration amplitude, scene units/second².
     pub turbulence: f64,
-    pub seed: u64,
+    /// The draws of the turbulence: cell `key` at step t reads S(e, 1 + axis, t, key).
+    pub draws: Draws,
     /// Maximum conjugate-gradient iterations.
     pub pressure_iterations: usize,
     /// RMS divergence error allowed, in 1/second.
@@ -192,7 +194,7 @@ impl Default for Spec {
             buoyancy: 0.0,
             vorticity: 0.0,
             turbulence: 0.0,
-            seed: 0,
+            draws: Draws::Legacy(0),
             pressure_iterations: 200,
             pressure_tolerance: 1e-6,
             solver: PressureSolver::Jacobi,
@@ -1752,6 +1754,20 @@ fn global_cell(c: [usize; 3], window: [i64; 3], cells: [usize; 3]) -> u64 {
     1 << 63 | part(0) | part(1) << 21 | part(2) << 42
 }
 
+/// The purposes of the stream draws of the solver (random-streams SREP, section 5), read once per step.
+pub mod purpose {
+    /// The turbulence along x; y and z read the next two.
+    pub const TURBULENCE_X: u32 = 1;
+}
+
+/// The turbulence draw in [−1, 1) of cell `key` along `axis` at `step`: S_signed(e, 1 + axis, step, key), or
+/// signed(seed, key, 3 · step + axis) from a legacy seed.
+#[inline]
+fn turbulence(draws: Draws, key: u64, step: u64, axis: usize) -> f64 {
+    let p = purpose::TURBULENCE_X + axis as u32;
+    2.0 * draws.at_step(p, step, key, |seed| crate::rng::unit(seed, key, step * 3 + axis as u64)) - 1.0
+}
+
 fn forces(s: &mut State, spec: &Spec, input: &Inputs, step: u64) {
     let count = s.density.len();
     let mut force = vec![[0.0; 3]; count];
@@ -1764,7 +1780,7 @@ fn forces(s: &mut State, spec: &Spec, input: &Inputs, step: u64) {
             for a in 0..3 {
                 f[a] = input.acceleration[a]
                     + input.spatial_acceleration.get(k).map_or(0.0, |v| v[a])
-                    + spec.turbulence * crate::rng::signed(spec.seed, key, step * 3 + a as u64);
+                    + spec.turbulence * turbulence(spec.draws, key, step, a);
             }
             f[1] -= spec.buoyancy * (temperature[k] - ambient);
         });
@@ -2482,5 +2498,14 @@ mod tests {
 
         let (solid, faces) = voxelize(cells, origin, h, &[]).unwrap();
         assert!(solid.len() == count && solid.iter().all(|s| !s) && faces.is_empty(), "no colliders, no solid cells");
+    }
+    #[test]
+    fn stream_turbulence_reads_purpose_1_plus_axis_at_the_step_and_legacy_turbulence_its_seed() {
+        let key = 1 << 63 | 5 | 7 << 21 | 2 << 42;
+        for (step, a) in [(0, 0), (9, 1), (4_294_967_301, 2)] {
+            assert_eq!(turbulence(Draws::Legacy(9), key, step, a), crate::rng::signed(9, key, step * 3 + a as u64));
+            let want = sr_vector::d24::stream_signed(77, purpose::TURBULENCE_X + a as u32, step as u32, key);
+            assert_eq!(turbulence(Draws::Stream(77), key, step, a), want);
+        }
     }
 }

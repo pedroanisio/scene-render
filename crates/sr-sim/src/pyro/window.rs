@@ -11,7 +11,7 @@ fn spec(follow: Option<Follow>) -> Spec {
         dt: 0.1,
         boundary: Boundary::Open,
         turbulence: 3.0,
-        seed: 11,
+        draws: crate::rng::Draws::Legacy(11),
         follow,
         ..Spec::default()
     }

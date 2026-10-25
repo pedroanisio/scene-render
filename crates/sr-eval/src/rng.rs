@@ -193,8 +193,21 @@ pub fn sim_draws(
     seed: Option<u64>,
     legacy: impl FnOnce() -> u64,
 ) -> sr_sim::rng::Draws {
+    derived_draws(version, project, id, seed, "stream", legacy)
+}
+
+/// [`sim_draws`] under a derived purpose such as `stream:pyro`: the seed of a simulation that a child without an
+/// `id` of its own runs, addressed by its parent's `id` (section 5, "further purposes").
+pub fn derived_draws(
+    version: sr_model::Version,
+    project: u64,
+    id: &str,
+    seed: Option<u64>,
+    purpose: &str,
+    legacy: impl FnOnce() -> u64,
+) -> sr_sim::rng::Draws {
     if version >= STREAMS_FROM {
-        sr_sim::rng::Draws::Stream(element_seed(project, id, seed, "stream"))
+        sr_sim::rng::Draws::Stream(element_seed(project, id, seed, purpose))
     } else {
         sr_sim::rng::Draws::Legacy(legacy())
     }
@@ -216,6 +229,16 @@ mod tests {
             sim_draws(Version::V1_8, 7, "fx", Some(3), || unreachable!()),
             Draws::Stream(element_seed(7, "fx", Some(3), "stream"))
         );
+    }
+
+    #[test]
+    fn a_derived_purpose_addresses_the_parent_id_under_its_own_purpose_string() {
+        use sr_model::Version;
+        use sr_sim::rng::Draws;
+        assert_eq!(derived_draws(Version::V1_7, 7, "fx", Some(3), "stream:pyro", || 99), Draws::Legacy(99));
+        let d = derived_draws(Version::V1_8, 7, "fx", Some(3), "stream:pyro", || unreachable!());
+        assert_eq!(d, Draws::Stream(element_seed(7, "fx", Some(3), "stream:pyro")));
+        assert_ne!(d, sim_draws(Version::V1_8, 7, "fx", Some(3), || unreachable!()));
     }
 
     #[test]

@@ -433,3 +433,32 @@ fn fractional_samples_inside_one_step_export_once_and_changes_of_state_export_ag
     // The index 0.4 is revisited after a replay: still the state of the first visit.
     assert_eq!(volume(0.4).key, b.key);
 }
+
+#[test]
+fn a_1_8_pyro_draws_its_turbulence_from_the_streams_of_the_project_and_scrubs_alike() {
+    let densities = |version: &str, project: &str| {
+        let xml = format!(
+            r#"<scene version="{version}"><project width="32" height="32" fps="10" duration="4"{project}/>
+          <composition><object3D id="cloud" primitive="volume">
+            <pyro width="8" height="8" depth="8" voxelSize="1" dt="0.1" turbulence="2" seed="3">
+              <pyroSource shape="sphere" radius="2" densityRate="10" temperatureRate="1000" start="0" end="0.3"/>
+            </pyro><medium blackbody="true"/></object3D></composition></scene>"#
+        );
+        let doc = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
+        let ev = sr_eval::Evaluator::new(&doc, &Default::default()).unwrap();
+        let sample = |t: f64| {
+            let frame = ev.evaluate(t);
+            assert!(frame.problems.is_empty(), "{:?}", frame.problems);
+            let volume = frame.nodes.iter().find(|n| &*n.id == "cloud").unwrap().sim_volume.clone().unwrap();
+            let grid = volume.data.grid("density").unwrap();
+            [[0.5, 0.5, 0.5], [1.5, -0.5, 0.5], [-1.5, 1.5, -0.5], [0.5, 2.5, 1.5]].map(|p| grid.sample_world(p))
+        };
+        let a = sample(0.6);
+        let _ = sample(0.2);
+        assert_eq!(sample(0.6), a, "{version}: scrubbing back gives the same smoke");
+        a
+    };
+    assert_eq!(densities("1.7", ""), densities("1.7", r#" seed="5""#));
+    assert_ne!(densities("1.8", ""), densities("1.8", r#" seed="5""#));
+    assert_ne!(densities("1.7", ""), densities("1.8", ""));
+}
