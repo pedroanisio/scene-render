@@ -1,9 +1,9 @@
 Scene-render schema vendored from sr-core release 1.7.0 (tag schema-1.7.0, commit 95cf9b0a676415a0e7eb2e86505db512576d4e2d),
 unreleased: + the diff of sr-core srep/srep-0000-random-streams.md (draft, Schema-Version 1.8), applied by hand on
 this branch: the value 1.8 of scene/@version, its only schema change (no element, attribute or Schematron rule);
-+ the diff of sr-core srep/srep-0000-media.md (draft, Schema-Version 1.8): the medium attributes phase, phaseAlpha
-and dropletDiameter, the Schematron rules MED1 to MED3 and the version gate MED4 (in the cinematic-volume pattern,
-after V8's rule, so a 1.0 to 1.2 document gets V8 alone).
++ the diff of sr-core srep/srep-0000-media.md (draft, Schema-Version 1.8, as of sr-core 2c81f9d): the medium
+attributes phase, phaseAlpha and dropletDiameter, the Schematron rules MED1 to MED3 and the version gate MED4 (in
+the cinematic-volume pattern, after V8's rule, so a 1.0 to 1.2 document gets V8 alone).
 The branch merges when those SREPs are accepted; this file then names the schema-1.8.0 tag.
 Source: https://github.com/pedroanisio/sr-core
 
