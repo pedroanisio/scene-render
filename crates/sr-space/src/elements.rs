@@ -314,3 +314,29 @@ pub fn approximate_position(body: i32, et: f64, table: ElementTable) -> Result<[
     let (se, ce) = OBLIQUITY_J2000.to_radians().sin_cos();
     Ok([x * AU_KM, (ce * y - se * z) * AU_KM, (se * y + ce * z) * AU_KM])
 }
+
+/// The table rule 5 reads at ephemeris time et: Table 1 for the years 1800 to 2050, Tables 2a and 2b elsewhere from
+/// −3000 to 3000; a year outside both is an error.
+pub fn element_table(et: f64) -> Result<ElementTable, SpaceError> {
+    let year = calendar(J2000_JD + et / 86400.0).0;
+    if (1800..=2050).contains(&year) {
+        Ok(ElementTable::Y1800To2050)
+    } else if (-3000..=3000).contains(&year) {
+        Ok(ElementTable::Bc3000ToAd3000)
+    } else {
+        Err(SpaceError::Elements(format!("the approximate elements cover the years -3000 to 3000, not {year}")))
+    }
+}
+
+/// A body's ICRF position (km) about an origin from the approximate elements at ephemeris time et: the heliocentric
+/// difference, the Sun (10) and the barycentre (0, taken as the Sun) at zero for either term, a planet 1 to 8
+/// otherwise, with the table [`element_table`] picks for et.
+pub fn approximate_relative(body: i32, origin: i32, et: f64) -> Result<[f64; 3], SpaceError> {
+    let table = element_table(et)?;
+    let helio = |b: i32| match b {
+        0 | 10 => Ok([0.0; 3]),
+        _ => approximate_position(b, et, table),
+    };
+    let (p, o) = (helio(body)?, helio(origin)?);
+    Ok([p[0] - o[0], p[1] - o[1], p[2] - o[2]])
+}

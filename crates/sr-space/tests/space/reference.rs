@@ -1,10 +1,10 @@
 //! The draft's numeric table. Floats are rounded as the table's expression rounds them.
 
 use sr_space::{
-    apparent_position, approximate_position, body_fixed_from_icrf, calendar, chebyshev, chebyshev_derivative,
-    determinant, ecliptic_from_icrf, et_from_utc, julian_day, leap_seconds, mat_apply, parse_utc, place_body,
-    pole_icrf, rotation_elements, solve_kepler, tdb_minus_tt, ElementTable, Frame, Space, Spk, TimeScale, LEAP_SECONDS,
-    ROTATION_EARTH_W1, SCENE_FROM_ICRF_AXES, TT_MINUS_TAI,
+    apparent_position, approximate_position, approximate_relative, body_fixed_from_icrf, calendar, chebyshev,
+    chebyshev_derivative, determinant, ecliptic_from_icrf, element_table, et_from_utc, julian_day, leap_seconds,
+    mat_apply, parse_utc, place_body, pole_icrf, rotation_elements, solve_kepler, tdb_minus_tt, ElementTable, Frame,
+    Space, Spk, TimeScale, LEAP_SECONDS, ROTATION_EARTH_W1, SCENE_FROM_ICRF_AXES, TT_MINUS_TAI,
 };
 
 pub const EXCERPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/space/fixtures/de440s-excerpt.bsp");
@@ -127,6 +127,38 @@ fn element_rows() {
     let jupiter = elements_error_arcsec(&spk, 5, 0.0, ElementTable::Bc3000ToAd3000);
     assert_eq!(round(jupiter, 3), 485.963);
     assert!(em < 60.0 && jupiter < 1800.0);
+}
+
+#[test]
+fn approximate_relative_rows() {
+    // Mars about the Earth-Moon barycentre at J2000, against the excerpt's position(4, 3)
+    let p = approximate_relative(4, 3, 0.0).unwrap();
+    assert_eq!(round(dist(p), 3), 276691116.515);
+    let e = excerpt().position(4, 3, 0.0).unwrap();
+    // the reference's row: 6933 km nearer than the excerpt's distance, 0.9″ from its direction
+    assert_eq!(round(dist(e) - dist(p), 0), 6933.0);
+    assert_eq!(round(3600.0 * angle_deg(p, e), 1), 0.9);
+    // the Sun and the barycentre are the elements' origin; a planet about itself is at zero
+    assert_eq!(
+        approximate_relative(4, 0, 0.0).unwrap(),
+        approximate_position(4, 0.0, ElementTable::Y1800To2050).unwrap()
+    );
+    assert_eq!(approximate_relative(4, 10, 0.0).unwrap(), approximate_relative(4, 0, 0.0).unwrap());
+    assert_eq!(approximate_relative(10, 0, 0.0).unwrap(), [0.0; 3]);
+    assert_eq!(approximate_relative(4, 4, 0.0).unwrap(), [0.0; 3]);
+    // Table 1 inside 1800 to 2050, the long tables elsewhere to 3000, an error beyond
+    let year = |y: f64| (y - 2000.0) * 365.25 * 86400.0;
+    assert_eq!(element_table(0.0).unwrap(), ElementTable::Y1800To2050);
+    assert_eq!(element_table(year(2100.0)).unwrap(), ElementTable::Bc3000ToAd3000);
+    assert_eq!(element_table(year(1700.0)).unwrap(), ElementTable::Bc3000ToAd3000);
+    assert!(element_table(year(3100.0)).is_err());
+    assert_eq!(
+        approximate_relative(5, 0, year(2100.0)).unwrap(),
+        approximate_position(5, year(2100.0), ElementTable::Bc3000ToAd3000).unwrap()
+    );
+    for (body, origin) in [(9, 0), (301, 0), (4, 399), (4, 9)] {
+        assert!(approximate_relative(body, origin, 0.0).is_err(), "{body} about {origin}");
+    }
 }
 
 #[test]

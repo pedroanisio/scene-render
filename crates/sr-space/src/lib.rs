@@ -19,7 +19,9 @@ pub mod frames;
 pub mod spk;
 pub mod time;
 
-pub use elements::{approximate_position, solve_kepler, ElementTable, AU_KM, MAX_KEPLER_ITERATIONS};
+pub use elements::{
+    approximate_position, approximate_relative, element_table, solve_kepler, ElementTable, AU_KM, MAX_KEPLER_ITERATIONS,
+};
 pub use frames::{
     body_fixed_from_icrf, determinant, ecliptic_from_icrf, mat_apply, mat_mul, place_body, pole_icrf,
     rotation_elements, rotation_known, transpose, Frame, Mat3, Placement, ROTATION_EARTH_W1, SCENE_FROM_ICRF_AXES,
