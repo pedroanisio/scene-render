@@ -17,6 +17,7 @@ pub mod lottie;
 pub mod markers;
 pub mod measure;
 pub mod modifiers;
+pub mod morph;
 pub mod path;
 pub mod rig;
 pub mod scene;
