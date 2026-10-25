@@ -30,6 +30,7 @@ This release accepts documents of version 1.8, which carry six drafts of sr-core
 ## Fixes
 
 - A formula is centred in its box on its layout's extent. Before, it was drawn higher than its box's middle by its ascent less its descent, so a formula asset sat high in its box and could leave it at the top. Every `formula` asset draws lower than before by that amount.
+- `watch` renders a change once the watched files settle: after a stamp changes it polls until two polls one interval apart agree. Before, a writer that truncated a file and then wrote it could be caught between the two, and `watch` rendered the empty document, reported an XML error and, as the last run of `--max-runs`, exited with code 1. With a scene held truncated from 45 ms to 75 ms after the ready line at the default 50 ms interval, the previous loop failed 30 of 30 runs and this one none of 30.
 
 ## Changes that can alter output from v0.7.5
 
