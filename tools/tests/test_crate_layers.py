@@ -28,8 +28,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 # (name, role, members), lowest layer first.
 LAYERS = (
-    ("kernels", "document-independent geometry, volumes, WebAssembly and FFmpeg I/O that everything shares",
-     ("sr-media", "sr-vector", "sr-volume", "sr-wasm")),
+    ("kernels", "document-independent geometry, volumes, ephemerides, WebAssembly and FFmpeg I/O that everything shares",
+     ("sr-media", "sr-space", "sr-vector", "sr-volume", "sr-wasm")),
     ("primitives", "document-independent text, 3D assets, simulation, geography and audio",
      ("sr-3d", "sr-audio", "sr-geo", "sr-sim", "sr-text")),
     ("model", "the document: validation, the typed model, asset verification", ("sr-model",)),

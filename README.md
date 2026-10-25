@@ -988,8 +988,7 @@ crates/sr-3d/src/           import (glTF, OBJ, PLY, splats, FBX, USD), usdc (USD
                             extrusion), clay (SDF blobs, surface nets), anim, material,
                             light (colour temperature, IES), env (HDRI prefiltering), camera, mtlx; voxel (`.vox` import), occupancy (cell lattices), pieces (cut bodies), crater, fracture, terrain (globe
                             relief), sequence (mesh-cache time selection), sampling (texture sampling), mtlx_graph (MaterialX pattern
-                            graphs), sky (procedural dome sky), subsurface (SREP 71 lobe), space (time scales, JPL
-                            SPK ephemerides, celestial frames)
+                            graphs), sky (procedural dome sky), subsurface (SREP 71 lobe); `space` re-exports sr-space
 crates/sr-gpu/src/          gpu (device), color, drape (drawings rasterised on the CPU), render_map3d (3D maps and
                             globes), resources (textures, images, pool), paint, render (planning,
                             caching, execution), video (decode conversion, frame blending, optical flow),
@@ -1027,6 +1026,8 @@ crates/sr-audio/src/        layout, dsp, effects, loudness, mix, analysis, wav
 crates/sr-sim/src/          physics (Rapier world, joints, checkpoints), physics3d (Rapier 3D), soft, particles, fields, timeline, flock,
                             fluid, slime, erosion, rng; cratering (impact craters), granular (deposit beds), hydrostatics, exchange (coupled solvers), gr and
                             sedov (analytic references), stress, surface, ocean, particles3d, pyro
+crates/sr-space/src/         the time-frames draft: time (UTC, TT and TDB, the frame clock), spk (JPL SPK ephemerides),
+                            elements (approximate Keplerian elements), frames (ICRF, ecliptic, IAU body-fixed frames)
 crates/sr-volume/src/        sparse volumetric grids and bounded deterministic caches: openvdb (OpenVDB ingestion), sequence
                             (cache timing), bake (content-addressed bakes, SRVSEQ), advection (motion-aware interpolation),
                             medium (participating media), thermal (blackbody emission)
@@ -1055,7 +1056,7 @@ dependency may point anywhere that closes no cycle. `tools/tests/test_crate_laye
 them against `cargo metadata`:
 
 <!-- facts:crate-layers -->
-1. **kernels**: `sr-media`, `sr-vector`, `sr-volume`, `sr-wasm`. Document-independent geometry, volumes, WebAssembly and FFmpeg I/O that everything shares.
+1. **kernels**: `sr-media`, `sr-space`, `sr-vector`, `sr-volume`, `sr-wasm`. Document-independent geometry, volumes, ephemerides, WebAssembly and FFmpeg I/O that everything shares.
 2. **primitives**: `sr-3d`, `sr-audio`, `sr-geo`, `sr-sim`, `sr-text`. Document-independent text, 3D assets, simulation, geography and audio.
 3. **model**: `sr-model`. The document: validation, the typed model, asset verification.
 4. **evaluation**: `sr-eval`. Documents to frames of drawable state.

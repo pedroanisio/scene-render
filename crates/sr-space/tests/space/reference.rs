@@ -1,6 +1,6 @@
 //! The draft's numeric table. Floats are rounded as the table's expression rounds them.
 
-use sr_3d::space::{
+use sr_space::{
     apparent_position, approximate_position, body_fixed_from_icrf, calendar, chebyshev, chebyshev_derivative,
     determinant, ecliptic_from_icrf, et_from_utc, julian_day, leap_seconds, mat_apply, parse_utc, place_body,
     pole_icrf, rotation_elements, solve_kepler, tdb_minus_tt, ElementTable, Frame, Space, Spk, TimeScale, LEAP_SECONDS,

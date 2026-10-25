@@ -3152,9 +3152,9 @@ dependencies = [
  "rayon",
  "roxmltree 0.20.0",
  "serde_json",
- "sha2",
  "spade",
  "sr-media",
+ "sr-space",
  "sr-vector",
  "sr-volume",
  "thiserror",
@@ -3340,6 +3340,15 @@ dependencies = [
  "rayon",
  "sr-vector",
  "sr-volume",
+ "thiserror",
+]
+
+[[package]]
+name = "sr-space"
+version = "0.8.0"
+dependencies = [
+ "serde_json",
+ "sha2",
  "thiserror",
 ]
 

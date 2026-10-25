@@ -12,6 +12,8 @@
 //! seconds of TDB past J2000. Every value is a pure function of its inputs, so a frame rendered alone equals the
 //! frame reached by playing.
 
+#![forbid(unsafe_code)]
+
 pub mod elements;
 pub mod frames;
 pub mod spk;

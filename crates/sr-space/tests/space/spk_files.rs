@@ -1,7 +1,7 @@
 //! The reader on both byte orders and the failure paths of rules 1 to 6: every malformed file, foreign value
 //! and out-of-range request is a typed error, never a default.
 
-use sr_3d::space::{
+use sr_space::{
     apparent_position, approximate_position, leap_seconds, mat_apply, parse_utc, place_body, pole_icrf,
     rotation_elements, solve_kepler, ElementTable, Frame, Space, SpaceError, Spk, TimeScale, C_KM_S,
     MAX_KEPLER_ITERATIONS, SCENE_FROM_ICRF_AXES,

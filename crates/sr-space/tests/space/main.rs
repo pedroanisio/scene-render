@@ -1,5 +1,5 @@
 //! The numeric table of the time scales and ephemerides draft (sr-core srep/srep-0000-time-frames.md,
-//! Conformance), row by row, against `sr_3d::space`, and the failure paths of its rules.
+//! Conformance), row by row, against `sr_space`, and the failure paths of its rules.
 //!
 //! `fixtures/de440s-excerpt.bsp` and `fixtures/horizons-vectors.json` are byte-equal to
 //! conformance/assets/ in sr-core at f6cf12f (MIT, same author; the excerpt is written from NAIF's

@@ -11,6 +11,7 @@ description = "3D assets for scene-render: model import (glTF, OBJ, PLY, FBX, US
 [dependencies]
 sr-media.workspace = true
 sr-volume.workspace = true
+sr-space.workspace = true
 glam = { version = "0.30", features = ["bytemuck"] }
 gltf = { version = "1.4", default-features = false, features = ["utils", "names", "extras", "extensions", "KHR_materials_transmission", "KHR_materials_ior", "KHR_materials_volume", "KHR_materials_specular", "KHR_materials_emissive_strength", "KHR_materials_unlit", "KHR_materials_variants", "KHR_texture_transform", "KHR_lights_punctual"] }
 tobj = { version = "4", default-features = false }
@@ -19,7 +20,6 @@ ufbx = "0.11"
 image = { workspace = true, features = ["hdr", "exr"] }
 roxmltree.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 half.workspace = true
 bytemuck.workspace = true
 spade = "2.15.1"
