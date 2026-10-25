@@ -582,6 +582,10 @@
       "origin": "previous-repository"
     },
     {
+      "file": "crates/sr-sim/src/particles3d/mesh.rs",
+      "sha256": "7a94d39571f13ac53c63edaa33183f74c6a77251522192f1fd9ba0a6bfc2cb4b"
+    },
+    {
       "file": "crates/sr-sim/src/physics3d.rs",
       "sha256": "05225346179739e310b9ddd1d7e1ae7806e6d8bc62894b7a6436aac8bbc5a1b1",
       "origin": "previous-repository"
