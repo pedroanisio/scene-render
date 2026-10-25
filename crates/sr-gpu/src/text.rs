@@ -1126,7 +1126,10 @@ fn chart_drawing(tc: &mut TextCache, cx: &mut Cx, key: &str, c: &m::ChartAsset) 
     let mut series: Vec<chart::Series> = Vec::new();
     for ch in children(c) {
         if is(ch, "series") {
-            let sa = Attrs { e: ch, props: None };
+            // the reactive-values draft: a series with a link or an expression is a part of the chart, keyed
+            // `{chart}/series[i]`, and reads its values at the frame (Semantics 7)
+            let part = format!("{key}/{}[{}]", ch.element_name(), series.len());
+            let sa = Attrs { e: ch, props: cx.g.elements.iter().find(|e| *e.key == *part).map(|e| &e.props) };
             series.push(chart::Series {
                 name: sa.str("name").unwrap_or_default(),
                 values: sa.nums("values").unwrap_or_default(),
