@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- expect: SPT1 -->
+<scene version="1.8"><project width="64" height="64" fps="24" duration="1" background="#000000FF"/><composition><shape id="s" shape="rect" width="40" height="30" fill="#FFFFFFFF"><deform><modifier type="matrix" b="0.5" e="4"/><modifier type="map" y="v" unit="20"/><modifier type="complex" function="mobius" coefficients="1 0 0 0 0 0.01 1 0"/></deform></shape><group id="g"><deform><modifier type="complex" function="square" unit="40"/></deform><shape id="l" shape="rect" width="20" height="20" stroke="#FF0000FF" strokeWidth="2"/></group></composition></scene>

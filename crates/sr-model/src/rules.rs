@@ -1129,7 +1129,7 @@ impl<'a> Eval<'a> {
                 "a julia fractal has juliaX and juliaY; a mandelbrot has neither.".into()
             });
         }
-        // the plots draft (p-srep-plots)
+        // V17, the one version gate of the 1.8 drafts (p-v17): the plots and the space-transforms drafts' clauses
         if local == "scene"
             && n.parent_element().is_none()
             && matches!(a("version"), Some("1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7"))
@@ -1137,9 +1137,11 @@ impl<'a> Eval<'a> {
             let uses = n.descendants().any(|d| {
                 ["axes", "plot", "axes3D", "plot3D"].iter().any(|e| is(d, e))
                     || (is(d, "object3D") && d.attribute("primitive") == Some("axes"))
+                    || (is(d, "modifier") && matches!(d.attribute("type"), Some("matrix" | "map" | "complex")))
+                    || (is(d, "deform") && d.parent_element().is_some_and(|g| is(g, "group")))
             });
             self.check(!uses, n, "V17", || {
-                "axes, plot, axes3D, plot3D and primitive=\"axes\" need version=\"1.8\".".into()
+                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex and a group's deform need version=\"1.8\".".into()
             });
         }
         if local == "plot" {
@@ -2496,6 +2498,30 @@ impl<'a> Eval<'a> {
                 });
                 let c26 = a("type") != Some("corner-pin") || tokens(a("corners").unwrap_or("")) == 8;
                 self.check(c26, n, "C26", || "modifier type=\"corner-pin\" requires 8 numbers in @corners.".into());
+                // the space-transforms draft
+                let (ty, func) = (a("type"), a("function"));
+                let coefficients = a("coefficients").map(tokens);
+                let spt1 = (ty != Some("map") || (has("x") && has("y")))
+                    && (ty != Some("complex") || has("function"))
+                    && (func != Some("mobius") || coefficients == Some(8))
+                    && (coefficients.is_none() || func == Some("mobius"))
+                    && (ty == Some("map") || !(has("x") || has("y")))
+                    && (ty == Some("complex") || !(has("function") || has("coefficients")));
+                self.check(spt1, n, "SPT1", || {
+                    "a map modifier has x and y, a complex one a function, a mobius eight coefficients; no other modifier has them.".into()
+                });
+                if func == Some("mobius") && coefficients == Some(8) {
+                    let k: Vec<f64> = normalize_space(a("coefficients").unwrap_or(""))
+                        .split(' ')
+                        .map(|t| t.parse().unwrap_or(f64::NAN))
+                        .collect();
+                    // ad − bc on the complex numbers a = k0 + i k1, b = k2 + i k3, c = k4 + i k5, d = k6 + i k7
+                    let re = k[0] * k[6] - k[1] * k[7] - (k[2] * k[4] - k[3] * k[5]);
+                    let im = k[0] * k[7] + k[1] * k[6] - (k[2] * k[5] + k[3] * k[4]);
+                    self.check(re != 0.0 || im != 0.0, n, "SPT2", || {
+                        "a mobius modifier's coefficients have a d - b c != 0.".into()
+                    });
+                }
             }
             // p15
             "transformConstraint" => {

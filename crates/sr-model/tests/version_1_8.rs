@@ -57,7 +57,7 @@ fn the_corpus_validates_alike_at_1_7_and_1_8() {
                 c.sort();
                 c
             };
-            // MED4 and V17 are the differences: a 1.7 document may not carry the phase attributes or the plots 1.8 adds
+            // MED4 and V17 are the differences: a 1.7 document may not carry the phase attributes, the plots or the space transforms 1.8 adds
             let phased = xml.split("<medium").skip(1).any(|tag| {
                 let tag = &tag[..tag.find('>').unwrap_or(tag.len())];
                 [" phase=", " phaseAlpha=", " dropletDiameter="].iter().any(|k| tag.contains(k))
@@ -66,8 +66,12 @@ fn the_corpus_validates_alike_at_1_7_and_1_8() {
             let gated = at_1_7.iter().any(|c| c == "MED4");
             at_1_7.retain(|c| c != "MED4");
             assert_eq!(gated, phased && !codes(&b).iter().any(|c| c == "S01"), "{}", f.display());
-            let plotted =
-                ["<axes ", "<plot ", "<axes3D ", "<plot3D ", "primitive=\"axes\""].iter().any(|k| xml.contains(k));
+            // and the space transforms: the three modifier types and a deform as a group's first child
+            let group_deform =
+                xml.split("<group").skip(1).any(|t| t[t.find('>').map_or(t.len(), |i| i + 1)..].starts_with("<deform"));
+            let plotted = group_deform
+                || ["<axes ", "<plot ", "<axes3D ", "<plot3D ", "primitive=\"axes\""].iter().any(|k| xml.contains(k))
+                || ["matrix", "map", "complex"].iter().any(|t| xml.contains(&format!("<modifier type=\"{t}\"")));
             let plot_gated = at_1_7.iter().any(|c| c == "V17");
             at_1_7.retain(|c| c != "V17");
             assert_eq!(plot_gated, plotted && !codes(&b).iter().any(|c| c == "S01"), "{}", f.display());

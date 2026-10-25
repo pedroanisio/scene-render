@@ -100,6 +100,8 @@
     <sch:rule context="modifier">
       <sch:assert id="C25" test="not(@type='skin') or @skeleton">modifier type="skin" requires @skeleton.</sch:assert>
       <sch:assert id="C26" test="not(@type='corner-pin') or count(str:tokenize(normalize-space(@corners),' '))=8">modifier type="corner-pin" requires 8 numbers in @corners.</sch:assert>
+      <sch:assert id="SPT1" test="(not(@type='map') or (@x and @y)) and (not(@type='complex') or @function) and (not(@function='mobius') or (@coefficients and count(str:tokenize(normalize-space(@coefficients), ' '))=8)) and (not(@coefficients) or @function='mobius') and (@type='map' or not(@x or @y)) and (@type='complex' or not(@function or @coefficients))">a map modifier has x and y, a complex one a function, a mobius eight coefficients; no other modifier has them.</sch:assert>
+      <sch:assert id="SPT2" test="not(@function='mobius') or count(str:tokenize(normalize-space(@coefficients), ' ')) != 8 or number(str:tokenize(normalize-space(@coefficients), ' ')[1]) * number(str:tokenize(normalize-space(@coefficients), ' ')[7]) - number(str:tokenize(normalize-space(@coefficients), ' ')[2]) * number(str:tokenize(normalize-space(@coefficients), ' ')[8]) - number(str:tokenize(normalize-space(@coefficients), ' ')[3]) * number(str:tokenize(normalize-space(@coefficients), ' ')[5]) + number(str:tokenize(normalize-space(@coefficients), ' ')[4]) * number(str:tokenize(normalize-space(@coefficients), ' ')[6]) != 0 or number(str:tokenize(normalize-space(@coefficients), ' ')[1]) * number(str:tokenize(normalize-space(@coefficients), ' ')[8]) + number(str:tokenize(normalize-space(@coefficients), ' ')[2]) * number(str:tokenize(normalize-space(@coefficients), ' ')[7]) - number(str:tokenize(normalize-space(@coefficients), ' ')[3]) * number(str:tokenize(normalize-space(@coefficients), ' ')[6]) - number(str:tokenize(normalize-space(@coefficients), ' ')[4]) * number(str:tokenize(normalize-space(@coefficients), ' ')[5]) != 0">a mobius modifier's coefficients have a d - b c != 0.</sch:assert>
     </sch:rule>
   </sch:pattern>
   <sch:pattern id="p15">
@@ -863,10 +865,12 @@
       <sch:assert id="FRC1" test="(@kind='julia') = (boolean(@juliaX) and boolean(@juliaY))">a julia fractal has juliaX and juliaY; a mandelbrot has neither.</sch:assert>
     </sch:rule>
   </sch:pattern>
-  <sch:pattern id="p-srep-plots">
+  <sch:pattern id="p-v17">
     <sch:rule context="/scene[@version='1.0' or @version='1.1' or @version='1.2' or @version='1.3' or @version='1.4' or @version='1.5' or @version='1.6' or @version='1.7']">
-      <sch:assert id="V17" test="not(.//axes or .//plot or .//object3D[@primitive='axes'] or .//axes3D or .//plot3D)">axes, plot, axes3D, plot3D and primitive="axes" need version="1.8".</sch:assert>
+      <sch:assert id="V17" test="not(.//axes or .//plot or .//object3D[@primitive='axes'] or .//axes3D or .//plot3D or .//modifier[@type='matrix' or @type='map' or @type='complex'] or .//group/deform)">axes, plot, axes3D, plot3D, primitive="axes", the modifier types matrix, map and complex and a group's deform need version="1.8".</sch:assert>
     </sch:rule>
+  </sch:pattern>
+  <sch:pattern id="p-srep-plots">
     <sch:rule context="plot">
       <sch:assert id="PLT1" test="(@kind='explicit' and @y and not(@x or @r or @f)) or (@kind='parametric' and @x and @y and not(@r or @f)) or (@kind='polar' and @r and not(@x or @y or @f)) or (@kind='implicit' and @f and not(@x or @y or @r))">a plot has the expressions of its kind: explicit y; parametric x and y; polar r; implicit f; and no other.</sch:assert>
     </sch:rule>

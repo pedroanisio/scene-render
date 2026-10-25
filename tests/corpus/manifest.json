@@ -1248,6 +1248,21 @@
       "P3D6",
       "PYRO8"
     ],
+    "space-function-enum.scene.xml": [
+      "S06"
+    ],
+    "space-group-body.scene.xml": [
+      "S02"
+    ],
+    "spt1-mobius.scene.xml": [
+      "SPT1"
+    ],
+    "spt1.scene.xml": [
+      "SPT1"
+    ],
+    "spt2.scene.xml": [
+      "SPT2"
+    ],
     "srt1-low-high.scene.xml": [
       "SRT1"
     ],
@@ -1291,6 +1306,9 @@
       "V16"
     ],
     "v17-axes3d.scene.xml": [
+      "V17"
+    ],
+    "v17-space.scene.xml": [
       "V17"
     ],
     "v17.scene.xml": [
@@ -1607,6 +1625,7 @@
     "repeat-points-neutral-steps.scene.xml": [],
     "repeat-points.scene.xml": [],
     "solid-colliders.scene.xml": [],
+    "space-transforms.scene.xml": [],
     "srep71-subsurface-sky-maps.scene.xml": [],
     "srt1-low-plus-0.5.scene.xml": [],
     "stroke-text.scene.xml": [],

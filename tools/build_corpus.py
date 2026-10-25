@@ -847,6 +847,20 @@ CASES += [
     ("plot-resolution-range", ["S06"], lambda _: PLOTS.replace('f="x * x + y * y - 1"', 'f="x * x + y * y - 1" resolution="5000"')),
     ("plot3d-segments-range", ["S06"], lambda _: PLOTS3D.replace('material="m"', 'material="m" tubeSegments="2"')),
 ]
+SPACE = ('<scene version="1.8"><project width="64" height="64" fps="24" duration="1" background="#000000FF"/><composition>'
+    '<shape id="s" shape="rect" width="40" height="30" fill="#FFFFFFFF"><deform><modifier type="matrix" b="0.5" e="4"/>'
+    '<modifier type="map" x="u + 0.1 * v * v" y="v" unit="20"/><modifier type="complex" function="mobius" coefficients="1 0 0 0 0 0.01 1 0"/></deform></shape>'
+    '<group id="g"><deform><modifier type="complex" function="square" unit="40"/></deform>'
+    '<shape id="l" shape="rect" width="20" height="20" stroke="#FF0000FF" strokeWidth="2"/></group></composition></scene>\n')
+VALID["space-transforms"] = SPACE
+CASES += [
+    ("v17-space", ["V17"], lambda _: SPACE.replace('version="1.8"', 'version="1.7"')),
+    ("spt1", ["SPT1"], lambda _: SPACE.replace(' x="u + 0.1 * v * v"', '')),
+    ("spt1-mobius", ["SPT1"], lambda _: SPACE.replace(' coefficients="1 0 0 0 0 0.01 1 0"', '')),
+    ("spt2", ["SPT2"], lambda _: SPACE.replace('coefficients="1 0 0 0 0 0.01 1 0"', 'coefficients="1 0 2 0 1 0 2 0"')),
+    ("space-function-enum", ["S06"], lambda _: SPACE.replace('function="square"', 'function="tan"')),
+    ("space-group-body", ["S02"], lambda _: SPACE.replace('<group id="g"><deform>', '<group id="g"><rigidBody/><deform>')),
+]
 CASES += [
     ("v16-fractal", ["V16"], lambda _: FRACTAL.replace('version="1.6"', 'version="1.5"')),
     ("frc1-julia-without-c", ["FRC1"], lambda _: FRACTAL.replace(' juliaX="-0.8" juliaY="0.156"', ' juliaX="-0.8"')),

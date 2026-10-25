@@ -1731,6 +1731,7 @@
         <xs:enumeration value="bulge"/><xs:enumeration value="pinch"/>
         <xs:enumeration value="spherize"/><xs:enumeration value="ripple"/>
         <xs:enumeration value="turbulence"/><xs:enumeration value="corner-pin"/>
+        <xs:enumeration value="matrix"/><xs:enumeration value="map"/><xs:enumeration value="complex"/>
       </xs:restriction></xs:simpleType>
     </xs:attribute>
     <xs:attribute name="amount" type="xs:double" default="0"/>
@@ -1746,6 +1747,38 @@
     <xs:attribute name="skeleton" type="xs:IDREF"/>
     <xs:attribute name="corners" type="numberListType">
       <xs:annotation><xs:documentation>corner-pin: 8 numbers x0 y0 x1 y1 x2 y2 x3 y3 (TL, TR, BR, BL).</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="a" type="xs:double" default="1">
+      <xs:annotation><xs:documentation>matrix: the linear part in the SVG order, x' = a x + c y, y' = b x + d y, about centerX/centerY (the space-transforms draft).</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="b" type="xs:double" default="0"/>
+    <xs:attribute name="c" type="xs:double" default="0"/>
+    <xs:attribute name="d" type="xs:double" default="1"/>
+    <xs:attribute name="e" type="xs:double" default="0">
+      <xs:annotation><xs:documentation>matrix: the translation, pixels (e along x, f along y).</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="f" type="xs:double" default="0"/>
+    <xs:attribute name="x" type="expressionString">
+      <xs:annotation><xs:documentation>map: u' and v' (x and y) as expressions of the data coordinates u and v, +v up, about centerX/centerY at unit pixels per data unit.</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="y" type="expressionString"/>
+    <xs:attribute name="function">
+      <xs:annotation><xs:documentation>complex: w = f(z) with z = u + iv in the frame of map; mobius is (a z + b)/(c z + d) of its coefficients.</xs:documentation></xs:annotation>
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="square"/><xs:enumeration value="cube"/><xs:enumeration value="inverse"/>
+        <xs:enumeration value="exp"/><xs:enumeration value="log"/><xs:enumeration value="sqrt"/>
+        <xs:enumeration value="sin"/><xs:enumeration value="cos"/><xs:enumeration value="mobius"/>
+        <xs:enumeration value="joukowski"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="coefficients" type="numberListType">
+      <xs:annotation><xs:documentation>mobius: eight numbers, a, b, c and d of (a z + b)/(c z + d), each as its real and imaginary parts.</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="unit" type="positiveDecimal" default="1">
+      <xs:annotation><xs:documentation>map, complex: pixels per data unit about the centre.</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="tolerance" type="positiveDecimal" default="0.25">
+      <xs:annotation><xs:documentation>matrix, map, complex: the mapped chord error, pixels, that stops the adaptive subdivision of the outline.</xs:documentation></xs:annotation>
     </xs:attribute>
   </xs:complexType>
   <xs:complexType name="deformType">
@@ -2752,6 +2785,9 @@
     <xs:choice minOccurs="0" maxOccurs="unbounded">
       <xs:group ref="nodeBehaviour"/>
       <xs:group ref="nodeChoice"/>
+      <xs:element name="deform" type="deformType">
+        <xs:annotation><xs:documentation>The modifiers act on the flattened outlines of the group's descendants in its local space, after each descendant's own transform and deform (the space-transforms draft).</xs:documentation></xs:annotation>
+      </xs:element>
     </xs:choice>
     <xs:attributeGroup ref="nodeAttributes"/>
     <xs:attribute name="blend" type="blendType" default="normal"/>
