@@ -218,6 +218,9 @@ pub struct FrameNode {
     pub content: Option<crate::layout::Content>,
     /// Children are clipped to the box.
     pub clip: bool,
+    /// The plots draft: an `axes` node's frame (its mapping, parts and labels), on the `axes` and its labels node.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub axes: Option<Arc<crate::axes::AxesFrame>>,
     /// Current values of the node's animated attributes.
     pub props: Props,
     /// Animated parts inside the node.
@@ -401,6 +404,8 @@ pub(crate) struct Frame<'p> {
     /// Whether each node and its ancestors are inside their windows (conditions not yet applied).
     alive: Vec<bool>,
     memo: Memo,
+    /// The frames of the live `axes` nodes (the plots draft), by node.
+    axes: Vec<(u32, Arc<crate::axes::AxesFrame>)>,
 }
 
 /// Values of linked and computed slots away from the frame's own time, by slot, time and depth:
@@ -960,6 +965,88 @@ impl<'p> Frame<'p> {
         self.regs = regs;
     }
 
+    /// The plots draft: computes the frame of every live `axes` from its attributes' values at this frame. An
+    /// `axes` whose values the rules refuse (an animated range that closes, say) has no frame: its parts draw
+    /// nothing, its children stay in pixels, and the refusal is returned as the frame's problem.
+    fn axes_frames(&mut self) -> Vec<String> {
+        let p = self.p;
+        let mut problems = Vec::new();
+        for &n in &p.axes_nodes {
+            if !self.alive[n as usize] {
+                continue;
+            }
+            let node = &p.nodes[n as usize];
+            let Node::Axes(a) = &*node.elem else { continue };
+            let props = self.props(&node.slots);
+            let num = |k: &str, d: f64| props.get(k).and_then(Value::as_num).unwrap_or(d);
+            let step = |k: &str, d: Option<f64>| props.get(k).and_then(Value::as_num).or(d);
+            let flag = |k: &str, d: bool| match props.get(k) {
+                Some(Value::Bool(b)) => *b,
+                _ => d,
+            };
+            let spec = crate::axes::Spec {
+                kind: match a.kind {
+                    sr_model::model::AxesKind::Cartesian => crate::axes::AxesKind::Cartesian,
+                    sr_model::model::AxesKind::Complex => crate::axes::AxesKind::Complex,
+                    sr_model::model::AxesKind::Polar => crate::axes::AxesKind::Polar,
+                    sr_model::model::AxesKind::NumberLine => crate::axes::AxesKind::NumberLine,
+                },
+                width: num("width", a.width.get()),
+                height: num("height", a.height.get()),
+                ranges: [num("xMin", a.x_min), num("xMax", a.x_max), num("yMin", a.y_min), num("yMax", a.y_max)],
+                steps: [step("xStep", a.x_step.map(|s| s.get())), step("yStep", a.y_step.map(|s| s.get()))],
+                ticks: flag("ticks", a.ticks),
+                labels: flag("labels", a.labels),
+                grid: flag("grid", a.grid),
+                tick_length: num("tickLength", a.tick_length.get()),
+            };
+            match crate::axes::frame(&spec) {
+                Ok(af) => self.axes.push((n, Arc::new(af))),
+                Err(e) => problems.push(format!("{}: {e}", node.id)),
+            }
+        }
+        problems
+    }
+
+    /// The frame of `axes` node `n`, when it is live and its values are valid.
+    pub(crate) fn axes_of(&self, n: u32) -> Option<Arc<crate::axes::AxesFrame>> {
+        self.axes.iter().find(|(k, _)| *k == n).map(|(_, af)| af.clone())
+    }
+
+    /// The path of a synthetic part of `axes` node `a`, drawn by node `n`, at this frame.
+    fn axes_part(
+        &mut self,
+        n: u32,
+        a: u32,
+        part: crate::program::AxesPart,
+        out: &mut FrameNode,
+        problems: &mut Vec<String>,
+    ) {
+        use crate::program::AxesPart;
+        let Some(af) = self.axes_of(a) else { return };
+        let d = match part {
+            AxesPart::Grid => crate::axes::lines(&af.grid),
+            AxesPart::Axis => crate::axes::lines(&af.axis),
+            AxesPart::Ticks => crate::axes::lines(&af.ticks),
+            AxesPart::Labels => return,
+            AxesPart::Plot(k) => {
+                let p = self.p;
+                let clip = matches!(&*p.nodes[a as usize].elem, Node::Axes(x) if x.clip);
+                match crate::axes::plot_path(self, n, &p.plots[k as usize], &af, clip) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        problems.push(format!("{}: {e}", out.id));
+                        return;
+                    }
+                }
+            }
+        };
+        match out.props.0.iter_mut().find(|(k, _)| &**k == "path") {
+            Some(slot) => slot.1 = Value::Str(d.into()),
+            None => out.props.0.push((Arc::from("path"), Value::Str(d.into()))),
+        }
+    }
+
     fn num(&self, n: u32, k: usize) -> f64 {
         let node = &self.p.nodes[n as usize];
         match node.tf_slots.num[k] {
@@ -986,8 +1073,8 @@ impl<'p> Frame<'p> {
         let fs = p.size;
         let mut x = resolve_len(self.len(n, tfi::X), bx[0], fs);
         let mut y = resolve_len(self.len(n, tfi::Y), bx[1], fs);
-        let ax = resolve_len(self.len(n, tfi::AX), bx[0], fs);
-        let ay = resolve_len(self.len(n, tfi::AY), bx[1], fs);
+        let mut ax = resolve_len(self.len(n, tfi::AX), bx[0], fs);
+        let mut ay = resolve_len(self.len(n, tfi::AY), bx[1], fs);
         let mut rot = self.num(n, tfi::ROT);
         let (sx, sy) = (self.num(n, tfi::SX), self.num(n, tfi::SY));
         let (kx, ky) = (self.num(n, tfi::KX), self.num(n, tfi::KY));
@@ -1018,6 +1105,12 @@ impl<'p> Frame<'p> {
                 rot += ang + m.orient_offset;
             }
         }
+        let data = [x, y];
+        if let Some(af) = node.data_axes.and_then(|a| self.axes_of(a)) {
+            // rule 9: the child's position and anchor are in data units; its other attributes stay in pixels
+            [x, y] = af.place(x, y);
+            [ax, ay] = af.offset(ax, ay);
+        }
         let mut aff = Affine::translate(x, y)
             .then(&Affine::rotate(rot))
             .then(&Affine::skew(kx, ky))
@@ -1043,7 +1136,9 @@ impl<'p> Frame<'p> {
         if let Some(adj) = self.adjust[n as usize] {
             aff = adj.then(&aff);
         }
-        Local { aff, opacity, pos: [x, y], anchor: [ax, ay], rot }
+        // the properties of a data-unit child read its data values; its drawn anchor is in pixels
+        let pos = if node.data_axes.is_some() { data } else { [x, y] };
+        Local { aff, opacity, pos, anchor: [ax, ay], rot }
     }
 
     /// Box size and media placement of a node in its local space.
@@ -1210,6 +1305,7 @@ pub fn elements_at(p: &Program, t: f64) -> Vec<ElementState> {
         adjust: vec![None; n],
         alive: vec![false; n],
         memo: Memo::default(),
+        axes: Vec::new(),
     };
     f.timelines(&[]);
     f.slots(Some(t));
@@ -1250,12 +1346,14 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
         adjust: vec![None; n],
         alive: vec![false; n],
         memo: Memo::default(),
+        axes: Vec::new(),
     };
     f.timelines(clocks);
     if include_inactive {
         f.alive.fill(true);
     }
     f.slots(None);
+    let axes_problems = f.axes_frames();
 
     struct Out {
         inst: Vec<u32>,
@@ -1271,7 +1369,7 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
         nodes: Vec::with_capacity(alive),
         world: vec![None; n],
         out_ix: vec![None; n],
-        problems: Vec::new(),
+        problems: axes_problems,
     };
 
     // depth-first, z-sorted, active nodes only
@@ -1352,6 +1450,11 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
             anchor: lc.anchor,
             content,
             clip: node.clip,
+            axes: match (node.name, node.axes_part) {
+                ("axes", _) => f.axes_of(n),
+                (_, Some((a, crate::program::AxesPart::Labels))) => f.axes_of(a),
+                _ => None,
+            },
             props: {
                 let mut props = f.props(&node.slots);
                 if node.motion.is_some() {
@@ -1392,6 +1495,11 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
         if let Some(g) = node.geom {
             if let Some(out) = o.nodes.last_mut() {
                 crate::parametric::attach(f, n, &p.geoms[g as usize], out);
+            }
+        }
+        if let Some((a, part)) = node.axes_part {
+            if let Some(out) = o.nodes.last_mut() {
+                f.axes_part(n, a, part, out, &mut o.problems);
             }
         }
         if node.name == "shape" {

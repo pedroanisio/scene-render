@@ -329,6 +329,22 @@ pub struct InstNode {
     pub doc_children: Vec<u32>,
     /// Clip children to the box.
     pub clip: bool,
+    /// The plots draft: the part of an `axes` this synthetic node draws, with that `axes` node.
+    pub axes_part: Option<(u32, AxesPart)>,
+    /// The plots draft: the `axes` node whose data units place this child (its x, y, anchorX and anchorY, rule 9).
+    pub data_axes: Option<u32>,
+}
+
+/// The nodes an `axes` lowers to (the plots draft), in paint order: the grid, the axis lines, the ticks, each
+/// plot, the clip group of its children, and the labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxesPart {
+    Grid,
+    Axis,
+    Ticks,
+    /// A plot, in [`Program::plots`].
+    Plot(u32),
+    Labels,
 }
 
 /// Who owns a slot.
@@ -573,6 +589,10 @@ pub struct Program {
     pub exprs: Vec<ExprInst>,
     /// Parametric geometry of shapes and 3D objects (SREP 70), indexed by `NodeInst::geom`.
     pub geoms: Vec<crate::parametric::Geom>,
+    /// The plots of `axes` nodes (the plots draft), indexed by [`AxesPart::Plot`].
+    pub plots: Vec<crate::axes::PlotInst>,
+    /// The `axes` nodes, whose frames the evaluator computes before it places their children.
+    pub axes_nodes: Vec<u32>,
     /// Links.
     pub links: Vec<LinkInst>,
     /// The point generators of repeats with a `points` child (SREP 26).
@@ -1273,6 +1293,9 @@ struct Builder {
     geoms: Vec<crate::parametric::Geom>,
     /// Parametric definitions waiting for their expressions to compile: (node, definition, seed, scope, doc).
     pending_geom: Vec<(u32, crate::parametric::Def, u64, Arc<str>, u16)>,
+    plots: Vec<crate::axes::PlotInst>,
+    /// Plots waiting for their expressions to compile: (plot shape node, axes node, plot index, plot, scope, doc).
+    pending_plot: Vec<(u32, u32, usize, m::Plot, Arc<str>, u16)>,
     links: Vec<LinkInst>,
     elements: Vec<ElemTarget>,
     /// Element targets that run on an include's clock: (element, include node). See [`Slot::clock`].
@@ -1303,6 +1326,7 @@ fn strip(n: &Node) -> Node {
         Node::Repeat(r) => r.children.retain(|c| !matches!(c, m::RepeatChild::Node(_))),
         Node::Iterate(r) => r.children.retain(|c| !matches!(c, m::IterateChild::Node(_))),
         Node::Viewport3D(v) => v.children.retain(|c| !matches!(c, m::Viewport3DChild::Node(_))),
+        Node::Axes(a) => a.children.retain(|c| !matches!(c, m::AxesChild::Node(_))),
         _ => {}
     }
     n
@@ -1313,6 +1337,11 @@ fn node_children(n: &Node) -> Vec<Node> {
 }
 
 const ANIM: [&str; 4] = ["animate", "expression", "motionPath", "link"];
+
+/// `v` escaped for a double-quoted XML attribute of a node fragment.
+fn xml_attr(v: &str) -> String {
+    v.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;")
+}
 
 fn scoped(scope: &str, id: &str) -> Arc<str> {
     if scope.is_empty() {
@@ -1600,6 +1629,8 @@ impl Builder {
                 align: None,
                 doc_children: Vec::new(),
                 clip: attr_bool(e, "clip").unwrap_or(false),
+                axes_part: None,
+                data_axes: None,
             };
             self.nodes.push(node);
             if matches!(name, "flock" | "fluid" | "slime" | "erosion" | "compute" | "program") {
@@ -1644,6 +1675,7 @@ impl Builder {
                 }
                 Node::Repeat(r) => self.repeat(idx, r, n, ctx),
                 Node::Connector(c) => self.connector(idx, c, ctx),
+                Node::Axes(a) => self.axes(idx, a, ctx),
                 Node::Instance(i) => self.instance(idx, i, ctx),
                 Node::Include(i) => self.include(idx, i, ctx),
                 Node::Layer(l) => self.layer_clock(idx, l, ctx),
@@ -1969,6 +2001,104 @@ impl Builder {
         let scope = self.nodes[idx as usize].scope.clone();
         let inst = crate::connector::ConnectorInst { id, from: None, to: None, label };
         self.connectors.push((inst, scope, [c.from.clone(), c.to.clone()]));
+    }
+
+    /// The plots draft: an `axes` lowers to path shapes for its grid, axis lines, ticks and plots, a group of its
+    /// box (clipped when `clip`) that holds its child nodes in data units, and a node of its labels, in that paint
+    /// order (Semantics 6: the grid under everything). Their paths and labels follow the frame's attribute values
+    /// (crate::axes); the synthetic nodes live in the `axes`' scope, its children in the `axes`' own.
+    fn axes(&mut self, idx: u32, a: &m::Axes, ctx: &Ctx) {
+        let id = self.nodes[idx as usize].id.clone();
+        let (w, h) = (a.width.get(), a.height.get());
+        self.nodes[idx as usize].box_size = Some([Length::px(w), Length::px(h)]);
+        // the content group clips the children; plots are clipped as polylines (rule 2), labels never
+        self.nodes[idx as usize].clip = false;
+        let (polar, line) = (a.kind == m::AxesKind::Polar, a.kind == m::AxesKind::NumberLine);
+        let sw = a.stroke_width.get();
+        let stroke = a.stroke.to_string();
+        let grid_stroke = match (&a.grid_stroke, &a.stroke) {
+            (Some(g), _) => g.to_string(),
+            (None, sr_model::values::Paint::Color(Color::Rgba(c))) => {
+                Color::Rgba(sr_model::values::Rgba { a: c.a * 0.25, ..*c }).to_string()
+            }
+            // a token or paint reference has no alpha to scale here: the grid takes it whole
+            (None, other) => other.to_string(),
+        };
+        let style: String = ["strokeCap", "strokeJoin", "miterLimit", "dash", "dashOffset", "strokePosition"]
+            .iter()
+            .filter_map(|k| a.get_attr(k).map(|v| format!(r#" {k}="{}""#, xml_attr(&v.to_string()))))
+            .collect();
+        let path = |part: &str, paint: &str, width: f64| {
+            format!(
+                r##"<shape id="{part}" shape="path" fill="#00000000" stroke="{}" strokeWidth="{width}"{style}/>"##,
+                xml_attr(paint)
+            )
+        };
+        let mut parts: Vec<(String, AxesPart)> = Vec::new();
+        if polar || (a.grid && !line) {
+            parts.push((path("grid", &grid_stroke, sw / 2.0), AxesPart::Grid));
+        }
+        if !polar {
+            parts.push((path("axis", &stroke, sw), AxesPart::Axis));
+            if a.ticks {
+                parts.push((path("ticks", &stroke, sw / 2.0), AxesPart::Ticks));
+            }
+        }
+        let plots: Vec<&m::Plot> = a
+            .children
+            .iter()
+            .filter_map(|c| match c {
+                m::AxesChild::Plot(p) => Some(p),
+                _ => None,
+            })
+            .collect();
+        for (i, p) in plots.iter().enumerate() {
+            let attrs: String = m::Plot::ATTRIBUTES
+                .iter()
+                .filter(|k| !crate::axes::PLOT_ONLY.contains(k))
+                .filter_map(|k| p.get_attr(k).map(|v| format!(r#" {k}="{}""#, xml_attr(&v.to_string()))))
+                .collect();
+            let fill = if p.fill.is_none() { r##" fill="#00000000""## } else { "" };
+            parts.push((format!(r#"<shape id="plot{i}" shape="path"{fill}{attrs}/>"#), AxesPart::Plot(i as u32)));
+        }
+        let cctx = Ctx { scope: id.clone(), ..ctx.clone() };
+        let mut kids = Vec::new();
+        let one = |b: &mut Self, xml: &str| -> Option<u32> {
+            match Node::from_fragment(xml) {
+                Ok(node) => b.instantiate(std::slice::from_ref(&node), Some(idx), &cctx).first().copied(),
+                Err(e) => {
+                    b.diags.push(err("E10", format!("axes {id:?}: {}", e.message), a.loc, &*id));
+                    None
+                }
+            }
+        };
+        for (xml, part) in parts {
+            let Some(k) = one(self, &xml) else { continue };
+            if let AxesPart::Plot(i) = part {
+                let (scope, doc) = (ctx.scope.clone(), ctx.doc);
+                self.pending_plot.push((k, idx, i as usize, plots[i as usize].clone(), scope, doc));
+            } else {
+                self.nodes[k as usize].axes_part = Some((idx, part));
+            }
+            kids.push(k);
+        }
+        if let Some(c) = one(self, &format!(r#"<group id="content" width="{w}" height="{h}" clip="{}"/>"#, a.clip)) {
+            let children = node_children(&Node::Axes(a.clone()));
+            let placed = self.instantiate(&children, Some(c), ctx);
+            for &k in &placed {
+                self.nodes[k as usize].data_axes = Some(idx);
+            }
+            self.nodes[c as usize].children = placed;
+            kids.push(c);
+        }
+        if a.labels {
+            if let Some(k) = one(self, r#"<group id="labels"/>"#) {
+                self.nodes[k as usize].name = "axesLabels";
+                self.nodes[k as usize].axes_part = Some((idx, AxesPart::Labels));
+                kids.push(k);
+            }
+        }
+        self.nodes[idx as usize].children = kids;
     }
 
     /// Registers every shape placed on a pdf region (SREP 17) with its region's box and its layer's effective id.
@@ -3401,6 +3531,37 @@ impl Builder {
                 self.nodes[n as usize].geom = Some((self.geoms.len() - 1) as u32);
             }
         }
+        // the plots draft: a plot's expressions, with the sampling variables of its kind
+        for (n, axes, i, plot, scope, doc) in std::mem::take(&mut self.pending_plot) {
+            let (sources, names) = crate::axes::plot_sources(&plot);
+            let points = self.nodes[n as usize].point.is_some();
+            let seed = self.project_seed;
+            let mut exprs = Vec::with_capacity(sources.len());
+            for (attr, src) in &sources {
+                let who = format!("{}/plot[{i}]@{attr}", self.nodes[axes as usize].id);
+                let mut res = ExprResolver { b: self, scope: scope.clone(), doc, points, sample: names };
+                match vm::compile(src, &mut res) {
+                    Ok(code) => {
+                        self.exprs.push(ExprInst { code, slot: None, node: Some(n), doc, seed });
+                        exprs.push((self.exprs.len() - 1) as u32);
+                    }
+                    Err(e) => {
+                        let excerpt: String = src.chars().skip(e.offset.saturating_sub(10)).take(30).collect();
+                        self.diags.push(err(
+                            "E01",
+                            format!("{who}: {} (near {:?})", e.message, excerpt.trim()),
+                            plot.loc,
+                            who.as_str(),
+                        ));
+                    }
+                }
+            }
+            if exprs.len() == sources.len() {
+                self.plots.push(crate::axes::PlotInst::new(&plot, exprs));
+                let k = (self.plots.len() - 1) as u32;
+                self.nodes[n as usize].axes_part = Some((axes, AxesPart::Plot(k)));
+            }
+        }
         for (slot, l, _node, scope, doc) in std::mem::take(&mut self.pending_link) {
             let who = self.slot_name(slot);
             let source = if let Some(p) = l.source.strip_prefix("param:") {
@@ -3766,6 +3927,8 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         exprs: Vec::new(),
         geoms: Vec::new(),
         pending_geom: Vec::new(),
+        plots: Vec::new(),
+        pending_plot: Vec::new(),
         links: Vec::new(),
         elements: Vec::new(),
         elem_clock: HashMap::new(),
@@ -3816,6 +3979,7 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
     b.globals();
     b.compile_pending();
     let order = b.order();
+    let axes_nodes = (0..b.nodes.len() as u32).filter(|&n| b.nodes[n as usize].name == "axes").collect();
     let mut slot_read = b.slot_read();
     let pinned = b.pinned();
     b.fill_tf_slots();
@@ -3964,6 +4128,8 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         channels: b.channels,
         exprs: b.exprs,
         geoms: b.geoms,
+        plots: b.plots,
+        axes_nodes,
         links: b.links,
         points: b.points,
         connectors: b.connectors.into_iter().map(|(c, _, _)| c).collect(),

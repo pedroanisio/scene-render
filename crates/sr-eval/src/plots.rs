@@ -277,6 +277,13 @@ pub fn marching_squares(
     resolution: usize,
     level: f64,
 ) -> Result<Vec<Vec<[f64; 2]>>, PlotError> {
+    let (xs, ys) = marching_grid(ranges, resolution)?;
+    let v: Vec<Vec<f64>> = xs.iter().map(|&x| ys.iter().map(|&y| f(x, y) - level).collect()).collect();
+    Ok(marching_squares_on(&xs, &ys, &v))
+}
+
+/// The corner coordinates of rule 8's grid: x_i = x0 + i·(x1 − x0)/R and y_j likewise, i, j = 0 … R.
+pub fn marching_grid(ranges: [f64; 4], resolution: usize) -> Result<(Vec<f64>, Vec<f64>), PlotError> {
     let [x0, x1, y0, y1] = ranges;
     if resolution < 1 {
         return Err(PlotError::Resolution(resolution));
@@ -285,9 +292,15 @@ pub fn marching_squares(
         return Err(PlotError::Range("implicit plot"));
     }
     let n = resolution;
-    let xs: Vec<f64> = (0..=n).map(|i| x0 + i as f64 * (x1 - x0) / n as f64).collect();
-    let ys: Vec<f64> = (0..=n).map(|j| y0 + j as f64 * (y1 - y0) / n as f64).collect();
-    let v: Vec<Vec<f64>> = xs.iter().map(|&x| ys.iter().map(|&y| f(x, y) - level).collect()).collect();
+    let xs = (0..=n).map(|i| x0 + i as f64 * (x1 - x0) / n as f64).collect();
+    let ys = (0..=n).map(|j| y0 + j as f64 * (y1 - y0) / n as f64).collect();
+    Ok((xs, ys))
+}
+
+/// [`marching_squares`] over corner values already evaluated: `v[i][j]` = f(xs[i], ys[j]) − level on the grid of
+/// [`marching_grid`].
+pub fn marching_squares_on(xs: &[f64], ys: &[f64], v: &[Vec<f64>]) -> Vec<Vec<[f64; 2]>> {
+    let n = xs.len() - 1;
     let mut crossings: HashMap<(usize, usize, bool), [f64; 2]> = HashMap::new();
     let mut crossing = |i: usize, j: usize, horizontal: bool| -> [f64; 2] {
         *crossings.entry((i, j, horizontal)).or_insert_with(|| {
@@ -343,7 +356,7 @@ pub fn marching_squares(
             }
         }
     }
-    Ok(join(&segments))
+    join(&segments)
 }
 
 /// Segments with a common endpoint joined into polylines, in the reference's order: each unused segment starts a

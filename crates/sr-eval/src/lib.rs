@@ -17,6 +17,7 @@
 
 #![forbid(unsafe_code)]
 pub mod agents;
+pub mod axes;
 pub mod channel;
 pub mod codes;
 pub mod connector;

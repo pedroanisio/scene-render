@@ -48,6 +48,11 @@ impl Node {
                 Viewport3DChild::Node(n) => Some(n),
                 _ => None,
             })),
+            // the plots draft: an axes' child nodes, beside its plot elements
+            Node::Axes(a) => Box::new(a.children.iter().filter_map(|c| match c {
+                AxesChild::Node(n) => Some(n),
+                _ => None,
+            })),
             _ => Box::new(std::iter::empty()),
         }
     }
