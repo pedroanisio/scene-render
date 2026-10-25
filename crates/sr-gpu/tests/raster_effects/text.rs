@@ -362,3 +362,80 @@ fn an_unknown_chart_kind_is_a_render_error_and_draws_no_column_chart() {
     assert!(bad.stats.errors.iter().any(|e| e.contains("pyramid") && e.contains("chart")), "{:?}", bad.stats.errors);
     assert!(sum(&bad, 0, 0, 200, 100, 1) < 1.0, "nothing is drawn for an unknown kind");
 }
+
+/// A 640×320 version-1.8 document of `assets` and `body` (the semantic-tex draft).
+fn doc_1_8(assets: &str, body: &str) -> sr_model::Document {
+    let xml = format!(
+        r##"<scene version="1.8"><project width="640" height="320" fps="10" duration="2" background="#000000"/><assets>{assets}</assets><composition>{body}</composition></scene>"##
+    );
+    sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap_or_else(|e| panic!("{e:?}"))
+}
+
+/// The red-weighted centroid of a rectangle, and the red it weighs.
+fn centroid(r: &Rendered, x0: u32, y0: u32, x1: u32, y1: u32) -> ([f64; 2], f64) {
+    let (mut s, mut sx, mut sy) = (0.0, 0.0, 0.0);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let v = r.at(x, y)[0] as f64;
+            s += v;
+            sx += v * (x as f64 + 0.5);
+            sy += v * (y as f64 + 0.5);
+        }
+    }
+    ([sx / s.max(1e-9), sy / s.max(1e-9)], s)
+}
+
+#[test]
+fn formula_parts_animate_and_formulas_morph() {
+    // the kit's formula-part case: E = mc² in white at size 48, the rhs part moved up 40 px by a formulaAnimator
+    let eq = r"\part{lhs}{E} = \part{rhs}{m c^2}";
+    let f = format!(r##"<formula id="f" tex="{eq}" width="640" height="320" size="48" color="#FFFFFF"/>"##);
+    let plain = doc_1_8(&f, r#"<layer id="l" asset="f" x="0" y="0"/>"#);
+    let Some(a) = render_times(&plain, &[0.0]) else { return };
+    assert!(a.stats.errors.is_empty(), "{:?}", a.stats.errors);
+    let moved = doc_1_8(&f, r#"<layer id="l" asset="f" x="0" y="0"><formulaAnimator part="rhs" y="-40"/></layer>"#);
+    let b = render_times(&moved, &[0.0]).unwrap();
+    assert!(b.stats.errors.is_empty(), "{:?}", b.stats.errors);
+    let t = sr_text::formula::typeset_parts(&mut sr_text::FontLib::new(true), eq, 48.0, [640.0, 320.0], 0.1).unwrap();
+    let rhs = t.boxes[1].unwrap();
+    let split = rhs.x.floor() as u32 - 1;
+    // the lhs glyphs are pixel-identical
+    for y in 0..320 {
+        for x in 0..split {
+            assert_eq!(a.at(x, y), b.at(x, y), "({x}, {y})");
+        }
+    }
+    // the rhs ink is the plain rhs moved up 40 px, within 0.5 px (rule 11)
+    let ((pa, wa), (pb, wb)) = (centroid(&a, split, 0, 640, 320), centroid(&b, split, 0, 640, 320));
+    assert!(wa > 100.0 && (wa - wb).abs() < 0.01 * wa, "{wa} {wb}");
+    assert!((pb[0] - pa[0]).abs() < 0.5 && (pb[1] - pa[1] + 40.0).abs() < 0.5, "{pa:?} {pb:?}");
+    // an unknown part is an error of the layer
+    let bad = doc_1_8(&f, r#"<layer id="l" asset="f" x="0" y="0"><formulaAnimator part="mid"/></layer>"#);
+    let e = render_times(&bad, &[0.0]).unwrap();
+    assert!(e.stats.errors.iter().any(|m| m.contains("mid")), "{:?}", e.stats.errors);
+
+    // a formulaMorph layer: the from formula at progress 0, the to formula at 1, something of both between
+    let m = format!(
+        r##"{f}<formula id="g" tex="\part{{lhs}}{{E}} = \part{{rhs}}{{m^2}}" width="640" height="320" size="48"/>
+            <formulaMorph id="m" from="f" to="g" width="640" height="320" size="48" color="#FFFFFF"><animate property="progress"><key time="0" value="0"/><key time="1" value="1"/></animate></formulaMorph>"##
+    );
+    let morph = doc_1_8(&m, r#"<layer id="l" asset="m" x="0" y="0"/>"#);
+    let m0 = render_times(&morph, &[0.0]).unwrap();
+    assert!(
+        m0.stats.errors.is_empty() && m0.stats.unsupported.is_empty(),
+        "{:?} {:?}",
+        m0.stats.errors,
+        m0.stats.unsupported
+    );
+    assert_eq!(m0.px, a.px, "the from formula at progress 0");
+    let to = doc_1_8(
+        r##"<formula id="g" tex="\part{lhs}{E} = \part{rhs}{m^2}" width="640" height="320" size="48" color="#FFFFFF"/>"##,
+        r#"<layer id="l" asset="g" x="0" y="0"/>"#,
+    );
+    let (m1, g1) = (render_times(&morph, &[1.0]).unwrap(), render_times(&to, &[0.0]).unwrap());
+    assert_eq!(m1.px, g1.px, "the to formula at progress 1");
+    let mid = render_times(&morph, &[0.5]).unwrap();
+    let ink = |r: &Rendered| sum(r, 0, 0, 640, 320, 0);
+    assert!(ink(&mid) > 0.5 * ink(&g1).min(ink(&a)), "{} {} {}", ink(&mid), ink(&a), ink(&g1));
+    assert!(mid.px != a.px && mid.px != g1.px);
+}

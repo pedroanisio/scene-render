@@ -14,8 +14,9 @@ use sr_text::animate::{self, Animator, Combine, OnPath, Order, Preset, Props, Se
 use sr_text::captions::{self, Cue, Page};
 use sr_text::glyph::{self, BgMode, Decor, Drawing};
 use sr_text::layout::{self, Align, AutoFit, Dir, Layout, Opts, Overflow, Para, Run, VAlign, Wrap, Writing};
+use sr_text::parts::MatchBy;
 use sr_text::style::{parse_variations, Decoration, StrokePos, Transform};
-use sr_text::{chart, code, formula, FontLib, Style};
+use sr_text::{chart, code, formula, formula_anim, FontLib, Style};
 use sr_vector::geom::Xf;
 use sr_vector::Paint;
 
@@ -281,6 +282,12 @@ pub fn asset_of<'p>(p: &'p Program, key: &str) -> Option<(&'p AssetsChild, usize
     let scene = if *doc == 0 { &p.scene } else { &p.includes.get(*doc as usize - 1)?.1 };
     let a = scene.assets.as_ref()?.children.iter().find(|c| c.id() == Some(id.as_str()))?;
     Some((a, *doc as usize))
+}
+
+/// The asset with id `id` in document `doc` (0 the main document, else an include).
+fn asset_in<'p>(p: &'p Program, doc: usize, id: &str) -> Option<&'p AssetsChild> {
+    let scene = if doc == 0 { &p.scene } else { &p.includes.get(doc - 1)?.1 };
+    scene.assets.as_ref()?.children.iter().find(|c| c.id() == Some(id))
 }
 
 /// Loads the documents' font assets once; returns the ones that could not be read as fonts.
@@ -992,10 +999,73 @@ pub fn asset_drawing(tc: &mut TextCache, cx: &mut Cx, key: &str, a: &AssetsChild
                 .paint("color")
                 .and_then(|v| (cx.paint)(&v, [0.0, 0.0, f.width as f64, f.height as f64]))
                 .unwrap_or(Paint::Solid { rgba: [1.0; 4], srgb: false });
-            formula::draw(tc.lib(), &f.tex, f.size.get(), [f.width as f64, f.height as f64], color, tol)
+            let anims = formula_animators(cx, [0.0, 0.0, f.width as f64, f.height as f64]);
+            formula_anim::draw_animated(
+                tc.lib(),
+                &f.tex,
+                f.size.get(),
+                [f.width as f64, f.height as f64],
+                color,
+                &anims,
+                tol,
+            )
+            .map_err(|e| format!("{}: {e}", cx.n.id))
+        }
+        AssetsChild::FormulaMorph(fm) => {
+            let (w, h) = (fm.width as f64, fm.height as f64);
+            // the asset's animated progress, read like a chart's (an include's own morph is `ns/id`)
+            let at = Attrs { e: fm, props: cx.g.elements.iter().find(|e| *e.key == *key).map(|e| &e.props) };
+            let color = at
+                .paint("color")
+                .and_then(|v| (cx.paint)(&v, [0.0, 0.0, w, h]))
+                .unwrap_or(Paint::Solid { rgba: [1.0; 4], srgb: false });
+            // `from` and `to` are ids in the morph's own document, shown by no layer of their own
+            let doc = asset_of(cx.p, key).map(|(_, d)| d).unwrap_or(0);
+            let tex = |id: &str| match asset_in(cx.p, doc, id) {
+                Some(AssetsChild::Formula(f)) => Ok(f.tex.clone()),
+                _ => Err(format!("{key}: formulaMorph: {id:?} is no formula asset")),
+            };
+            let by = if fm.r#match.as_str() == "tex" { MatchBy::Tex } else { MatchBy::Name };
+            (|| {
+                let (from, to) = (tex(&fm.from)?, tex(&fm.to)?);
+                let p = at.num("progress", fm.progress.get());
+                formula_anim::draw_morph(tc.lib(), &from, &to, by, p, fm.size.get(), [w, h], color, tol)
+                    .map_err(|e| format!("{key}: {e}"))
+            })()
         }
         _ => return None,
     })
+}
+
+/// The layer's `formulaAnimator`s at this frame (the semantic-tex draft, Semantics 5), in document order: each
+/// part name with the animator's values, as a `textAnimator`'s are read; `bx` is the formula image, the box the
+/// paints resolve over.
+fn formula_animators(cx: &mut Cx, bx: [f64; 4]) -> Vec<(String, Props)> {
+    let n = cx.n;
+    let mut out = Vec::new();
+    for (i, c) in children(&*n.elem).into_iter().filter(|c| is(*c, "formulaAnimator")).enumerate() {
+        let key = format!("{}/formulaAnimator[{i}]", n.id);
+        let a = Attrs { e: c, props: crate::vector::part(n, &key) };
+        let mut paint = |name: &str| a.paint(name).and_then(|v| (cx.paint)(&v, bx));
+        let props = Props {
+            x: a.opt("x"),
+            y: a.opt("y"),
+            scale: a.opt("scale"),
+            scale_x: a.opt("scaleX"),
+            scale_y: a.opt("scaleY"),
+            rotation: a.opt("rotation"),
+            opacity: a.opt("opacity"),
+            fill: paint("fill"),
+            stroke: paint("stroke"),
+            stroke_width: a.opt("strokeWidth"),
+            blur: a.opt("blur"),
+            anchor_x: a.opt("anchorX"),
+            anchor_y: a.opt("anchorY"),
+            ..Default::default()
+        };
+        out.push((a.str("part").unwrap_or_default(), props));
+    }
+    out
 }
 
 fn load_data(path: &FsPath) -> ChartData {

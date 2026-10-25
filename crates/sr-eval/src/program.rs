@@ -1768,6 +1768,7 @@ impl Builder {
                     m::AssetsChild::Audiogram(x) => wh(Some(x.width as f64), Some(x.height as f64)),
                     m::AssetsChild::Code(x) => wh(Some(x.width as f64), Some(x.height as f64)),
                     m::AssetsChild::Formula(x) => wh(Some(x.width as f64), Some(x.height as f64)),
+                    m::AssetsChild::FormulaMorph(x) => wh(Some(x.width as f64), Some(x.height as f64)),
                     m::AssetsChild::Generated(x) => wh(x.width.map(|v| v as f64), x.height.map(|v| v as f64)),
                     m::AssetsChild::Pdf(x) => wh(Some(x.width as f64), Some(x.height as f64)),
                     _ => None,

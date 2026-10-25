@@ -3713,6 +3713,7 @@ impl Renderer {
             AssetsChild::Audiogram(x) => (x.width as f64, x.height as f64),
             AssetsChild::Code(x) => (x.width as f64, x.height as f64),
             AssetsChild::Formula(x) => (x.width as f64, x.height as f64),
+            AssetsChild::FormulaMorph(x) => (x.width as f64, x.height as f64),
             _ => return None,
         };
         let [x0, y0, x1, y1] = content.dest;
@@ -3737,7 +3738,8 @@ impl Renderer {
             | AssetsChild::Map(_)
             | AssetsChild::Audiogram(_)
             | AssetsChild::Code(_)
-            | AssetsChild::Formula(_) => {
+            | AssetsChild::Formula(_)
+            | AssetsChild::FormulaMorph(_) => {
                 let mut tc = std::mem::take(&mut self.text);
                 let mut unsupported = Vec::new();
                 let (p, g) = (ctx.p, ctx.g);
