@@ -1,4 +1,4 @@
-//! Document version 1.8 (the random-streams draft): a simulation draws from the D24 streams S(e, p, t, i) with the
+//! Document version 1.8 (the random-streams draft): a simulation draws from the lattice-hash streams S(e, p, t, i) with the
 //! element seed e = E(project, id, @seed, "stream") (section 5); a document of 1.7 or before keeps the legacy draws
 //! of Appendix A.
 

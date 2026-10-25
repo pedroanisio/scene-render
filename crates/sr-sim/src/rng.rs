@@ -50,7 +50,7 @@ fn curl_of(noise: impl Fn(f64, f64) -> f64, x: f64, y: f64) -> [f64; 2] {
 
 /// Where a simulation's draws come from. `Legacy` is the mixer above with a simulation seed, as documents of
 /// version 1.0 to 1.7 draw (Appendix A of the random-streams SREP); `Stream` is an element seed E(…, "stream") whose
-/// draws are the D24 streams S(e, p, t, i) that version 1.8 reads (its section 5). A draw names a purpose `p`, the
+/// draws are the lattice-hash streams S(e, p, t, i) that version 1.8 reads (its section 5). A draw names a purpose `p`, the
 /// number the simulation gives the quantity it draws; a legacy draw reads `p` as its second counter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Draws {

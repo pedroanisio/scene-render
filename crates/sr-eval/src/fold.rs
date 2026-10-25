@@ -80,7 +80,7 @@ impl System {
 }
 
 /// The number of steps at or before composition time `t` (Semantics 2): 0 before the start, else
-/// ⌊(t − start) / step + 10⁻⁹⌋, the tolerance D25 gives `frame`.
+/// ⌊(t − start) / step + 10⁻⁹⌋, the tolerance the expression language gives `frame`.
 pub fn steps_at(start: f64, step: f64, t: f64) -> u64 {
     if t < start {
         return 0;
@@ -99,7 +99,7 @@ pub fn draw(seed: u64, index: u64, channel: f64, i: f64) -> f64 {
     sr_vector::d24::d24_unit(seed, channel as u64, sr_vector::d24::pack(index as i64, i as i64, 0))
 }
 
-/// `random()` in an update at fold index `index` (Semantics 6): D25's draw with the index in place of the frame.
+/// `random()` in an update at fold index `index` (Semantics 6): the expression language's `random()` draw with the index in place of the frame.
 pub fn random(seed: u64, index: u64, site: u32, channel: u64, component: u32) -> f64 {
     sr_vector::d24::d24_unit(seed, index, site as u64 + (channel << 32) + ((component as u64) << 48))
 }

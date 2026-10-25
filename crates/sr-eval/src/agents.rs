@@ -113,7 +113,7 @@ fn seed(e: &dyn Element, id: &str) -> u64 {
     }
 }
 
-/// The draws of a flock, slime or erosion: the D24 streams from 1.8, else [`seed`].
+/// The draws of a flock, slime or erosion: the lattice-hash streams from 1.8, else [`seed`].
 fn draws(p: &Program, n: &FrameNode) -> sr_sim::rng::Draws {
     let e: &dyn Element = &*n.elem;
     let attr = match e.get_attr("seed") {

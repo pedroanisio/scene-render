@@ -66,6 +66,6 @@ pub use document::{
 
 /// Schema version implemented by this crate: the newest document version it accepts. Version 1.8 is the vendored
 /// sr-core schema 1.7.0 with the value 1.8 of the random-streams draft (schema/UPSTREAM): a 1.8 document is a 1.7
-/// document whose simulations draw from the D24 streams. Version 1.7 adds no syntax (SREP 87 has no version gate), so a 1.7 document means
+/// document whose simulations draw from the lattice-hash streams. Version 1.7 adds no syntax (SREP 87 has no version gate), so a 1.7 document means
 /// what it means as 1.6; a 1.6 document with no 1.6 syntax holds 1.5 content and means what it means as 1.5.
 pub const SCHEMA_VERSION: &str = "1.8";

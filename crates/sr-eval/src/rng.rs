@@ -180,7 +180,7 @@ pub fn fbm1(seed: u64, x: f64, octaves: u32, amp_mult: f64) -> f64 {
     }
 }
 
-/// The first document version whose simulations draw from the D24 streams (the random-streams draft, section 6).
+/// The first document version whose simulations draw from the lattice-hash streams (the random-streams draft, section 6).
 pub const STREAMS_FROM: sr_model::Version = sr_model::Version::V1_8;
 
 /// Where the draws of a simulation element come from in a document of `version`: from [`STREAMS_FROM`], the stream
