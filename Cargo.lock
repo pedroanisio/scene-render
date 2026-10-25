@@ -3152,6 +3152,7 @@ dependencies = [
  "rayon",
  "roxmltree 0.20.0",
  "serde_json",
+ "sha2",
  "spade",
  "sr-media",
  "sr-vector",

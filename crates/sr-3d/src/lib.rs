@@ -9,6 +9,8 @@
 //!   paths and text, in scene units.
 //! * **Lights, environments and cameras**: colour temperature, IES profiles,
 //!   prefiltered HDRI environments, the physical camera and camera shake.
+//! * **Space**: time scales, JPL ephemerides and celestial frames placing
+//!   solar-system bodies in scene pixels ([`space`]).
 //!
 //! Scene space is the composition's pixel space extended to 3D: x right,
 //! y down, z away from the default camera. Imported Y-up assets measured in
@@ -37,6 +39,7 @@ pub mod prim;
 pub mod sampling;
 pub mod sequence;
 pub mod sky;
+pub mod space;
 pub mod subsurface;
 pub mod terrain;
 pub mod usdc;

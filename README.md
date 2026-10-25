@@ -988,7 +988,8 @@ crates/sr-3d/src/           import (glTF, OBJ, PLY, splats, FBX, USD), usdc (USD
                             extrusion), clay (SDF blobs, surface nets), anim, material,
                             light (colour temperature, IES), env (HDRI prefiltering), camera, mtlx; voxel (`.vox` import), occupancy (cell lattices), pieces (cut bodies), crater, fracture, terrain (globe
                             relief), sequence (mesh-cache time selection), sampling (texture sampling), mtlx_graph (MaterialX pattern
-                            graphs), sky (procedural dome sky), subsurface (SREP 71 lobe)
+                            graphs), sky (procedural dome sky), subsurface (SREP 71 lobe), space (time scales, JPL
+                            SPK ephemerides, celestial frames)
 crates/sr-gpu/src/          gpu (device), color, drape (drawings rasterised on the CPU), render_map3d (3D maps and
                             globes), resources (textures, images, pool), paint, render (planning,
                             caching, execution), video (decode conversion, frame blending, optical flow),

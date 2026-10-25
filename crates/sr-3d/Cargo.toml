@@ -19,6 +19,7 @@ ufbx = "0.11"
 image = { workspace = true, features = ["hdr", "exr"] }
 roxmltree.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 half.workspace = true
 bytemuck.workspace = true
 spade = "2.15.1"
