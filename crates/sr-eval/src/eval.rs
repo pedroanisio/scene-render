@@ -275,8 +275,8 @@ pub struct FrameNode {
     /// The meshes an axes object draws with other materials than its own (the plots draft): (material id, mesh).
     #[serde(skip)]
     pub param_parts: Vec<(Arc<str>, Arc<crate::parametric::ParamMesh>)>,
-    /// The space-transforms draft: the node's `map` modifiers at this frame, by the renderer's part key
-    /// (`{id}/deform[i]/modifier[j]`); [`FrameGraph::point_map`] turns one into its point function.
+    /// The space-transforms draft: the node's `map` modifiers at this frame, by their part key
+    /// (`{id}/deform[i]/modifierType[j]`); [`FrameGraph::point_map`] turns one into its point function.
     #[serde(skip)]
     pub deform_maps: Vec<(Arc<str>, MapSpec)>,
     /// A clay object's surface at this time, extracted ahead of rendering ([`crate::solid::attach_clay`]); None when
@@ -399,7 +399,7 @@ impl std::fmt::Debug for SharedProgram {
 /// and the times they read.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapSpec {
-    /// The part key, `{id}/deform[i]/modifier[j]`.
+    /// The part key, `{id}/deform[i]/modifierType[j]`.
     pub key: Arc<str>,
     exprs: [u32; 2],
     comp_t: f64,

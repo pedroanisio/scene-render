@@ -36,12 +36,12 @@ fn shape(modifiers: &str) -> String {
 fn a_map_runs_its_expressions_at_any_point_and_time() {
     let ev = evaluator(&shape(r#"<modifier type="map" x="u * u - v * v + time" y="2 * u * v + param('k')"/>"#));
     let g = ev.evaluate(0.5);
-    let f = g.point_map(spec(node(&g, "s"), "s/deform[0]/modifier[0]")).unwrap();
+    let f = g.point_map(spec(node(&g, "s"), "s/deform[0]/modifierType[0]")).unwrap();
     assert_eq!(f(2.0, 1.0), [3.5, 7.0]);
     assert_eq!(f(-1.0, 0.5), [1.25, 2.0]);
     // a later frame reads its own time
     let g = ev.evaluate(1.5);
-    let f = g.point_map(spec(node(&g, "s"), "s/deform[0]/modifier[0]")).unwrap();
+    let f = g.point_map(spec(node(&g, "s"), "s/deform[0]/modifierType[0]")).unwrap();
     assert_eq!(f(2.0, 1.0), [4.5, 7.0]);
 }
 
@@ -55,8 +55,8 @@ fn the_key_counts_deforms_and_modifiers_as_the_renderer_does() {
     let g = ev.evaluate(0.0);
     let n = node(&g, "g");
     assert_eq!(n.deform_maps.len(), 2);
-    assert_eq!(g.point_map(spec(n, "g/deform[0]/modifier[1]")).unwrap()(1.0, 2.0), [1.0, -2.0]);
-    assert_eq!(g.point_map(spec(n, "g/deform[1]/modifier[1]")).unwrap()(1.0, 2.0), [2.0, 1.0]);
+    assert_eq!(g.point_map(spec(n, "g/deform[0]/modifierType[1]")).unwrap()(1.0, 2.0), [1.0, -2.0]);
+    assert_eq!(g.point_map(spec(n, "g/deform[1]/modifierType[1]")).unwrap()(1.0, 2.0), [2.0, 1.0]);
     assert!(node(&g, "l").deform_maps.is_empty());
 }
 
@@ -71,7 +71,7 @@ fn a_value_that_is_no_number_maps_to_nan() {
     // rule 5: a non-finite image breaks the outline there; the renderer decides, the evaluator only reports
     let ev = evaluator(&shape(r#"<modifier type="map" x="'left'" y="1 / (u - u)"/>"#));
     let g = ev.evaluate(0.0);
-    let [x, y] = g.point_map(spec(node(&g, "s"), "s/deform[0]/modifier[0]")).unwrap()(1.0, 1.0);
+    let [x, y] = g.point_map(spec(node(&g, "s"), "s/deform[0]/modifierType[0]")).unwrap()(1.0, 1.0);
     assert!(x.is_nan(), "{x}");
     assert!(!y.is_finite(), "{y}");
 }
@@ -88,16 +88,16 @@ fn an_expression_that_does_not_compile_is_e01_naming_the_attribute() {
 fn a_graph_evaluated_without_its_program_refuses_the_map() {
     let ev = evaluator(&shape(r#"<modifier type="map" x="u" y="v"/>"#));
     let g = sr_eval::eval::evaluate(ev.program(), 0.0);
-    let s = spec(node(&g, "s"), "s/deform[0]/modifier[0]");
+    let s = spec(node(&g, "s"), "s/deform[0]/modifierType[0]");
     let Err(e) = g.point_map(s) else { panic!("mapped without a program") };
-    assert!(e.contains("s/deform[0]/modifier[0]"), "{e}");
+    assert!(e.contains("s/deform[0]/modifierType[0]"), "{e}");
 }
 
 #[test]
 fn the_point_function_runs_on_other_threads() {
     let ev = evaluator(&shape(r#"<modifier type="map" x="u + v" y="u - v"/>"#));
     let g = ev.evaluate(0.0);
-    let f = g.point_map(spec(node(&g, "s"), "s/deform[0]/modifier[0]")).unwrap();
+    let f = g.point_map(spec(node(&g, "s"), "s/deform[0]/modifierType[0]")).unwrap();
     let got: Vec<[f64; 2]> = std::thread::scope(|s| {
         let f = &f;
         let hs: Vec<_> = (0..4).map(|k| s.spawn(move || f(k as f64, 1.0))).collect();
