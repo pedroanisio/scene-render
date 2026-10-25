@@ -1165,14 +1165,29 @@ impl<'a> Eval<'a> {
             let sources = ["u", "function", "w", "grid", "forceField"].iter().filter(|k| has(k)).count()
                 + usize::from(["charge", "current", "dipole"].iter().any(|k| has_kid(n, k)));
             let v_ok = !has("v") || (has("u") && matches!(a("kind"), None | Some("vector")));
-            self.check(sources == 1 && v_ok, n, "FLD1", || {
-                "a field has exactly one source: u, function, w, grid, forceField, or charge, current and dipole \
-                 children; v goes with u in a vector field."
+            let kids = ["charge", "current", "dipole"].iter().any(|k| has_kid(n, k));
+            let fits = match a("kind") {
+                Some("scalar") => (has("u") && !has("v")) || has("grid"),
+                Some("complex") => has("function") || has("w"),
+                None | Some("vector") => (has("u") && has("v")) || has("grid") || has("forceField") || kids,
+                Some(_) => false,
+            };
+            let coefficients = a("coefficients").map(tokens);
+            let mobius = a("function") == Some("mobius");
+            let coefficients_ok = (coefficients.is_none() || mobius) && (!mobius || coefficients == Some(8));
+            self.check(sources == 1 && v_ok && fits && coefficients_ok, n, "FLD1", || {
+                "a field has exactly one source, fitting its kind: a vector field u with v, grid, forceField, or \
+                 charge, current and dipole children; a scalar field u alone or grid; a complex field function or \
+                 w; coefficients go with function=\"mobius\" only, eight of them."
                     .into()
             });
             let below = |lo: &str, hi: &str| !(has(lo) && has(hi)) || num(n, lo) < num(n, hi);
             self.check(below("xMin", "xMax") && below("yMin", "yMax"), n, "FLD2", || {
                 "each given min of a field is below its max.".into()
+            });
+            let in_axes = n.ancestors().skip(1).any(|p| is(p, "axes"));
+            self.check(in_axes || (has("width") && has("height")), n, "FLD5", || {
+                "a field outside an axes states its box: width and height.".into()
             });
         }
         if let Some(field) =

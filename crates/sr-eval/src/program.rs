@@ -3873,10 +3873,10 @@ impl Builder {
                         opacity: a.opacity.get(),
                     },
                     m::FieldChild::Portrait(a) => {
-                        if a.base.get() <= 1.0 {
-                            problems.push(format!("a portrait's base is above 1, not {}", a.base.get()));
+                        if a.base <= 1.0 {
+                            problems.push(format!("a portrait's base is above 1, not {}", a.base));
                         }
-                        Part::Portrait { modulus: a.modulus, base: a.base.get(), opacity: a.opacity.get() }
+                        Part::Portrait { modulus: a.modulus, base: a.base, opacity: a.opacity.get() }
                     }
                     _ => continue,
                 });

@@ -893,8 +893,9 @@
   </sch:pattern>
   <sch:pattern id="p-srep-fields">
     <sch:rule context="field">
-      <sch:assert id="FLD1" test="count(@u | @function | @w | @grid | @forceField) + number(boolean(charge | current | dipole)) = 1 and (not(@v) or (@u and (not(@kind) or @kind='vector')))">a field has exactly one source: u, function, w, grid, forceField, or charge, current and dipole children; v goes with u in a vector field.</sch:assert>
+      <sch:assert id="FLD1" test="count(@u | @function | @w | @grid | @forceField) + number(boolean(charge | current | dipole)) = 1 and (not(@v) or (@u and (not(@kind) or @kind='vector'))) and ((@kind='scalar' and ((@u and not(@v)) or @grid)) or (@kind='complex' and (@function or @w)) or ((not(@kind) or @kind='vector') and ((@u and @v) or @grid or @forceField or charge or current or dipole))) and (not(@coefficients) or @function='mobius') and (not(@function='mobius') or count(str:tokenize(normalize-space(@coefficients), ' '))=8)">a field has exactly one source, fitting its kind: a vector field u with v, grid, forceField, or charge, current and dipole children; a scalar field u alone or grid; a complex field function or w; coefficients go with function="mobius" only, eight of them.</sch:assert>
       <sch:assert id="FLD2" test="(not(@xMin and @xMax) or number(@xMin) &lt; number(@xMax)) and (not(@yMin and @yMax) or number(@yMin) &lt; number(@yMax))">each given min of a field is below its max.</sch:assert>
+      <sch:assert id="FLD5" test="ancestor::axes or (@width and @height)">a field outside an axes states its box: width and height.</sch:assert>
     </sch:rule>
     <sch:rule context="field/portrait | field/contours | field/lines | field/streamlines">
       <sch:assert id="FLD3" test="(not(self::portrait) or ../@kind='complex') and (not(self::contours) or ../@kind='scalar') and (not(self::lines) or ../charge)">a portrait needs a complex field, contours a scalar field, and lines a field with charges.</sch:assert>

@@ -21,17 +21,16 @@ test reads contains(@tex, $partTag);
 + the diff of sr-core srep/srep-0000-reactive-values.md (draft, Schema-Version 1.8, as of sr-core 082efff): the value
 asset (valueAssetType: an animatable number list value, start, step, count up to 1000000, update, between, seed), the
 animation children of a chart series, RV1 and RV2 (pattern p-srep-reactive, last) and V17's clause;
-+ the diff of sr-core srep/srep-0000-fields.md (draft, Schema-Version 1.8, as of sr-core 9d2e75a): the field node
++ the diff of sr-core srep/srep-0000-fields.md (draft, Schema-Version 1.8, as of sr-core 5186b0c): the field node
 (fieldType) in nodeChoice with its source children charge, current and dipole and its presentation children arrows,
-streamlines, lic, portrait, lines and contours, FLD1 to FLD4 (pattern p-srep-fields, last) and V17's clause. A
-Schematron pattern tests each node by its first matching rule only, so FLD3 and FLD4, which the draft states on the
-overlapping contexts field/lines, share one rule (field/portrait | field/contours | field/lines | field/streamlines).
-Local to this branch and not in the draft's table: stroke and strokeWidth on the field (defaults #FFFFFFFF and 2)
-and on its stroked presentations (defaulting to the field's), the field's coefficients (for function="mobius", as on
-the complex modifier), blend and effects (as on axes); cols, rows and perCharge at most 1000 and a lic's resolution at
-most 4096 (the deterministic bounds of what they multiply into); contours/@levels is
-required. The typed model holds fieldType's sequence of choices as one child list (crates/sr-model/build.rs,
-is_child_list); the structure stage checks the order.
+streamlines, lic, portrait, lines and contours; stroke and strokeWidth on the field (defaults #FFFFFFFF and 2) and on
+its stroked presentations (defaulting to the field's); the field's coefficients (for function="mobius"); cols, rows
+and perCharge at most 1000 and a lic's and contours' resolution at most 4096; a portrait's base above 1; FLD1 (one
+source, fitting the kind; coefficients with mobius only, eight of them), FLD2, FLD3 and FLD4 in one rule of context
+field/portrait | field/contours | field/lines | field/streamlines, FLD5 (pattern p-srep-fields, last) and V17's
+clause. Local to this branch and not in the draft's table: blend and effects on the field (as on axes), and
+contours/@levels is required. The typed model holds fieldType's sequence of choices as one child list
+(crates/sr-model/build.rs, is_child_list); the structure stage checks the order.
 V17 is SREP 12's one shared 1.8 gate: one pattern, p-v17 (after p-srep75), whose one assert is the conjunction of
 the drafts' clauses.
 The branch merges when those SREPs are accepted; this file then names the schema-1.8.0 tag.
@@ -40,8 +39,8 @@ Source: https://github.com/pedroanisio/sr-core
 Canonical upstream files (SHA-256; the files of that tag with the seven drafts' diffs; at the tag the .xsd is
 5ef91e6ca9a6d860047f2a5347c59fa17423cb99ef7535b7ceaca16619f8ce2c and the .sch, as in sr-core's schema/SHA256SUMS,
 868863e9ea4caf04e7f0bd9873c23ce5f723205714178349a4f385c4778fd368):
-  scene-render.xsd: 626c8d90f242e4ccd852ae00bdc48440ded9fddd4423e51c88ddd35a6a4d67e3
-  scene-render.sch: 6ccf22b6e6e0708fea778f35b614478c158c5f0cf884e1406d5cd52312f19189
+  scene-render.xsd: c48139a26f1cadb02c32b8c55c86bcbfc30bd9841b57b512791931a45fd92461
+  scene-render.sch: 93f1e1504cd1619409523196407f1745967591955e4993c6a77b9a69ee3a4427
   capabilities-1.schema.json: 6cb35c8ec6d37df32c9a0ad12eb33332d2abe4f11ac6000a9311d9891ec2e8b3
 
 scene-render-1.1.xsd, scene-render-1.1.sch and capabilities-1.schema.json are byte-identical to these files. Local

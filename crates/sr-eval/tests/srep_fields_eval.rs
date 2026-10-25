@@ -348,22 +348,66 @@ fn a_field_expression_that_does_not_compile_is_an_e01() {
     assert!(err.contains("E01") && err.contains("f@u"), "{err}");
 }
 
+/// Builds an evaluator for a valid composition whose one field `mutate` then changes, as an override can after the
+/// Schematron has run: the evaluator's own refusal.
+fn refused_after(composition: &str, mutate: impl FnOnce(&mut sr_model::model::Field)) -> String {
+    let xml = document(composition, "");
+    let mut doc =
+        sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap_or_else(|e| panic!("{e}\n{xml}"));
+    let Some(sr_model::model::Node::Field(f)) = doc.scene.composition.children.first_mut() else {
+        panic!("{composition}: no field first")
+    };
+    mutate(f);
+    match Evaluator::new(&doc, &Default::default()) {
+        Ok(_) => panic!("{composition} builds"),
+        Err(e) => e.to_string(),
+    }
+}
+
+fn kind(k: &'static str) -> impl FnOnce(&mut sr_model::model::Field) {
+    move |f| sr_model::element::Element::set_attr(f, "kind", k).unwrap()
+}
+
 #[test]
-fn sources_that_do_not_fit_the_kind_are_flde1() {
+fn fields_the_schema_admits_but_cannot_evaluate_are_flde1() {
+    // a grid or forceField that names an id of the wrong element passes IDREF
     for bad in [
-        format!(r#"<field {BOX} u="x"><arrows/></field>"#),
-        format!(r#"<field {BOX} function="exp"><arrows/></field>"#),
-        format!(r#"<field {BOX} kind="scalar" function="exp"><contours levels="0"/></field>"#),
-        format!(r#"<field {BOX} kind="complex" u="x"><portrait/></field>"#),
-        format!(r#"<field {BOX} kind="complex"><charge x="0" y="0" q="1"/><portrait/></field>"#),
-        format!(r#"<field {BOX} kind="complex" function="mobius" coefficients="1 0 0"><portrait/></field>"#),
-        format!(r#"<field {BOX} kind="complex" function="exp"><portrait base="1"/></field>"#),
-        r#"<field id="f" u="-y" v="x"><arrows/></field>"#.to_string(),
-        format!(r#"<field {BOX} grid="nowhere"><arrows/></field>"#).replace(r#"grid="nowhere""#, r#"grid="f""#),
-        // an id that is not a forceField of physics
+        format!(r#"<field {BOX} grid="f"><arrows/></field>"#),
         format!(r#"<field {BOX} forceField="f"><arrows/></field>"#),
     ] {
         let err = refused(&bad);
         assert!(err.contains("FLDE1"), "{bad}: {err}");
+    }
+}
+
+#[test]
+fn fields_changed_past_the_schematron_are_flde1() {
+    let vector = format!(r#"<field {BOX} u="x" v="y"><arrows/></field>"#);
+    let complex = format!(r#"<field {BOX} kind="complex" function="exp"><portrait/></field>"#);
+    let scalar = format!(r#"<field {BOX} kind="scalar" u="x"><contours levels="0"/></field>"#);
+    let charges = format!(r#"<field {BOX}><charge x="0" y="0" q="1"/><arrows/></field>"#);
+    let mobius =
+        format!(r#"<field {BOX} kind="complex" function="mobius" coefficients="1 0 0 0 0 0 1 0"><portrait/></field>"#);
+    let cases: Vec<(&str, String)> = vec![
+        ("a vector u without v", refused_after(&vector, |f| f.v = None)),
+        ("a function in a vector field", refused_after(&complex, kind("vector"))),
+        ("a function in a scalar field", refused_after(&complex, kind("scalar"))),
+        ("u in a complex field", refused_after(&scalar, kind("complex"))),
+        ("charges in a complex field", refused_after(&charges, kind("complex"))),
+        ("mobius with three coefficients", refused_after(&mobius, |f| f.coefficients = Some(vec![1.0, 0.0, 0.0]))),
+        (
+            "a portrait base of 1",
+            refused_after(&complex, |f| {
+                for c in &mut f.children {
+                    if let sr_model::model::FieldChild::Portrait(p) = c {
+                        p.base = 1.0;
+                    }
+                }
+            }),
+        ),
+        ("no box outside an axes", refused_after(&vector, |f| f.width = None)),
+    ];
+    for (what, err) in cases {
+        assert!(err.contains("FLDE1"), "{what}: {err}");
     }
 }

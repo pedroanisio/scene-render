@@ -3583,7 +3583,9 @@
   <xs:complexType name="fieldPortraitType">
     <xs:annotation><xs:documentation>The phase portrait of a complex field: hue by arg w, shaded by the fractional part of log_base |w| when modulus is true.</xs:documentation></xs:annotation>
     <xs:attribute name="modulus" type="xs:boolean" default="true"/>
-    <xs:attribute name="base" type="positiveDecimal" default="2"/>
+    <xs:attribute name="base" default="2">
+      <xs:simpleType><xs:restriction base="xs:double"><xs:minExclusive value="1"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
     <xs:attribute name="opacity" type="unitDecimal" default="1"/>
   </xs:complexType>
   <xs:complexType name="fieldLinesType">

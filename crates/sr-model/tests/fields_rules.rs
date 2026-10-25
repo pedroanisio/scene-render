@@ -76,6 +76,57 @@ fn a_field_has_exactly_one_source_fld1() {
 }
 
 #[test]
+fn the_source_fits_the_kind_fld1() {
+    for bad in [
+        // a vector field takes u with v, grid, forceField or the source children
+        field(r#"u="x""#, ""),
+        field(r#"function="exp""#, ""),
+        field(r#"w="x; y""#, ""),
+        // a scalar field takes u alone or grid
+        field(r#"kind="scalar" function="exp""#, ""),
+        field(r#"kind="scalar" forceField="wind""#, ""),
+        field(r#"kind="scalar""#, r#"<charge x="0" y="0" q="1"/>"#),
+        // a complex field takes function or w
+        field(r#"kind="complex" u="x""#, ""),
+        field(r#"kind="complex" grid="flow""#, ""),
+        field(r#"kind="complex""#, r#"<dipole x="0" y="0" mx="1" my="0"/>"#),
+    ] {
+        refused(&bad, "FLD1");
+    }
+    valid(&field(r#"kind="scalar" u="x""#, ""));
+    valid(&field(r#"kind="scalar" grid="flow""#, ""));
+    valid(&field(r#"grid="flow""#, ""));
+    valid(&field(r#"forceField="wind""#, ""));
+    valid(&field(r#"kind="complex" w="x; y""#, ""));
+}
+
+#[test]
+fn coefficients_go_with_mobius_and_are_eight_fld1() {
+    for bad in [
+        field(r#"kind="complex" function="mobius""#, ""),
+        field(r#"kind="complex" function="mobius" coefficients="1 0 0 0 0 0 1""#, ""),
+        field(r#"kind="complex" function="mobius" coefficients="1 0 0 0 0 0 1 0 0""#, ""),
+        field(r#"kind="complex" function="exp" coefficients="1 0 0 0 0 0 1 0""#, ""),
+        field(r#"kind="complex" w="x; y" coefficients="1 0 0 0 0 0 1 0""#, ""),
+    ] {
+        refused(&bad, "FLD1");
+    }
+    valid(&field(r#"kind="complex" function="mobius" coefficients=" 1 0  0 0 0 0 1 0 ""#, "<portrait/>"));
+}
+
+#[test]
+fn a_field_outside_an_axes_states_its_box_fld5() {
+    for bad in [
+        r#"<field id="g" u="-y" v="x"/>"#,
+        r#"<field id="g" u="-y" v="x" width="40"/>"#,
+        r#"<group id="k"><field id="g" u="-y" v="x" height="30"/></group>"#,
+    ] {
+        refused(bad, "FLD5");
+    }
+    valid(r#"<axes id="ax" width="40" height="30"><group id="k"><field id="g" u="-y" v="x"/></group></axes>"#);
+}
+
+#[test]
 fn each_given_min_is_below_its_max_fld2() {
     for bad in [r#"xMin="1" xMax="1""#, r#"xMin="2" xMax="-2""#, r#"yMin="0.5" yMax="0""#] {
         refused(&field(&format!("{ROTATION} {bad}"), ""), "FLD2");
@@ -120,6 +171,9 @@ fn the_schema_types_refuse_values_outside_their_ranges() {
         field(ROTATION, r#"<lic opacity="2"/>"#),
         field(ROTATION, r#"<lic seed="-1"/>"#),
         field(r#"kind="complex" function="exp""#, r#"<portrait base="0"/>"#),
+        // a base above 1: log_base needs it
+        field(r#"kind="complex" function="exp""#, r#"<portrait base="1"/>"#),
+        field(r#"kind="complex" function="exp""#, r#"<portrait base="0.5"/>"#),
         field(r#"kind="scalar" u="x""#, r#"<contours levels="0" resolution="0"/>"#),
         field("", r#"<charge x="0" y="0"/>"#),
         field("", r#"<current x="0" i="1"/>"#),

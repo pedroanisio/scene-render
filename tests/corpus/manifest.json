@@ -455,12 +455,28 @@
     ],
     "field-kind-enum.scene.xml": [
       "S06",
+      "FLD1",
       "FLD3"
+    ],
+    "field-portrait-base.scene.xml": [
+      "S06"
     ],
     "field-source-order.scene.xml": [
       "S02"
     ],
+    "fld1-coefficients-not-mobius.scene.xml": [
+      "FLD1"
+    ],
+    "fld1-kind.scene.xml": [
+      "FLD1"
+    ],
+    "fld1-mobius-count.scene.xml": [
+      "FLD1"
+    ],
     "fld1-v-scalar.scene.xml": [
+      "FLD1"
+    ],
+    "fld1-vector-u-alone.scene.xml": [
       "FLD1"
     ],
     "fld1.scene.xml": [
@@ -480,6 +496,9 @@
     ],
     "fld4.scene.xml": [
       "FLD4"
+    ],
+    "fld5.scene.xml": [
+      "FLD5"
     ],
     "formula-animator-part-required.scene.xml": [
       "S05"

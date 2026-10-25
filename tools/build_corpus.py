@@ -899,6 +899,8 @@ FIELDS = ('<scene version="1.8"><project width="64" height="64" fps="24" duratio
     '<field id="sad" kind="scalar" u="x * x - y * y" width="32" height="32"><contours levels="-0.5 0 0.5"/></field>'
     '<field id="pair" width="64" height="32"><charge x="-0.5" y="0" q="1"/><charge x="0.5" y="0" q="-1"/><lines perCharge="6"/></field>'
     '<field id="g" grid="flow" width="32" height="32" xMin="0" xMax="1" yMin="0" yMax="1"><arrows cols="2" rows="2"/></field>'
+    '<field id="mob" kind="complex" function="mobius" coefficients="1 0 0 0 0 0 1 0" width="32" height="32"><portrait base="3"/></field>'
+    '<axes id="ax" width="32" height="32"><field id="inax" u="1" v="0"><arrows cols="2" rows="2"/></field></axes>'
     '</composition></scene>\n')
 VALID["fields"] = FIELDS
 CASES += [
@@ -910,7 +912,13 @@ CASES += [
     ("fld3-lines", ["FLD3"], lambda _: FIELDS.replace('<charge x="0.5" y="0" q="-1"/>', '').replace('<charge x="-0.5" y="0" q="1"/>', '<dipole x="0" y="0" mx="1" my="0"/>')),
     ("fld4", ["FLD4"], lambda _: FIELDS.replace('separation="12"', 'separation="12" test="13"')),
     ("fld4-max-steps", ["FLD4"], lambda _: FIELDS.replace('<lines perCharge="6"/>', '<lines perCharge="6" maxSteps="2000000"/>')),
-    ("field-kind-enum", ["S06", "FLD3"], lambda _: FIELDS.replace('kind="complex"', 'kind="tensor"')),
+    ("fld1-kind", ["FLD1"], lambda _: FIELDS.replace('kind="scalar" u="x * x - y * y"', 'kind="scalar" forceField="rot"')),
+    ("fld1-vector-u-alone", ["FLD1"], lambda _: FIELDS.replace('u="-y" v="x"', 'u="-y"')),
+    ("fld1-mobius-count", ["FLD1"], lambda _: FIELDS.replace('coefficients="1 0 0 0 0 0 1 0"', 'coefficients="1 0 0"')),
+    ("fld1-coefficients-not-mobius", ["FLD1"], lambda _: FIELDS.replace('function="square"', 'function="square" coefficients="1 0 0 0 0 0 1 0"')),
+    ("fld5", ["FLD5"], lambda _: FIELDS.replace('<field id="sq" kind="complex" function="square" width="32" height="32">', '<field id="sq" kind="complex" function="square" width="32">')),
+    ("field-portrait-base", ["S06"], lambda _: FIELDS.replace('<portrait base="3"/>', '<portrait base="1"/>')),
+    ("field-kind-enum", ["S06", "FLD1", "FLD3"], lambda _: FIELDS.replace('kind="complex" function="square"', 'kind="tensor" function="square"')),
     ("field-arrows-bound", ["S06"], lambda _: FIELDS.replace('cols="8"', 'cols="1001"')),
     ("field-source-order", ["S02"], lambda _: FIELDS.replace('<charge x="0.5" y="0" q="-1"/><lines perCharge="6"/>', '<lines perCharge="6"/><charge x="0.5" y="0" q="-1"/>')),
 ]
