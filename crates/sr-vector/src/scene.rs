@@ -152,6 +152,15 @@ impl Scene {
         }
     }
 
+    /// Replaces the outline of every fill and mask with `f` of it (a path map of the space-transforms draft).
+    pub fn map_polys(&mut self, f: &dyn Fn(&[crate::path::Poly]) -> Vec<crate::path::Poly>) {
+        for c in &mut self.cmds {
+            if let Cmd::Fill { polys, .. } | Cmd::Mask { polys, .. } = c {
+                *polys = f(polys);
+            }
+        }
+    }
+
     /// Splits long edges so point maps bend them smoothly.
     pub fn subdivide(&mut self, max: f64) {
         for c in &mut self.cmds {

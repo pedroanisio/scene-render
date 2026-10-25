@@ -195,3 +195,50 @@ fn the_three_deformers_map_as_the_rules_and_map_outlines_adaptively() {
     let out = deform_polys(&[inv], &[ring], 0.25);
     assert!(!out.is_empty() && out.iter().all(|q| !q.closed));
 }
+
+#[test]
+fn a_chain_within_another_space_maps_there_and_back() {
+    use sr_vector::deform::{deform_polys, path_tolerance, Deformer};
+    use sr_vector::geom::{p, Xf};
+    use sr_vector::path::Poly;
+    use sr_vector::scene::{Cmd, FillRule, Scene};
+    // a group at (100, 0) scaled by 2: a node point (x, y) is (100 + 2x, 2y) in the group's space
+    let to = Xf([2.0, 0.0, 0.0, 2.0, 100.0, 0.0]);
+    let shift = Deformer::Matrix { m: [1.0, 0.0, 0.0, 1.0, 10.0, 0.0], center: p(0.0, 0.0), tol: 0.5 };
+    let within = Deformer::within(to, vec![shift]).expect("invertible");
+    // 10 px of the group's space is 5 px of the node's
+    let q = within.apply(p(1.0, 1.0));
+    assert_eq!((q.x, q.y), (6.0, 1.0));
+    assert_eq!(path_tolerance(std::slice::from_ref(&within)), Some(0.5));
+    assert_eq!(
+        path_tolerance(&[Deformer::within(
+            to,
+            vec![Deformer::Twist { amount: 1.0, center: p(0.0, 0.0), radius: 1.0 }]
+        )
+        .unwrap()]),
+        None
+    );
+    // a space that has no inverse has no chain
+    assert!(Deformer::within(Xf([0.0; 6]), vec![]).is_none());
+    // a scene's fills and masks map as paths, the pole breaking them
+    let inv = Deformer::Complex {
+        f: sr_vector::space::ComplexFn::Inverse,
+        coefficients: vec![],
+        center: p(0.0, 0.0),
+        unit: 10.0,
+        tol: 0.25,
+    };
+    let line = Poly { pts: vec![p(-20.0, 0.0), p(20.0, 0.0)], closed: false };
+    let mut s = Scene::default();
+    s.cmds.push(Cmd::Fill {
+        polys: vec![line.clone()],
+        rule: FillRule::NonZero,
+        paint: sr_vector::Paint::Solid { rgba: [1.0; 4], srgb: false },
+        opacity: 1.0,
+    });
+    let want = deform_polys(std::slice::from_ref(&inv), &[line], 0.25);
+    s.map_polys(&|polys: &[Poly]| deform_polys(std::slice::from_ref(&inv), polys, 0.25));
+    let Cmd::Fill { polys, .. } = &s.cmds[0] else { panic!() };
+    assert_eq!(polys, &want);
+    assert_eq!(polys.len(), 2);
+}

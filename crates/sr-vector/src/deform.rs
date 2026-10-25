@@ -66,6 +66,9 @@ pub enum Deformer {
     Map { f: PointMap, center: P, unit: f64, tol: f64 },
     /// A named complex function in the frame of `Map` (rule 3).
     Complex { f: crate::space::ComplexFn, coefficients: Vec<f64>, center: P, unit: f64, tol: f64 },
+    /// A chain acting in another space (a group's deform on a descendant, rule 9 and Syntax 2): `to` takes a point
+    /// there, the chain maps it, and `from`, the inverse of `to`, brings it back. Built by [`Deformer::within`].
+    Within { to: crate::geom::Xf, from: crate::geom::Xf, ds: Vec<Deformer> },
 }
 
 impl Deformer {
@@ -169,13 +172,20 @@ impl Deformer {
                 let [x, y] = crate::space::complex_map(*f, coefficients, [q.x, q.y], [center.x, center.y], *unit);
                 p(x, y)
             }
+            Deformer::Within { to, from, ds } => from.apply(apply_all(ds, to.apply(q))),
         }
+    }
+
+    /// The chain `ds` acting in the space that `to` maps a point into; None when `to` has no inverse.
+    pub fn within(to: crate::geom::Xf, ds: Vec<Deformer>) -> Option<Deformer> {
+        Some(Deformer::Within { from: to.inverse()?, to, ds })
     }
 
     /// The tolerance of rule 4 for the three types of the space-transforms draft; None for the others.
     pub fn path_tolerance(&self) -> Option<f64> {
         match self {
             Deformer::Matrix { tol, .. } | Deformer::Map { tol, .. } | Deformer::Complex { tol, .. } => Some(*tol),
+            Deformer::Within { ds, .. } => path_tolerance(ds),
             _ => None,
         }
     }
