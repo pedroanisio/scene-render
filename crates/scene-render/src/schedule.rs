@@ -60,12 +60,14 @@ pub fn distinct(adapters: &[Adapter]) -> Vec<usize> {
     keep
 }
 
-/// Whether two adapter names are one device: the same name, or one name followed by `/` and the driver's suffix
+/// Whether two adapter names are one device: the same name, one name followed by `/` and the driver's suffix
 /// (NVIDIA's OpenGL driver names the RTX 3050 that Vulkan calls `NVIDIA GeForce RTX 3050`
-/// `NVIDIA GeForce RTX 3050/PCIe/SSE2`).
+/// `NVIDIA GeForce RTX 3050/PCIe/SSE2`), or one name after `Mesa ` (Mesa's OpenGL driver names the GPU that its
+/// Vulkan driver calls `Intel(R) Arc(tm) Graphics (MTL)` `Mesa Intel(R) Arc(tm) Graphics (MTL)`).
 pub fn same_device(a: &str, b: &str) -> bool {
     let suffixed = |long: &str, short: &str| long.strip_prefix(short).is_some_and(|rest| rest.starts_with('/'));
-    a == b || suffixed(a, b) || suffixed(b, a)
+    let mesa = |long: &str, short: &str| long.strip_prefix("Mesa ") == Some(short);
+    a == b || suffixed(a, b) || suffixed(b, a) || mesa(a, b) || mesa(b, a)
 }
 
 /// Splits `frames` frames of `segments` path segments each across `adapters` (see the module documentation). The
@@ -241,6 +243,23 @@ mod tests {
         let s = schedule(&list, 10, 1).unwrap();
         covers(&s, 10);
         assert_eq!(s.iter().map(|x| x.adapter).collect::<Vec<_>>(), vec![0, 2]);
+    }
+
+    #[test]
+    fn mesa_opengl_names_the_device_its_vulkan_driver_names() {
+        // as `gpus` lists an Intel Arc laptop: Mesa's OpenGL driver puts `Mesa ` before the name its Vulkan driver gives
+        let arc = [
+            gpu("Intel(R) Arc(tm) Graphics (MTL)", "Vulkan", false, true, Some(2.0)),
+            gpu("llvmpipe (LLVM 22.1.8, 256 bits)", "Vulkan", true, false, None),
+            gpu("Mesa Intel(R) Arc(tm) Graphics (MTL)", "Gl", false, false, Some(2.0)),
+        ];
+        assert_eq!(distinct(&arc), vec![0, 1]);
+        assert!(same_device("Mesa Intel(R) Arc(tm) Graphics (MTL)", "Intel(R) Arc(tm) Graphics (MTL)"));
+        assert!(same_device("Intel(R) Arc(tm) Graphics (MTL)", "Mesa Intel(R) Arc(tm) Graphics (MTL)"));
+        assert!(!same_device("Mesa Intel(R) Arc(tm) Graphics (MTL)", "Intel(R) Arc(tm) Graphics"));
+        assert!(!same_device("Mesa Intel(R) Arc(tm) Graphics (MTL)", "Mesa Intel(R) Arc(tm) Graphics"));
+        // the device renders every frame, rather than half of them on each backend as if it were two
+        assert_eq!(schedule(&arc, 10, 1).unwrap(), vec![Share { adapter: 0, frames: 0..10, seconds: Some(5.0) }]);
     }
 
     #[test]
