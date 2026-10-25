@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use glam::{DMat3, DMat4, DVec3};
-use sr_volume::medium::{March, Medium};
+use sr_volume::medium::{March, Medium, Phase};
 use sr_volume::thermal::{blackbody_table, TABLE_INTERVALS};
 
 const RECORD_ROWS: usize = 64;
@@ -131,6 +131,14 @@ pub struct VolumeDraw {
     light_grid: Option<LightGridRequest>,
 }
 
+/// The g of a Henyey–Greenstein phase, the one phase function the GPU media evaluate.
+fn hg_asymmetry(phase: Phase) -> Option<f64> {
+    match phase {
+        Phase::Hg { g } => Some(g),
+        _ => None,
+    }
+}
+
 fn f32_ok(v: f64) -> bool {
     v.is_finite() && (v as f32).is_finite() && (v == 0.0 || v as f32 != 0.0)
 }
@@ -187,10 +195,13 @@ impl VolumeDraw {
             }
         }
         let optical = medium.optical();
-        let mut scalars = vec![optical.density_scale, optical.extinction, optical.anisotropy];
+        let Some(g) = hg_asymmetry(optical.phase) else {
+            return Err("the GPU volume renderer evaluates only phase=\"hg\"".into());
+        };
+        let mut scalars = vec![optical.density_scale, optical.extinction, g];
         scalars.extend(optical.albedo);
         scalars.extend(optical.emission);
-        if scalars.into_iter().any(|v| !f32_ok(v)) || (optical.anisotropy as f32).abs() >= 1.0 {
+        if scalars.into_iter().any(|v| !f32_ok(v)) || (g as f32).abs() >= 1.0 {
             return Err("volume optical coefficients exceed GPU precision".into());
         }
         let peak = density_peak(&medium);
@@ -401,7 +412,8 @@ pub(crate) fn pack(out: &mut Vec<[f32; 4]>, volumes: &[VolumeDraw]) -> [u32; 4] 
         let hi = bounds.map_or([0.0; 3], |b| b.max());
         out[base + 4] = [lo[0] as f32, lo[1] as f32, lo[2] as f32, o.density_scale as f32];
         out[base + 5] = [hi[0] as f32, hi[1] as f32, hi[2] as f32, o.extinction as f32];
-        out[base + 6] = [o.albedo[0] as f32, o.albedo[1] as f32, o.albedo[2] as f32, o.anisotropy as f32];
+        out[base + 6] =
+            [o.albedo[0] as f32, o.albedo[1] as f32, o.albedo[2] as f32, hg_asymmetry(o.phase).unwrap_or(0.0) as f32];
         out[base + 7] = [o.emission[0] as f32, o.emission[1] as f32, o.emission[2] as f32, 0.0];
         out[base + 8..base + 12].copy_from_slice(&(world * index).inverse().as_mat4().to_cols_array_2d());
         out[base + 12] = pack_grid(out, m.density());
@@ -613,7 +625,7 @@ pub fn plan_light_grid(volumes: &[VolumeDraw], lights: u32, dome: bool) -> Resul
         spacing = spacing.min(voxel * f64::from(request.cell));
         directions = directions.max(request.dome_directions);
         memory = memory.min(request.memory_bytes);
-        if m.optical().anisotropy == 0.0 {
+        if m.optical().phase.is_isotropic() {
             radiance = true;
         } else {
             directional = true;
@@ -722,13 +734,28 @@ mod tests {
             Arc::new(ball(voxel)),
             Some(sr_volume::medium::Bounds::new([0.0; 3], [8.0; 3]).unwrap()),
             Transform::identity(),
-            sr_volume::medium::Optical { extinction: 1.0, anisotropy, ..Default::default() },
+            sr_volume::medium::Optical { extinction: 1.0, phase: Phase::Hg { g: anisotropy }, ..Default::default() },
         )
         .unwrap();
         let draw = VolumeDraw::new(Arc::new(medium), March { step_size: 0.5, max_steps: 65536 }).unwrap();
         match grid {
             Some((cell, directions, mib)) => draw.with_light_grid(cell, directions, mib).unwrap(),
             None => draw,
+        }
+    }
+
+    #[test]
+    fn a_phase_other_than_hg_is_refused_before_upload() {
+        for phase in [Phase::Rayleigh, Phase::Draine { g: 0.5, alpha: 1.0 }, Phase::Fog { diameter: 10.0 }] {
+            let medium = Medium::new(
+                Arc::new(ball(1.0)),
+                Some(sr_volume::medium::Bounds::new([0.0; 3], [8.0; 3]).unwrap()),
+                Transform::identity(),
+                sr_volume::medium::Optical { phase, ..Default::default() },
+            )
+            .unwrap();
+            let err = VolumeDraw::new(Arc::new(medium), March::default()).err();
+            assert!(err.as_deref().is_some_and(|e| e.contains("phase=\"hg\"")), "{phase:?}: {err:?}");
         }
     }
 

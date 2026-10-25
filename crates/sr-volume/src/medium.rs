@@ -72,8 +72,8 @@ pub struct Optical {
     pub albedo: [f64; 3],
     /// Emitted radiance per scene unit at unit density, per channel; nonnegative.
     pub emission: [f64; 3],
-    /// Cosine between incoming and outgoing propagation directions: positive is forward.
-    pub anisotropy: f64,
+    /// The phase function of the scattering (the media draft, section 4).
+    pub phase: Phase,
     /// Maximum path-tracer scattering collisions; zero retains absorption and emission only.
     /// The CPU reference integrator evaluates the first scattering order.
     pub scatter_bounces: u32,
@@ -87,14 +87,15 @@ impl Default for Optical {
             // white, as the schema's medium/@albedo default (#FFFFFFFF) says; the renderer takes this value too
             albedo: [1.0; 3],
             emission: [0.0; 3],
-            anisotropy: 0.0,
+            phase: Phase::Hg { g: 0.0 },
             scatter_bounces: 1,
         }
     }
 }
 
 impl Optical {
-    fn validate(&self) -> Result<(), Error> {
+    /// Refuses non-finite or out-of-range coefficients and phase parameters.
+    pub fn validate(&self) -> Result<(), Error> {
         if self.scatter_bounces > 32
             || !self.density_scale.is_finite()
             || self.density_scale < 0.0
@@ -102,14 +103,12 @@ impl Optical {
             || self.extinction < 0.0
             || self.albedo.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
             || self.emission.iter().any(|v| !v.is_finite() || *v < 0.0)
-            || !self.anisotropy.is_finite()
-            || self.anisotropy.abs() >= 1.0
         {
             return Err(Error::Invalid(
-                "medium coefficients must be finite, nonnegative; albedo in [0,1], anisotropy in (-1,1), scatter bounces in [0,32]",
+                "medium coefficients must be finite, nonnegative; albedo in [0,1], scatter bounces in [0,32]",
             ));
         }
-        Ok(())
+        self.phase.validate()
     }
 }
 
@@ -430,6 +429,178 @@ pub struct Transport {
     pub steps: u32,
 }
 
+/// The phase function of a medium (the media draft, section 4). Directions are propagation directions and μ is
+/// the cosine between the arriving and leaving ones, so μ = 1 continues straight on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Phase {
+    /// Henyey–Greenstein with asymmetry g in (−1, 1): medium/@phase="hg" with @anisotropy.
+    Hg {
+        /// The mean cosine.
+        g: f64,
+    },
+    /// Rayleigh, 3 (1 + μ²) / (16π).
+    Rayleigh,
+    /// Draine's two-parameter function: g from @anisotropy, alpha ≥ 0 from @phaseAlpha.
+    Draine {
+        /// The asymmetry, in (−1, 1).
+        g: f64,
+        /// The side-lobe weight, nonnegative.
+        alpha: f64,
+    },
+    /// The HG and Draine mixture fitted to water droplets of this mean diameter in micrometres, 5 to 50.
+    Fog {
+        /// The droplet diameter in micrometres.
+        diameter: f64,
+    },
+}
+
+/// Below this |g| Henyey–Greenstein is sampled as isotropic (SREP 79 rule 6).
+const HG_ISOTROPIC: f64 = 1e-3;
+/// Halvings of [−1, 1] in the Draine inversion: 2 / 2⁶⁴ is far below the 1e-12 the draft asks.
+const BISECTION_STEPS: u32 = 64;
+
+impl Phase {
+    /// Refuses a parameter outside the domain of rule 16, or a droplet diameter outside the fit's 5 to 50.
+    pub fn validate(&self) -> Result<(), Error> {
+        let asymmetry = |g: f64| g.is_finite() && g.abs() < 1.0;
+        let ok = match *self {
+            Phase::Hg { g } => asymmetry(g),
+            Phase::Rayleigh => true,
+            Phase::Draine { g, alpha } => asymmetry(g) && alpha.is_finite() && alpha >= 0.0,
+            Phase::Fog { diameter } => (5.0..=50.0).contains(&diameter),
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(Error::Invalid("medium phase needs g in (-1,1), alpha >= 0 and a droplet diameter in [5,50]"))
+        }
+    }
+
+    /// p(μ), a density over the sphere of leaving directions.
+    pub fn eval(&self, mu: f64) -> f64 {
+        match *self {
+            Phase::Hg { g } => phase_hg(mu, g),
+            Phase::Rayleigh => phase_rayleigh(mu),
+            Phase::Draine { g, alpha } => phase_draine(mu, g, alpha),
+            Phase::Fog { diameter } => phase_fog(mu, diameter),
+        }
+    }
+
+    /// μ of a leaving direction drawn from this phase function: `lobe` picks the fog's lobe (rule 20) and is
+    /// unused by the others, `u` is inverted (rules 18 and 19). Both draws lie in [0, 1).
+    pub fn sample(&self, lobe: f64, u: f64) -> f64 {
+        match *self {
+            Phase::Hg { g } => sample_hg(u, g),
+            Phase::Rayleigh => sample_draine(u, 0.0, 1.0),
+            Phase::Draine { g, alpha } => sample_draine(u, g, alpha),
+            Phase::Fog { diameter } => sample_fog(lobe, u, diameter),
+        }
+    }
+
+    /// Whether p is the same in every direction: only Henyey–Greenstein with g = 0 (rule 17).
+    pub fn is_isotropic(&self) -> bool {
+        *self == Phase::Hg { g: 0.0 }
+    }
+}
+
+/// Rayleigh: 3 (1 + μ²) / (16π).
+pub fn phase_rayleigh(mu: f64) -> f64 {
+    let mu = mu.clamp(-1.0, 1.0);
+    3.0 * (1.0 + mu * mu) / (16.0 * std::f64::consts::PI)
+}
+
+/// Draine (2003, equation 5). alpha = 0 is Henyey–Greenstein; g = 0, alpha = 1 is Rayleigh; alpha = 1 is
+/// Cornette–Shanks. Callers supply |g| < 1 and alpha ≥ 0.
+pub fn phase_draine(mu: f64, g: f64, alpha: f64) -> f64 {
+    let mu = mu.clamp(-1.0, 1.0);
+    let denominator = 1.0 + g * g - 2.0 * g * mu;
+    let norm = (1.0 - g * g) / (4.0 * std::f64::consts::PI * (1.0 + alpha * (1.0 + 2.0 * g * g) / 3.0));
+    norm * (1.0 + alpha * mu * mu) / denominator.powf(1.5)
+}
+
+/// The first moment of the Draine phase function (Draine 2003, equation A2).
+pub fn mean_cosine_draine(g: f64, alpha: f64) -> f64 {
+    g * (1.0 + alpha * (3.0 + 2.0 * g * g) / 5.0) / (1.0 + alpha * (1.0 + 2.0 * g * g) / 3.0)
+}
+
+/// The fitted parameters of the fog phase function (Jendersie and d'Eon 2023, equations 4 to 7).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FogParameters {
+    /// Asymmetry of the Henyey–Greenstein lobe.
+    pub g_hg: f64,
+    /// Asymmetry of the Draine lobe.
+    pub g_d: f64,
+    /// Alpha of the Draine lobe.
+    pub alpha: f64,
+    /// Weight of the Draine lobe.
+    pub w_d: f64,
+}
+
+/// The fog fit for a droplet diameter d in micrometres; the fit holds for 5 ≤ d ≤ 50, which callers supply.
+pub fn fog_parameters(d: f64) -> FogParameters {
+    FogParameters {
+        g_hg: (-0.0990567 / (d - 1.67154)).exp(),
+        g_d: (-2.20679 / (d + 3.91029) - 0.428934).exp(),
+        alpha: (3.62489 - 8.29288 / (d + 5.52825)).exp(),
+        w_d: (-0.599085 / (d - 0.641583) - 0.665888).exp(),
+    }
+}
+
+/// (1 − w_D) HG(g_HG) + w_D Draine(g_D, alpha) with the parameters of [`fog_parameters`].
+pub fn phase_fog(mu: f64, diameter: f64) -> f64 {
+    let p = fog_parameters(diameter);
+    (1.0 - p.w_d) * phase_hg(mu, p.g_hg) + p.w_d * phase_draine(mu, p.g_d, p.alpha)
+}
+
+/// The cumulative of the Draine phase function in μ, from −1 to `mu` (rule 19), K (I₀ + α I₂) with I_n the integral
+/// of νⁿ t^(−3/2) over [−1, μ], t = 1 + g² − 2gν. The draft's antiderivative in t divides by g² and loses every digit
+/// for 1e-6 < |g| < 1e-4; this form of the same integrals, with s₁ = 1 + g, s₂ = √t(μ) and P = s₁s₂, never divides
+/// by g and holds at g = 0 (60-digit check: 6e-14 relative over |g| ≤ 0.99, α ≤ 30).
+pub fn cdf_draine(mu: f64, g: f64, alpha: f64) -> f64 {
+    let mu = mu.clamp(-1.0, 1.0);
+    let a = 1.0 + g * g;
+    let k = (1.0 - g * g) / (2.0 * (1.0 + alpha * (1.0 + 2.0 * g * g) / 3.0));
+    let (s1, s2) = (1.0 + g, (a - 2.0 * g * mu).sqrt());
+    let p = s1 * s2;
+    let i0 = 2.0 * (1.0 + mu) / (p * (s1 + s2));
+    let q = (mu - 1.0) * (3.0 * a + p) * (a * (mu - 1.0) + 2.0 * g * mu) / (a + p) + mu * (3.0 * a - p);
+    let i2 = 2.0 * (1.0 + mu) * q / (3.0 * p * (s1 + s2) * (a + p));
+    k * (i0 + alpha * i2)
+}
+
+/// μ of a Henyey–Greenstein direction from a draw in [0, 1), by the inversion of SREP 79 rule 6.
+pub fn sample_hg(u: f64, g: f64) -> f64 {
+    if g.abs() < HG_ISOTROPIC {
+        return 1.0 - 2.0 * u;
+    }
+    let s = (1.0 - g * g) / (1.0 - g + 2.0 * g * u);
+    ((1.0 + g * g - s * s) / (2.0 * g)).clamp(-1.0, 1.0)
+}
+
+/// μ of a Draine direction from a draw in [0, 1): the μ with [`cdf_draine`] = u, by bisection of [−1, 1].
+pub fn sample_draine(u: f64, g: f64, alpha: f64) -> f64 {
+    let (mut low, mut high) = (-1.0, 1.0);
+    for _ in 0..BISECTION_STEPS {
+        let mid = 0.5 * (low + high);
+        if cdf_draine(mid, g, alpha) < u {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    0.5 * (low + high)
+}
+
+/// μ of a fog direction: the Draine lobe when `lobe` < w_D, else the HG lobe, each inverting `u` (rule 20).
+pub fn sample_fog(lobe: f64, u: f64, diameter: f64) -> f64 {
+    let p = fog_parameters(diameter);
+    if lobe < p.w_d {
+        sample_draine(u, p.g_d, p.alpha)
+    } else {
+        sample_hg(u, p.g_hg)
+    }
+}
+
 /// Normalized Henyey–Greenstein phase. Directions follow propagation, so g>0
 /// peaks at cos(theta)=1. Callers supply finite cosine and |g|<1.
 pub fn phase_hg(cos_theta: f64, g: f64) -> f64 {
@@ -439,12 +610,12 @@ pub fn phase_hg(cos_theta: f64, g: f64) -> f64 {
 
 /// Integrates emission, absorption and single scattering across all overlapping media.
 /// `incident` returns phase-weighted, visibility-attenuated incident RGB at a point,
-/// given the outgoing propagation direction (toward the viewer) and anisotropy.
+/// given the outgoing propagation direction (toward the viewer) and the medium's phase function.
 pub fn integrate(
     media: &[Medium],
     ray: Ray,
     march: March,
-    mut incident: impl FnMut([f64; 3], [f64; 3], f64) -> [f64; 3],
+    mut incident: impl FnMut([f64; 3], [f64; 3], Phase) -> [f64; 3],
 ) -> Result<Transport, Error> {
     if !march.step_size.is_finite() || march.step_size <= 0.0 || march.max_steps == 0 {
         return Err(Error::Invalid("march requires positive finite step size and positive step budget"));
@@ -489,7 +660,7 @@ pub fn integrate(
                 let light = if optical.scatter_bounces == 0 || optical.albedo == [0.0; 3] {
                     [0.0; 3]
                 } else {
-                    incident(point, (-ray.direction).to_array(), optical.anisotropy)
+                    incident(point, (-ray.direction).to_array(), optical.phase)
                 };
                 if light.iter().any(|v| !v.is_finite() || *v < 0.0) {
                     return Err(Error::Invalid("incident radiance must be finite and nonnegative"));

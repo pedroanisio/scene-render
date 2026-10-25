@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use glam::{DMat4, DVec3};
-use sr_volume::medium::{integrate, phase_hg, Bounds, March, Medium, Optical, Ray};
+use sr_volume::medium::{integrate, phase_hg, Bounds, March, Medium, Optical, Phase, Ray};
 use sr_volume::{SparseGrid, Transform};
 
 fn slab(lo: f64, hi: f64, optical: Optical) -> Medium {
@@ -18,7 +18,7 @@ fn ray() -> Ray {
     Ray::new([0.0, 0.0, -5.0], [0.0, 0.0, 1.0], 20.0).unwrap()
 }
 
-fn dark(_: [f64; 3], _: [f64; 3], _: f64) -> [f64; 3] {
+fn dark(_: [f64; 3], _: [f64; 3], _: Phase) -> [f64; 3] {
     [0.0; 3]
 }
 
@@ -118,7 +118,7 @@ fn invalid_domain_coefficients_and_density_fail_before_transport() {
     for optical in [
         Optical { extinction: -1.0, ..Default::default() },
         Optical { albedo: [1.1; 3], ..Default::default() },
-        Optical { anisotropy: 1.0, ..Default::default() },
+        Optical { phase: Phase::Hg { g: 1.0 }, ..Default::default() },
         Optical { emission: [f64::INFINITY; 3], ..Default::default() },
     ] {
         assert!(Medium::new(bg.clone(), bounds, Transform::identity(), optical).is_err());
