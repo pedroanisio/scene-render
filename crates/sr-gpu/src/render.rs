@@ -1737,6 +1737,77 @@ impl Renderer {
         );
     }
 
+    /// Draws a field's lic or portrait raster (the fields draft) over the field's box at the raster's opacity. The
+    /// raster is display-encoded sRGB; its texture is kept per node until its pixels change.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_field_raster(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        i: usize,
+        space: &Space,
+        op: f64,
+        blend: u32,
+        seed: u32,
+        cmds: &mut Vec<Cmd>,
+        root_hash: u64,
+    ) {
+        let n = &ctx.g.nodes[i];
+        let (Some(r), Some([bw, bh])) = (n.raster.clone(), n.size) else { return };
+        let key = r.key;
+        let tex = match self.sim_textures.get(&n.id) {
+            Some((k, t)) if *k == key => t.clone(),
+            _ => {
+                let working = self.working;
+                let decode = |v: f32| {
+                    let v = v.clamp(0.0, 1.0) as f64;
+                    if v <= 0.04045 {
+                        v / 12.92
+                    } else {
+                        ((v + 0.055) / 1.055).powf(2.4)
+                    }
+                };
+                let px: Vec<[f32; 4]> = r
+                    .rgba
+                    .iter()
+                    .map(|p| {
+                        let a = p[3].clamp(0.0, 1.0) as f64;
+                        let c = working.from_linear_srgb([decode(p[0]), decode(p[1]), decode(p[2]), a]);
+                        [(c[0] * a) as f32, (c[1] * a) as f32, (c[2] * a) as f32, a as f32]
+                    })
+                    .collect();
+                let d = resources::Decoded::mipmapped(r.cols as u32, r.rows as u32, px);
+                let t = Arc::new(resources::upload(&self.gpu.device, &self.gpu.queue, &self.bgl1, &d, "field raster"));
+                self.sim_textures.insert(n.id.clone(), (key, t.clone()));
+                t
+            }
+        };
+        let op = op * r.opacity;
+        let d = Draw {
+            opacity: op as f32,
+            blend,
+            src_kind: src::TEXTURE,
+            seed,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            ..Default::default()
+        };
+        let hash = h(&[root_hash, sr_eval::rng::hash_str(&n.id), key, hf(op), 0xF1E1]);
+        self.draw_cmd(
+            plan,
+            ctx,
+            i,
+            space,
+            d,
+            [0.0, 0.0, bw, bh],
+            [0.0, 0.0, 1.0, 1.0],
+            &n.world,
+            tex,
+            cmds,
+            hash,
+            false,
+        );
+    }
+
     /// Runs a compute node and draws its tonemapped histogram over its width × height box (SREP 67).
     #[allow(clippy::too_many_arguments)]
     fn emit_compute(
@@ -2758,6 +2829,7 @@ impl Renderer {
             n.sim_volume.as_ref().map(|s| s.key).unwrap_or(8),
             n.particles3d.as_ref().map(|s| s.key).unwrap_or(9),
             n.fracture.as_ref().map(|s| s.key).unwrap_or(11),
+            n.raster.as_ref().map(|s| s.key).unwrap_or(14),
             n.sim_ocean.as_ref().map(|s| s.key).unwrap_or(10),
             n.particles
                 .as_ref()
@@ -3048,6 +3120,7 @@ impl Renderer {
             n.sim_volume.as_ref().map(|s| s.key).unwrap_or(8),
             n.particles3d.as_ref().map(|s| s.key).unwrap_or(9),
             n.fracture.as_ref().map(|s| s.key).unwrap_or(11),
+            n.raster.as_ref().map(|s| s.key).unwrap_or(14),
             n.particles
                 .as_ref()
                 .map(|p| h(&p.pos.iter().flat_map(|q| q.map(|v| v.to_bits() as u64)).collect::<Vec<u64>>()))
@@ -3653,6 +3726,7 @@ impl Renderer {
                 self.emit_sim_image(plan, ctx, i, space, op, blend, seed, cmds, root_hash)
             }
             "compute" => self.emit_compute(plan, ctx, i, space, op, blend, seed, cmds, root_hash),
+            "fieldRaster" => self.emit_field_raster(plan, ctx, i, space, op, blend, seed, cmds, root_hash),
             kind if sr_eval::draws_in_3d(kind) => self.three_run(plan, ctx, i, space, iso_op, cmds, root_hash),
             "adjustment" => self.adjust(plan, ctx, i, space, op, cmds, root_hash),
             _ => {}

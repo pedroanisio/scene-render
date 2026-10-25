@@ -99,6 +99,16 @@ pub struct FieldRaster {
     pub rows: usize,
     pub rgba: Vec<[f32; 4]>,
     pub opacity: f64,
+    /// Changes whenever the pixels do (for render caches).
+    pub key: u64,
+}
+
+impl FieldRaster {
+    fn new(cols: usize, rows: usize, rgba: Vec<[f32; 4]>, opacity: f64) -> FieldRaster {
+        let words: Vec<u64> =
+            [cols as u64, rows as u64].into_iter().chain(rgba.iter().flatten().map(|v| v.to_bits() as u64)).collect();
+        FieldRaster { key: crate::rng::hash(&words), cols, rows, rgba, opacity }
+    }
 }
 
 /// The default separation of `streamlines`, in pixels, from which `lines` also takes its default step.
@@ -318,7 +328,7 @@ pub fn lic_raster(
     let ppu = b.ppu();
     let out = fields::lic(f, &noise, b.ranges, length / ppu, step / ppu)?;
     let rgba = out.iter().rev().flat_map(|row| row.iter().map(|&v| [v as f32, v as f32, v as f32, 1.0])).collect();
-    Ok(FieldRaster { cols, rows, rgba, opacity })
+    Ok(FieldRaster::new(cols, rows, rgba, opacity))
 }
 
 /// HSL with full saturation to display-encoded RGB; `h` in [0, 1).
@@ -361,5 +371,5 @@ pub fn portrait_raster(
             rgba.push([r as f32, g as f32, bl as f32, 1.0]);
         }
     }
-    FieldRaster { cols, rows, rgba, opacity }
+    FieldRaster::new(cols, rows, rgba, opacity)
 }

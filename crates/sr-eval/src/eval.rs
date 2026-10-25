@@ -1338,10 +1338,12 @@ impl<'p> Frame<'p> {
                 let r = fnode::lic_raster(&vector, &b, length, step, resolution, seed, opacity)
                     .map_err(|e| e.to_string())?;
                 out.raster = Some(Arc::new(r));
+                out.size = Some([b.width, b.height]);
                 return Ok(());
             }
             &Part::Portrait { modulus, base, opacity } => {
                 out.raster = Some(Arc::new(fnode::portrait_raster(&vector, &b, modulus, base, opacity)));
+                out.size = Some([b.width, b.height]);
                 return Ok(());
             }
         };
