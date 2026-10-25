@@ -105,6 +105,9 @@ fn an_epoch_parses_as_rule_1_says_tf2() {
         "2026-10-24T00:00:00+0530",
         "1971-12-31T23:59:59Z",
         "1972-01-01T00:30:00+01:00",
+        "1971-12-31T22:59:59-01:00",
+        "1971-12-31T23:30:00Z",
+        "1971-12-31T23:30:00+01:00",
         " 2026-10-24T00:00:00Z",
         "2026-10-24T00:00:00+0é:00",
         "2026-10-24T00:00:00.5éZ",
@@ -118,6 +121,9 @@ fn an_epoch_parses_as_rule_1_says_tf2() {
         "2000-02-29T00:00:00Z",
         "1972-01-01T00:00:00Z",
         "1972-01-01T00:30:00-01:00",
+        // the instant 1972-01-01T00:30 UTC, written in the day before
+        "1971-12-31T23:30:00-01:00",
+        "1971-12-31T23:00:00-01:00",
         "2026-10-24T00:00:00+05:30",
         "2026-10-24T23:59:59.999999Z",
     ] {
@@ -136,6 +142,11 @@ fn the_approximate_elements_bound_the_epoch_tf2() {
     // the long table (rule 5): years -3000 to 3000, Julian days 625332.5 to 2817152.5
     refused(&space("3001-01-01T00:00:00Z", ""), "", "TF2");
     valid(&space("3000-12-31T23:59:59Z", ""), "");
+    // the bound is on the UTC instant, after the offset
+    valid(&space("3001-01-01T00:30:00+01:00", ""), "");
+    refused(&space("3001-01-01T01:00:00+01:00", ""), "", "TF2");
+    refused(&space("3000-12-31T23:30:00-01:00", ""), "", "TF2");
+    valid(&space("3000-12-31T22:59:59-01:00", ""), "");
     valid(&space("3001-01-01T00:00:00Z", r#" ephemeris="de""#), "");
     for (jd, ok) in [("625332.4", false), ("625332.5", true), ("2817152.4", true), ("2817152.5", false)] {
         let got = codes(&space(jd, r#" timeScale="tdb""#), "");

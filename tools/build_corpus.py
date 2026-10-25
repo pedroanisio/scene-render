@@ -942,6 +942,8 @@ TF_APPROX = TF.replace('body="301" positionFrom="ephemeris" orientation="bodyFix
 VALID["time-frames"] = TF
 VALID["time-frames-approximate"] = TF_APPROX
 VALID["time-frames-utc-offset"] = TF.replace('epoch="2451545.0" timeScale="tdb"', 'epoch="2024-02-29T23:59:59.25+05:30"')
+VALID["time-frames-utc-instant-1972"] = TF.replace('epoch="2451545.0" timeScale="tdb"', 'epoch="1971-12-31T23:30:00-01:00"')
+VALID["time-frames-utc-instant-3000"] = TF_APPROX.replace('epoch="2025-06-01T00:00:00Z"', 'epoch="3001-01-01T00:30:00+01:00"')
 VALID["time-frames-body-fixed"] = TF.replace('timeScale="tdb"', 'timeScale="tt" rate="+86164.0962" frame="bodyFixed" frameBody="0399"')
 CASES += [
     ("v17-time-frames", ["V17"], lambda _: TF.replace('version="1.8"', 'version="1.7"')),
@@ -951,6 +953,8 @@ CASES += [
     ("tf2-fraction-without-digits", ["TF2"], lambda _: TF.replace('epoch="2451545.0" timeScale="tdb"', 'epoch="2026-10-24T00:00:00.Z"')),
     ("tf2-non-ascii", ["TF2"], lambda _: TF.replace('epoch="2451545.0" timeScale="tdb"', 'epoch="2026-10-24T00:00:00+0\u00e9:00"')),
     ("tf2-julian-exponent", ["TF2"], lambda _: TF.replace('epoch="2451545.0"', 'epoch="2.451545e6"')),
+    ("tf2-utc-instant-1971", ["TF2"], lambda _: TF.replace('epoch="2451545.0" timeScale="tdb"', 'epoch="1971-12-31T22:59:59-01:00"')),
+    ("tf2-utc-instant-3001", ["TF2"], lambda _: TF_APPROX.replace('epoch="2025-06-01T00:00:00Z"', 'epoch="3000-12-31T23:30:00-01:00"')),
     ("tf2-approximate-year", ["TF2"], lambda _: TF_APPROX.replace('epoch="2025-06-01T00:00:00Z"', 'epoch="2817152.5" timeScale="tdb"')),
     ("tf3-no-frame-body", ["TF3"], lambda _: TF.replace('ephemeris="de"/>', 'ephemeris="de" frame="bodyFixed"/>')),
     ("tf3-frame-body-without-rotation", ["TF3"], lambda _: TF.replace('ephemeris="de"/>', 'ephemeris="de" frame="bodyFixed" frameBody="4"/>')),

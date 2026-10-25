@@ -237,7 +237,8 @@ fn rotating(body: f64) -> bool {
 }
 
 /// TF2 for timeScale="utc", as the Schematron reads the text: YYYY-MM-DDThh:mm:ss, an optional fraction of digits,
-/// then Z or ±hh:mm; a calendar date of 1972 or later in UTC; with the approximate elements a year to 3000.
+/// then Z or ±hh:mm; a calendar date whose UTC instant is in 1972 or later, and with the approximate elements in 3000
+/// or earlier.
 fn utc_epoch(e: &str, approx: bool) -> bool {
     let b = e.as_bytes();
     let zone_len = if e.ends_with('Z') { 1 } else { 6 };
@@ -264,7 +265,10 @@ fn utc_epoch(e: &str, approx: bool) -> bool {
     let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
     let days = [31, 28 + i64::from(leap), 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let (zh, zm) = if zone == "Z" { (0, 0) } else { (field(&zone[1..3]), field(&zone[4..6])) };
-    let ahead = if zone.starts_with('+') { 60 * zh + zm } else { 0 };
+    // the year of the UTC instant: an offset under a day moves the date by at most one day
+    let shift = if zone.starts_with('+') { 60 * zh + zm } else { -(60 * zh + zm) };
+    let u = 60 * h + mi - shift;
+    let uy = y + i64::from(u >= 1440 && m == 12 && d == 31) - i64::from(u < 0 && m == 1 && d == 1);
     (1..=12).contains(&m)
         && d >= 1
         && d <= days[(m - 1) as usize]
@@ -273,9 +277,8 @@ fn utc_epoch(e: &str, approx: bool) -> bool {
         && s <= 59
         && zh <= 23
         && zm <= 59
-        && y >= 1972
-        && !(y == 1972 && m == 1 && d == 1 && ahead > 60 * h + mi)
-        && (!approx || y <= 3000)
+        && uy >= 1972
+        && (!approx || uy <= 3000)
 }
 
 /// TF2 for timeScale="tt" or "tdb": a decimal number once XML whitespace is collapsed (a sign, digits with at most one

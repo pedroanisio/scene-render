@@ -38,8 +38,8 @@ timeScale utc|tt|tdb, rate, origin, frame icrf|eclipticJ2000|bodyFixed, frameBod
 @positionFrom document|ephemeris and @orientation document|bodyFixed, TF2 to TF5 (pattern p-srep-time-frames, last) and
 V17's clause. TF1 and the clauses of TF4 and TF5 that need the ephemeris file's segments are the asset stage's, as A02 is
 for a sha256. The draft states TF2 to TF5 in prose; the asserts here write them out: TF2 reads the epoch's text (a UTC
-epoch's fields in range, February 29 in leap years, an offset to 23:59, 1972-01-01 in UTC, the approximate elements' long
-table to the year 3000; a TT or TDB epoch a decimal number, Julian days 625332.5 to 2817152.5 with the approximate
+epoch's fields in range, February 29 in leap years, an offset to 23:59, its UTC instant (after the offset) from
+1972-01-01 on and, with the approximate elements' long table, in the year 3000 or earlier; a TT or TDB epoch a decimal number, Julian days 625332.5 to 2817152.5 with the approximate
 elements), TF3 and TF4 list rule 6's bodies with rotation elements, and integer attributes read by value (SREP 84).
 Local to this branch and not in the draft: TF5 also refuses an ephemeris that names no ephemeris asset, and, with the
 approximate elements, an origin other than 0, 10 or a planet 1 to 8 (the elements are heliocentric, so the barycentre 0
@@ -53,7 +53,7 @@ Canonical upstream files (SHA-256; the files of that tag with the eight drafts' 
 5ef91e6ca9a6d860047f2a5347c59fa17423cb99ef7535b7ceaca16619f8ce2c and the .sch, as in sr-core's schema/SHA256SUMS,
 868863e9ea4caf04e7f0bd9873c23ce5f723205714178349a4f385c4778fd368):
   scene-render.xsd: 5e9874e3e72111d5d82eed207f1a216ec0a29e40d3dc4d5e4956da10d7c41b8f
-  scene-render.sch: 9ab9b3f832f705b729f041b3a9c2fcbc810f99094086840cb7807f190a0bb300
+  scene-render.sch: 397dccc0b4827d23d1549ba808509e5c4b1ea047e5cbc59f5bb8fe1e4ea41bbd
   capabilities-1.schema.json: 6cb35c8ec6d37df32c9a0ad12eb33332d2abe4f11ac6000a9311d9891ec2e8b3
 
 scene-render-1.1.xsd, scene-render-1.1.sch and capabilities-1.schema.json are byte-identical to these files. Local

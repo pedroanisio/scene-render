@@ -919,8 +919,10 @@
       <sch:let name="mi" value="number(substring($e,15,2))"/>
       <sch:let name="leap" value="($Y mod 4 = 0 and $Y mod 100 != 0) or $Y mod 400 = 0"/>
       <sch:let name="days" value="number(substring('312831303130313130313031',2*$M - 1,2)) + number($M=2 and $leap)"/>
-      <sch:let name="ahead" value="number(substring($zone,1,1)='+')*(60*number(substring($zone,2,2))+number(substring($zone,5,2)))"/>
-      <sch:let name="utc" value="string-length($e) &gt;= 20 and translate(substring($stamp,1,19),'0123456789','0000000000')='0000-00-00T00:00:00' and (string-length($stamp)=19 or (substring($stamp,20,1)='.' and string-length($stamp) &gt; 20 and translate(substring($stamp,21),'0123456789','')='')) and ($zone='Z' or translate($zone,'0123456789+','0000000000-')='-00:00') and $M &gt;= 1 and $M &lt;= 12 and $D &gt;= 1 and $D &lt;= $days and $h &lt;= 23 and $mi &lt;= 59 and number(substring($e,18,2)) &lt;= 59 and ($zone='Z' or (number(substring($zone,2,2)) &lt;= 23 and number(substring($zone,5,2)) &lt;= 59)) and $Y &gt;= 1972 and not($Y=1972 and $M=1 and $D=1 and $ahead &gt; 60*$h+$mi) and (not($approx) or $Y &lt;= 3000)"/>
+      <sch:let name="shift" value="(number(substring($zone,1,1)='+') - number(substring($zone,1,1)='-'))*(60*number(concat('0',substring($zone,2,2)))+number(concat('0',substring($zone,5,2))))"/>
+      <sch:let name="u" value="60*$h + $mi - $shift"/>
+      <sch:let name="uy" value="$Y + number($u &gt;= 1440 and $M=12 and $D=31) - number($u &lt; 0 and $M=1 and $D=1)"/>
+      <sch:let name="utc" value="string-length($e) &gt;= 20 and translate(substring($stamp,1,19),'0123456789','0000000000')='0000-00-00T00:00:00' and (string-length($stamp)=19 or (substring($stamp,20,1)='.' and string-length($stamp) &gt; 20 and translate(substring($stamp,21),'0123456789','')='')) and ($zone='Z' or translate($zone,'0123456789+','0000000000-')='-00:00') and $M &gt;= 1 and $M &lt;= 12 and $D &gt;= 1 and $D &lt;= $days and $h &lt;= 23 and $mi &lt;= 59 and number(substring($e,18,2)) &lt;= 59 and ($zone='Z' or (number(substring($zone,2,2)) &lt;= 23 and number(substring($zone,5,2)) &lt;= 59)) and $uy &gt;= 1972 and (not($approx) or $uy &lt;= 3000)"/>
       <sch:let name="j" value="normalize-space(@epoch)"/>
       <sch:let name="digits" value="substring($j,1+number(starts-with($j,'+') or starts-with($j,'-')))"/>
       <sch:let name="jd" value="number(substring(normalize-space(@epoch),1+number(starts-with(normalize-space(@epoch),'+'))))"/>
