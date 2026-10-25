@@ -79,6 +79,29 @@ class TextRules(unittest.TestCase):
             bad, _ = findings("notes.md", line + "\n")
             self.assertTrue(any(f": {rule} " in b for b in bad), f"{rule} on {line!r}: {bad}")
 
+    def test_a_model_label_in_frontmatter_provenance_passes(self):
+        # AI-generated artifacts carry their source model and tool in frontmatter (CLAUDE.md, Artifacts and versioning)
+        text = "---\ntitle: Guide\nmodel: Claude Opus 5.5\ntool: Claude Code\ngenerated-by: ChatGPT\n---\n\n# Guide\n"
+        self.assertEqual(findings("docs/guide.md", text)[0], [])
+
+    def test_a_model_name_outside_frontmatter_provenance_is_refused(self):
+        for text in [
+            "# Guide\n\nmodel: Claude Opus 5.5\n",  # no frontmatter: body text
+            "---\ntitle: Written by Claude\n---\n",  # frontmatter, but not a provenance key
+            "---\ntitle: Guide\n---\n\nmodel: Claude Opus 5.5\n",  # after the frontmatter closed
+            "intro\n---\nmodel: Claude\n---\n",  # a block that does not open the file is not frontmatter
+        ]:
+            bad, _ = findings("docs/guide.md", text)
+            self.assertTrue(any(": B7 " in b for b in bad), f"{text!r}: {bad}")
+
+    def test_session_narration_in_a_provenance_key_is_still_refused(self):
+        bad, _ = findings("docs/guide.md", "---\nmodel: Claude Opus 5.5, as discussed\n---\n")
+        self.assertTrue(any(': B7 development-session narration: "as discussed"' in b for b in bad), bad)
+
+    def test_frontmatter_is_read_in_markdown_only(self):
+        bad, _ = findings("x.yml", "---\nmodel: Claude\n---\n")
+        self.assertTrue(any(": B7 " in b for b in bad), bad)
+
     def test_a_decision_code_in_code_is_judged_only_in_a_comment(self):
         bad, _ = findings("x.rs", "let D2 = 1;\n")
         self.assertEqual(bad, [])

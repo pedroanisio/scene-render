@@ -108,6 +108,26 @@ def comment_of(line):
     return ""
 
 
+# Frontmatter keys that label an AI-generated artifact with its source model and tool, as the project guidelines ask
+# (CLAUDE.md, Artifacts and versioning): a product name is the label's value there, not session narration, so B7
+# refuses only the session phrases on these lines.
+PROVENANCE_KEY = r"^(model|tool|generator|generated-by|source-model|source-tool)\s*:"
+PRODUCT_NAME = r"Claude|Copilot|ChatGPT"
+
+
+def provenance_lines(path, lines):
+    """The 1-based numbers of the provenance lines in the frontmatter that opens a Markdown file."""
+    if not path.endswith(".md") or not lines or lines[0].strip() != "---":
+        return set()
+    out = set()
+    for n, line in enumerate(lines[1:], 2):
+        if line.strip() == "---":
+            return out
+        if re.match(PROVENANCE_KEY, line):
+            out.add(n)
+    return set()  # a block never closed is not frontmatter
+
+
 def files_from_dir(d):
     return [os.path.relpath(os.path.join(r, f), d) for r, _, fs in os.walk(d) for f in fs]
 
@@ -134,12 +154,15 @@ def check(paths, base, staged=False):
         if text is None:
             continue
         lines = text.splitlines()
+        provenance = provenance_lines(p, lines)
         for n, line in enumerate(lines, 1):
             code = os.path.splitext(p)[1] in (".rs", ".wgsl", ".glsl")
             comment = comment_of(line)
             for rid, pat, why in TEXT_RULES:
                 # decision codes look like identifiers in code (D2, D65); judge them in comments only
-                m = re.search(pat, comment if code and rid == "B5" else line)
+                subject = comment if code and rid == "B5" else line
+                m = next((m for m in re.finditer(pat, subject)
+                          if not (rid == "B7" and n in provenance and re.fullmatch(PRODUCT_NAME, m.group(0)))), None)
                 if m and not allowed(p, rid):
                     bad.append(f'{p}:{n}: {rid} {why}: "{m.group(0)}"')
             m = re.search(TRIPWIRE, line)
