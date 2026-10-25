@@ -1,10 +1,11 @@
 //! The draft's numeric table. Floats are rounded as the table's expression rounds them.
 
 use sr_space::{
-    apparent_position, approximate_position, approximate_relative, body_fixed_from_icrf, calendar, chebyshev,
-    chebyshev_derivative, determinant, ecliptic_from_icrf, element_table, et_from_utc, julian_day, leap_seconds,
-    mat_apply, parse_utc, place_at, place_body, pole_icrf, rotation_elements, solve_kepler, tdb_minus_tt, ElementTable,
-    Frame, Positions, Space, Spk, TimeScale, LEAP_SECONDS, ROTATION_EARTH_W1, SCENE_FROM_ICRF_AXES, TT_MINUS_TAI,
+    apparent_position, approximate_position, approximate_relative, body_axes, body_fixed_from_icrf, calendar,
+    chebyshev, chebyshev_derivative, determinant, ecliptic_from_icrf, element_table, et_from_utc, julian_day,
+    leap_seconds, mat_apply, parse_utc, place_at, place_body, pole_icrf, rotation_elements, solve_kepler, tdb_minus_tt,
+    ElementTable, Frame, Positions, Space, Spk, TimeScale, LEAP_SECONDS, ROTATION_EARTH_W1, SCENE_FROM_ICRF_AXES,
+    TT_MINUS_TAI,
 };
 
 pub const EXCERPT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/space/fixtures/de440s-excerpt.bsp");
@@ -220,6 +221,17 @@ fn place_at_rows() {
     assert_eq!(got.et, 0.0);
     assert_eq!(Positions::Approximate.position(4, 3, 0.0).unwrap(), approximate_relative(4, 3, 0.0).unwrap());
     assert_eq!(Positions::File(&spk).position(301, 399, 0.0).unwrap(), spk.position(301, 399, 0.0).unwrap());
+    // the axes alone read no position: the Earth's, which the approximate elements do not hold
+    assert_eq!(body_axes(&s, 301, et).unwrap(), place_body(&spk, &s, 301, 30, 24.0, 1e-6).unwrap().orientation);
+    assert!(place_at(Positions::Approximate, &helio, 399, 0.0, 1e-9).is_err());
+    assert_eq!(body_axes(&helio, 399, 0.0).unwrap(), place_body(&spk, &helio, 399, 0, 24.0, 1e-9).unwrap().orientation);
+    assert_eq!(body_axes(&helio, 4, 0.0).unwrap(), helio_frame_in_scene(&helio));
     assert!(place_at(Positions::Approximate, &helio, 301, 0.0, 1e-9).is_err());
     assert!(place_at(Positions::File(&spk), &s, 499, 0.0, 1e-6).is_err());
+}
+
+fn helio_frame_in_scene(s: &Space) -> [[f64; 3]; 3] {
+    let t = |m: &[[f64; 3]; 3]| sr_space::transpose(m);
+    let f = s.frame_matrix(0.0).unwrap();
+    sr_space::mat_mul(&SCENE_FROM_ICRF_AXES, &sr_space::mat_mul(&f, &t(&SCENE_FROM_ICRF_AXES)))
 }

@@ -215,8 +215,13 @@ pub fn place_at(
 ) -> Result<Placement, SpaceError> {
     let p = positions.position(body, space.origin, et)?;
     let position = space.scene_from_icrf(p, [0.0; 3], pixels_per_meter, et)?;
+    Ok(Placement { et, position, orientation: body_axes(space, body, et)? })
+}
+
+/// A body's fixed axes in scene axes (rows first) at ephemeris time et; the space's frame for a body without
+/// rotation elements. It reads no position, so it holds for any body whatever the space's ephemeris.
+pub fn body_axes(space: &Space, body: i32, et: f64) -> Result<Mat3, SpaceError> {
     let f = space.frame_matrix(et)?;
     let axes = if rotation_known(body) { mat_mul(&f, &transpose(&body_fixed_from_icrf(body, et)?)) } else { f };
-    let orientation = mat_mul(&SCENE_FROM_ICRF_AXES, &mat_mul(&axes, &transpose(&SCENE_FROM_ICRF_AXES)));
-    Ok(Placement { et, position, orientation })
+    Ok(mat_mul(&SCENE_FROM_ICRF_AXES, &mat_mul(&axes, &transpose(&SCENE_FROM_ICRF_AXES))))
 }
