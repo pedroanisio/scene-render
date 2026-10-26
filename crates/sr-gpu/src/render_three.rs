@@ -1740,7 +1740,7 @@ impl Renderer {
         }
     }
 
-    /// A planet's cloud layer (the planets draft's rule 4): the shell of 1 + `cloudHeight` times its equatorial radius
+    /// A planet's cloud layer (the planets draft's rule 4): the body's spheroid scaled by 1 + `cloudHeight`
     /// drawn with `cloudMap`, alpha-blended and lit as a white diffuse surface, turned eastward by its drift, and, with
     /// `cloudShadow`, its texture and the ground's shadow inputs toward `sun`; none without a `cloudMap`.
     #[allow(clippy::too_many_arguments)]
@@ -1760,18 +1760,18 @@ impl Renderer {
             Some(asset) => self.asset_map_texture(plan, ctx, n.doc, asset, true, &n.id),
             None => self.map_texture(plan, &ctx.p.doc_base(n.doc), &uri, true, &n.id),
         }?;
-        let radius = match planet_spheroid(ctx, a) {
-            Ok((r, _)) => r * (1.0 + a.num("cloudHeight", 0.004)),
+        let (radius, flattening) = match planet_spheroid(ctx, a) {
+            Ok((r, f)) => (r * (1.0 + a.num("cloudHeight", 0.004)), f),
             Err(e) => {
                 plan.stats.errors.push(format!("{}: {e}", n.id));
                 return None;
             }
         };
         let segs = a.num("segments", 32.0).clamp(3.0, 512.0) as u32;
-        let key = format!("planet-shell|{radius}|{segs}");
+        let key = format!("planet-shell|{radius}|{flattening}|{segs}");
         let mesh = match self.three_engine().meshes.get(&key) {
             Some(m) => m.clone(),
-            None => match sr_3d::prim::spheroid(radius as f32, 0.0, segs) {
+            None => match sr_3d::prim::spheroid(radius as f32, flattening as f32, segs) {
                 Ok(p) => {
                     let m = self.three_engine().upload_mesh(&p.vertices, &p.indices);
                     self.three_engine().meshes.insert(key, m.clone());
@@ -1815,8 +1815,13 @@ impl Renderer {
             let (scale, rotation, centre) = world.to_scale_rotation_translation();
             let to_layer = (glam::Mat3::from_quat(rotation) * turn).transpose();
             let rows = [to_layer.row(0), to_layer.row(1), to_layer.row(2)].map(|r| r.to_array());
-            let cloud =
-                sr_3d::CloudShadow { sun, centre: centre.to_array(), radius: radius as f32 * scale.x, to_layer: rows };
+            let cloud = sr_3d::CloudShadow {
+                sun,
+                centre: centre.to_array(),
+                radius: radius as f32 * scale.x,
+                flattening: flattening as f32,
+                to_layer: rows,
+            };
             (texture, cloud)
         });
         Some((shell, ground))

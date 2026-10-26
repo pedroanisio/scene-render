@@ -58,8 +58,8 @@ struct Mat {
     // flags (1 night mask, 2 limb darkening)
     planet: array<vec4<f32>, 2>,
     // a planet's ground under its clouds' shadow: the world-to-layer rows with the direction toward the Sun in w, the
-    // shell's centre and radius (0: none); the cloud layer's map
-    cloud: array<vec4<f32>, 4>,
+    // shell's centre and equatorial radius (0: none), the body's flattening; the cloud layer's map
+    cloud: array<vec4<f32>, 5>,
     cloud_map: vec4<u32>,
 };
 
@@ -519,15 +519,23 @@ fn sample_dir(s: Surf, n: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
 fn cloud_through(m: Mat, world: vec3<f32>) -> f32 {
     let radius = m.cloud[3].w;
     if (radius <= 0.0) { return 1.0; }
-    let sun = vec3(m.cloud[0].w, m.cloud[1].w, m.cloud[2].w);
-    let p = world - m.cloud[3].xyz;
-    let b = dot(p, sun);
-    if (b <= 0.0) { return 1.0; }
-    let q = p + sun * (sqrt(max(b * b - dot(p, p) + radius * radius, 0.0)) - b);
-    // the layer's own axes: the body's x is x, its y is z and its north pole −y (the planets draft's rule 2)
-    let l = vec3(dot(m.cloud[0].xyz, q), dot(m.cloud[1].xyz, q), dot(m.cloud[2].xyz, q));
+    // in the layer's own axes: the body's x is x, its y is z and its north pole −y (the planets draft's rule 2)
+    let pw = world - m.cloud[3].xyz;
+    let p = vec3(dot(m.cloud[0].xyz, pw), dot(m.cloud[1].xyz, pw), dot(m.cloud[2].xyz, pw));
+    let sw = vec3(m.cloud[0].w, m.cloud[1].w, m.cloud[2].w);
+    let sun = vec3(dot(m.cloud[0].xyz, sw), dot(m.cloud[1].xyz, sw), dot(m.cloud[2].xyz, sw));
+    let g = 1.0 - m.cloud[4].x;
+    // the night side, beyond the plane of the geodetic normal
+    if (dot(vec3(p.x, p.y / (g * g), p.z), sun) <= 0.0) { return 1.0; }
+    // stretched along the pole by 1 / (1 − f) the shell is the sphere of its equatorial radius
+    let ps = vec3(p.x, p.y / g, p.z);
+    let ds = vec3(sun.x, sun.y / g, sun.z);
+    let a = dot(ds, ds);
+    let b = dot(ps, ds);
+    let l = p + sun * ((-b + sqrt(max(b * b - a * (dot(ps, ps) - radius * radius), 0.0))) / a);
     let lon = atan2(l.z, l.x);
-    let lat = asin(clamp(-l.y / length(l), -1.0, 1.0));
+    // the texel at the geodetic latitude, as the shell's mesh places it
+    let lat = atan2(-l.y, g * g * length(l.xz));
     let uv = vec2(fract(lon / (2.0 * PI) + 0.5), 0.5 - lat / PI);
     return 1.0 - map_sample(m.cloud_map, uv, vec4(0.0)).a;
 }

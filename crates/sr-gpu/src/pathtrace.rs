@@ -78,8 +78,8 @@ pub struct PtMat {
     /// darkening's exponent per channel and the flags (1 night mask, 2 limb darkening).
     pub planet: [[f32; 4]; 2],
     /// A planet's ground under its clouds' shadow (the planets draft's rule 4): the world-to-layer rows with the
-    /// direction toward the Sun in w, then the shell's centre and radius (0: none).
-    pub cloud: [[f32; 4]; 4],
+    /// direction toward the Sun in w, the shell's centre and equatorial radius (0: none), the body's flattening.
+    pub cloud: [[f32; 4]; 5],
     /// The cloud layer's pixel map, as `maps`.
     pub cloud_map: [u32; 4],
 }
@@ -652,7 +652,7 @@ fn build_inner(scene: &Scene3, cache: &mut BuildCache, take: bool) -> (PtScene, 
             sss: [0.0; 4],
             sss_color: [0.0; 4],
             planet: [[0.0; 4]; 2],
-            cloud: [[0.0; 4]; 4],
+            cloud: [[0.0; 4]; 5],
             cloud_map: [0; 4],
         });
     }

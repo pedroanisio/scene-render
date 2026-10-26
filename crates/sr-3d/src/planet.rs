@@ -322,19 +322,33 @@ pub fn solar_disc(mu: f64) -> Result<V3, PlanetError> {
     Ok(out)
 }
 
-/// Rule 4: the point of the cloud shell (radius × (1 + `height`)) whose texel shadows the surface point `p`: where
-/// the ray from p toward the Sun leaves the shell; none when the Sun is below p's horizon.
-pub fn cloud_shadow_point(p: V3, sun: V3, radius: f64, height: f64) -> Result<Option<V3>, PlanetError> {
+/// Rule 4: the point of the cloud shell whose texel shadows the surface point `p` of the spheroid of equatorial
+/// `radius` and `flattening`: where the ray from p toward the Sun leaves the shell, the body's spheroid scaled by
+/// 1 + `height` (semi-axes a(1 + h) and c(1 + h)); none when the Sun is below p's horizon, the plane of its geodetic
+/// normal.
+pub fn cloud_shadow_point(
+    p: V3,
+    sun: V3,
+    radius: f64,
+    height: f64,
+    flattening: f64,
+) -> Result<Option<V3>, PlanetError> {
     if !(height > 0.0 && height.is_finite()) {
         return err("the cloud height is a positive fraction of the radius");
     }
+    if !(radius > 0.0 && radius.is_finite()) || !(0.0..1.0).contains(&flattening) {
+        return err("the equatorial radius is positive and the flattening within [0, 1)");
+    }
     let s = unit(sun)?;
-    if !lit(p, s) {
+    if !lit(surface_normal(radius, flattening, p), s) {
         return Ok(None);
     }
+    // stretched along the pole by 1 / (1 − f) the shell is the sphere of radius a(1 + h)
+    let k = 1.0 / (1.0 - flattening);
+    let (q, d) = ([p[0], p[1], p[2] * k], [s[0], s[1], s[2] * k]);
     let shell = radius * (1.0 + height);
-    let b = dot(p, s);
-    let t = -b + (b * b - dot(p, p) + shell * shell).sqrt();
+    let (a, b) = (dot(d, d), dot(q, d));
+    let t = (-b + (b * b - a * (dot(q, q) - shell * shell)).sqrt()) / a;
     Ok(Some(add(p, mul(s, t))))
 }
 

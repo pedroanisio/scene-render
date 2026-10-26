@@ -673,9 +673,9 @@ struct MaterialU {
     planet: [f32; 4],
     /// the limb darkening's exponent per channel, flags (1 night mask, 2 limb darkening)
     planet_limb: [f32; 4],
-    /// the cloud shadow: the world-to-layer rows with the direction toward the Sun in w, then the shell's centre and
-    /// radius (0: none)
-    cloud: [[f32; 4]; 4],
+    /// the cloud shadow: the world-to-layer rows with the direction toward the Sun in w, the shell's centre and
+    /// equatorial radius (0: none), the body's flattening
+    cloud: [[f32; 4]; 5],
 }
 
 #[repr(C)]
@@ -777,20 +777,22 @@ fn material_u(m: &MaterialParams, maps: &Maps) -> MaterialU {
         planet: planet_u(m)[0],
         planet_limb: planet_u(m)[1],
         // the occlusion map's binding holds the cloud layer only on a ground without one (`Maps`)
-        cloud: if maps[3].is_some() { [[0.0; 4]; 4] } else { cloud_u(m) },
+        cloud: if maps[3].is_some() { [[0.0; 4]; 5] } else { cloud_u(m) },
     }
 }
 
 /// A planet's ground under its clouds' shadow for the shaders (the planets draft's rule 4): the world-to-layer rows
-/// with the direction toward the Sun in w, then the shell's centre and radius; zeros without one.
-pub(crate) fn cloud_u(m: &MaterialParams) -> [[f32; 4]; 4] {
-    m.cloud_shadow.map_or([[0.0; 4]; 4], |c| {
+/// with the direction toward the Sun in w, the shell's centre and equatorial radius, then the body's flattening; zeros
+/// without one.
+pub(crate) fn cloud_u(m: &MaterialParams) -> [[f32; 4]; 5] {
+    m.cloud_shadow.map_or([[0.0; 4]; 5], |c| {
         let r = c.to_layer;
         [
             [r[0][0], r[0][1], r[0][2], c.sun[0]],
             [r[1][0], r[1][1], r[1][2], c.sun[1]],
             [r[2][0], r[2][1], r[2][2], c.sun[2]],
             [c.centre[0], c.centre[1], c.centre[2], c.radius],
+            [c.flattening, 0.0, 0.0, 0.0],
         ]
     })
 }

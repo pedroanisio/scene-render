@@ -405,13 +405,13 @@ fn the_raster_pass_names_the_clouds_shadows_it_does_not_draw() {
 
 #[test]
 fn the_path_tracer_casts_the_clouds_shadow_unless_it_is_off() {
-    // the raster frame's patch, traced: ground seen bare under the patch's shadow is dark with cloudShadow, lit
-    // without, and the ground at the mirrored southern latitudes lit either way
+    // the raster frame's patch, traced on a sphere and an oblate body: ground seen bare is the frame without the
+    // shadow times 1 − alpha at its shadow point
     let ((lo, hi), (south, north)) = ((-50.0, -30.0), (10.0, 60.0));
     let map = cloud_band("planet-cloud-patch.png", [0, 0, 0], (lo, hi), (south, north));
-    let frame = |shadow: bool| {
+    let frame = |shadow: bool, f: f64, turn: f64| {
         let xml = format!(
-            r##"<scene version="1.8"><project width="{SIZE}" height="{SIZE}" fps="24" duration="1" background="#000000FF"/><materials><material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/></materials><composition><camera id="eye" x="0" y="0" z="0" fov="60" renderer="pathtrace" pathSamples="1" maxBounces="1" denoise="false"/><object3D id="p" primitive="planet" material="m" radius="100" z="400" segments="256" cloudMap="{}" cloudHeight="0.2" cloudShadow="{shadow}"/></composition><lights><light id="sun" type="directional" yaw="-90" intensity="3"/></lights></scene>"##,
+            r##"<scene version="1.8"><project width="{SIZE}" height="{SIZE}" fps="24" duration="1" background="#000000FF"/><materials><material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/></materials><composition><camera id="eye" x="0" y="0" z="0" fov="60" renderer="pathtrace" pathSamples="1" maxBounces="1" denoise="false"/><object3D id="p" primitive="planet" material="m" radius="100" z="400" segments="256" flattening="{f}" rotationY="{turn}" cloudMap="{}" cloudHeight="0.2" cloudShadow="{shadow}"/></composition><lights><light id="sun" type="directional" yaw="-90" intensity="3"/></lights></scene>"##,
             map.display()
         );
         let opts = sr_model::LoadOptions { verify_assets: true, base_dir: Some(fixtures()) };
@@ -420,46 +420,46 @@ fn the_path_tracer_casts_the_clouds_shadow_unless_it_is_off() {
         assert!(r.stats.errors.is_empty(), "{:?}", r.stats.errors);
         Some(r)
     };
-    let (Some(on), Some(off)) = (frame(true), frame(false)) else { return };
-    let latitude = |q: [f64; 3]| (-q[1] / (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt()).asin().to_degrees();
-    // a shell point well inside the patch (1), mirrored to the south (−1), or neither
-    let side = |q: [f64; 3]| {
-        let (lon, lat) = (longitude(q), latitude(q));
-        let inside = (lo + 1.5..hi - 1.5).contains(&lon) && (south + 1.5..north - 1.5).contains(&lat.abs());
-        if inside {
-            lat.signum() as i32
-        } else {
-            0
-        }
-    };
-    let clear = |q: [f64; 3]| {
-        let (lon, lat) = (longitude(q), latitude(q));
-        !((lo - 1.5..hi + 1.5).contains(&lon) && (south - 1.5..north + 1.5).contains(&lat))
-    };
-    let c = SIZE / 2;
-    let (mut shaded, mut mirrored) = (0, 0);
-    for row in [c - 40, c - 25, c + 25, c + 40] {
-        for x in 0..SIZE {
-            let (Some(p), Some(qv)) = (crossing(x, row, 100.0), crossing(x, row, 120.0)) else { continue };
-            let Some(q) = sr_3d::planet::cloud_shadow_point(p, [1.0, 0.0, 0.0], 100.0, 0.2).unwrap() else { continue };
-            if p[0] < 30.0 || !clear(qv) {
-                continue;
-            }
-            let (dark, lit) = (on.at(x, row)[0], off.at(x, row)[0]);
-            match side(q) {
-                1 => {
-                    assert!(lit > 0.2 && dark < 0.05 * lit, "({x}, {row}): {dark} under the clouds, {lit} without");
-                    shaded += 1;
+    // a body turned about its pole (rotationY θ, westward) carries its layer θ west: the sun meets it in its own axes
+    for (f, turn) in [(0.0, 0.0), (0.3, 0.0), (0.3, 15.0)] {
+        let (Some(on), Some(off)) = (frame(true, f, turn), frame(false, f, turn)) else { return };
+        // alpha at a shell point, its texel at the point's geodetic latitude; none near the patch's edges, which the
+        // tracer's sample jittered within its pixel may straddle
+        let alpha = |q: [f64; 3]| {
+            let (lon, lat) = (longitude(q) + turn, geodetic_latitude(q, f));
+            let near = |v: f64, e: f64| (v - e).abs() < 3.0;
+            (!(near(lon, lo) || near(lon, hi) || near(lat, south) || near(lat, north)))
+                .then_some(if (lo..hi).contains(&lon) && (south..north).contains(&lat) { 1.0 } else { 0.0 })
+        };
+        let c = SIZE / 2;
+        let (mut checked, mut shaded) = (0, 0);
+        for row in (c - 50..c + 50).step_by(5) {
+            for x in 0..SIZE {
+                let (Some(p), Some(qv)) = (crossing_spheroid(x, row, 100.0, f), crossing_spheroid(x, row, 120.0, f))
+                else {
+                    continue;
+                };
+                // the ground seen bare, lit
+                let lit = off.at(x, row)[0];
+                if alpha(qv) != Some(0.0) || lit < 0.05 {
+                    continue;
                 }
-                -1 => {
-                    assert!(lit > 0.2 && (dark - lit).abs() < 0.05 * lit, "({x}, {row}): {dark} south, {lit} without");
-                    mirrored += 1;
-                }
-                _ => {}
+                let through = match shadow_point(p, [1.0, 0.0, 0.0], 100.0, 0.2, f).map(alpha) {
+                    Some(Some(a)) => 1.0 - a as f32,
+                    Some(None) => continue,
+                    None => 1.0,
+                };
+                let dark = on.at(x, row)[0];
+                assert!(
+                    (dark - lit * through).abs() < 0.03,
+                    "f {f} turn {turn} ({x}, {row}): {dark} under the clouds, {lit} without"
+                );
+                checked += 1;
+                shaded += (through < 0.5) as u32;
             }
         }
+        assert!(checked > 200 && shaded > 20, "f {f} turn {turn}: {checked} pixels checked, {shaded} in the shadow");
     }
-    assert!(shaded > 5 && mirrored > 5, "{shaded} pixels in the shadow seen bare, {mirrored} mirrored");
 }
 
 /// The planet of radius 100 (unless `attrs` gives one) at (0, 0, 400) seen through 60°, of `material` with `attrs`,
@@ -478,17 +478,38 @@ fn planet_at(material: &str, attrs: &str, lights: &str, t: f64) -> Option<Render
 
 /// The first point at distance `radius` from the planet's centre along pixel (x, y)'s ray, in the planet's frame.
 fn crossing(x: u32, y: u32, radius: f64) -> Option<[f64; 3]> {
+    crossing_spheroid(x, y, radius, 0.0)
+}
+
+/// The first point of the spheroid of equatorial `radius` and `flattening` (its pole the scene's y) along pixel
+/// (x, y)'s ray, in the planet's frame.
+fn crossing_spheroid(x: u32, y: u32, radius: f64, flattening: f64) -> Option<[f64; 3]> {
     let f = SIZE as f64 / 2.0 / 30f64.to_radians().tan();
     let c = SIZE as f64 / 2.0;
     let d = [(x as f64 + 0.5 - c) / f, (y as f64 + 0.5 - c) / f, 1.0];
-    let n = (d[0] * d[0] + d[1] * d[1] + 1.0).sqrt();
-    let d = d.map(|v| v / n);
-    let b = d[2] * 400.0;
-    let disc = b * b - (400.0f64 * 400.0 - radius * radius);
+    // stretched along the pole the spheroid is the sphere of its equatorial radius; the eye is 400 before the centre
+    let k = 1.0 / (1.0 - flattening);
+    let ds = [d[0], d[1] * k, d[2]];
+    let a = ds[0] * ds[0] + ds[1] * ds[1] + ds[2] * ds[2];
+    let b = -400.0 * ds[2];
+    let disc = b * b - a * (400.0f64 * 400.0 - radius * radius);
     (disc >= 0.0).then(|| {
-        let t = b - disc.sqrt();
+        let t = (-b - disc.sqrt()) / a;
         [d[0] * t, d[1] * t, d[2] * t - 400.0]
     })
+}
+
+/// `cloud_shadow_point` of a scene-axes point of the planet's frame toward a scene-axes `sun`: the kernel's pole is
+/// z, the scene's −y.
+fn shadow_point(p: [f64; 3], sun: [f64; 3], radius: f64, height: f64, flattening: f64) -> Option<[f64; 3]> {
+    let (body, sun) = ([p[0], p[2], -p[1]], [sun[0], sun[2], -sun[1]]);
+    let q = sr_3d::planet::cloud_shadow_point(body, sun, radius, height, flattening).unwrap()?;
+    Some([q[0], -q[2], q[1]])
+}
+
+/// The geodetic latitude (degrees) of a scene-axes point of a spheroid of `flattening` (its north pole −y).
+fn geodetic_latitude(q: [f64; 3], flattening: f64) -> f64 {
+    (-q[1]).atan2((1.0 - flattening).powi(2) * (q[0] * q[0] + q[2] * q[2]).sqrt()).to_degrees()
 }
 
 /// The longitude of a scene-axes point of the planet's frame (the body's x is the scene's x, its y the scene's z).
@@ -515,75 +536,131 @@ fn the_cloud_shell_stands_above_the_ground_and_drifts_east() {
     assert!(r.at(c + 30, c)[0] > 0.2, "{:?}", r.at(c + 30, c));
 }
 
+/// A cloud-shadow frame to check: black opaque clouds over `lon` and `lat` (degrees), the sun toward longitude 0 at
+/// latitude `sun_lat` north (pitch −`sun_lat` from the yaw −90 light), the shadow on or off, the layer's drift rate
+/// and time, the body's flattening.
+struct ShadowCase {
+    lon: (f64, f64),
+    lat: (f64, f64),
+    sun_lat: f64,
+    shadow: bool,
+    rate: f64,
+    t: f64,
+    f: f64,
+}
+
+/// Every lit pixel of `rows` whose texels are clear of the patch's edges shows the bare ground times 1 − alpha at its
+/// shadow point and at its view through the shell (h = 0.2); returns how many it checked and how many sat in the
+/// shadow seen bare.
+fn check_shadow(c: &ShadowCase, rows: &[u32]) -> Option<(u32, u32)> {
+    let (h, (lo, hi), (south, north)) = (0.2, c.lon, c.lat);
+    let name = format!("planet-cloud-{lo}-{hi}-{south}-{north}.png");
+    let map = cloud_band(&name, [0, 0, 0], (lo, hi), (south, north));
+    let material = r##"<material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/>"##;
+    let light = format!(r#"<light id="sun" type="directional" yaw="-90" pitch="{}" intensity="3"/>"#, -c.sun_lat);
+    let body = format!(r#"flattening="{}""#, c.f);
+    let clouds = format!(
+        r#"cloudMap="{}" cloudHeight="{h}" cloudRotation="{}" cloudShadow="{}" {body}"#,
+        map.display(),
+        c.rate,
+        c.shadow
+    );
+    let bare = planet_at(material, &body, &light, 0.0)?;
+    let r = planet_at(material, &clouds, &light, c.t)?;
+    let drift = c.rate * c.t;
+    let phi = c.sun_lat.to_radians();
+    let sun = [phi.cos(), -phi.sin(), 0.0];
+    // alpha of the drifted layer at a shell point, its texel at the point's geodetic latitude, none near the patch's
+    // edges (the texels' filtering)
+    let alpha = |q: [f64; 3]| {
+        let (lon, lat) = (longitude(q) - drift, geodetic_latitude(q, c.f));
+        let near = |v: f64, e: f64| (v - e).abs() < 1.5;
+        (!(near(lon, lo) || near(lon, hi) || near(lat, south) || near(lat, north)))
+            .then_some(if (lo..hi).contains(&lon) && (south..north).contains(&lat) { 1.0 } else { 0.0 })
+    };
+    let (mut checked, mut shaded) = (0, 0);
+    for &row in rows {
+        for x in 0..SIZE {
+            let (Some(p), Some(qv)) =
+                (crossing_spheroid(x, row, 100.0, c.f), crossing_spheroid(x, row, 100.0 * (1.0 + h), c.f))
+            else {
+                continue;
+            };
+            let lit = bare.at(x, row)[0] as f64;
+            if lit < 0.05 || p[2] > -30.0 {
+                continue;
+            }
+            let Some(seen) = alpha(qv) else { continue };
+            let through = match shadow_point(p, sun, 100.0, h, c.f) {
+                Some(q) if c.shadow => match alpha(q) {
+                    Some(a) => 1.0 - a,
+                    None => continue,
+                },
+                _ => 1.0,
+            };
+            let want = lit * through * (1.0 - seen);
+            let got = r.at(x, row)[0] as f64;
+            assert!(
+                (got - want).abs() < 0.03,
+                "shadow {} drift {drift} flattening {} sun {}: ({x}, {row}) lon {:.1}: {got} want {want}",
+                c.shadow,
+                c.f,
+                c.sun_lat,
+                longitude(p)
+            );
+            checked += 1;
+            shaded += (through < 0.5 && seen == 0.0) as u32;
+        }
+    }
+    Some((checked, shaded))
+}
+
 #[test]
 fn the_clouds_shadow_falls_where_the_sunward_ray_leaves_the_shell() {
-    // black opaque clouds over the longitudes −50 to −30 and the latitudes 10 to 60 N; the sun toward +x (longitude
-    // 0), the ground white
-    let ((lo, hi), (south, north)) = ((-50.0, -30.0), (10.0, 60.0));
-    let map = cloud_band("planet-cloud-patch.png", [0, 0, 0], (lo, hi), (south, north));
-    let material = r##"<material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/>"##;
-    let light = r#"<light id="sun" type="directional" yaw="-90" intensity="3"/>"#;
-    let Some(bare) = planet_at(material, "", light, 0.0) else { return };
-    let h = 0.2;
+    // the patch over the longitudes −50 to −30 and the latitudes 10 to 60 N, the ground white; the north is up the
+    // frame (the scene's −y)
     let c = SIZE / 2;
-    // the north is up the frame (the scene's −y)
     let rows = [c - 50, c - 40, c - 30, c - 20, c - 10, c, c + 20];
-    let clouds = |rate: f64, shadow: bool| {
-        format!(r#"cloudMap="{}" cloudHeight="{h}" cloudRotation="{rate}" cloudShadow="{shadow}""#, map.display())
-    };
-    // a westward drift of 20 degrees (the layer's 340) keeps its shadow on the side the eye sees past the patch
-    for (shadow, rate, t) in [(true, 0.0, 0.0), (true, -10.0, 2.0), (false, 0.0, 0.0)] {
-        let Some(r) = planet_at(material, &clouds(rate, shadow), light, t) else { return };
-        let drift = rate * t;
-        // alpha of the drifted layer at a shell point, none near the patch's edges (the texels' filtering)
-        let alpha = |q: [f64; 3]| {
-            let lon = longitude(q) - drift;
-            let lat = (-q[1] / (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt()).asin().to_degrees();
-            let near = |v: f64, e: f64| (v - e).abs() < 1.5;
-            (!(near(lon, lo) || near(lon, hi) || near(lat, south) || near(lat, north)))
-                .then_some(if (lo..hi).contains(&lon) && (south..north).contains(&lat) { 1.0 } else { 0.0 })
-        };
-        let (mut checked, mut shaded) = (0, 0);
-        for row in rows {
-            for x in 0..SIZE {
-                let (Some(p), Some(qv)) = (crossing(x, row, 100.0), crossing(x, row, 100.0 * (1.0 + h))) else {
-                    continue;
-                };
-                let lit = bare.at(x, row)[0] as f64;
-                if lit < 0.05 || p[2] > -30.0 {
-                    continue;
-                }
-                let Some(seen) = alpha(qv) else { continue };
-                let through = match sr_3d::planet::cloud_shadow_point(p, [1.0, 0.0, 0.0], 100.0, h).unwrap() {
-                    Some(q) if shadow => match alpha(q) {
-                        Some(a) => 1.0 - a,
-                        None => continue,
-                    },
-                    _ => 1.0,
-                };
-                let want = lit * through * (1.0 - seen);
-                let got = r.at(x, row)[0] as f64;
-                assert!(
-                    (got - want).abs() < 0.03,
-                    "shadow {shadow} drift {drift}: ({x}, {row}) lon {:.1}: {got} want {want}",
-                    longitude(p)
-                );
-                checked += 1;
-                shaded += (through < 0.5 && seen == 0.0) as u32;
-            }
-        }
-        assert!(checked > 150, "{checked} pixels checked");
-        assert!(!shadow || shaded > 20, "shadow {shadow} drift {drift}: {shaded} pixels in the shadow seen bare");
+    let patch =
+        |shadow, rate, t, f| ShadowCase { lon: (-50.0, -30.0), lat: (10.0, 60.0), sun_lat: 0.0, shadow, rate, t, f };
+    // a westward drift of 20 degrees (the layer's 340) keeps its shadow on the side the eye sees past the patch; on
+    // an oblate body the shell is its spheroid scaled by 1 + h
+    for case in [
+        patch(true, 0.0, 0.0, 0.0),
+        patch(true, -10.0, 2.0, 0.0),
+        patch(false, 0.0, 0.0, 0.0),
+        patch(true, 0.0, 0.0, 0.3),
+    ] {
+        let Some((checked, shaded)) = check_shadow(&case, &rows) else { return };
+        assert!(checked > 150, "flattening {}: {checked} pixels checked", case.f);
+        assert!(
+            !case.shadow || shaded > 20,
+            "drift {}, flattening {}: {shaded} in the shadow",
+            case.rate * case.t,
+            case.f
+        );
     }
+    // a sun 30 degrees north over an oblate body: beside the terminator the geodetic normal still faces the Sun where
+    // the radius does not, and there the shadow of a patch sunward of it falls (the eye sees the shell clear above)
+    let terminator =
+        ShadowCase { lon: (-80.0, -20.0), lat: (-70.0, 70.0), sun_lat: 30.0, shadow: true, rate: 0.0, t: 0.0, f: 0.3 };
+    let rows: Vec<u32> = (c - 60..c + 60).step_by(6).collect();
+    let Some((checked, shaded)) = check_shadow(&terminator, &rows) else { return };
+    assert!(checked > 100 && shaded > 20, "{checked} pixels checked, {shaded} in the shadow");
     // the layer turns and scales with the body: a body of radius 50 at scale 2 is the body of radius 100, and one
     // turned 20 degrees about its pole under a layer drifted 20 degrees east shows the layer where it began
-    let Some(still) = planet_at(material, &clouds(0.0, true), light, 0.0) else { return };
+    let map = cloud_band("planet-cloud-patch.png", [0, 0, 0], (-50.0, -30.0), (10.0, 60.0));
+    let material = r##"<material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/>"##;
+    let light = r#"<light id="sun" type="directional" yaw="-90" intensity="3"/>"#;
+    let clouds = |rate: f64| format!(r#"cloudMap="{}" cloudHeight="0.2" cloudRotation="{rate}""#, map.display());
+    let rows = [c - 50, c - 40, c - 30, c - 20, c - 10, c, c + 20];
+    let Some(still) = planet_at(material, &clouds(0.0), light, 0.0) else { return };
     let cases = [
         (r#"radius="50" scaleX="2" scaleY="2" scaleZ="2""#, 0.0, 0.0, "scaled"),
         (r#"rotationY="20""#, 20.0, 1.0, "turned"),
     ];
     for (body, rate, t, case) in cases {
-        let Some(r) = planet_at(material, &format!("{} {body}", clouds(rate, true)), light, t) else { return };
+        let Some(r) = planet_at(material, &format!("{} {body}", clouds(rate)), light, t) else { return };
         let mut far = 0;
         for row in rows {
             for x in 0..SIZE {
@@ -592,4 +669,30 @@ fn the_clouds_shadow_falls_where_the_sunward_ray_leaves_the_shell() {
         }
         assert!(far < 10, "{case}: {far} pixels differ from the still body's");
     }
+}
+
+#[test]
+fn an_oblate_bodys_cloud_shell_is_its_spheroid_scaled() {
+    // white clouds everywhere over a black ground of flattening 0.3, the light from the eye: over the pole the shell
+    // ends at c (1 + h), well inside a sphere of a (1 + h)
+    let map = cloud_band("planet-cloud-all.png", [255, 255, 255], (-180.0, 180.0), (-90.0, 90.0));
+    let material = r##"<material id="m" baseColor="#000000FF" specular="0" roughness="1"/>"##;
+    let attrs = format!(r#"cloudMap="{}" cloudHeight="0.2" flattening="0.3""#, map.display());
+    let light = r#"<light id="sun" type="directional" intensity="3"/>"#;
+    let Some(r) = planet_at(material, &attrs, light, 0.0) else { return };
+    let c = SIZE / 2;
+    let (mut inside, mut outside) = (0, 0);
+    for y in 0..c {
+        let on_spheroid = crossing_spheroid(c, y, 120.0, 0.3).is_some_and(|q| q[2] < -60.0);
+        let on_sphere = crossing(c, y, 120.0).is_some();
+        let v = r.at(c, y)[0];
+        if on_spheroid {
+            assert!(v > 0.2, "row {y} on the shell: {v}");
+            inside += 1;
+        } else if on_sphere && crossing_spheroid(c, y + 2, 120.0, 0.3).is_none() {
+            assert!(v < 0.01, "row {y} beyond the shell: {v}");
+            outside += 1;
+        }
+    }
+    assert!(inside > 10 && outside > 10, "{inside} rows on the shell, {outside} beyond it");
 }

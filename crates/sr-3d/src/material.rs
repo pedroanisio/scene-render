@@ -34,9 +34,11 @@ pub struct PlanetEmission {
 pub struct CloudShadow {
     /// The unit direction toward the Sun.
     pub sun: [f32; 3],
-    /// The shell's centre and radius.
+    /// The shell's centre, its equatorial radius and the body's flattening: the shell is the body's spheroid scaled
+    /// by 1 + the cloud height.
     pub centre: [f32; 3],
     pub radius: f32,
+    pub flattening: f32,
     /// World axes to the drifted layer's own (scene-axes) frame, rows first.
     pub to_layer: [[f32; 3]; 3],
 }

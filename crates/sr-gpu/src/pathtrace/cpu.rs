@@ -1290,7 +1290,7 @@ pub(crate) struct Shaded {
     /// The material's planet emission (a night mask only on a material with an emissive map).
     pub planet: [[f32; 4]; 2],
     /// The material's cloud shadow and the cloud layer's map (`PtMat::cloud`).
-    pub cloud: [[f32; 4]; 4],
+    pub cloud: [[f32; 4]; 5],
     pub cloud_map: [u32; 4],
 }
 
@@ -1302,17 +1302,24 @@ pub(crate) fn cloud_through(pixels: &[u32], m: &Shaded, p: [f32; 3]) -> f32 {
     if radius <= 0.0 {
         return 1.0;
     }
-    let sun = [m.cloud[0][3], m.cloud[1][3], m.cloud[2][3]];
+    // in the layer's own axes: the body's x is x, its y is z and its north pole −y (the planets draft's rule 2)
     let p = sub(p, xyz(&m.cloud[3]));
-    let b = dot(p, sun);
-    if b <= 0.0 {
+    let p = [0, 1, 2].map(|r| dot(xyz(&m.cloud[r]), p));
+    let sun = [m.cloud[0][3], m.cloud[1][3], m.cloud[2][3]];
+    let sun = [0, 1, 2].map(|r| dot(xyz(&m.cloud[r]), sun));
+    let g = 1.0 - m.cloud[4][0];
+    // the night side, beyond the plane of the geodetic normal
+    if dot([p[0], p[1] / (g * g), p[2]], sun) <= 0.0 {
         return 1.0;
     }
-    let q = add(p, scale(sun, (b * b - dot(p, p) + radius * radius).max(0.0).sqrt() - b));
-    // the layer's own axes: the body's x is x, its y is z and its north pole −y (the planets draft's rule 2)
-    let l = [0, 1, 2].map(|r| dot(xyz(&m.cloud[r]), q));
+    // stretched along the pole by 1 / (1 − f) the shell is the sphere of its equatorial radius
+    let (ps, ds) = ([p[0], p[1] / g, p[2]], [sun[0], sun[1] / g, sun[2]]);
+    let (a, b) = (dot(ds, ds), dot(ps, ds));
+    let t = (-b + (b * b - a * (dot(ps, ps) - radius * radius)).max(0.0).sqrt()) / a;
+    let l = add(p, scale(sun, t));
     let lon = l[2].atan2(l[0]);
-    let lat = (-l[1] / dot(l, l).sqrt()).clamp(-1.0, 1.0).asin();
+    // the texel at the geodetic latitude, as the shell's mesh places it
+    let lat = (-l[1]).atan2(g * g * (l[0] * l[0] + l[2] * l[2]).sqrt());
     let uv = [(lon / (2.0 * std::f32::consts::PI) + 0.5).rem_euclid(1.0), 0.5 - lat / std::f32::consts::PI];
     1.0 - map_sample(pixels, m.cloud_map, uv, [0.0; 4])[3]
 }

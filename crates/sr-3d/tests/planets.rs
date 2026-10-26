@@ -142,11 +142,26 @@ fn rule_3_day_night_and_the_suns_limb() {
 #[test]
 fn rule_4_the_clouds_shadow_and_drift() {
     let p = surface_point(EARTH, 0.0, 0.0, 60.0).unwrap();
-    let q = cloud_shadow_point(p, [0.0, 0.0, 1.0], EARTH, 0.004).unwrap().unwrap();
+    let q = cloud_shadow_point(p, [0.0, 0.0, 1.0], EARTH, 0.004, 0.0).unwrap().unwrap();
     near(angle(p, q).to_degrees(), 0.131704);
     near(norm(q), EARTH * 1.004);
-    assert_eq!(cloud_shadow_point(p, [0.0, 0.0, -1.0], EARTH, 0.004).unwrap(), None);
-    assert!(cloud_shadow_point(p, [0.0, 0.0, 1.0], EARTH, 0.0).is_err());
+    assert_eq!(cloud_shadow_point(p, [0.0, 0.0, -1.0], EARTH, 0.004, 0.0).unwrap(), None);
+    assert!(cloud_shadow_point(p, [0.0, 0.0, 1.0], EARTH, 0.0, 0.0).is_err());
+    // on the spheroid the shell is the body's spheroid scaled by 1 + height: c × height over the pole, not a sphere
+    let f = flattening(399).unwrap();
+    let p = surface_point(EARTH, f, 0.0, 60.0).unwrap();
+    let q = cloud_shadow_point(p, [0.0, 0.0, 1.0], EARTH, 0.004, f).unwrap().unwrap();
+    near(angle(p, q).to_degrees(), 0.132368);
+    let pole = surface_point(EARTH, f, 0.0, 90.0).unwrap();
+    let q = cloud_shadow_point(pole, [0.0, 0.0, 1.0], EARTH, 0.004, f).unwrap().unwrap();
+    near(norm(q) - norm(pole), 25.427009);
+    // the day side is the geodetic normal's: at 45 N a sun just above the geocentric horizon is below the true one
+    let p = surface_point(EARTH, f, 0.0, 45.0).unwrap();
+    let below = [p[2] + 0.001 * p[0], 0.0, -p[0] + 0.001 * p[2]];
+    assert!(lit(p, below), "above the geocentric horizon");
+    assert_eq!(cloud_shadow_point(p, below, EARTH, 0.004, f).unwrap(), None);
+    assert!(cloud_shadow_point(p, below, EARTH, 0.004, 0.0).unwrap().is_some());
+    assert!(cloud_shadow_point(p, [0.0, 0.0, 1.0], EARTH, 0.004, 1.0).is_err());
     near(cloud_longitude(100.0, 1.5), 150.0);
     near(cloud_longitude(300.0, 1.5), 90.0);
     assert_eq!(clouds_uv(150.0, 0.0, 100.0, 1.5).unwrap(), texture_uv(0.0, 0.0).unwrap());
