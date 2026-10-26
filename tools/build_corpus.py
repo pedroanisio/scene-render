@@ -571,6 +571,8 @@ WARN_CASES = [
     ("w16-ephemeris-xyz", ["W16"], lambda _: TF.replace('positionFrom="ephemeris"', 'positionFrom="ephemeris" x="12" z="-3"')),
     # the star-fields draft, SF4: a space's clock gives the field's epoch
     ("w17-star-field-epoch", ["W17"], lambda _: SF.replace('catalogue="bsc"/>', 'catalogue="bsc" epoch="2100"/>').replace('</scene>', '<space epoch="2451545.0" timeScale="tdb"/></scene>')),
+    # the physical-sky draft, PSKY1: the physical sky's attributes under another sky
+    ("w18-physical-attributes", ["W18"], lambda _: PHYS.replace('sky="physical"', 'sky="gradient"').replace(' sunSize="0.6"', '')),
     ("w05-lights", ["W05"], lambda _: BLACKHOLE.replace('</composition>', '</composition><lights><light id="sun" type="directional"/></lights>')),
     ("w06-foam-material", ["W06"], lambda _: OCEAN.replace('</composition>', '<camera id="cam" renderer="pathtrace"/></composition>').replace('</ocean>', '<whitewater foamMode="albedo" foamMaterial="foam"/></ocean>').replace('<composition>', '<materials><material id="foam"/></materials><composition>')),
     ("w08-foam-unlit", ["W08"], lambda _: OCEAN.replace('</composition>', '<camera id="cam" renderer="pathtrace"/></composition>').replace('<ocean id="sea" ', '<ocean id="sea" material="glow" ').replace('</ocean>', '<whitewater foamMode="albedo"/></ocean>').replace('<composition>', '<materials><material id="glow" unlit="true"/></materials><composition>')),
@@ -991,6 +993,33 @@ CASES += [
     ("sf4-epoch-range", ["SF4"], lambda _: SF.replace('catalogue="bsc"/>', 'catalogue="bsc" epoch="12000.5"/>')),
     ("star-field-constellations-enum", ["S06"], lambda _: SF.replace('catalogue="bsc"/>', 'catalogue="bsc" constellations="lines"/>')),
     ("catalogue-digest-pattern", ["S06"], lambda _: re.sub(r'digest="sha256:([0-9a-f]{64})"', lambda m: 'digest="' + m.group(1) + '"', SF)),
+]
+# the physical-sky draft: sky="physical" and its attributes, PSKY2 to PSKY4, V17 (PSKY1 is the warning W18)
+PHYS = ('<scene version="1.8"><project width="64" height="64" fps="24" duration="1"/><composition><camera id="eye" z="-10"/></composition>'
+    '<lights><light id="sky" type="dome" sky="physical" date="2003-10-17T12:30:30-07:00" latitude="39.742476" longitude="-105.1786" '
+    'altitude="1830.14" pressure="820" temperature="11" deltaT="67" sunSize="0.6"/></lights></scene>\n')
+VALID["physical-sky"] = PHYS
+VALID["physical-sky-knobs"] = PHYS.replace(' sunSize="0.6"', ' sunSize="0.6" sunIntensity="2" moon="false" moonIntensity="0.5" atmosphere="none" aerosol="2" ozone="0" planetRadius="3389500" atmosphereHeight="+11.1e3" groundAlbedo="1" sunIrradiance="#FFE0C0FF" aerialPerspective="false" fogDensity="0.001" fogHeight="250"')
+VALID["physical-sky-date-forms"] = PHYS.replace('2003-10-17T12:30:30-07:00', '2100-12-31T23:59:60.25Z').replace(' deltaT="67"', '')
+VALID["physical-sky-ancient"] = PHYS.replace('2003-10-17T12:30:30-07:00', '-2000-03-21T06:00:00+05:30').replace('deltaT="67"', 'deltaT="+8000"')
+CASES += [
+    ("v17-physical-sky", ["V17"], lambda _: PHYS.replace('version="1.8"', 'version="1.7"')),
+    ("psky2-no-date", ["PSKY2"], lambda _: PHYS.replace(' date="2003-10-17T12:30:30-07:00"', '')),
+    ("psky2-no-seconds", ["PSKY2"], lambda _: PHYS.replace('12:30:30-07:00', '12:30-07:00')),
+    ("psky2-no-zone", ["PSKY2"], lambda _: PHYS.replace('12:30:30-07:00', '12:30:30')),
+    ("psky2-zone-form", ["PSKY2"], lambda _: PHYS.replace('12:30:30-07:00', '12:30:30-0700')),
+    ("psky2-empty-fraction", ["PSKY2"], lambda _: PHYS.replace('12:30:30-07:00', '12:30:30.Z')),
+    ("psky2-month", ["PSKY2"], lambda _: PHYS.replace('2003-10-17', '2003-13-17')),
+    ("psky2-hour", ["PSKY2"], lambda _: PHYS.replace('T12:30:30', 'T24:30:30')),
+    ("psky2-year", ["PSKY2"], lambda _: PHYS.replace('2003-10-17', '6001-10-17')),
+    ("psky2-deltat-required", ["PSKY2"], lambda _: PHYS.replace('2003-10-17', '1899-10-17').replace(' deltaT="67"', '')),
+    ("psky3-latitude", ["PSKY3"], lambda _: PHYS.replace('latitude="39.742476"', 'latitude="90.5"')),
+    ("psky3-longitude", ["PSKY3"], lambda _: PHYS.replace('longitude="-105.1786"', 'longitude="-180.01"')),
+    ("psky3-temperature", ["PSKY3"], lambda _: PHYS.replace('temperature="11"', 'temperature="-273"')),
+    ("psky3-deltat", ["PSKY3"], lambda _: PHYS.replace('deltaT="67"', 'deltaT="8000.5"')),
+    ("psky3-albedo", ["PSKY3"], lambda _: PHYS.replace(' sunSize="0.6"', ' sunSize="0.6" groundAlbedo="1.25"')),
+    ("psky4-sun-elevation", ["PSKY4"], lambda _: PHYS.replace(' sunSize="0.6"', ' sunSize="0.6" sunElevation="30"')),
+    ("physical-atmosphere-enum", ["S06"], lambda _: PHYS.replace(' sunSize="0.6"', ' sunSize="0.6" atmosphere="mars"')),
 ]
 CASES += [
     ("v16-fractal", ["V16"], lambda _: FRACTAL.replace('version="1.6"', 'version="1.5"')),

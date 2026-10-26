@@ -133,7 +133,9 @@ fn the_attribute_types() {
         assert_eq!(codes(&l(bad)), ["S06"], "{bad}");
     }
     let sky = |v: &str| kit("", "", "", &format!("<lights><light id=\"d\" type=\"dome\" sky=\"{v}\"/></lights>\n"));
-    assert_eq!(codes(&sky("physical")), ["S06"]);
+    assert_eq!(codes(&sky("hosek")), ["S06"]);
+    // physical is the physical-sky draft's value: before 1.8 the gate refuses it, and without a date PSKY2 does
+    assert_eq!(codes(&sky("physical")), ["PSKY2", "V17"]);
 }
 
 #[test]

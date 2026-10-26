@@ -838,6 +838,9 @@
     "pen2.scene.xml": [
       "PEN2"
     ],
+    "physical-atmosphere-enum.scene.xml": [
+      "S06"
+    ],
     "plot-kind-enum.scene.xml": [
       "S06",
       "PLT1"
@@ -878,6 +881,51 @@
     ],
     "prg3-step-size.scene.xml": [
       "PRG3"
+    ],
+    "psky2-deltat-required.scene.xml": [
+      "PSKY2"
+    ],
+    "psky2-empty-fraction.scene.xml": [
+      "PSKY2"
+    ],
+    "psky2-hour.scene.xml": [
+      "PSKY2"
+    ],
+    "psky2-month.scene.xml": [
+      "PSKY2"
+    ],
+    "psky2-no-date.scene.xml": [
+      "PSKY2"
+    ],
+    "psky2-no-seconds.scene.xml": [
+      "PSKY2"
+    ],
+    "psky2-no-zone.scene.xml": [
+      "PSKY2"
+    ],
+    "psky2-year.scene.xml": [
+      "PSKY2"
+    ],
+    "psky2-zone-form.scene.xml": [
+      "PSKY2"
+    ],
+    "psky3-albedo.scene.xml": [
+      "PSKY3"
+    ],
+    "psky3-deltat.scene.xml": [
+      "PSKY3"
+    ],
+    "psky3-latitude.scene.xml": [
+      "PSKY3"
+    ],
+    "psky3-longitude.scene.xml": [
+      "PSKY3"
+    ],
+    "psky3-temperature.scene.xml": [
+      "PSKY3"
+    ],
+    "psky4-sun-elevation.scene.xml": [
+      "PSKY4"
     ],
     "pyc1-derived.scene.xml": [
       "PYC1"
@@ -1499,6 +1547,9 @@
     "v17-part.scene.xml": [
       "V17"
     ],
+    "v17-physical-sky.scene.xml": [
+      "V17"
+    ],
     "v17-reactive-values.scene.xml": [
       "V17"
     ],
@@ -1802,6 +1853,10 @@
     "particles3d-version-1.6.scene.xml": [],
     "particles3d.scene.xml": [],
     "pdf-region.scene.xml": [],
+    "physical-sky-ancient.scene.xml": [],
+    "physical-sky-date-forms.scene.xml": [],
+    "physical-sky-knobs.scene.xml": [],
+    "physical-sky.scene.xml": [],
     "physics-internal-edges.scene.xml": [],
     "pinned-fonts.scene.xml": [],
     "plots-3d.scene.xml": [],
@@ -1996,6 +2051,9 @@
     ],
     "w17-star-field-epoch.scene.xml": [
       "W17"
+    ],
+    "w18-physical-attributes.scene.xml": [
+      "W18"
     ]
   }
 }

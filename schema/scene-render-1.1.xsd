@@ -4077,7 +4077,7 @@
     <xs:attribute name="contactShadowLength" type="positiveDecimal" default="20"/>
     <!-- SREP 71: a procedural sky (type="dome" only) -->
     <xs:attribute name="sky" default="none">
-      <xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="none"/><xs:enumeration value="gradient"/></xs:restriction></xs:simpleType>
+      <xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="none"/><xs:enumeration value="gradient"/><xs:enumeration value="physical"/></xs:restriction></xs:simpleType>
     </xs:attribute>
     <xs:attribute name="skyZenith" type="colorType" default="#3A6EA5FF"/>
     <xs:attribute name="skyHorizon" type="colorType" default="#C8D8E8FF"/>
@@ -4087,7 +4087,35 @@
     <xs:attribute name="sunElevation" type="xs:double" default="45"/>
     <xs:attribute name="sunSize" type="nonNegativeDecimal" default="0.53"/>
     <xs:attribute name="sunColor" type="colorType" default="#FFFFFFFF"/>
-    <xs:attribute name="sunIntensity" type="nonNegativeDecimal" default="0"/>
+    <xs:attribute name="sunIntensity" type="nonNegativeDecimal" default="0">
+      <xs:annotation><xs:documentation>With sky="physical" an absent sunIntensity reads as 1: the sun's effective irradiance is sunIrradiance times sunIntensity (physical-sky draft, rule 6).</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <!-- physical-sky draft, version 1.8: read with sky="physical" only, ignored with the warning PSKY1 otherwise -->
+    <xs:attribute name="date" type="xs:string">
+      <xs:annotation><xs:documentation>sky="physical": the observer's date and time, YYYY-MM-DDThh:mm:ss[.f] with Z or a +hh:mm offset, the year -2000 to 6000; required (PSKY2).</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="latitude" type="xs:double" default="0"/>
+    <xs:attribute name="longitude" type="xs:double" default="0"/>
+    <xs:attribute name="altitude" type="xs:double" default="0"/>
+    <xs:attribute name="pressure" type="nonNegativeDecimal" default="1013.25"/>
+    <xs:attribute name="temperature" type="xs:double" default="10"/>
+    <xs:attribute name="deltaT" type="xs:double">
+      <xs:annotation><xs:documentation>Seconds of TT - UT, -8000 to 8000; 69 when absent for dates in 1900 to 2100, required outside them (PSKY2).</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="moon" type="xs:boolean" default="true"/>
+    <xs:attribute name="moonIntensity" type="nonNegativeDecimal" default="1"/>
+    <xs:attribute name="atmosphere" default="earth">
+      <xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="earth"/><xs:enumeration value="none"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="aerosol" type="nonNegativeDecimal" default="1"/>
+    <xs:attribute name="ozone" type="nonNegativeDecimal" default="1"/>
+    <xs:attribute name="planetRadius" type="positiveDecimal" default="6360000"/>
+    <xs:attribute name="atmosphereHeight" type="positiveDecimal" default="100000"/>
+    <xs:attribute name="groundAlbedo" type="xs:double" default="0.3"/>
+    <xs:attribute name="sunIrradiance" type="colorType" default="#FFFFFFFF"/>
+    <xs:attribute name="aerialPerspective" type="xs:boolean" default="true"/>
+    <xs:attribute name="fogDensity" type="nonNegativeDecimal" default="0"/>
+    <xs:attribute name="fogHeight" type="positiveDecimal" default="100"/>
   </xs:complexType>
   <xs:complexType name="lightsType">
     <xs:sequence><xs:element name="light" type="lightType" maxOccurs="unbounded"/></xs:sequence>

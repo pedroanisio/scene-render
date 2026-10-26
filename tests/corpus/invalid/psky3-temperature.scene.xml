@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- expect: PSKY3 -->
+<scene version="1.8"><project width="64" height="64" fps="24" duration="1"/><composition><camera id="eye" z="-10"/></composition><lights><light id="sky" type="dome" sky="physical" date="2003-10-17T12:30:30-07:00" latitude="39.742476" longitude="-105.1786" altitude="1830.14" pressure="820" temperature="-273" deltaT="67" sunSize="0.6"/></lights></scene>

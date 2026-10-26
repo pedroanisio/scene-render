@@ -236,6 +236,64 @@ fn rotating(body: f64) -> bool {
     [10.0, 199.0, 299.0, 399.0, 499.0, 599.0, 699.0, 799.0, 899.0, 301.0].contains(&body)
 }
 
+/// The attributes of the physical-sky draft read only with `sky="physical"` (PSKY1, the warning W18 otherwise).
+const PHYSICAL_SKY_ATTRIBUTES: [&str; 19] = [
+    "date",
+    "latitude",
+    "longitude",
+    "altitude",
+    "pressure",
+    "temperature",
+    "deltaT",
+    "moon",
+    "moonIntensity",
+    "atmosphere",
+    "aerosol",
+    "ozone",
+    "planetRadius",
+    "atmosphereHeight",
+    "groundAlbedo",
+    "sunIrradiance",
+    "aerialPerspective",
+    "fogDensity",
+    "fogHeight",
+];
+
+/// PSKY2 as the Schematron reads the text: an optional "-", then YYYY-MM-DDThh:mm:ss, an optional fraction of
+/// digits and Z or ±00:00 in shape; month 1 to 12, day 1 to 31, hour to 23, minute to 59, second to 60; the year
+/// -2000 to 6000, and outside 1900 to 2100 only with a deltaT.
+fn physical_date(d: &str, delta_t: bool) -> bool {
+    // every place of the shape is ASCII, so any other character fails it, as in the Schematron
+    if !d.is_ascii() {
+        return false;
+    }
+    let neg = d.starts_with('-');
+    let ds = if neg { &d[1..] } else { d };
+    let shape: String = ds.chars().map(|c| if c.is_ascii_digit() { '0' } else { c }).collect();
+    if shape.get(..19) != Some("0000-00-00T00:00:00") {
+        return false;
+    }
+    let tail = &shape[19..];
+    let zone_len = if tail.ends_with('Z') { 1 } else { 6 };
+    if tail.len() < zone_len {
+        return false;
+    }
+    let (frac, zone) = tail.split_at(tail.len() - zone_len);
+    let frac_ok = frac.is_empty() || (frac.len() >= 2 && frac.starts_with('.') && frac[1..].bytes().all(|c| c == b'0'));
+    if !(matches!(zone, "Z" | "+00:00" | "-00:00") && frac_ok) {
+        return false;
+    }
+    let field = |at: usize, len: usize| ds[at..at + len].parse::<f64>().unwrap_or(f64::NAN);
+    let year = field(0, 4) * if neg { -1.0 } else { 1.0 };
+    (1.0..=12.0).contains(&field(5, 2))
+        && (1.0..=31.0).contains(&field(8, 2))
+        && field(11, 2) <= 23.0
+        && field(14, 2) <= 59.0
+        && field(17, 2) <= 60.0
+        && (-2000.0..=6000.0).contains(&year)
+        && ((1900.0..=2100.0).contains(&year) || delta_t)
+}
+
 /// TF2 for timeScale="utc", as the Schematron reads the text: YYYY-MM-DDThh:mm:ss, an optional fraction of digits,
 /// then Z or ±hh:mm; a calendar date whose UTC instant is in 1972 or later, and with the approximate elements in 3000
 /// or earlier.
@@ -1229,9 +1287,11 @@ impl<'a> Eval<'a> {
             // the star-fields draft's catalogue assets and star fields
             let uses = uses
                 || kids(n, "assets").any(|s| has_kid(s, "catalogue"))
-                || n.descendants().any(|d| is(d, "starField") && d.parent_element().is_some_and(|p| is(p, "light")));
+                || n.descendants().any(|d| is(d, "starField") && d.parent_element().is_some_and(|p| is(p, "light")))
+                // the physical-sky draft's sky
+                || n.descendants().any(|d| is(d, "light") && d.attribute("sky") == Some("physical"));
             self.check(!uses, n, "V17", || {
-                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets and starField need version=\"1.8\".".into()
+                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets, starField and sky=\"physical\" need version=\"1.8\".".into()
             });
         }
         // the time-frames draft (p-srep-time-frames)
@@ -1319,6 +1379,40 @@ impl<'a> Eval<'a> {
                     "W17",
                     "the scene's space gives the star field's epoch: its epoch is ignored.".to_string(),
                 );
+            }
+        }
+        // the physical-sky draft (p-srep-physical-sky; PSKY1 is the native warning W18)
+        if local == "light" && parent_is("lights") {
+            if a("sky") == Some("physical") {
+                let ok = a("date").is_some_and(|d| physical_date(d, has("deltaT")));
+                self.check(ok, n, "PSKY2", || {
+                    "a physical sky's date is YYYY-MM-DDThh:mm:ss[.f] with Z or a +hh:mm offset, its year -2000 to 6000, and deltaT is given for years outside 1900 to 2100.".into()
+                });
+                let within = |k: &str, lo: f64, hi: f64| !has(k) || (lo..=hi).contains(&num(n, k));
+                let ok = within("latitude", -90.0, 90.0)
+                    && within("longitude", -180.0, 180.0)
+                    && (!has("temperature") || num(n, "temperature") > -273.0)
+                    && within("deltaT", -8000.0, 8000.0)
+                    && within("groundAlbedo", 0.0, 1.0);
+                self.check(ok, n, "PSKY3", || {
+                    "a physical sky's latitude is -90 to 90, longitude -180 to 180, temperature above -273, deltaT -8000 to 8000 and groundAlbedo 0 to 1.".into()
+                });
+                self.check(!has("sunAzimuth") && !has("sunElevation"), n, "PSKY4", || {
+                    "a physical sky's sun comes from its date: sunAzimuth and sunElevation are not written.".into()
+                });
+            } else {
+                let written: Vec<&str> = PHYSICAL_SKY_ATTRIBUTES.iter().copied().filter(|k| has(k)).collect();
+                if !written.is_empty() {
+                    self.warn(
+                        n,
+                        "W18",
+                        format!(
+                            "{} {} read only with sky=\"physical\": ignored.",
+                            written.join(", "),
+                            if written.len() == 1 { "is" } else { "are" }
+                        ),
+                    );
+                }
             }
         }
         // the fields draft (p-srep-fields)

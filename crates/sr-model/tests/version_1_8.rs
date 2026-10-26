@@ -85,7 +85,9 @@ fn the_corpus_validates_alike_at_1_7_and_1_8() {
                     [" body=", " positionFrom=", " orientation="].iter().any(|k| tag.contains(k))
                 })
                 // and the star-fields draft's catalogue asset and star field
-                || ["<catalogue ", "<starField"].iter().any(|k| xml.contains(k));
+                || ["<catalogue ", "<starField"].iter().any(|k| xml.contains(k))
+                // and the physical-sky draft's sky
+                || xml.contains(r#"sky="physical""#);
             let plot_gated = at_1_7.iter().any(|c| c == "V17");
             at_1_7.retain(|c| c != "V17");
             assert_eq!(plot_gated, plotted && !codes(&b).iter().any(|c| c == "S01"), "{}", f.display());

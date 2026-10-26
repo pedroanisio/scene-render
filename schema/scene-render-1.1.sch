@@ -869,7 +869,7 @@
   <sch:pattern id="p-v17">
     <sch:rule context="/scene[@version='1.0' or @version='1.1' or @version='1.2' or @version='1.3' or @version='1.4' or @version='1.5' or @version='1.6' or @version='1.7']">
       <sch:let name="partTag" value="'\part{'"/>
-      <sch:assert id="V17" test="not(.//axes or .//plot or .//object3D[@primitive='axes'] or .//axes3D or .//plot3D or .//modifier[@type='matrix' or @type='map' or @type='complex'] or .//group/deform or .//formulaAnimator or assets/formulaMorph or .//shape[@morph] or assets/formula[contains(@tex, $partTag)] or assets/value or .//field or space or assets/ephemeris or .//object3D[@body or @positionFrom or @orientation] or assets/catalogue or .//light/starField)">axes, plot, axes3D, plot3D, primitive="axes", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets and starField need version="1.8".</sch:assert>
+      <sch:assert id="V17" test="not(.//axes or .//plot or .//object3D[@primitive='axes'] or .//axes3D or .//plot3D or .//modifier[@type='matrix' or @type='map' or @type='complex'] or .//group/deform or .//formulaAnimator or assets/formulaMorph or .//shape[@morph] or assets/formula[contains(@tex, $partTag)] or assets/value or .//field or space or assets/ephemeris or .//object3D[@body or @positionFrom or @orientation] or assets/catalogue or .//light/starField or .//light[@sky='physical'])">axes, plot, axes3D, plot3D, primitive="axes", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets, starField and sky="physical" need version="1.8".</sch:assert>
     </sch:rule>
   </sch:pattern>
   <sch:pattern id="p-srep-plots">
@@ -946,6 +946,27 @@
       <sch:assert id="SF2" test="../@type='dome' and count(../starField)=1 and /scene/assets/catalogue[@id=current()/@catalogue]">starField is written once, on a dome light, and names a catalogue asset.</sch:assert>
       <sch:assert id="SF3" test="not(@limitMagnitude) or $limit = $limit">a star field's limitMagnitude is finite.</sch:assert>
       <sch:assert id="SF4" test="not(@epoch) or ($epoch &gt;= -8000 and $epoch &lt;= 12000)">a star field's epoch is within 10000 years of 2000.0.</sch:assert>
+    </sch:rule>
+  </sch:pattern>
+  <sch:pattern id="p-srep-physical-sky">
+    <sch:rule context="lights/light[@sky='physical']">
+      <sch:let name="neg" value="starts-with(@date,'-')"/>
+      <sch:let name="ds" value="substring(@date,1+number($neg))"/>
+      <sch:let name="shape" value="translate($ds,'123456789','000000000')"/>
+      <sch:let name="tail" value="substring($shape,20)"/>
+      <sch:let name="tn" value="string-length($tail)"/>
+      <sch:let name="zl" value="1+5*number(substring($tail,$tn)!='Z')"/>
+      <sch:let name="zone" value="substring($tail,$tn - $zl + 1)"/>
+      <sch:let name="frac" value="substring($tail,1,$tn - $zl)"/>
+      <sch:let name="year" value="number(substring($ds,1,4))*(1-2*number($neg))"/>
+      <sch:let name="lat" value="number(substring(normalize-space(@latitude),1+number(starts-with(normalize-space(@latitude),'+'))))"/>
+      <sch:let name="lon" value="number(substring(normalize-space(@longitude),1+number(starts-with(normalize-space(@longitude),'+'))))"/>
+      <sch:let name="temp" value="number(substring(normalize-space(@temperature),1+number(starts-with(normalize-space(@temperature),'+'))))"/>
+      <sch:let name="dt" value="number(substring(normalize-space(@deltaT),1+number(starts-with(normalize-space(@deltaT),'+'))))"/>
+      <sch:let name="albedo" value="number(substring(normalize-space(@groundAlbedo),1+number(starts-with(normalize-space(@groundAlbedo),'+'))))"/>
+      <sch:assert id="PSKY2" test="@date and substring($shape,1,19)='0000-00-00T00:00:00' and ($zone='Z' or $zone='+00:00' or $zone='-00:00') and ($frac='' or (starts-with($frac,'.') and string-length($frac)&gt;=2 and translate(substring($frac,2),'0','')='')) and number(substring($ds,6,2))&gt;=1 and number(substring($ds,6,2))&lt;=12 and number(substring($ds,9,2))&gt;=1 and number(substring($ds,9,2))&lt;=31 and number(substring($ds,12,2))&lt;=23 and number(substring($ds,15,2))&lt;=59 and number(substring($ds,18,2))&lt;=60 and $year&gt;=-2000 and $year&lt;=6000 and (($year&gt;=1900 and $year&lt;=2100) or @deltaT)">a physical sky's date is YYYY-MM-DDThh:mm:ss[.f] with Z or a +hh:mm offset, its year -2000 to 6000, and deltaT is given for years outside 1900 to 2100.</sch:assert>
+      <sch:assert id="PSKY3" test="(not(@latitude) or ($lat&gt;=-90 and $lat&lt;=90)) and (not(@longitude) or ($lon&gt;=-180 and $lon&lt;=180)) and (not(@temperature) or $temp&gt;-273) and (not(@deltaT) or ($dt&gt;=-8000 and $dt&lt;=8000)) and (not(@groundAlbedo) or ($albedo&gt;=0 and $albedo&lt;=1))">a physical sky's latitude is -90 to 90, longitude -180 to 180, temperature above -273, deltaT -8000 to 8000 and groundAlbedo 0 to 1.</sch:assert>
+      <sch:assert id="PSKY4" test="not(@sunAzimuth) and not(@sunElevation)">a physical sky's sun comes from its date: sunAzimuth and sunElevation are not written.</sch:assert>
     </sch:rule>
   </sch:pattern>
 </sch:schema>

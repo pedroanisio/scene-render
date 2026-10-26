@@ -119,6 +119,11 @@ const FIXED: &[(&str, &str, &str)] = &[
         "rules",
         "A starField sets epoch in a scene with a space: the space's clock gives the field's epoch, so the attribute is ignored (the star-fields draft, SF4).",
     ),
+    (
+        "W18",
+        "rules",
+        "A dome light writes an attribute of the physical sky (date, the observer, the moon, the atmosphere or the fog) under sky=\"none\" or \"gradient\": it is read only with sky=\"physical\", so it is ignored (the physical-sky draft, PSKY1).",
+    ),
     ("A01", "assets", "A referenced input file does not exist."),
     (
         "TF1",
