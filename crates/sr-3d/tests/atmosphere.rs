@@ -3,9 +3,11 @@
 //! from orbit, over a length, with the aerosol and ozone knobs), and the failure paths of the rules.
 
 use sr_3d::atmosphere::{
-    atmosphere, hg_phase, integrate_phase, rayleigh_phase, unit, Atmosphere, AtmosphereOptions, Fog, Scattering,
-    SkyError, MAX_SAMPLES,
+    atmosphere, disc_solid_angle, effective_sun_irradiance, hg_phase, integrate_phase, lambert_phase, rayleigh_phase,
+    unit, Atmosphere, AtmosphereOptions, Fog, Scattering, SkyError, MAX_SAMPLES, MOON_ALBEDO,
 };
+use sr_3d::space::moon::moon_from_document;
+use sr_3d::space::sun::Observer;
 
 type V3 = [f64; 3];
 
@@ -269,4 +271,66 @@ fn values_the_rules_refuse() {
     for (density, height) in [(-1.0, 100.0), (0.001, 0.0), (f64::NAN, 100.0), (0.001, f64::INFINITY)] {
         assert!(Fog::new(density, height).is_err(), "{density} {height}");
     }
+}
+
+/// The reference's observer at (0, 0) with its defaults.
+fn equator() -> Observer {
+    Observer { latitude: 0.0, longitude: 0.0, altitude: 0.0, pressure: 1013.25, temperature: 10.0, delta_t: None }
+}
+
+#[test]
+fn the_effective_irradiance_reads_an_absent_intensity_as_one() {
+    assert_eq!(effective_sun_irradiance([1.0, 0.5, 0.25], None).unwrap(), [1.0, 0.5, 0.25]);
+    assert_eq!(effective_sun_irradiance([1.0, 0.5, 0.25], Some(4.0)).unwrap(), [4.0, 2.0, 1.0]);
+    assert_eq!(effective_sun_irradiance([1.0; 3], Some(0.0)).unwrap(), [0.0; 3]);
+    for bad in [[1.5, 0.0, 0.0], [-0.1, 0.0, 0.0], [f64::NAN, 0.0, 0.0]] {
+        assert!(effective_sun_irradiance(bad, None).is_err(), "{bad:?}");
+    }
+    for k in [-1.0, f64::NAN, f64::INFINITY] {
+        assert!(effective_sun_irradiance([1.0; 3], Some(k)).is_err(), "{k}");
+    }
+}
+
+#[test]
+fn the_sun_disc_rows() {
+    let a = earth();
+    let disc = a.sun_disc_radiance(ground(&a), [0.0, 0.0, 1.0], 0.53, [1.0; 3]).unwrap();
+    assert_eq!(disc.map(|x| round(x, 4)), [13926.5031, 12849.2701, 11289.9575]);
+    let wide = a.sun_disc_radiance(ground(&a), [0.0, 0.0, 1.0], 2.0, [1.0; 3]).unwrap();
+    let power = wide.map(|x| round(x * disc_solid_angle(2.0).unwrap(), 6));
+    assert_eq!(power, [0.935918, 0.863523, 0.758731]);
+    // sunColor tints, sunSize 0 draws nothing
+    let tinted = a.sun_disc_radiance(ground(&a), [0.0, 0.0, 1.0], 0.53, [1.0, 0.5, 0.0]).unwrap();
+    assert_eq!(tinted, [disc[0], disc[1] * 0.5, 0.0]);
+    assert_eq!(a.sun_disc_radiance(ground(&a), [0.0, 0.0, 1.0], 0.0, [1.0; 3]).unwrap(), [0.0; 3]);
+    for size in [-0.1, 180.5, f64::NAN] {
+        assert!(disc_solid_angle(size).is_err(), "{size}");
+    }
+    assert!(a.sun_disc_radiance(ground(&a), [0.0, 0.0, 1.0], 0.53, [1.2, 0.0, 0.0]).is_err());
+}
+
+#[test]
+// 0.31831 is the draft's row, 1/π to its six digits
+#[allow(clippy::approx_constant)]
+fn the_moon_rows() {
+    let a = earth();
+    assert_eq!(MOON_ALBEDO, 0.12);
+    let phases = [0.0, 90.0, 180.0].map(|x| round(lambert_phase(x).unwrap(), 6));
+    assert_eq!(phases, [1.0, 0.31831, 0.0]);
+    for bad in [-1.0, 180.5, f64::NAN] {
+        assert!(lambert_phase(bad).is_err(), "{bad}");
+    }
+    let (full, _) = moon_from_document("2003-11-09T01:13:00Z", &equator()).unwrap();
+    let l = a.moon_radiance(ground(&a), &full, 1.0).unwrap();
+    assert_eq!(l.map(|x| round(x, 6)), [0.035444, 0.032365, 0.027965]);
+    let (new, _) = moon_from_document("2003-10-25T12:50:00Z", &equator()).unwrap();
+    assert_eq!(a.moon_radiance(ground(&a), &new, 1.0).unwrap().map(|x| round(x, 6)), [0.0; 3]);
+    // moonIntensity scales it, and is refused below 0
+    let twice = a.moon_radiance(ground(&a), &full, 2.0).unwrap();
+    close(twice, l.map(|x| 2.0 * x), "moonIntensity 2");
+    assert!(a.moon_radiance(ground(&a), &full, -1.0).is_err());
+    // a moon below the horizon is dark
+    let mut set = full;
+    set.zenith = 95.0;
+    assert_eq!(a.moon_radiance(ground(&a), &set, 1.0).unwrap(), [0.0; 3]);
 }

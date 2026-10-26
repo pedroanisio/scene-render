@@ -34,6 +34,7 @@ pub mod material;
 pub mod mtlx;
 mod mtlx_graph;
 pub mod occupancy;
+pub mod physical_sky;
 pub mod pieces;
 
 pub mod prim;

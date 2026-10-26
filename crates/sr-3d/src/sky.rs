@@ -81,9 +81,7 @@ impl Sky {
 
     /// The sky as an equirectangular image `width` × `width / 2` for image-based lighting.
     ///
-    /// The gradient is sampled at texel centres. The sun is spread over the texels its disc covers (4 × 4 samples each)
-    /// and scaled so that the image holds exactly its power (radiance × solid angle): a sun smaller than a texel
-    /// lights as much as a large one of the same power.
+    /// The gradient is sampled at texel centres and the sun added by [`add_disc`].
     pub fn equirect(&self, width: u32) -> Equirect {
         let (w, h) = (width.max(4), (width / 2).max(2));
         let mut rgb = Vec::with_capacity((w * h) as usize);
@@ -93,55 +91,11 @@ impl Sky {
                 rgb.push(self.gradient(d).to_array());
             }
         }
+        let mut eq = Equirect { width: w, height: h, rgb };
         if self.has_sun() {
-            let texel_sa = |y: u32| {
-                let v = (y as f32 + 0.5) / h as f32;
-                (2.0 * std::f32::consts::PI / w as f32)
-                    * (std::f32::consts::PI / h as f32)
-                    * (v * std::f32::consts::PI).sin()
-            };
-            let sun = Vec3::from(self.sun_dir);
-            // a texel's centre lies within the disc's radius plus the texel's diagonal of every texel the disc touches
-            let reach = (1.0 - self.sun_cos.clamp(-1.0, 1.0)).max(0.0);
-            let radius = (2.0 * reach).sqrt() + 2.0 * std::f32::consts::PI / w as f32 * 1.5;
-            let mut cover: Vec<(usize, f32)> = Vec::new();
-            for y in 0..h {
-                for x in 0..w {
-                    let d = dir_of((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32);
-                    if d.distance(sun) > radius {
-                        continue;
-                    }
-                    const N: u32 = 4;
-                    let mut inside = 0;
-                    for j in 0..N {
-                        for i in 0..N {
-                            let u = (x as f32 + (i as f32 + 0.5) / N as f32) / w as f32;
-                            let v = (y as f32 + (j as f32 + 0.5) / N as f32) / h as f32;
-                            if dir_of(u, v).dot(sun) >= self.sun_cos {
-                                inside += 1;
-                            }
-                        }
-                    }
-                    if inside > 0 {
-                        cover.push(((y * w + x) as usize, inside as f32 / (N * N) as f32 * texel_sa(y)));
-                    }
-                }
-            }
-            if cover.is_empty() {
-                // smaller than a sample: all of it in the texel of the centre
-                let uv = crate::env::uv_of(sun);
-                let x = ((uv.x * w as f32) as u32).min(w - 1);
-                let y = ((uv.y * h as f32) as u32).min(h - 1);
-                cover.push(((y * w + x) as usize, texel_sa(y)));
-            }
-            let total: f32 = cover.iter().map(|c| c.1).sum();
-            let power = Vec3::from(self.sun) * self.sun_solid_angle();
-            for (i, sa) in cover {
-                let add = power * (sa / total) / texel_sa((i / w as usize) as u32);
-                rgb[i] = (Vec3::from(rgb[i]) + add).to_array();
-            }
+            add_disc(&mut eq, Vec3::from(self.sun_dir), self.sun_cos, Vec3::from(self.sun));
         }
-        Equirect { width: w, height: h, rgb }
+        eq
     }
 }
 
@@ -165,6 +119,56 @@ impl Sky {
 pub fn sun_direction(azimuth: f64, elevation: f64) -> [f32; 3] {
     let (a, e) = (azimuth.to_radians(), elevation.to_radians());
     [(e.cos() * a.sin()) as f32, (-e.sin()) as f32, (e.cos() * a.cos()) as f32]
+}
+
+/// Adds a disc of `radiance` about the unit `dir` (d is inside when d · dir ≥ `cos`) to an equirectangular image,
+/// spread over the texels it covers (4 × 4 samples each) and scaled so that the image holds exactly its power
+/// (radiance × solid angle): a disc smaller than a texel lights as much as a large one of the same power.
+pub fn add_disc(eq: &mut Equirect, dir: Vec3, cos: f32, radiance: Vec3) {
+    let (w, h) = (eq.width, eq.height);
+    let texel_sa = |y: u32| {
+        let v = (y as f32 + 0.5) / h as f32;
+        (2.0 * std::f32::consts::PI / w as f32) * (std::f32::consts::PI / h as f32) * (v * std::f32::consts::PI).sin()
+    };
+    // a texel's centre lies within the disc's radius plus the texel's diagonal of every texel the disc touches
+    let reach = (1.0 - cos.clamp(-1.0, 1.0)).max(0.0);
+    let radius = (2.0 * reach).sqrt() + 2.0 * std::f32::consts::PI / w as f32 * 1.5;
+    let mut cover: Vec<(usize, f32)> = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            let d = dir_of((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32);
+            if d.distance(dir) > radius {
+                continue;
+            }
+            const N: u32 = 4;
+            let mut inside = 0;
+            for j in 0..N {
+                for i in 0..N {
+                    let u = (x as f32 + (i as f32 + 0.5) / N as f32) / w as f32;
+                    let v = (y as f32 + (j as f32 + 0.5) / N as f32) / h as f32;
+                    if dir_of(u, v).dot(dir) >= cos {
+                        inside += 1;
+                    }
+                }
+            }
+            if inside > 0 {
+                cover.push(((y * w + x) as usize, inside as f32 / (N * N) as f32 * texel_sa(y)));
+            }
+        }
+    }
+    if cover.is_empty() {
+        // smaller than a sample: all of it in the texel of the centre
+        let uv = crate::env::uv_of(dir);
+        let x = ((uv.x * w as f32) as u32).min(w - 1);
+        let y = ((uv.y * h as f32) as u32).min(h - 1);
+        cover.push(((y * w + x) as usize, texel_sa(y)));
+    }
+    let total: f32 = cover.iter().map(|c| c.1).sum();
+    let power = radiance * 2.0 * std::f32::consts::PI * (1.0 - cos);
+    for (i, sa) in cover {
+        let add = power * (sa / total) / texel_sa((i / w as usize) as u32);
+        eq.rgb[i] = (Vec3::from(eq.rgb[i]) + add).to_array();
+    }
 }
 
 #[cfg(test)]

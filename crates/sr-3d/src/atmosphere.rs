@@ -9,6 +9,8 @@
 
 use std::f64::consts::PI;
 
+/// The moon's geometric albedo (rule 7).
+pub const MOON_ALBEDO: f64 = 0.12;
 /// The most quadrature segments a ray takes.
 pub const MAX_SAMPLES: usize = 65536;
 /// The heights of the multiple-scattering table.
@@ -184,6 +186,36 @@ fn sphere_hit(p: V3, d: V3, radius: f64) -> Option<f64> {
     Some(if t0 >= 0.0 { t0 } else { t1 })
 }
 
+/// The sun's irradiance a physical sky is lit by: `sunIrradiance` times `sunIntensity`, which reads as 1 when the
+/// document leaves it out (SREP 71's default 0 is the gradient sky's sunless decoration).
+pub fn effective_sun_irradiance(sun_irradiance: V3, sun_intensity: Option<f64>) -> Result<V3, SkyError> {
+    if !sun_irradiance.iter().all(|c| (0.0..=1.0).contains(c)) {
+        return err("sunIrradiance is three channels in [0, 1]");
+    }
+    let k = sun_intensity.unwrap_or(1.0);
+    if !(k >= 0.0 && k.is_finite()) {
+        return err("sunIntensity is a finite non-negative number");
+    }
+    Ok(sun_irradiance.map(|c| c * k))
+}
+
+/// The solid angle of a disc of the given angular diameter in degrees, 2π(1 − cos(θ/2)).
+pub fn disc_solid_angle(angular_diameter: f64) -> Result<f64, SkyError> {
+    if !(0.0..=180.0).contains(&angular_diameter) {
+        return err("a disc's angular diameter is 0 to 180 degrees");
+    }
+    Ok(2.0 * PI * (1.0 - (angular_diameter.to_radians() / 2.0).cos()))
+}
+
+/// The Lambert sphere's phase law at a phase angle in degrees: 1 at full phase, 1/π at quadrature, 0 at new.
+pub fn lambert_phase(phase_angle: f64) -> Result<f64, SkyError> {
+    if !(0.0..=180.0).contains(&phase_angle) {
+        return err("a phase angle is 0 to 180 degrees");
+    }
+    let a = phase_angle.to_radians();
+    Ok((a.sin() + (PI - a) * a.cos()) / PI)
+}
+
 /// Rayleigh's phase function of the cosine between the view and the sun.
 pub fn rayleigh_phase(mu: f64) -> f64 {
     3.0 / (16.0 * PI) * (1.0 + mu * mu)
@@ -357,6 +389,34 @@ impl Atmosphere {
     pub fn sun_radiance(&self, obs: V3, d: V3) -> Result<V3, SkyError> {
         let t = self.transmittance(obs, d)?;
         Ok(std::array::from_fn(|c| self.sun_irradiance[c] * t[c]))
+    }
+
+    /// Rule 6: the sun disc's radiance, `sunColor` times [`Atmosphere::sun_radiance`] over the disc's solid angle, so
+    /// that the disc's power over `sun_size` degrees is the transmitted irradiance whatever the size; no disc (zeros)
+    /// at size 0.
+    pub fn sun_disc_radiance(&self, obs: V3, d: V3, sun_size: f64, sun_color: V3) -> Result<V3, SkyError> {
+        if !sun_color.iter().all(|c| (0.0..=1.0).contains(c)) {
+            return err("sunColor is three channels in [0, 1]");
+        }
+        let omega = disc_solid_angle(sun_size)?;
+        if omega == 0.0 {
+            return Ok([0.0; 3]);
+        }
+        let e = self.sun_radiance(obs, d)?;
+        Ok(std::array::from_fn(|c| sun_color[c] * e[c] / omega))
+    }
+
+    /// Rule 7: the moon disc's radiance, uniform over the disc: `moon_intensity` times [`MOON_ALBEDO`] times the
+    /// Lambert phase law at the moon's phase angle times the sun's irradiance over π, through the transmittance along
+    /// the moon's direction (zero below the horizon). Only the moon's zenith angle matters to an observer on the z axis.
+    pub fn moon_radiance(&self, obs: V3, moon: &sr_space::moon::Moon, moon_intensity: f64) -> Result<V3, SkyError> {
+        if !(moon_intensity >= 0.0 && moon_intensity.is_finite()) {
+            return err("moonIntensity is a finite non-negative number");
+        }
+        let z = moon.zenith.to_radians();
+        let t = self.transmittance(obs, [z.sin(), 0.0, z.cos()])?;
+        let k = moon_intensity * MOON_ALBEDO * lambert_phase(moon.phase_angle)? / PI;
+        Ok(std::array::from_fn(|c| k * self.sun_irradiance[c] * t[c]))
     }
 
     /// Hillaire's isotropic multiple-scattering estimate at height `h` and sun cosine `mu_s`: the second-order
