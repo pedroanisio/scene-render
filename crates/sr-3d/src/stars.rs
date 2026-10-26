@@ -8,7 +8,10 @@
 //! mapping (x, −z, y) of the ICRF ([`SCENE_FROM_ICRF_AXES`]), so the celestial north pole is up, after a space's
 //! frame matrix when the scene has one (rule 4).
 
-use crate::space::stars::{moved, star_field, Star};
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
+
+use crate::space::stars::{constellation, direction, moved, precess, star_field, Star, BOUNDARIES};
 use crate::space::{mat_apply, Mat3, SpaceError};
 
 pub use crate::space::SCENE_FROM_ICRF_AXES;
@@ -28,6 +31,8 @@ pub struct FieldStar {
 #[derive(Debug, Clone)]
 pub struct Field {
     stars: Vec<(Star, FieldStar)>,
+    /// Every catalogue star by its constellation, whatever the limit (rule 5's labels).
+    members: BTreeMap<&'static str, Vec<Star>>,
 }
 
 impl Field {
@@ -35,7 +40,12 @@ impl Field {
     pub fn new(catalogue: &[Star], limit_magnitude: f64, magnitude_zero: f64) -> Result<Field, SpaceError> {
         let field = star_field(catalogue, limit_magnitude, 0.0, magnitude_zero)?;
         let stars = catalogue.iter().filter(|s| s.vmag <= limit_magnitude);
+        let mut members: BTreeMap<&'static str, Vec<Star>> = BTreeMap::new();
+        for s in catalogue {
+            members.entry(constellation(s.ra, s.dec, 2000.0)?).or_default().push(s.clone());
+        }
         Ok(Field {
+            members,
             stars: stars
                 .zip(field)
                 .map(|(s, f)| {
@@ -73,6 +83,90 @@ impl Field {
             })
             .collect()
     }
+}
+
+impl Field {
+    /// Rule 5's labels: each constellation's abbreviation at the centroid of the catalogue stars it holds (the
+    /// normalised mean of their directions `years` after J2000, moved when `proper_motion`), in the axes `axes`, in
+    /// alphabetical order. Every catalogue star counts, so a label stays where it is whatever the limiting magnitude.
+    pub fn labels(
+        &self,
+        years: f64,
+        proper_motion: bool,
+        axes: &Mat3,
+    ) -> Result<Vec<(&'static str, [f64; 3])>, SpaceError> {
+        self.members
+            .iter()
+            .map(|(abbr, stars)| {
+                let mut sum = [0.0; 3];
+                for s in stars {
+                    let d = moved(s, if proper_motion { years } else { 0.0 })?;
+                    sum = [sum[0] + d[0], sum[1] + d[1], sum[2] + d[2]];
+                }
+                let n = (sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]).sqrt();
+                Ok((*abbr, mat_apply(axes, sum.map(|v| v / n))))
+            })
+            .collect()
+    }
+}
+
+/// The longest step, in right ascension or declination, between two points of a boundary line (rule 5).
+pub const BOUNDARY_STEP_DEG: f64 = 0.5;
+
+/// Rule 5's boundaries as ICRF directions: lines no two of whose consecutive points are more than
+/// [`BOUNDARY_STEP_DEG`] apart. Roman's table is constant on each cell of the grid its right ascensions and
+/// declinations make at equinox 1875, so a boundary is each edge of that grid whose two cells name different
+/// constellations: an arc of constant declination or of constant right ascension, precessed to J2000, where the
+/// field is drawn. Computed once.
+pub fn boundaries() -> &'static [Vec<[f64; 3]>] {
+    static LINES: OnceLock<Vec<Vec<[f64; 3]>>> = OnceLock::new();
+    LINES.get_or_init(|| {
+        let sorted = |mut v: Vec<f64>| {
+            v.sort_by(f64::total_cmp);
+            v.dedup();
+            v
+        };
+        let ras = sorted(BOUNDARIES.iter().flat_map(|r| [r.0, r.1]).chain([0.0, 24.0]).collect());
+        let decs = sorted(BOUNDARIES.iter().map(|r| r.2).chain([-90.0, 90.0]).collect());
+        let (nr, nd) = (ras.len() - 1, decs.len() - 1);
+        // the constellation of cell (i, j), between ras[i]..ras[i + 1] hours and decs[j]..decs[j + 1] degrees
+        let cell: Vec<&str> = (0..nd)
+            .flat_map(|j| (0..nr).map(move |i| (i, j)))
+            .map(|(i, j)| {
+                let (ra, dec) = ((ras[i] + ras[i + 1]) / 2.0, (decs[j] + decs[j + 1]) / 2.0);
+                constellation(ra * 15.0, dec, 1875.0).unwrap_or("")
+            })
+            .collect();
+        let at = |i: usize, j: usize| cell[j * nr + i];
+        // a line from (ra0, dec0) to (ra1, dec1) at 1875, hours and degrees, sampled evenly
+        let line = |(ra0, dec0): (f64, f64), (ra1, dec1): (f64, f64)| -> Vec<[f64; 3]> {
+            let span = ((ra1 - ra0) * 15.0).abs().max((dec1 - dec0).abs());
+            let n = (span / BOUNDARY_STEP_DEG).ceil().max(1.0) as usize;
+            (0..=n)
+                .filter_map(|k| {
+                    let t = k as f64 / n as f64;
+                    let (ra, dec) = ((ra0 + (ra1 - ra0) * t) * 15.0, dec0 + (dec1 - dec0) * t);
+                    let (ra, dec) = precess(ra, dec, 1875.0, 2000.0).ok()?;
+                    direction(ra, dec).ok()
+                })
+                .collect()
+        };
+        let mut lines = Vec::new();
+        for j in 0..nd {
+            for i in 0..nr {
+                // the meridian edge on the cell's west side (the first cell's west neighbour is the last)
+                let west = if i == 0 { nr - 1 } else { i - 1 };
+                if at(i, j) != at(west, j) {
+                    lines.push(line((ras[i], decs[j]), (ras[i], decs[j + 1])));
+                }
+                // the parallel edge on its south side
+                if j > 0 && at(i, j) != at(i, j - 1) {
+                    lines.push(line((ras[i], decs[j]), (ras[i + 1], decs[j])));
+                }
+            }
+        }
+        lines
+    })
 }
 
 /// Twice the area of the disc of radius `r` about the origin left of `t` per unit height: the primitive of
