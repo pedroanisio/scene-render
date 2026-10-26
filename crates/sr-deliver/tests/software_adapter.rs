@@ -1,5 +1,5 @@
-//! Delivery on a software adapter: the report says so, and the automatic worker count is one
-//! (workers compete for the same CPU cores), while an explicit count is honoured.
+//! Delivery on a software adapter: the report says so, and the automatic worker count is two from 8 cores and one
+//! with fewer (two devices on fewer cores only compete), while an explicit count is honoured.
 //! Workers use independent devices on the caller's selected adapter.
 
 mod common;
@@ -44,7 +44,7 @@ fn programme(name: &str) -> sr_model::Document {
 }
 
 #[test]
-fn software_rendering_is_reported_and_runs_one_automatic_worker() {
+fn software_rendering_is_reported_and_runs_the_automatic_workers_its_cores_allow() {
     let Some(gpu) = software() else { return };
     if !common::ffmpeg_available("software adapter tests") {
         return;
@@ -52,7 +52,10 @@ fn software_rendering_is_reported_and_runs_one_automatic_worker() {
     let doc = programme("auto");
     let opts = sr_deliver::Options { parallel: sr_deliver::Parallel::Auto, ..Default::default() };
     let r = sr_deliver::deliver(&doc, &doc.scene.outputs[0], Some(&gpu), &opts, &mut |_, _| {}).unwrap();
-    assert_eq!(r.segments, 1, "a software adapter renders with one automatic worker");
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    // the 40 s programme splits into two segments of 20 s when two workers render it
+    let expected = if cores >= 8 { 2 } else { 1 };
+    assert_eq!(r.segments, expected, "a software adapter on {cores} cores");
     // the adapter is a fact about the machine, not a finding about the document
     let a = r.render_adapter.as_ref().expect("a video output names its adapter");
     assert!(a.software && a.name == gpu.info.name, "{a:?}");
