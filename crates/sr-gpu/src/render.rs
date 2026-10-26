@@ -4400,6 +4400,15 @@ impl Renderer {
     /// and silhouettes act on layers only. A node with an edge-space override needs the visible background first.
     fn background(&mut self, plan: &mut Plan, ctx: &Ctx, space: &Space, cmds: &mut Vec<Cmd>) {
         let g = ctx.g;
+        // the star-fields draft's field is not drawn yet
+        for l in ctx.p.scene.lights.iter().flat_map(|ls| &ls.lights) {
+            if l.children.iter().any(|c| matches!(c, m::LightChild::StarField(_))) {
+                let msg = format!("{}: starField (the star-fields draft) is not drawn", l.id);
+                if !plan.stats.unsupported.contains(&msg) {
+                    plan.stats.unsupported.push(msg);
+                }
+            }
+        }
         // a visible procedural sky that no 3D pass draws takes the background's place (SREP 71)
         let sky = self.sky_background(ctx, space);
         let hash = {
