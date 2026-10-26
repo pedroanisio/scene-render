@@ -125,6 +125,11 @@ const FIXED: &[(&str, &str, &str)] = &[
         "assets",
         "An ephemeris asset's file is not a DAF/SPK file whose segments are all type 2 in the ICRF, or its sha256 differs from @digest; with verified assets, a placed body, origin or frameBody that is not in the file is TF4 or TF5 (the time-frames draft).",
     ),
+    (
+        "SF1",
+        "assets",
+        "A catalogue asset's file is not a gzipped CSV of the nine columns HR,Name,RA,Dec,V,B-V,pmRA,pmDE,SpType with HR strictly increasing and every place and magnitude in range, or its sha256 differs from @digest (the star-fields draft).",
+    ),
     ("A02", "assets", "A file's SHA-256 digest differs from the declared sha256 or cacheSha256."),
     ("A03", "assets", "A remote input (http, https, s3, …) could not be verified offline."),
     ("A04", "assets", "Frames of an image sequence are missing; an error when missingFrame=\"error\"."),

@@ -550,6 +550,9 @@ ASSET_CASES = [
     ("tf1-not-spk", ["TF1"], lambda _: TF.replace("../media/de440s-excerpt.bsp", "../media/music.wav")),
     ("tf4-body-not-in-file", ["TF4"], lambda _: TF.replace('body="301"', 'body="499"')),
     ("tf5-origin-not-in-file", ["TF5"], lambda _: TF.replace('origin="399"', 'origin="499"')),
+    # the star-fields draft: SF1 reads the catalogue file
+    ("sf1-digest", ["SF1"], lambda _: re.sub(r'(digest="sha256:)[0-9a-f]', lambda m: m.group(1) + ('1' if SF.split('digest="sha256:')[1][0] == '0' else '0'), SF)),
+    ("sf1-not-a-catalogue", ["SF1"], lambda _: SF.replace("../media/bsc5-compact.csv.gz", "../media/music.wav")),
 ]
 # Errors of the engine's own rules (rules.rs), outside XSD and Schematron: the oracle accepts these documents.
 RULE_CASES = [

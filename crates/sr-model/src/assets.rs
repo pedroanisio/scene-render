@@ -17,6 +17,9 @@
 //! An `ephemeris` asset's file is read as an SPK file pinned by its `digest` (the time-frames draft): a file of
 //! another kind or digest is `TF1`, a body placed from it that it does not hold `TF4`, and a space's origin or
 //! frameBody that it does not hold `TF5`.
+//!
+//! A `catalogue` asset's file is read as the star-fields draft's gzipped CSV pinned by its `digest`: a file of
+//! another kind, columns or digest is `SF1`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
@@ -318,6 +321,24 @@ pub fn verify(doc: &Document<'_>, base_dir: &Path, out: &mut Vec<Diagnostic>) {
                 }
                 continue;
             }
+            if name == "catalogue" && attr == "src" && n.parent_element().is_some_and(|p| p.has_tag_name("assets")) {
+                match resolve(value, base_dir) {
+                    // a missing file is A01, as for any asset
+                    Resolved::Local(path) if !path.exists() => checks.push(Check {
+                        node: n,
+                        attr,
+                        value,
+                        path,
+                        expected: None,
+                        hash_attr: "",
+                        missing: Severity::Error,
+                        missing_code: "A01",
+                    }),
+                    Resolved::Local(path) => catalogue(n, &path, out),
+                    Resolved::Remote(scheme) => remote.push((n, attr, scheme)),
+                }
+                continue;
+            }
             if name == "volume" && n.attribute("format") == Some("srvseq") && attr == "src" {
                 match resolve(value, base_dir) {
                     Resolved::Local(path) => {
@@ -541,16 +562,32 @@ fn xs_int(n: Node, attr: &str) -> Option<i32> {
     v.strip_prefix('+').unwrap_or(v).parse().ok()
 }
 
+/// A `digest` attribute that is "sha256:" and 64 lowercase hex digits; another is the structure stage's S06, as a
+/// malformed @sha256 is not A02.
+fn pinned_digest<'a>(n: Node<'a, '_>) -> Option<&'a str> {
+    n.attribute("digest").filter(|d| {
+        d.strip_prefix("sha256:")
+            .is_some_and(|h| h.len() == 64 && h.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')))
+    })
+}
+
+/// SF1 for a catalogue asset's local file: the gzipped CSV of the star-fields draft's rule 1 with its digest.
+fn catalogue(n: Node, path: &Path, out: &mut Vec<Diagnostic>) {
+    let Some(digest) = pinned_digest(n) else { return };
+    if let Err(e) = sr_space::stars::load_catalogue(path, Some(digest)) {
+        out.push(Diagnostic::error(
+            "SF1",
+            format!("catalogue {:?}: {e} (resolved to {})", n.attribute("src").unwrap_or_default(), path.display()),
+            attr_loc(n, "src"),
+            element_path(n),
+        ));
+    }
+}
+
 /// TF1 for an ephemeris asset's local file, then the clauses of TF4 and TF5 that read its bodies: every object3D
 /// placed from it holds a body of the file, and the space's origin and frameBody are in the file or the barycentre 0.
 fn ephemeris(n: Node, path: &Path, out: &mut Vec<Diagnostic>) {
-    // a digest that is not "sha256:" and 64 lowercase hex digits is the structure stage's S06, as a malformed
-    // @sha256 is not A02
-    let digest = n.attribute("digest").filter(|d| {
-        d.strip_prefix("sha256:")
-            .is_some_and(|h| h.len() == 64 && h.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')))
-    });
-    let Some(digest) = digest else { return };
+    let Some(digest) = pinned_digest(n) else { return };
     let spk = match sr_space::Spk::open(path, Some(digest)) {
         Ok(spk) => spk,
         Err(e) => {
