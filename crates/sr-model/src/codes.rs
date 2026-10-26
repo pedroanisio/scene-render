@@ -114,6 +114,11 @@ const FIXED: &[(&str, &str, &str)] = &[
         "rules",
         "An object3D with positionFrom=\"ephemeris\" also sets x, y or z: it stands at its body's position about the space's origin, so those attributes are ignored (the time-frames draft, rule 7).",
     ),
+    (
+        "W17",
+        "rules",
+        "A starField sets epoch in a scene with a space: the space's clock gives the field's epoch, so the attribute is ignored (the star-fields draft, SF4).",
+    ),
     ("A01", "assets", "A referenced input file does not exist."),
     (
         "TF1",

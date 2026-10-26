@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- expect: SF4 -->
+<scene version="1.8"><project width="64" height="64" fps="24" duration="1" background="#000000FF"/><assets><catalogue id="bsc" src="../media/bsc5-compact.csv.gz" digest="sha256:cd18b1c9b8c009d922edfed020ba718aa14a577416fb625bf01ddd9cbdaab617"/></assets><composition><camera id="eye" z="-10"/></composition><lights><light id="sky" type="dome"><starField catalogue="bsc" epoch="12000.5"/></light></lights></scene>

@@ -360,6 +360,9 @@
     "c9.scene.xml": [
       "C9"
     ],
+    "catalogue-digest-pattern.scene.xml": [
+      "S06"
+    ],
     "cmp13-two-tonemaps.scene.xml": [
       "CMP13"
     ],
@@ -1316,6 +1319,22 @@
       "S10",
       "R54"
     ],
+    "sf2-not-a-catalogue.scene.xml": [
+      "SF2"
+    ],
+    "sf2-not-dome.scene.xml": [
+      "SF2"
+    ],
+    "sf2-two-fields.scene.xml": [
+      "SF2"
+    ],
+    "sf3-limit-nan.scene.xml": [
+      "SF3",
+      "W01"
+    ],
+    "sf4-epoch-range.scene.xml": [
+      "SF4"
+    ],
     "sky1-not-dome.scene.xml": [
       "SKY1"
     ],
@@ -1358,6 +1377,9 @@
     ],
     "srt1-low-plus-1-above-high-plus-0.5.scene.xml": [
       "SRT1"
+    ],
+    "star-field-constellations-enum.scene.xml": [
+      "S06"
     ],
     "stp1-build-program.scene.xml": [
       "STP1"
@@ -1478,6 +1500,9 @@
       "V17"
     ],
     "v17-space.scene.xml": [
+      "V17"
+    ],
+    "v17-star-fields.scene.xml": [
       "V17"
     ],
     "v17-time-frames.scene.xml": [
@@ -1806,6 +1831,8 @@
     "space-transforms.scene.xml": [],
     "srep71-subsurface-sky-maps.scene.xml": [],
     "srt1-low-plus-0.5.scene.xml": [],
+    "star-fields-labels.scene.xml": [],
+    "star-fields.scene.xml": [],
     "stroke-text.scene.xml": [],
     "text3d-tracking.scene.xml": [],
     "thermal-volume.scene.xml": [],
@@ -1960,6 +1987,9 @@
     ],
     "w16-ephemeris-xyz.scene.xml": [
       "W16"
+    ],
+    "w17-star-field-epoch.scene.xml": [
+      "W17"
     ]
   }
 }

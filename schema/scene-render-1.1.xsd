@@ -1235,6 +1235,38 @@
     <xs:attribute name="src" type="xs:anyURI" use="required"/>
     <xs:attribute name="digest" type="ephemerisDigestType" use="required"/>
   </xs:complexType>
+  <!-- star-fields draft, version 1.8 -->
+  <xs:complexType name="catalogueType">
+    <xs:annotation><xs:documentation>
+      A star catalogue: a gzipped CSV with the header HR,Name,RA,Dec,V,B-V,pmRA,pmDE,SpType (J2000 places in degrees,
+      V, B-V or empty, proper motion in arcseconds per Julian year, pmRA times cos Dec), HR numbers strictly
+      increasing, at most 16384 stars, pinned by the sha256 of its bytes; another file refuses the document (SF1).
+      Star-fields draft, version 1.8.
+    </xs:documentation></xs:annotation>
+    <xs:attribute name="id" type="xs:ID" use="required"/>
+    <xs:attribute name="src" type="xs:anyURI" use="required"/>
+    <xs:attribute name="digest" type="ephemerisDigestType" use="required"/>
+  </xs:complexType>
+  <xs:complexType name="starFieldType">
+    <xs:annotation><xs:documentation>
+      The catalogue's stars to limitMagnitude drawn by a dome light behind every surface: a star of magnitude m has
+      the radiance magnitudeZero × 10^(-0.4 m) spread over a disc of pointSize pixels, the colour of a blackbody at
+      its B-V temperature, and its J2000 direction moved by its proper motion to the field's epoch (the space's clock
+      when the scene has one, else epoch). constellations draws Roman's names or boundaries. Star-fields draft,
+      version 1.8.
+    </xs:documentation></xs:annotation>
+    <xs:attribute name="catalogue" type="xs:IDREF" use="required"/>
+    <xs:attribute name="limitMagnitude" type="xs:double" default="6.5"/>
+    <xs:attribute name="magnitudeZero" type="positiveDecimal" default="1"/>
+    <xs:attribute name="pointSize" type="positiveDecimal" default="1.5"/>
+    <xs:attribute name="properMotion" type="xs:boolean" default="true"/>
+    <xs:attribute name="epoch" type="xs:double" default="2000.0">
+      <xs:annotation><xs:documentation>Julian years; ignored, with a warning, when the scene has a space (SF4).</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="constellations" default="none">
+      <xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="none"/><xs:enumeration value="labels"/><xs:enumeration value="boundaries"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+  </xs:complexType>
   <xs:complexType name="spaceType">
     <xs:annotation><xs:documentation>
       The scene's clock in a time scale and its celestial frame about an origin body. Frame f is at ephemeris time
@@ -1598,6 +1630,8 @@
       <xs:element name="value" type="valueAssetType"/>
       <!-- time-frames draft, version 1.8 -->
       <xs:element name="ephemeris" type="ephemerisType"/>
+      <!-- star-fields draft, version 1.8 -->
+      <xs:element name="catalogue" type="catalogueType"/>
       <xs:element name="generated" type="generatedAssetType"/>
       <xs:element name="geo" type="geoAssetType"/>
       <xs:element name="tiles" type="tilesAssetType"/>
@@ -3993,6 +4027,8 @@
     <xs:choice minOccurs="0" maxOccurs="unbounded">
       <xs:group ref="animationElements"/>
       <xs:element name="transformConstraint" type="transformConstraintType"/>
+      <!-- star-fields draft, version 1.8: one, on a dome light (SF2) -->
+      <xs:element name="starField" type="starFieldType"/>
     </xs:choice>
     <xs:attribute name="id" type="xs:ID" use="required"/>
     <xs:attribute name="type" use="required">

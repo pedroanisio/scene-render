@@ -1226,8 +1226,12 @@ impl<'a> Eval<'a> {
                 || n.descendants().any(|d| {
                     is(d, "object3D") && ["body", "positionFrom", "orientation"].iter().any(|k| d.has_attribute(*k))
                 });
+            // the star-fields draft's catalogue assets and star fields
+            let uses = uses
+                || kids(n, "assets").any(|s| has_kid(s, "catalogue"))
+                || n.descendants().any(|d| is(d, "starField") && d.parent_element().is_some_and(|p| is(p, "light")));
             self.check(!uses, n, "V17", || {
-                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula, value assets, field nodes, space, ephemeris assets and object3D/@body, @positionFrom and @orientation need version=\"1.8\".".into()
+                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets and starField need version=\"1.8\".".into()
             });
         }
         // the time-frames draft (p-srep-time-frames)
@@ -1289,6 +1293,31 @@ impl<'a> Eval<'a> {
                         set.join(", "),
                         if set.len() == 1 { "is" } else { "are" }
                     ),
+                );
+            }
+        }
+        // the star-fields draft (p-srep-star-fields)
+        if let Some(light) = n.parent_element().filter(|p| local == "starField" && is(*p, "light")) {
+            let named = n
+                .document()
+                .root_element()
+                .children()
+                .filter(|s| is(*s, "assets"))
+                .flat_map(|s| kids(s, "catalogue"))
+                .any(|c| c.attribute("id").is_some() && c.attribute("id") == a("catalogue"));
+            let ok = light.attribute("type") == Some("dome") && kids(light, "starField").count() == 1 && named;
+            self.check(ok, n, "SF2", || {
+                "starField is written once, on a dome light, and names a catalogue asset.".into()
+            });
+            let ok = !has("limitMagnitude") || !num(n, "limitMagnitude").is_nan();
+            self.check(ok, n, "SF3", || "a star field's limitMagnitude is finite.".into());
+            let ok = !has("epoch") || (-8000.0..=12000.0).contains(&num(n, "epoch"));
+            self.check(ok, n, "SF4", || "a star field's epoch is within 10000 years of 2000.0.".into());
+            if has("epoch") && n.document().root_element().children().any(|s| is(s, "space")) {
+                self.warn(
+                    n,
+                    "W17",
+                    "the scene's space gives the star field's epoch: its epoch is ignored.".to_string(),
                 );
             }
         }

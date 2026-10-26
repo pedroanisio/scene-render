@@ -83,7 +83,9 @@ fn the_corpus_validates_alike_at_1_7_and_1_8() {
                 || xml.split("<object3D").skip(1).any(|tag| {
                     let tag = &tag[..tag.find('>').unwrap_or(tag.len())];
                     [" body=", " positionFrom=", " orientation="].iter().any(|k| tag.contains(k))
-                });
+                })
+                // and the star-fields draft's catalogue asset and star field
+                || ["<catalogue ", "<starField"].iter().any(|k| xml.contains(k));
             let plot_gated = at_1_7.iter().any(|c| c == "V17");
             at_1_7.retain(|c| c != "V17");
             assert_eq!(plot_gated, plotted && !codes(&b).iter().any(|c| c == "S01"), "{}", f.display());

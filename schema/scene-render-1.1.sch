@@ -869,7 +869,7 @@
   <sch:pattern id="p-v17">
     <sch:rule context="/scene[@version='1.0' or @version='1.1' or @version='1.2' or @version='1.3' or @version='1.4' or @version='1.5' or @version='1.6' or @version='1.7']">
       <sch:let name="partTag" value="'\part{'"/>
-      <sch:assert id="V17" test="not(.//axes or .//plot or .//object3D[@primitive='axes'] or .//axes3D or .//plot3D or .//modifier[@type='matrix' or @type='map' or @type='complex'] or .//group/deform or .//formulaAnimator or assets/formulaMorph or .//shape[@morph] or assets/formula[contains(@tex, $partTag)] or assets/value or .//field or space or assets/ephemeris or .//object3D[@body or @positionFrom or @orientation])">axes, plot, axes3D, plot3D, primitive="axes", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \part in a formula, value assets, field nodes, space, ephemeris assets and object3D/@body, @positionFrom and @orientation need version="1.8".</sch:assert>
+      <sch:assert id="V17" test="not(.//axes or .//plot or .//object3D[@primitive='axes'] or .//axes3D or .//plot3D or .//modifier[@type='matrix' or @type='map' or @type='complex'] or .//group/deform or .//formulaAnimator or assets/formulaMorph or .//shape[@morph] or assets/formula[contains(@tex, $partTag)] or assets/value or .//field or space or assets/ephemeris or .//object3D[@body or @positionFrom or @orientation] or assets/catalogue or .//light/starField)">axes, plot, axes3D, plot3D, primitive="axes", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets and starField need version="1.8".</sch:assert>
     </sch:rule>
   </sch:pattern>
   <sch:pattern id="p-srep-plots">
@@ -937,6 +937,15 @@
       <sch:let name="b" value="number(substring(normalize-space(@body),1+number(starts-with(normalize-space(@body),'+'))))"/>
       <sch:let name="approx" value="not(/scene/space/@ephemeris) or /scene/space/@ephemeris='approximate'"/>
       <sch:assert id="TF4" test="@body and /scene/space and (not(@positionFrom='ephemeris') or not($approx) or ($b &gt;= 1 and $b &lt;= 8)) and (not(@orientation='bodyFixed') or $b=10 or $b=199 or $b=299 or $b=399 or $b=499 or $b=599 or $b=699 or $b=799 or $b=899 or $b=301)">positionFrom="ephemeris" and orientation="bodyFixed" need a body and a space; with the approximate elements the body is a planet 1 to 8, and orientation="bodyFixed" a body with rotation elements.</sch:assert>
+    </sch:rule>
+  </sch:pattern>
+  <sch:pattern id="p-srep-star-fields">
+    <sch:rule context="light/starField">
+      <sch:let name="limit" value="number(substring(normalize-space(@limitMagnitude),1+number(starts-with(normalize-space(@limitMagnitude),'+'))))"/>
+      <sch:let name="epoch" value="number(substring(normalize-space(@epoch),1+number(starts-with(normalize-space(@epoch),'+'))))"/>
+      <sch:assert id="SF2" test="../@type='dome' and count(../starField)=1 and /scene/assets/catalogue[@id=current()/@catalogue]">starField is written once, on a dome light, and names a catalogue asset.</sch:assert>
+      <sch:assert id="SF3" test="not(@limitMagnitude) or $limit = $limit">a star field's limitMagnitude is finite.</sch:assert>
+      <sch:assert id="SF4" test="not(@epoch) or ($epoch &gt;= -8000 and $epoch &lt;= 12000)">a star field's epoch is within 10000 years of 2000.0.</sch:assert>
     </sch:rule>
   </sch:pattern>
 </sch:schema>
