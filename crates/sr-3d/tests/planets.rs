@@ -176,10 +176,17 @@ fn rule_5_the_rings_and_their_shadows() {
     assert_eq!(ring_sample(&STRIP, 2.269, 1.239, 2.269).unwrap(), Some(STRIP[3]));
     assert_eq!(ring_sample(&STRIP, 1.2, 1.239, 2.269).unwrap(), None);
     assert!(ring_sample(&STRIP, 1.5, 2.0, 1.0).is_err() && ring_sample(&STRIP[..1], 1.5, 1.0, 2.0).is_err());
-    let (along, across) = planet_shadow_on_rings(saturn_sun(), SATURN).unwrap();
+    let (along, across) = planet_shadow_on_rings(saturn_sun(), SATURN, 0.0).unwrap().unwrap();
     near(along / SATURN, 2.22559);
     near(across / SATURN, 1.0);
-    assert_eq!(planet_shadow_on_rings([1.0, 0.0, 0.0], SATURN), None);
+    // the spheroid's meridian tangent parallel to the Sun reaches 2.053 radii, not the sphere's 2.226
+    let f = flattening(699).unwrap();
+    let (along, across) = planet_shadow_on_rings(saturn_sun(), SATURN, f).unwrap().unwrap();
+    near(along / SATURN, 2.05345);
+    near(across / SATURN, 1.0);
+    assert_eq!(planet_shadow_on_rings([1.0, 0.0, 0.0], SATURN, f).unwrap(), None);
+    assert!(planet_shadow_on_rings(saturn_sun(), SATURN, 1.0).is_err());
+    assert!(planet_shadow_on_rings(saturn_sun(), SATURN, -0.1).is_err());
     let p = surface_point(SATURN, 0.0, 0.0, -20.0).unwrap();
     near(ring_crossing(p, saturn_sun()).unwrap() / SATURN, 1.61972);
     near(ring_shadow(p, saturn_sun(), &STRIP, 1.239 * SATURN, 2.269 * SATURN).unwrap(), 0.198014);
@@ -188,11 +195,20 @@ fn rule_5_the_rings_and_their_shadows() {
     assert_eq!(ring_crossing(north, saturn_sun()), None);
     assert_eq!(ring_shadow(north, saturn_sun(), &STRIP, 1.239 * SATURN, 2.269 * SATURN).unwrap(), 1.0);
     // a ring point behind the planet from the Sun is in its shadow, one beside it is not
-    let behind = [-1.5 * SATURN, 0.0, 0.0];
-    assert!(ring_shadowed_by_planet(behind, saturn_sun(), SATURN));
-    assert!(!ring_shadowed_by_planet([0.0, 1.5 * SATURN, 0.0], saturn_sun(), SATURN));
+    let shadowed = |q: [f64; 3], f: f64| ring_shadowed_by_planet(q, saturn_sun(), SATURN, f).unwrap();
+    assert!(shadowed([-1.5 * SATURN, 0.0, 0.0], 0.0));
+    assert!(shadowed([-1.5 * SATURN, 0.0, 0.0], f));
+    assert!(!shadowed([0.0, 1.5 * SATURN, 0.0], 0.0));
     // on the sunward side the line toward the Sun meets the sphere only behind the point: lit
-    assert!(!ring_shadowed_by_planet([1.5 * SATURN, 0.0, 0.0], saturn_sun(), SATURN));
+    assert!(!shadowed([1.5 * SATURN, 0.0, 0.0], 0.0));
+    // at 2.1 radii behind the planet the sphere's shadow reaches the ring and the spheroid's does not
+    assert!(shadowed([-2.1 * SATURN, 0.0, 0.0], 0.0));
+    assert!(!shadowed([-2.1 * SATURN, 0.0, 0.0], f));
+    assert!(ring_shadowed_by_planet([-2.1 * SATURN, 0.0, 0.0], saturn_sun(), SATURN, 1.0).is_err());
+    // a point over the pole at 0.95 R is outside the spheroid (c = 0.902 R) and sees a Sun on the horizon past it,
+    // where a sphere would hold it inside
+    assert!(!ring_shadowed_by_planet([0.0, 0.0, 0.95 * SATURN], [1.0, 0.0, 0.0], SATURN, f).unwrap());
+    assert!(ring_shadowed_by_planet([0.0, 0.0, 0.95 * SATURN], [1.0, 0.0, 0.0], SATURN, 0.0).unwrap());
 }
 
 #[test]

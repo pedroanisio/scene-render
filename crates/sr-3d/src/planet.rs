@@ -377,20 +377,32 @@ pub fn ring_sample(strip: &[[f64; 4]], rho: f64, inner: f64, outer: f64) -> Resu
     Ok(Some(std::array::from_fn(|c| strip[i][c] * (1.0 - f) + strip[i + 1][c] * f)))
 }
 
-/// Rule 5: whether a point of the ring plane is in the planet's shadow: its ray toward the Sun meets the sphere.
-pub fn ring_shadowed_by_planet(q: V3, sun: V3, radius: f64) -> bool {
-    let Ok(s) = unit(sun) else { return false };
+/// Rule 5: whether a point of the ring plane is in the planet's shadow: its ray toward the Sun meets the spheroid of
+/// flattening `flattening` (the sphere once z is stretched by 1 / (1 − f)).
+pub fn ring_shadowed_by_planet(q: V3, sun: V3, radius: f64, flattening: f64) -> Result<bool, PlanetError> {
+    if !(0.0..1.0).contains(&flattening) {
+        return err("the flattening is within [0, 1)");
+    }
+    let k = 1.0 / (1.0 - flattening);
+    let Ok(s) = unit([sun[0], sun[1], sun[2] * k]) else { return Ok(false) };
+    let q = [q[0], q[1], q[2] * k];
     let b = dot(q, s);
     let c = dot(q, q) - radius * radius;
     let disc = b * b - c;
-    disc >= 0.0 && -b + disc.sqrt() > 0.0
+    Ok(disc >= 0.0 && -b + disc.sqrt() > 0.0)
 }
 
 /// Rule 5: the semi-axes of the ellipse the planet's shadow cuts in the ring plane (z = 0), along and across the
-/// Sun's projected direction; none with the Sun in the plane.
-pub fn planet_shadow_on_rings(sun: V3, radius: f64) -> Option<(f64, f64)> {
-    let s = unit(sun).ok()?;
-    (s[2] != 0.0).then(|| (radius / s[2].abs(), radius))
+/// Sun's projected direction; none with the Sun in the plane. Along it the spheroid's meridian tangent parallel to
+/// the Sun lies at R √(sin² β + (1 − f)² cos² β) / |sin β|, β the Sun's elevation above the plane.
+pub fn planet_shadow_on_rings(sun: V3, radius: f64, flattening: f64) -> Result<Option<(f64, f64)>, PlanetError> {
+    if !(0.0..1.0).contains(&flattening) {
+        return err("the flattening is within [0, 1)");
+    }
+    let Ok(s) = unit(sun) else { return Ok(None) };
+    let sin2 = s[2] * s[2];
+    let g = 1.0 - flattening;
+    Ok((s[2] != 0.0).then(|| (radius * (sin2 + g * g * (1.0 - sin2)).sqrt() / s[2].abs(), radius)))
 }
 
 /// Rule 5: the radius at which the ray from a surface point toward the Sun crosses the ring plane ahead of it.
