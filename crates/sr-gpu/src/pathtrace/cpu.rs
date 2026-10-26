@@ -1289,6 +1289,32 @@ pub(crate) struct Shaded {
     pub occlusion: f32,
     /// The material's planet emission (a night mask only on a material with an emissive map).
     pub planet: [[f32; 4]; 2],
+    /// The material's cloud shadow and the cloud layer's map (`PtMat::cloud`).
+    pub cloud: [[f32; 4]; 4],
+    pub cloud_map: [u32; 4],
+}
+
+/// The shader's `cloud_through`: the light a planet's cloud layer lets through to world point `p` of its ground (the
+/// planets draft's rule 4), 1 − alpha of the texel where the ray from `p` toward the Sun leaves the shell; 1 without
+/// a cloud shadow or on the night side.
+pub(crate) fn cloud_through(pixels: &[u32], m: &Shaded, p: [f32; 3]) -> f32 {
+    let radius = m.cloud[3][3];
+    if radius <= 0.0 {
+        return 1.0;
+    }
+    let sun = [m.cloud[0][3], m.cloud[1][3], m.cloud[2][3]];
+    let p = sub(p, xyz(&m.cloud[3]));
+    let b = dot(p, sun);
+    if b <= 0.0 {
+        return 1.0;
+    }
+    let q = add(p, scale(sun, (b * b - dot(p, p) + radius * radius).max(0.0).sqrt() - b));
+    // the layer's own axes: the body's x is x, its y is z and its north pole −y (the planets draft's rule 2)
+    let l = [0, 1, 2].map(|r| dot(xyz(&m.cloud[r]), q));
+    let lon = l[2].atan2(l[0]);
+    let lat = (-l[1] / dot(l, l).sqrt()).clamp(-1.0, 1.0).asin();
+    let uv = [(lon / (2.0 * std::f32::consts::PI) + 0.5).rem_euclid(1.0), 0.5 - lat / std::f32::consts::PI];
+    1.0 - map_sample(pixels, m.cloud_map, uv, [0.0; 4])[3]
 }
 
 /// The shader's planet emission (the planets draft's rule 3) of a hit seen along `d` with the oriented normal `n`:
@@ -1390,6 +1416,8 @@ pub(crate) fn shade_hit(scene: &Dense, hit: &Hit) -> Shaded {
         ng,
         occlusion: 1.0 + m.texture_params[3] * (ao[0] - 1.0),
         planet: m.planet,
+        cloud: m.cloud,
+        cloud_map: m.cloud_map,
     }
 }
 
@@ -1639,6 +1667,9 @@ pub(crate) fn radiance(
             let mut visible = 1.0;
             if lt.size[1] > 0.5 && m.extra[2] > 0.5 {
                 visible = visibility(scene, add(pt, scale(ng, 1e-2)), l, dist - 2e-2);
+            }
+            if ty == 1 {
+                visible *= cloud_through(&scene.top.pixels, &m, pt);
             }
             let flags = lt.right[3] as u32;
             let lobes = [(flags & 1) as f32, ((flags >> 1) & 1) as f32];

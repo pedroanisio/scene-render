@@ -195,8 +195,11 @@ impl MeshSrc {
     }
 }
 
-/// Texture slots: base colour, normal, metallic-roughness, occlusion, emissive, displacement.
-pub type Maps = [Option<Arc<TexGpu>>; 6];
+/// Texture slots: base colour, normal, metallic-roughness, occlusion, emissive, displacement, and a planet's cloud
+/// layer, which its ground reads for the clouds' shadow (the planets draft's rule 4). The cloud layer is bound in the
+/// occlusion map's place, which a ground with one leaves it (a stage holds 16 sampled textures and the pass uses them
+/// all).
+pub type Maps = [Option<Arc<TexGpu>>; 7];
 
 /// One mesh draw.
 pub struct Draw3 {
@@ -670,6 +673,9 @@ struct MaterialU {
     planet: [f32; 4],
     /// the limb darkening's exponent per channel, flags (1 night mask, 2 limb darkening)
     planet_limb: [f32; 4],
+    /// the cloud shadow: the world-to-layer rows with the direction toward the Sun in w, then the shell's centre and
+    /// radius (0: none)
+    cloud: [[f32; 4]; 4],
 }
 
 #[repr(C)]
@@ -770,7 +776,23 @@ fn material_u(m: &MaterialParams, maps: &Maps) -> MaterialU {
         sss_color: [m.subsurface_color[0], m.subsurface_color[1], m.subsurface_color[2], 0.0],
         planet: planet_u(m)[0],
         planet_limb: planet_u(m)[1],
+        // the occlusion map's binding holds the cloud layer only on a ground without one (`Maps`)
+        cloud: if maps[3].is_some() { [[0.0; 4]; 4] } else { cloud_u(m) },
     }
+}
+
+/// A planet's ground under its clouds' shadow for the shaders (the planets draft's rule 4): the world-to-layer rows
+/// with the direction toward the Sun in w, then the shell's centre and radius; zeros without one.
+pub(crate) fn cloud_u(m: &MaterialParams) -> [[f32; 4]; 4] {
+    m.cloud_shadow.map_or([[0.0; 4]; 4], |c| {
+        let r = c.to_layer;
+        [
+            [r[0][0], r[0][1], r[0][2], c.sun[0]],
+            [r[1][0], r[1][1], r[1][2], c.sun[1]],
+            [r[2][0], r[2][1], r[2][2], c.sun[2]],
+            [c.centre[0], c.centre[1], c.centre[2], c.radius],
+        ]
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -811,6 +833,7 @@ fn plain_material(draw: &Draw3) -> bool {
         && m.transmission == 0.0
         && m.subsurface == 0.0
         && m.planet.is_none()
+        && m.cloud_shadow.is_none()
 }
 
 /// The buffers one rasterised pass binds and the material bind groups over its material buffer, kept for the
@@ -820,7 +843,7 @@ fn plain_material(draw: &Draw3) -> bool {
 #[derive(Default)]
 struct PassSet {
     bufs: [Option<Grown>; 7],
-    mat_binds: HashMap<[u64; 6], wgpu::BindGroup>,
+    mat_binds: HashMap<[u64; 7], wgpu::BindGroup>,
     /// The vertices of the pass's deformed draws, in draw order. As the two lists below, it stays as long as the
     /// most a pass used, so a pass with fewer leaves the rest for the next one with more.
     deformed: Vec<Option<Grown>>,
@@ -2359,15 +2382,19 @@ impl ThreeEngine {
     /// The key of the bind group over `maps` and `uniform` in `binds`, made when it is missing (counted in `made`).
     fn mat_bind(
         &self,
-        binds: &mut HashMap<[u64; 6], wgpu::BindGroup>,
+        binds: &mut HashMap<[u64; 7], wgpu::BindGroup>,
         maps: &Maps,
         uniform: &wgpu::Buffer,
         made: &mut usize,
-    ) -> [u64; 6] {
+    ) -> [u64; 7] {
         let key = std::array::from_fn(|k| maps[k].as_ref().map(|t| t.key).unwrap_or(0));
         if let std::collections::hash_map::Entry::Vacant(e) = binds.entry(key) {
+            let slot = |k: usize| match k {
+                3 => maps[3].as_ref().or(maps[6].as_ref()),
+                k => maps[k].as_ref(),
+            };
             let views: Vec<&wgpu::TextureView> =
-                (0..6).map(|k| maps[k].as_ref().map(|t| &t.view).unwrap_or(&self.white.view)).collect();
+                (0..6).map(|k| slot(k).map(|t| &t.view).unwrap_or(&self.white.view)).collect();
             let mut entries = vec![wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
@@ -2378,6 +2405,7 @@ impl ThreeEngine {
             }];
             for (k, v) in views.iter().enumerate() {
                 entries.push(wgpu::BindGroupEntry {
+                    // the six material maps at 1 to 6, the sampler at 7
                     binding: k as u32 + 1,
                     resource: wgpu::BindingResource::TextureView(v),
                 });
@@ -3012,7 +3040,7 @@ impl ThreeEngine {
             kind: Kind,
             obj: u32,
             mat: u32,
-            key: [u64; 6],
+            key: [u64; 7],
             vbuf: Option<Bound>,
             depth: f32,
             pipe: PipeKey,
@@ -3039,7 +3067,7 @@ impl ThreeEngine {
                     kind: Kind::Opaque,
                     obj: 0,
                     mat: 0,
-                    key: [0; 6],
+                    key: [0; 7],
                     vbuf: None,
                     depth: 0.0,
                     pipe: PipeKey {
@@ -3120,7 +3148,7 @@ impl ThreeEngine {
                 kind,
                 obj,
                 mat,
-                key: [0; 6],
+                key: [0; 7],
                 vbuf,
                 depth: scene.cam.depth_of(center),
                 pipe,
@@ -3599,7 +3627,7 @@ impl ThreeEngine {
             rp.set_bind_group(0, &fb_plain, &[]);
             if env.map(|e| e.visible).unwrap_or(false) {
                 rp.set_pipeline(&self.dome_pipe);
-                rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 6])], &[0]);
+                rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 7])], &[0]);
                 rp.set_bind_group(2, &obj_bind, &[]);
                 rp.draw(0..3, 0..1);
             }
@@ -3609,12 +3637,12 @@ impl ThreeEngine {
                 rp.set_bind_group(0, overlay, &[]);
                 rp.draw(0..3, 0..1);
                 rp.set_bind_group(0, &fb_plain, &[]);
-                rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 6])], &[0]);
+                rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 7])], &[0]);
                 rp.set_bind_group(2, &obj_bind, &[]);
             }
             if let Some(stars) = &star_buf {
                 rp.set_pipeline(&self.star_pipe);
-                rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 6])], &[0]);
+                rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 7])], &[0]);
                 rp.set_bind_group(2, &obj_bind, &[]);
                 rp.set_vertex_buffer(0, stars.slice(..));
                 rp.draw(0..4, 0..scene.stars.len() as u32);
@@ -5750,7 +5778,7 @@ mod wgsl_layout_tests {
 
     #[test]
     fn material_u_matches_wgsl_material() {
-        let fields = rust_fields!(super::MaterialU; base_color, emissive, p0, p1, p2, p3, attenuation, sheen, specular_color, irid, aniso, uv, finish, sampling, borders, sss, sss_color, planet, planet_limb);
+        let fields = rust_fields!(super::MaterialU; base_color, emissive, p0, p1, p2, p3, attenuation, sheen, specular_color, irid, aniso, uv, finish, sampling, borders, sss, sss_color, planet, planet_limb, cloud);
         assert_agree(include_str!("three.wgsl"), "Material", std::mem::size_of::<super::MaterialU>(), &fields);
     }
 

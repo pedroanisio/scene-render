@@ -53,7 +53,7 @@ pub mod voxel;
 
 use glam::{Mat4, Quat, Vec3};
 
-pub use material::{AlphaMode, FoamMix, MaterialParams, PlanetEmission};
+pub use material::{AlphaMode, CloudShadow, FoamMix, MaterialParams, PlanetEmission};
 pub use occupancy::Occupancy;
 
 /// Y-up, metre-based assets (glTF, OBJ, PLY, FBX, USD after unit conversion)

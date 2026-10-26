@@ -43,6 +43,8 @@ struct Material {
     planet: vec4<f32>,
     // limb darkening exponent per channel, flags (1 night mask, 2 limb darkening)
     planet_limb: vec4<f32>,
+    // the cloud shadow: world-to-layer rows with the direction toward the Sun in w, the shell's centre and radius (0: none)
+    cloud: array<vec4<f32>, 4>,
 };
 
 @group(1) @binding(0) var<uniform> mat: Material;
@@ -342,6 +344,26 @@ fn night_weight(n: vec3<f32>) -> f32 {
     let e = degrees(asin(clamp(dot(n, mat.planet.xyz), -1.0, 1.0)));
     if (mat.planet.w <= 0.0) { return select(select(0.0, 1.0, e < 0.0), 0.5, e == 0.0); }
     return clamp(0.5 - e / (2.0 * mat.planet.w), 0.0, 1.0);
+}
+
+// The planets draft's rule 4: the share of the Sun's light a planet's cloud layer lets through to the ground point
+// `world`, 1 − alpha of the layer's texel where the ray toward the Sun leaves the shell; 1 on the night side and
+// without a layer.
+fn cloud_through(world: vec3<f32>) -> f32 {
+    let radius = mat.cloud[3].w;
+    if (radius <= 0.0) { return 1.0; }
+    let sun = vec3(mat.cloud[0].w, mat.cloud[1].w, mat.cloud[2].w);
+    let p = world - mat.cloud[3].xyz;
+    let b = dot(p, sun);
+    if (b <= 0.0) { return 1.0; }
+    let q = p + sun * (sqrt(max(b * b - dot(p, p) + radius * radius, 0.0)) - b);
+    // the layer's own axes: the body's x is x, its y is z and its north pole −y (the planets draft's rule 2)
+    let l = vec3(dot(mat.cloud[0].xyz, q), dot(mat.cloud[1].xyz, q), dot(mat.cloud[2].xyz, q));
+    let lon = atan2(l.z, l.x);
+    let lat = asin(clamp(-l.y / length(l), -1.0, 1.0));
+    let uv = vec2(fract(lon / (2.0 * PI) + 0.5), 0.5 - lat / PI);
+    // the cloud layer is bound in the occlusion map's place (`Maps`)
+    return 1.0 - textureSampleLevel(occ_map, mat_smp, uv, 0.0).a;
 }
 
 // The line of sight from `world` toward the eye: through an orthographic camera (eye.w 0) every point's is the view
@@ -693,6 +715,9 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
         return o;
     }
     var col = vec3(0.0);
+    // a planet's cloud layer shades its ground from the directional lights (the planets draft's rule 4)
+    var cloud = 1.0;
+    if (!PLAIN_MATERIAL) { cloud = cloud_through(s.world); }
     // a shadow catcher compares the light that arrives (lit_sh) with the light that would arrive without casters (lit_un)
     var lit_un = 0.0;
     var lit_sh = 0.0;
@@ -732,7 +757,7 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
             } else if (ty == 0u) {
                 sh = ao;
             }
-            col += contribution * sh;
+            col += contribution * sh * select(1.0, cloud, ty == 1u);
             if (catcher) {
                 lit_un += luma(contribution * select(1.0, ao, ty == 0u));
                 lit_sh += luma(contribution * sh);
@@ -755,7 +780,7 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
             } else if (ty == 0u) {
                 sh = ao;
             }
-            col += contribution * sh;
+            col += contribution * sh * select(1.0, cloud, ty == 1u);
             if (catcher) {
                 lit_un += luma(contribution * select(1.0, ao, ty == 0u));
                 lit_sh += luma(contribution * sh);
@@ -778,7 +803,7 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
             } else if (ty == 0u) {
                 sh = ao;
             }
-            col += contribution * sh;
+            col += contribution * sh * select(1.0, cloud, ty == 1u);
             if (catcher) {
                 lit_un += luma(contribution * select(1.0, ao, ty == 0u));
                 lit_sh += luma(contribution * sh);
@@ -801,7 +826,7 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
             } else if (ty == 0u) {
                 sh = ao;
             }
-            col += contribution * sh;
+            col += contribution * sh * select(1.0, cloud, ty == 1u);
             if (catcher) {
                 lit_un += luma(contribution * select(1.0, ao, ty == 0u));
                 lit_sh += luma(contribution * sh);
@@ -827,7 +852,7 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
             } else if (ty == 0u) {
                 sh = ao;
             }
-            col += contribution * sh;
+            col += contribution * sh * select(1.0, cloud, ty == 1u);
             if (catcher) {
                 lit_un += luma(contribution * select(1.0, ao, ty == 0u));
                 lit_sh += luma(contribution * sh);

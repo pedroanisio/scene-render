@@ -28,6 +28,19 @@ pub struct PlanetEmission {
     pub limb: Option<[f32; 3]>,
 }
 
+/// The planets draft's cloud shadow on a planet's ground (rule 4), in the scene's world axes: the light toward the Sun
+/// is 1 − alpha of the cloud layer's texel where the ray from a lit ground point toward the Sun leaves the shell.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CloudShadow {
+    /// The unit direction toward the Sun.
+    pub sun: [f32; 3],
+    /// The shell's centre and radius.
+    pub centre: [f32; 3],
+    pub radius: f32,
+    /// World axes to the drifted layer's own (scene-axes) frame, rows first.
+    pub to_layer: [[f32; 3]; 3],
+}
+
 /// Every scalar and colour input of the shading model. Colours are linear.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialParams {
@@ -80,6 +93,8 @@ pub struct MaterialParams {
     pub subsurface_radius_scale: [f32; 3],
     /// A planet's night lights and limb darkening; none on other surfaces.
     pub planet: Option<PlanetEmission>,
+    /// A planet's ground under its cloud layer's shadow; none on other surfaces.
+    pub cloud_shadow: Option<CloudShadow>,
 }
 
 impl Default for MaterialParams {
@@ -127,6 +142,7 @@ impl Default for MaterialParams {
             subsurface_radius: 10.0,
             subsurface_radius_scale: [1.0, 0.5, 0.25],
             planet: None,
+            cloud_shadow: None,
         }
     }
 }

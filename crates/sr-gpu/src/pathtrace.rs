@@ -77,6 +77,11 @@ pub struct PtMat {
     /// A planet's emission (the planets draft): the direction toward the Sun and the twilight band, then the limb
     /// darkening's exponent per channel and the flags (1 night mask, 2 limb darkening).
     pub planet: [[f32; 4]; 2],
+    /// A planet's ground under its clouds' shadow (the planets draft's rule 4): the world-to-layer rows with the
+    /// direction toward the Sun in w, then the shell's centre and radius (0: none).
+    pub cloud: [[f32; 4]; 4],
+    /// The cloud layer's pixel map, as `maps`.
+    pub cloud_map: [u32; 4],
 }
 
 /// Beer-Lambert coefficients per scene unit: the light left after `distance` units is `color`.
@@ -400,7 +405,7 @@ fn build_inner(scene: &Scene3, cache: &mut BuildCache, take: bool) -> (PtScene, 
     // a shadow catcher has no colour of its own and the tracer cannot evaluate its darkening: it is left out (see `notes`)
     for dr in scene.draws.iter().filter(|d| !d.shadow_catcher) {
         let m = &dr.material;
-        let maps = std::array::from_fn(|slot| {
+        let maps: [[u32; 4]; 7] = std::array::from_fn(|slot| {
             dr.maps[slot].as_ref().map_or([0; 4], |texture| {
                 let offset = *texture_offsets.entry(texture.key).or_insert_with(|| {
                     s.push_atlas(AtlasPart::Texture { key: texture.key, rgba: texture.rgba.clone() })
@@ -438,7 +443,7 @@ fn build_inner(scene: &Scene3, cache: &mut BuildCache, take: bool) -> (PtScene, 
                 // foam mixed into the surface (the water shader's hook): 1 + the foam's roughness, or 0
                 m.foam_mix.map_or(0.0, |f| 1.0 + f.roughness.clamp(0.0, 1.0)),
             ],
-            maps,
+            maps: std::array::from_fn(|slot| maps[slot]),
             borders: std::array::from_fn(|i| {
                 dr.maps[i].as_ref().and_then(|t| t.sampler).map_or([0.0; 4], |s| s.border)
             }),
@@ -468,6 +473,8 @@ fn build_inner(scene: &Scene3, cache: &mut BuildCache, take: bool) -> (PtScene, 
             },
             sss_color: [m.subsurface_color[0], m.subsurface_color[1], m.subsurface_color[2], 0.0],
             planet: crate::three::planet_u(m),
+            cloud: crate::three::cloud_u(m),
+            cloud_map: maps[6],
         });
         if reused.is_some() {
             continue;
@@ -645,6 +652,8 @@ fn build_inner(scene: &Scene3, cache: &mut BuildCache, take: bool) -> (PtScene, 
             sss: [0.0; 4],
             sss_color: [0.0; 4],
             planet: [[0.0; 4]; 2],
+            cloud: [[0.0; 4]; 4],
+            cloud_map: [0; 4],
         });
     }
     if s.pos.is_empty() {
@@ -2714,7 +2723,7 @@ pub(crate) fn render_cached(
     let packed::Buffers { verts: tverts, nodes, offset } = geometry;
     let mut materials = data.mats.clone();
     for material in &mut materials {
-        for map in &mut material.maps {
+        for map in material.maps.iter_mut().chain([&mut material.cloud_map]) {
             map[0] += offset;
         }
     }
@@ -3052,7 +3061,7 @@ mod wgsl_layout_tests {
 
     #[test]
     fn pt_mat_matches_wgsl_mat() {
-        let fields = rust_fields!(super::PtMat; base, params, emissive, extra, maps, texture_params, borders, attenuation, sss, sss_color, planet);
+        let fields = rust_fields!(super::PtMat; base, params, emissive, extra, maps, texture_params, borders, attenuation, sss, sss_color, planet, cloud, cloud_map);
         assert_agree(include_str!("pathtrace.wgsl"), "Mat", std::mem::size_of::<super::PtMat>(), &fields);
     }
 

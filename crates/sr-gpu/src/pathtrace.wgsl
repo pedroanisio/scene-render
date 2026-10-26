@@ -57,6 +57,10 @@ struct Mat {
     // the planets draft: direction toward the Sun, twilight band (degrees); limb darkening exponent per channel,
     // flags (1 night mask, 2 limb darkening)
     planet: array<vec4<f32>, 2>,
+    // a planet's ground under its clouds' shadow: the world-to-layer rows with the direction toward the Sun in w, the
+    // shell's centre and radius (0: none); the cloud layer's map
+    cloud: array<vec4<f32>, 4>,
+    cloud_map: vec4<u32>,
 };
 
 struct Node {
@@ -510,6 +514,24 @@ fn sample_dir(s: Surf, n: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
 
 // Alpha-tested and blended surfaces attenuate shadow rays using the same base map
 // as camera rays. Captured Gaussian splats do not cast shadows.
+// The light a planet's cloud layer lets through to world point `world` of its ground (the planets draft's rule 4):
+// 1 − alpha of the texel where the ray toward the Sun leaves the shell; 1 without a cloud shadow or on the night side.
+fn cloud_through(m: Mat, world: vec3<f32>) -> f32 {
+    let radius = m.cloud[3].w;
+    if (radius <= 0.0) { return 1.0; }
+    let sun = vec3(m.cloud[0].w, m.cloud[1].w, m.cloud[2].w);
+    let p = world - m.cloud[3].xyz;
+    let b = dot(p, sun);
+    if (b <= 0.0) { return 1.0; }
+    let q = p + sun * (sqrt(max(b * b - dot(p, p) + radius * radius, 0.0)) - b);
+    // the layer's own axes: the body's x is x, its y is z and its north pole −y (the planets draft's rule 2)
+    let l = vec3(dot(m.cloud[0].xyz, q), dot(m.cloud[1].xyz, q), dot(m.cloud[2].xyz, q));
+    let lon = atan2(l.z, l.x);
+    let lat = asin(clamp(-l.y / length(l), -1.0, 1.0));
+    let uv = vec2(fract(lon / (2.0 * PI) + 0.5), 0.5 - lat / PI);
+    return 1.0 - map_sample(m.cloud_map, uv, vec4(0.0)).a;
+}
+
 fn visibility(origin: vec3<f32>, direction: vec3<f32>, distance: f32) -> f32 {
     var o = origin;
     var remaining = distance;
@@ -829,6 +851,7 @@ fn radiance(px: vec2<f32>, pix: u32, first: bool) -> vec4<f32> {
             if (max(rad.r, max(rad.g, rad.b)) <= 0.0) { continue; }
             var visible = 1.0;
             if (lt.size.y > 0.5 && m.extra.z > 0.5) { visible = visibility(p + ng * 1e-2, l, ls.w - 2e-2); }
+            if (ty == 1u) { visible *= cloud_through(m, p); }
             if (HAS_MEDIA && m.extra.z > 0.5) { visible *= volume_transmittance(p + ng * 1e-2, l, ls.w - 2e-2); }
             var c = vec3(0.0);
             if (sss > 0.0) {

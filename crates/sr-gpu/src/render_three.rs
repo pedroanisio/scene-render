@@ -131,6 +131,21 @@ fn attrs<'a>(n: &'a sr_eval::FrameNode) -> Attrs<'a> {
     Attrs { e: &*n.elem, props: Some(&n.props) }
 }
 
+/// A planet ground's inputs for its clouds' shadow: the cloud layer's texture and the shadow's geometry.
+type GroundClouds = (Arc<crate::three::TexGpu>, sr_3d::CloudShadow);
+
+/// The planets draft's rule 1: a planet's equatorial radius in scene units and its flattening, from its body's IAU
+/// radii through `pixelsPerMeter`, else `radius` and `flattening`.
+fn planet_spheroid(ctx: &Ctx, a: &Attrs) -> Result<(f64, f64), sr_3d::planet::PlanetError> {
+    match a.opt("body") {
+        Some(b) if sr_3d::planet::radii(b as i32).is_ok() => {
+            let b = b as i32;
+            Ok((sr_3d::planet::scene_radius(b, pixels_per_meter(ctx.p))?, sr_3d::planet::flattening(b)?))
+        }
+        _ => Ok((f64::from(a.num("radius", 50.0) as f32), a.num("flattening", 0.0))),
+    }
+}
+
 /// The planets draft's sun among a pass's document lights (rule 3): the physical sky's sun in the scene's axes, else
 /// the direction toward the first directional light; none without either.
 /// The physical sky is its dome's rotation and its discs' uniforms.
@@ -1008,14 +1023,7 @@ impl Renderer {
             self.three_engine().param_meshes.insert(n.id.clone(), (pm.key, m.clone()));
             return Some(m);
         }
-        // the planets draft's rule 1: a body's IAU radii in scene units, else radius and flattening
-        let spheroid = (kind == "planet").then(|| match a.opt("body") {
-            Some(b) if sr_3d::planet::radii(b as i32).is_ok() => {
-                let b = b as i32;
-                Ok((sr_3d::planet::scene_radius(b, pixels_per_meter(ctx.p))?, sr_3d::planet::flattening(b)?))
-            }
-            _ => Ok::<_, sr_3d::planet::PlanetError>((f64::from(r), a.num("flattening", 0.0))),
-        });
+        let spheroid = (kind == "planet").then(|| planet_spheroid(ctx, &a));
         let key = match kind.as_str() {
             "planet" => format!("planet|{spheroid:?}|{segs}"),
             "text" => format!(
@@ -1711,18 +1719,107 @@ impl Renderer {
         if !flag(a, "nightLights", true) || maps[4].is_none() || body == Some(10) {
             return Ok(None);
         }
-        let sun = match self.planet_sun {
-            Some(d) => Some(d.to_array()),
-            None => match ctx.p.skies.get(n.doc as usize) {
-                Some(Some(Ok(sky))) => {
-                    let from = body.filter(|_| a.str("positionFrom").as_deref() == Some("ephemeris"));
-                    sky.sun_direction(from, ctx.g.time)?.map(|d| d.map(|v| v as f32))
+        let sun = self.planet_sun_of(ctx, n, a)?;
+        Ok(sun.map(|d| sr_3d::PlanetEmission { night: Some((d, a.num("twilight", 6.0) as f32)), limb: None }))
+    }
+
+    /// The planets draft's sun of planet `n` (rule 3): the pass's sun, else the space's Sun seen from its body when the
+    /// ephemeris places it, or from the space's origin; none without either.
+    fn planet_sun_of(&self, ctx: &Ctx, n: &FrameNode, a: &Attrs) -> Result<Option<[f32; 3]>, String> {
+        if let Some((d, _)) = self.planet_sun {
+            return Ok(Some(d.to_array()));
+        }
+        match ctx.p.skies.get(n.doc as usize) {
+            Some(Some(Ok(sky))) => {
+                let body = a.opt("body").map(|b| b as i32);
+                let from = body.filter(|_| a.str("positionFrom").as_deref() == Some("ephemeris"));
+                Ok(sky.sun_direction(from, ctx.g.time)?.map(|d| d.map(|v| v as f32)))
+            }
+            Some(Some(Err(e))) => Err(e.clone()),
+            _ => Ok(None),
+        }
+    }
+
+    /// A planet's cloud layer (the planets draft's rule 4): the shell of 1 + `cloudHeight` times its equatorial radius
+    /// drawn with `cloudMap`, alpha-blended and lit as a white diffuse surface, turned eastward by its drift, and, with
+    /// `cloudShadow`, its texture and the ground's shadow inputs toward `sun`; none without a `cloudMap`.
+    #[allow(clippy::too_many_arguments)]
+    fn planet_clouds(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        n: &FrameNode,
+        a: &Attrs,
+        world: Mat4,
+        opacity: f32,
+        receive: bool,
+        sun: Option<[f32; 3]>,
+    ) -> Option<(Draw3, Option<GroundClouds>)> {
+        let uri = a.str("cloudMap")?;
+        let texture = match uri.trim().strip_prefix('#') {
+            Some(asset) => self.asset_map_texture(plan, ctx, n.doc, asset, true, &n.id),
+            None => self.map_texture(plan, &ctx.p.doc_base(n.doc), &uri, true, &n.id),
+        }?;
+        let radius = match planet_spheroid(ctx, a) {
+            Ok((r, _)) => r * (1.0 + a.num("cloudHeight", 0.004)),
+            Err(e) => {
+                plan.stats.errors.push(format!("{}: {e}", n.id));
+                return None;
+            }
+        };
+        let segs = a.num("segments", 32.0).clamp(3.0, 512.0) as u32;
+        let key = format!("planet-shell|{radius}|{segs}");
+        let mesh = match self.three_engine().meshes.get(&key) {
+            Some(m) => m.clone(),
+            None => match sr_3d::prim::spheroid(radius as f32, 0.0, segs) {
+                Ok(p) => {
+                    let m = self.three_engine().upload_mesh(&p.vertices, &p.indices);
+                    self.three_engine().meshes.insert(key, m.clone());
+                    m
                 }
-                Some(Some(Err(e))) => return Err(e.clone()),
-                _ => None,
+                Err(e) => {
+                    plan.stats.errors.push(format!("{}: {e}", n.id));
+                    return None;
+                }
             },
         };
-        Ok(sun.map(|d| sr_3d::PlanetEmission { night: Some((d, a.num("twilight", 6.0) as f32)), limb: None }))
+        // eastward about the body's pole, the scene's −y
+        let drift = sr_3d::planet::cloud_longitude(ctx.g.time, a.num("cloudRotation", 0.0)).to_radians() as f32;
+        let turn = glam::Mat3::from_axis_angle(Vec3::NEG_Y, drift);
+        let shadow = flag(a, "cloudShadow", true);
+        let mut maps: Maps = Default::default();
+        maps[0] = Some(texture.clone());
+        let shell = Draw3 {
+            mesh: MeshSrc::Cached(mesh),
+            model: world * Mat4::from_mat3(turn),
+            material: MaterialParams {
+                roughness: 1.0,
+                specular: 0.0,
+                alpha_mode: AlphaMode::Blend,
+                ..Default::default()
+            },
+            maps,
+            opacity,
+            // its shadow is the ground's to draw (`cloud_shadow`)
+            cast_shadow: false,
+            receive_shadow: receive,
+            shadow_catcher: false,
+        };
+        if shadow && self.planet_sun.is_some_and(|(_, physical)| physical) {
+            let m = format!("{}: the clouds' shadow under a physical sky's sun is not drawn", n.id);
+            if !plan.stats.unsupported.contains(&m) {
+                plan.stats.unsupported.push(m);
+            }
+        }
+        let ground = shadow.then_some(sun).flatten().map(|sun| {
+            let (scale, rotation, centre) = world.to_scale_rotation_translation();
+            let to_layer = (glam::Mat3::from_quat(rotation) * turn).transpose();
+            let rows = [to_layer.row(0), to_layer.row(1), to_layer.row(2)].map(|r| r.to_array());
+            let cloud =
+                sr_3d::CloudShadow { sun, centre: centre.to_array(), radius: radius as f32 * scale.x, to_layer: rows };
+            (texture, cloud)
+        });
+        Some((shell, ground))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1812,10 +1909,36 @@ impl Renderer {
                         });
                     }
                 }
+                let mut maps = maps;
+                let mut shell = None;
                 if n.kind == "object3D" && primitive_kind(n) == "planet" {
                     match self.planet_emission(ctx, n, &a, &maps) {
                         Ok(p) => material.planet = p,
                         Err(e) => plan.stats.errors.push(format!("{}: {e}", n.id)),
+                    }
+                    let sun = if a.str("cloudMap").is_some() {
+                        self.planet_sun_of(ctx, n, &a).unwrap_or_else(|e| {
+                            plan.stats.errors.push(format!("{}: {e}", n.id));
+                            None
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some((draw, ground)) = self.planet_clouds(plan, ctx, n, &a, world, opacity, receive, sun) {
+                        if let Some((texture, cloud)) = ground {
+                            if maps[3].is_some() {
+                                let m = format!(
+                                    "{}: the clouds' shadow on a ground with an occlusionMap is not drawn by the raster pass",
+                                    n.id
+                                );
+                                if !plan.stats.unsupported.contains(&m) {
+                                    plan.stats.unsupported.push(m);
+                                }
+                            }
+                            maps[6] = Some(texture);
+                            material.cloud_shadow = Some(cloud);
+                        }
+                        shell = Some(draw);
                     }
                 }
                 draws.push(Draw3 {
@@ -1828,6 +1951,7 @@ impl Renderer {
                     receive_shadow: receive,
                     shadow_catcher: catcher,
                 });
+                draws.extend(shell);
             }
             // the tubes of an axes object's plots with a material of their own (the plots draft)
             for (id, pm) in &n.param_parts {
@@ -3810,7 +3934,8 @@ impl Renderer {
             }
         };
         let (mut lights, mut env) = self.lights3(plan, ctx, only.as_deref());
-        self.planet_sun = planet_sun(&lights, env.as_ref().and_then(|e| Some((e.rotation, e.physical?))));
+        let physical = env.as_ref().and_then(|e| Some((e.rotation, e.physical?)));
+        self.planet_sun = planet_sun(&lights, physical).map(|d| (d, physical.is_some()));
         if lights.is_empty()
             && env.is_none()
             && ctx.p.scene.lights.as_ref().map(|l| l.lights.is_empty()).unwrap_or(true)

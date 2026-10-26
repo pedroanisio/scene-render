@@ -561,8 +561,9 @@ pub struct Renderer {
     /// every frame it moves.
     physical_sky: Option<PhysicalSkySlot>,
     /// The direction toward the sun of the 3D pass being drawn from its lights (the planets draft's rule 3): the
-    /// physical sky's sun or the first directional light's; none leaves each planet the space's Sun.
-    planet_sun: Option<glam::Vec3>,
+    /// physical sky's sun or the first directional light's, and whether it is the physical sky's; none leaves each
+    /// planet the space's Sun.
+    planet_sun: Option<(glam::Vec3, bool)>,
     /// Star fields by catalogue file, limiting magnitude and magnitudeZero (the star-fields draft).
     /// The star field a frame without a 3D pass draws, by its key (the star-fields draft).
     stars_bg: Option<(u64, Arc<Tex>)>,
