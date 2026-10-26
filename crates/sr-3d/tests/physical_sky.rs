@@ -123,7 +123,8 @@ fn the_table_has_its_stated_size_and_a_frame_alone_equals_a_frame_rebuilt() {
 fn a_sun_that_is_not_a_unit_is_refused() {
     let s = earth();
     assert!(SkyView::new(&s, 0.0, [0.0, 0.0, 2.0]).is_err());
-    assert!(SkyView::new(&s, -1.0, dir(10.0, 0.0)).is_err());
+    // an observer below the sphere is lifted onto it (78251fd: `altitude` below 0 is the ellipsoid's)
+    assert_eq!(SkyView::new(&s, -430.0, dir(10.0, 0.0)).unwrap(), SkyView::new(&s, 0.0, dir(10.0, 0.0)).unwrap());
     assert!(SkyView::new(&s, f64::NAN, dir(10.0, 0.0)).is_err());
 }
 

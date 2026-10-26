@@ -11,7 +11,7 @@ use std::f64::consts::PI;
 
 use rayon::prelude::*;
 
-use crate::atmosphere::{atmosphere_position, march, Fog, Scattering, SkyError};
+use crate::atmosphere::{atmosphere_position, Fog, Scattering, SkyError};
 use crate::physical_sky::to_planet;
 
 type V3 = [f64; 3];
@@ -142,15 +142,13 @@ fn column(
     if !camera.iter().chain(&d).all(|c| c.is_finite()) {
         return Err(SkyError("a camera ray is finite".into()));
     }
-    let (start, total, _) = s.atmosphere.path_end(camera, d)?;
     let fog = match fog {
         Some(f) => Some((f, s.horizon_radiance(observer, d, sun)?)),
         None => None,
     };
-    // the distances from the atmosphere's near end, held within the ray's length in it
-    let ends: Vec<f64> = distances.iter().map(|x| (x - start).clamp(0.0, total.max(0.0))).collect();
+    // a surface segment of rule 10, walked from the camera wherever it lies
     let mut out = vec![([0.0; 3], [1.0; 3]); distances.len()];
-    s.integrate(march(camera, d, start), d, sun, &ends, true, fog, |i, l, t| out[i + 1] = (l, t))?;
+    s.integrate(camera, d, sun, distances, true, fog, true, |i, l, t| out[i + 1] = (l, t))?;
     Ok(out)
 }
 
@@ -210,8 +208,9 @@ pub struct AerialSky {
 }
 
 impl AerialSky {
-    /// The sky of `s` for an observer `altitude` metres up and the unit `sun` of the dome's axes, marching when
-    /// `march` and fogged by `fog`; none when it has neither a march nor a fog of some density.
+    /// The sky of `s` for an observer `altitude` metres up (lifted onto the sphere below 0) and the unit `sun` of the
+    /// dome's axes, marching when `march` and fogged by `fog`; none when it has neither a march nor a fog of some
+    /// density.
     pub fn new(
         s: Scattering,
         altitude: f64,
@@ -223,8 +222,8 @@ impl AerialSky {
         if !(pixels_per_meter > 0.0 && pixels_per_meter.is_finite()) {
             return Err(SkyError("pixelsPerMeter is a positive number".into()));
         }
-        if !(altitude >= 0.0 && altitude.is_finite()) {
-            return Err(SkyError("the observer's altitude is finite and not below the ground".into()));
+        if !altitude.is_finite() {
+            return Err(SkyError("the observer's altitude is finite".into()));
         }
         let fog = fog.filter(|f| f.density > 0.0);
         if !march && fog.is_none() {

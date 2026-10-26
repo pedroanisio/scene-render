@@ -329,17 +329,29 @@ impl Atmosphere {
         Ok((start, -b + (b * b - c).max(0.0).sqrt(), false))
     }
 
-    /// Whether the ray from p along d meets the planet before leaving the atmosphere.
-    pub fn hits_ground(&self, p: V3, d: V3) -> Result<bool, SkyError> {
-        Ok(self.path_end(p, d)?.2)
+    /// Rule 10: a point below the planet's sphere read as the point on the sphere along its radius; the model's
+    /// ground is the sphere, and an `altitude` below 0 is the ellipsoid's.
+    pub fn lift(&self, p: V3) -> V3 {
+        let r = norm(p);
+        if r >= self.planet_radius || r == 0.0 {
+            return p;
+        }
+        mul(p, self.planet_radius / r)
     }
 
-    /// The optical depth of the segment [s0, s1] along d from p by 4-point Gauss–Legendre.
-    fn depth(&self, p: V3, d: V3, s0: f64, s1: f64) -> V3 {
+    /// Whether the ray from p (lifted onto the sphere) along d meets the planet before leaving the atmosphere.
+    pub fn hits_ground(&self, p: V3, d: V3) -> Result<bool, SkyError> {
+        Ok(self.path_end(self.lift(p), d)?.2)
+    }
+
+    /// The optical depth of the segment [s0, s1] along d from p by 4-point Gauss–Legendre; with `floor` (a surface
+    /// segment of rule 10) an altitude below 0 reads as 0.
+    fn depth(&self, p: V3, d: V3, s0: f64, s1: f64, floor: bool) -> V3 {
         let (half, mid) = ((s1 - s0) / 2.0, (s1 + s0) / 2.0);
         let mut out = [0.0; 3];
         for (x, w) in GL {
-            let e = self.extinction(self.height(march(p, d, mid + half * x)));
+            let h = self.height(march(p, d, mid + half * x));
+            let e = self.extinction(if floor { h.max(0.0) } else { h });
             for c in 0..3 {
                 out[c] += w * e[c];
             }
@@ -347,8 +359,8 @@ impl Atmosphere {
         out.map(|o| o * half)
     }
 
-    /// Rule 9: the transmittance from p along the unit d to the top of the atmosphere, zero when the ray meets the
-    /// ground first (64 segments clustered toward p).
+    /// Rule 9: the transmittance from p (lifted onto the sphere) along the unit d to the top of the atmosphere, zero
+    /// when the ray meets the ground first (64 segments clustered toward p).
     pub fn transmittance(&self, p: V3, d: V3) -> Result<V3, SkyError> {
         self.transmittance_with(p, d, 64, None, true)
     }
@@ -363,6 +375,7 @@ impl Atmosphere {
         cluster: bool,
     ) -> Result<V3, SkyError> {
         check_samples(samples)?;
+        let p = self.lift(p);
         let (start, mut total, ground) = self.path_end(p, d)?;
         if ground && length.is_none_or(|l| l >= start + total) {
             return Ok([0.0; 3]);
@@ -377,7 +390,7 @@ impl Atmosphere {
         let ends = segments(total, samples, cluster);
         let mut depth = [0.0; 3];
         for i in 0..samples {
-            let seg = self.depth(q, d, ends[i], ends[i + 1]);
+            let seg = self.depth(q, d, ends[i], ends[i + 1], false);
             for c in 0..3 {
                 depth[c] += seg[c];
             }
@@ -439,7 +452,7 @@ impl Atmosphere {
             let mut trans = [1.0; 3];
             for i in 0..MS_SAMPLES {
                 let (s0, s1) = (ends[i], ends[i + 1]);
-                let seg = self.depth(q, d, s0, s1);
+                let seg = self.depth(q, d, s0, s1, false);
                 let mid = march(q, d, (s0 + s1) / 2.0);
                 let t_mid: V3 = std::array::from_fn(|c| trans[c] * (-seg[c] / 2.0).exp());
                 let (sr, sm) = self.scattering(self.height(mid));
@@ -529,35 +542,24 @@ impl Scattering {
         out
     }
 
-    /// The in-scattered radiance along d from p, to `length` or the atmosphere's end, and the transmittance there;
-    /// with a fog (rule 11) its extinction joins the air's at every node and its isotropic source is its extinction
-    /// times the horizon radiance.
-    #[allow(clippy::too_many_arguments)]
-    fn inscatter(
-        &self,
-        p: V3,
-        d: V3,
-        sun: V3,
-        samples: usize,
-        multiple: bool,
-        length: Option<f64>,
-        fog: Option<(&Fog, V3)>,
-    ) -> Result<(V3, V3), SkyError> {
+    /// The in-scattered radiance along d from p to the atmosphere's end, and the transmittance there; with a fog
+    /// (rule 11) its extinction joins the air's at every node and its isotropic source is its extinction times the
+    /// horizon radiance.
+    fn inscatter(&self, p: V3, d: V3, sun: V3, samples: usize, multiple: bool) -> Result<(V3, V3), SkyError> {
         check_samples(samples)?;
-        let a = &self.atmosphere;
-        let (start, mut total, _) = a.path_end(p, d)?;
-        if let Some(l) = length {
-            total = total.min(l - start).max(0.0);
-        }
+        let (start, total, _) = self.atmosphere.path_end(p, d)?;
         if total <= 0.0 {
             return Ok(([0.0; 3], [1.0; 3]));
         }
-        self.integrate(march(p, d, start), d, sun, &segments(total, samples, true), multiple, fog, |_, _, _| ())
+        let ends = segments(total, samples, true);
+        self.integrate(march(p, d, start), d, sun, &ends, multiple, None, false, |_, _, _| ())
     }
 
     /// The in-scattering along d from q over the consecutive segments between `ends` (distances from q, ascending),
     /// as [`Scattering::inscatter`] marches them; `record(i, radiance, transmittance)` sees the running values at
-    /// `ends[i + 1]`. An empty segment adds nothing.
+    /// `ends[i + 1]`. An empty segment adds nothing. A `surface` segment (rule 10) reads an altitude below 0 as 0 for
+    /// the air's densities and the multiple-scattering lookup, and the sun's transmittance is taken from each sample
+    /// lifted onto the sphere.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn integrate(
         &self,
@@ -567,6 +569,7 @@ impl Scattering {
         ends: &[f64],
         multiple: bool,
         fog: Option<(&Fog, V3)>,
+        surface: bool,
         mut record: impl FnMut(usize, V3, V3),
     ) -> Result<(V3, V3), SkyError> {
         let a = &self.atmosphere;
@@ -584,9 +587,9 @@ impl Scattering {
             for (x, w) in GL {
                 // the transmittance from the segment's start to the node, then the scattering at the node
                 let s = mid + half * x;
-                let node_depth = if s > s0 { a.depth(q, d, s0, s) } else { [0.0; 3] };
+                let node_depth = if s > s0 { a.depth(q, d, s0, s, surface) } else { [0.0; 3] };
                 let y = march(q, d, s);
-                let hy = a.height(y);
+                let hy = if surface { a.height(y).max(0.0) } else { a.height(y) };
                 let (sr, sm) = a.scattering(hy);
                 let t_sun = a.transmittance_with(y, sun, 8, None, true)?;
                 let mu_s = dot(mul(y, 1.0 / norm(y)), sun);
@@ -599,7 +602,7 @@ impl Scattering {
                     inner[c] += w * t_node * (single + (sr[c] + sm) * psi[c] + source[c]);
                 }
             }
-            let seg = a.depth(q, d, s0, s1);
+            let seg = a.depth(q, d, s0, s1, surface);
             let fog_seg = fog_depth_along(fog, a, q, d, s0, s1);
             for c in 0..3 {
                 out[c] += inner[c] * half;
@@ -617,12 +620,14 @@ impl Scattering {
     }
 
     /// [`Scattering::sky_radiance`] with or without the multiple-scattering term, over `samples` segments.
+    /// An observer below the sphere is lifted onto it.
     pub fn sky_radiance_with(&self, obs: V3, d: V3, sun: V3, multiple: bool, samples: usize) -> Result<V3, SkyError> {
+        let obs = self.atmosphere.lift(obs);
         let (_, total, ground) = self.atmosphere.path_end(obs, d)?;
         if ground || total <= 0.0 {
             return Ok([0.0; 3]);
         }
-        Ok(self.inscatter(obs, d, sun, samples, multiple, None, None)?.0)
+        Ok(self.inscatter(obs, d, sun, samples, multiple)?.0)
     }
 
     /// The sky's irradiance on the ground under an observer on the +z axis, a midpoint grid of 6 × 12 cells over
@@ -647,7 +652,9 @@ impl Scattering {
     }
 
     /// Rule 10: a surface of `colour` at `distance` along d from `obs`, seen through the atmosphere: the colour times
-    /// the transmittance plus the in-scattering up to it (16 segments); at distance 0 the colour itself.
+    /// the transmittance plus the in-scattering up to it (16 segments); at distance 0 the colour itself. The segment
+    /// is walked over its whole length wherever its ends lie: the planet's sphere does not occlude it, and an
+    /// altitude below 0 along it reads as 0.
     pub fn aerial_perspective(&self, obs: V3, d: V3, distance: f64, colour: V3, sun: V3) -> Result<V3, SkyError> {
         self.aerial(obs, d, distance, colour, sun, None)
     }
@@ -680,7 +687,8 @@ impl Scattering {
         if distance <= 0.0 {
             return Ok(colour);
         }
-        let (inscatter, trans) = self.inscatter(obs, d, sun, 16, true, Some(distance), fog)?;
+        let ends = segments(distance, 16, true);
+        let (inscatter, trans) = self.integrate(obs, d, sun, &ends, true, fog, true, |_, _, _| ())?;
         Ok(std::array::from_fn(|c| colour[c] * trans[c] + inscatter[c]))
     }
 
@@ -697,10 +705,11 @@ impl Scattering {
 }
 
 /// Rule 11's optical depth between two distances along the ray from q: the closed form over the sphere's altitudes
-/// at the two ends.
+/// at the two ends, an altitude below 0 reading as 0.
 fn fog_depth_along(fog: Option<(&Fog, V3)>, a: &Atmosphere, q: V3, d: V3, s0: f64, s1: f64) -> f64 {
+    let h = |s: f64| a.height(march(q, d, s)).max(0.0);
     match fog {
-        Some((f, _)) if s1 > s0 => f.depth(a.height(march(q, d, s0)), a.height(march(q, d, s1)), s1 - s0),
+        Some((f, _)) if s1 > s0 => f.depth(h(s0), h(s1), s1 - s0),
         _ => 0.0,
     }
 }

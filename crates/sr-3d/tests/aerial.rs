@@ -98,7 +98,10 @@ fn the_volume_refuses_what_it_cannot_hold() {
     for max in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         assert!(make(camera, max, [2, 2, 1]).is_err(), "{max}");
     }
-    assert!(make([0.0, 0.0, r - 10.0], 1000.0, [2, 2, 1]).is_err(), "a camera under the ground");
+    // a camera under the sphere marches its segments through sea-level air (78251fd)
+    let under = make([0.0, 0.0, r - 10.0], 1000.0, [2, 2, 1]).unwrap();
+    let want = s.aerial_perspective([0.0, 0.0, r - 10.0], pinhole(0.0, 0.0), 1000.0, [0.5; 3], sun).unwrap();
+    within(under.apply(0.0, 0.0, 1000.0, [0.5; 3]), want, 1e-5, "a camera under the ground");
     for bad in [([f64::NAN, 0.0, r + 2.0], [0.0, 0.0, 1.0]), ([0.0, 0.0, r + 2.0], [0.0, f64::INFINITY, 1.0])] {
         let ray = move |_: f64, _: f64| bad;
         assert!(AerialVolume::new(&s, &ray, obs, sun, None, 1000.0, [2, 2, 1]).is_err(), "{bad:?}");
@@ -131,18 +134,24 @@ fn the_horizon_table_follows_the_horizon_radiance() {
 
 #[test]
 fn a_camera_above_the_air_marches_from_the_top() {
-    // from 400 km the ray meets the atmosphere 300 km down: the nodes beyond hold the march from there
+    // from 400 km the surface segment is walked from the camera, 300 km of vacuum before the air (78251fd): the
+    // nodes hold the converged march (1024 slices) to 5e-4, and the reference's 16 segments, clustered toward the camera and
+    // so coarse in the air, to the kit's 2 %
     let s = earth();
     let r = s.atmosphere.planet_radius;
     let (obs, camera) = ([0.0, 0.0, r], [0.0, 0.0, r + 400000.0]);
     let down = move |u: f64, v: f64| (camera, unit([(2.0 * u - 1.0) * 0.1, (2.0 * v - 1.0) * 0.1, -1.0]).unwrap());
     let sun = unit([0.3, 0.2, 0.9]).unwrap();
     let v = AerialVolume::new(&s, &down, obs, sun, None, 400000.0, [3, 3, 64]).unwrap();
+    let fine = AerialVolume::new(&s, &down, obs, sun, None, 400000.0, [3, 3, 1024]).unwrap();
     let colour = [0.2, 0.3, 0.4];
     for k in [50, 60, 63, 64] {
         let d = 400000.0 * (k as f64 / 64.0).powi(2);
+        within(v.apply(0.5, 0.5, d, colour), fine.apply(0.5, 0.5, d, colour), 5e-4, &format!("slice {k}"));
         let want = s.aerial_perspective(camera, down(0.5, 0.5).1, d, colour, sun).unwrap();
-        within(v.apply(0.5, 0.5, d, colour), want, 0.005, &format!("slice {k}"));
+        within(v.apply(0.5, 0.5, d, colour), want, 0.02, &format!("slice {k} against the reference"));
+        // the air begins 300 km down: slice 50 (244 km) is vacuum, slices 60 on (351 km) are in the air
+        assert_eq!(v.apply(0.5, 0.5, d, colour) == colour, k < 60, "slice {k}");
     }
 }
 
@@ -200,7 +209,8 @@ fn the_aerial_sky_maps_the_scene_into_the_planet() {
     for k in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         assert!(AerialSky::new(s.clone(), 0.0, sun, true, None, k).is_err(), "pixelsPerMeter {k}");
     }
-    assert!(AerialSky::new(s.clone(), -1.0, sun, true, None, 1.0).is_err(), "an observer under the ground");
+    let low = AerialSky::new(s.clone(), -430.0, sun, true, None, 1.0).unwrap().expect("a march");
+    assert_eq!(low.horizon(), air.horizon(), "an observer under the sphere is lifted onto it");
     for altitude in [f64::NAN, f64::INFINITY] {
         assert!(
             AerialSky::new(s.clone(), altitude, sun, false, Some(Fog::new(0.001, 100.0).unwrap()), 1.0).is_err(),
@@ -208,5 +218,5 @@ fn the_aerial_sky_maps_the_scene_into_the_planet() {
         );
     }
     let under = |_: f64, _: f64| ([0.0, 5000.0, 0.0], [0.0, 0.0, 1.0]);
-    assert!(a.volume(&under, 1000.0, [2, 2, 1]).is_err(), "a camera 40 m under the ground");
+    a.volume(&under, 1000.0, [2, 2, 1]).unwrap().expect("a camera 40 m under the ground marches");
 }

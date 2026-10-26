@@ -44,11 +44,13 @@ pub struct SkyView {
 }
 
 impl SkyView {
-    /// The table of `s` for an observer `altitude` metres above the ground and the unit `sun` of the planet frame.
+    /// The table of `s` for an observer `altitude` metres above the ground and the unit `sun` of the planet frame;
+    /// an observer below the sphere is lifted onto it.
     pub fn new(s: &Scattering, altitude: f64, sun: V3) -> Result<SkyView, SkyError> {
-        if !(altitude >= 0.0 && altitude.is_finite()) {
-            return Err(SkyError("the observer's altitude is finite and not below the ground".into()));
+        if !altitude.is_finite() {
+            return Err(SkyError("the observer's altitude is finite".into()));
         }
+        let altitude = altitude.max(0.0);
         let n = (sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]).sqrt();
         if (n - 1.0).abs() >= 1e-6 || n.is_nan() {
             return Err(SkyError("the sun's direction is a unit".into()));

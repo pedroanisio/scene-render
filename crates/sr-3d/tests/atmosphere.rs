@@ -349,9 +349,6 @@ fn values_the_rules_refuse() {
     assert!(bad(AtmosphereOptions { sun_irradiance: [1.0, -1.0, 1.0], ..d() }));
     assert!(bad(AtmosphereOptions { sun_irradiance: [1.0, f64::INFINITY, 1.0], ..d() }));
     let a = earth();
-    let below = [0.0, 0.0, a.planet_radius - 1.0];
-    assert!(a.transmittance(below, [0.0, 0.0, 1.0]).is_err());
-    assert!(Scattering::new(a).sky_radiance(below, [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]).is_err());
     assert!(a.transmittance_with(ground(&a), [0.0, 0.0, 1.0], 0, None, true).is_err());
     assert!(a.transmittance_with(ground(&a), [0.0, 0.0, 1.0], MAX_SAMPLES + 1, None, true).is_err());
     assert!(a.limb_direction(ground(&a), 0.0).is_err(), "the limb is seen from above the atmosphere");
@@ -448,4 +445,45 @@ fn scene_points_in_the_atmosphere() {
     assert!(atmosphere_position(&a, [0.0; 3], f64::NAN, 1.0).is_err());
     assert!(scene_altitude(f64::NAN, 0.0, 1.0).is_err());
     assert!(scene_altitude(0.0, f64::INFINITY, 1.0).is_err());
+}
+
+#[test]
+fn a_surface_segment_is_walked_wherever_its_ends_lie() {
+    // the ruling of 78251fd: the default camera 1.8 m under the sphere sees sea-level air (the "aerial below ground"
+    // row), the sphere does not occlude a surface segment, and a point under the sphere is lifted onto it
+    let s = Scattering::new(earth());
+    let r = s.atmosphere.planet_radius;
+    let (sun, d, colour) = (unit([1.0, 0.0, 0.5]).unwrap(), [1.0, 0.0, 0.0], [0.2, 0.4, 0.1]);
+    let camera = [0.0, 0.0, r - 1.8];
+    let below = s.aerial_perspective(camera, d, 10000.0, colour, sun).unwrap();
+    assert_eq!(below.map(|x| round(x, 6)), [0.194808, 0.358261, 0.151398]);
+    // below_ground_test: (True, True, True)
+    let above = [0.0, 0.0, r + 1.0];
+    let over = s.aerial_perspective(above, d, 10000.0, colour, sun).unwrap();
+    let through = s.aerial_perspective(above, unit([1.0, 0.0, -0.01]).unwrap(), 5000.0, colour, sun).unwrap();
+    let level = s.aerial_perspective(above, d, 5000.0, colour, sun).unwrap();
+    for c in 0..3 {
+        assert!((below[c] - over[c]).abs() < 2e-3 * over[c] && below[c] != colour[c], "{below:?} {over:?}");
+        assert!((through[c] - level[c]).abs() < 2e-3 * level[c] && through[c] != colour[c], "{through:?} {level:?}");
+    }
+    let (sphere, up) = ([0.0, 0.0, r], [0.0, 0.0, 1.0]);
+    assert_eq!(s.sky_radiance(camera, up, sun).unwrap(), s.sky_radiance(sphere, up, sun).unwrap());
+    assert_eq!(s.atmosphere.sun_radiance(camera, sun).unwrap(), s.atmosphere.sun_radiance(sphere, sun).unwrap());
+    assert_eq!(s.atmosphere.transmittance(camera, up).unwrap(), s.atmosphere.transmittance(sphere, up).unwrap());
+    assert_eq!(s.sky_irradiance(camera, sun).unwrap(), s.sky_irradiance(sphere, sun).unwrap());
+    assert_eq!(s.horizon_radiance(camera, d, sun).unwrap(), s.horizon_radiance(sphere, d, sun).unwrap());
+    assert!(
+        !s.atmosphere.hits_ground(camera, up).unwrap() && s.atmosphere.hits_ground(camera, [0.0, 0.0, -1.0]).unwrap()
+    );
+    // the fog reads an altitude below 0 as 0 too: two marches wholly under the sphere see the same sea-level media
+    let (f, horizon) = (Fog::new(0.001, 100.0).unwrap(), [0.1, 0.2, 0.3]);
+    let fogged = |z: f64| s.aerial_perspective_fogged([0.0, 0.0, r - z], d, 1000.0, colour, sun, &f, horizon).unwrap();
+    let (shallow, deep) = (fogged(1.8), fogged(10.0));
+    for c in 0..3 {
+        assert!((shallow[c] - deep[c]).abs() < 1e-9 * deep[c], "{shallow:?} {deep:?}");
+    }
+    assert!(
+        shallow != s.aerial_perspective([0.0, 0.0, r - 1.8], d, 1000.0, colour, sun).unwrap(),
+        "the fog is marched"
+    );
 }
