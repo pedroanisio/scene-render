@@ -2421,8 +2421,11 @@ impl Renderer {
                 let e = match self.three_engine().envs.get(&key) {
                     Some(e) => e.clone(),
                     None => {
+                        // one gradient sky is kept: a keyed sun is a new sky each frame
                         let e = self.three_engine().upload_env(&sky.equirect(SKY_BAKE_WIDTH));
-                        self.three_engine().envs.insert(key, e.clone());
+                        let envs = &mut self.three_engine().envs;
+                        envs.retain(|k, _| !k.starts_with("sky:"));
+                        envs.insert(key, e.clone());
                         e
                     }
                 };

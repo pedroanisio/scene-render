@@ -335,3 +335,17 @@ fn chrome_reflects_the_sky_instead_of_a_flat_grey() {
         "bottom {bottom:?}, top {top:?}"
     );
 }
+
+#[test]
+fn a_moving_sun_keeps_one_environment() {
+    // sunElevation keyed over the frames: each frame's sky is baked anew and the last one replaces the one before
+    let light = sun("0", "5").replace(
+        " environmentVisible=\"true\"/>",
+        "><animate property=\"sunElevation\"><key time=\"0\" value=\"5\"/><key time=\"1\" value=\"40\"/></animate></light>",
+    );
+    let body = "<object3D id=\"o\" primitive=\"sphere\" radius=\"20\" x=\"600\" y=\"330\"/>";
+    let d = sr_model::load_str(&kit("", "", body, &light), &sr_model::LoadOptions::without_assets()).unwrap();
+    let Some(r) = render_times(&d, &[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]) else { return };
+    assert!(r.stats.errors.is_empty(), "{:?}", r.stats.errors);
+    assert_eq!(r.renderer.cached_environments(), 1);
+}

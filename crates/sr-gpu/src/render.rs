@@ -4587,6 +4587,11 @@ impl Renderer {
         self.images.values().flatten().count() + self.video_frames.len() + self.glyph_tex.values().flatten().count()
     }
 
+    /// Prefiltered dome environments held for reuse: image files, gradient skies and the physical sky's slot.
+    pub fn cached_environments(&self) -> usize {
+        self.three.as_ref().map_or(0, |t| t.envs.len()) + self.physical_sky.is_some() as usize
+    }
+
     /// Texels of the pooled offscreen textures.
     pub fn pooled_texels(&self) -> u64 {
         self.pool.held_texels()
