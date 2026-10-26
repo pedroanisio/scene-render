@@ -547,6 +547,9 @@ pub struct Renderer {
     clay_keys: HashMap<Arc<str>, String>,
     /// The visible procedural sky of the last frame without a 3D pass, by its key (SREP 71).
     sky_bg: Option<(u64, Arc<Tex>)>,
+    /// The physical sky of the last frame that had one, by its options, with its lighting image (the physical-sky
+    /// draft): one slot, as a dated sky is a new sky every frame it moves.
+    physical_sky: Option<(String, Arc<sr_3d::physical_sky::PhysicalSky>, Arc<crate::three::EnvGpu>)>,
     /// Star fields by catalogue file, limiting magnitude and magnitudeZero (the star-fields draft).
     /// The star field a frame without a 3D pass draws, by its key (the star-fields draft).
     stars_bg: Option<(u64, Arc<Tex>)>,
@@ -1490,6 +1493,7 @@ impl Renderer {
             text: Default::default(),
             clay_keys: HashMap::new(),
             sky_bg: None,
+            physical_sky: None,
             stars_bg: None,
             star_fields: HashMap::new(),
             star_scale: 1,
@@ -4411,7 +4415,7 @@ impl Renderer {
     fn background(&mut self, plan: &mut Plan, ctx: &Ctx, space: &Space, cmds: &mut Vec<Cmd>) {
         let g = ctx.g;
         // a visible procedural sky that no 3D pass draws takes the background's place (SREP 71)
-        let sky = self.sky_background(ctx, space);
+        let sky = self.sky_background(plan, ctx, space);
         // a star field that no 3D pass draws goes over the background, under everything else (the star-fields draft)
         if let Some((stars, key)) = self.stars_background(plan, ctx, space) {
             let hash = h(&[key, hf(g.size[0]), hf(g.size[1]), elements_hash(&g.elements)]);

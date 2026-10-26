@@ -373,6 +373,10 @@ pub struct Env3 {
     /// A procedural sky (SREP 71): `env` is its baked image for lighting, and the visible background and the path
     /// tracer evaluate the sky itself.
     pub sky: Option<sr_3d::sky::Sky>,
+    /// A physical sky's discs (`sr_3d::physical_sky::PhysicalSky::uniforms`): `env` lights with the sky and the
+    /// sun's power, its visible image holds the sky alone, and the raster background draws the discs over it. The
+    /// path tracer sees `env` alone.
+    pub physical: Option<[[f32; 4]; 5]>,
 }
 
 /// One star of a dome light's field (the star-fields draft): its world direction, and its flux per channel with
@@ -2135,6 +2139,12 @@ impl ThreeEngine {
 
     /// Prefilters and uploads an environment.
     pub fn upload_env(&self, eq: &sr_3d::env::Equirect) -> Arc<EnvGpu> {
+        self.upload_env_seen(eq, eq)
+    }
+
+    /// Prefilters and uploads an environment that lights with `eq` and is seen as `seen`: a physical sky lights
+    /// with its sun's power and draws the disc itself.
+    pub fn upload_env_seen(&self, eq: &sr_3d::env::Equirect, seen: &sr_3d::env::Equirect) -> Arc<EnvGpu> {
         // lighting uses a 512-wide prefiltered chain; the visible sky keeps the source's resolution
         let base = eq.width.clamp(64, 512).next_power_of_two().min(512);
         let levels = (base.trailing_zeros() as usize).saturating_sub(2).clamp(2, 7);
@@ -2146,12 +2156,12 @@ impl ThreeEngine {
         }
         let cap = self.device.limits().max_texture_dimension_2d.min(8192);
         let resized;
-        let src = if eq.width > cap || eq.height > cap {
-            let w = cap.min(eq.width * cap / eq.height.max(1)).max(1);
-            resized = eq.resized(w, (eq.height * w / eq.width).max(1));
+        let src = if seen.width > cap || seen.height > cap {
+            let w = cap.min(seen.width * cap / seen.height.max(1)).max(1);
+            resized = seen.resized(w, (seen.height * w / seen.width).max(1));
             &resized
         } else {
-            eq
+            seen
         };
         let (w0, h0, px0) = &pf.mips[0];
         let mip0 =
@@ -2864,7 +2874,7 @@ impl ThreeEngine {
             ],
             sh,
             env_rot: env.map(|e| e.rotation.transpose()).unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
-            sky: env.and_then(|e| e.sky).map(|s| s.uniforms()).unwrap_or([[0.0; 4]; 5]),
+            sky: env.and_then(|e| e.sky.map(|s| s.uniforms()).or(e.physical)).unwrap_or([[0.0; 4]; 5]),
         };
         let (slot, mut set) = self.take_set();
         let mut deformed_draws = 0;

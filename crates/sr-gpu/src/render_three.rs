@@ -9,7 +9,10 @@ use super::*;
 use crate::three::{Dof, Draw3, Env3, Light3, LightKind, Maps, MeshSrc, Scene3, SplatDraw, StarInstance, ThreeEngine};
 use crate::vector::Attrs;
 use glam::{DMat3, DMat4, DVec3, DVec4, Mat4, Vec3};
+use sr_3d::atmosphere::effective_sun_irradiance;
 use sr_3d::camera::{self, CameraParams, CameraView};
+use sr_3d::physical_sky::{atmosphere_options, PhysicalSky, PhysicalSkyOptions};
+use sr_3d::space::sun::Observer;
 use sr_3d::{AlphaMode, Asset, MaterialParams};
 
 #[path = "render_voxels.rs"]
@@ -2429,7 +2432,26 @@ impl Renderer {
                     rotation: Mat4::from_quat(world.to_scale_rotation_translation().1),
                     visible: flag(&a, "environmentVisible", false),
                     sky: Some(sky),
+                    physical: None,
                 });
+                continue;
+            }
+            if kind == "dome" && a.str("sky").as_deref() == Some("physical") {
+                // a physical sky (the physical-sky draft): lit by its sky and the discs' power; the visible image is the
+                // sky alone and the background draws the discs from their formula
+                match self.physical_sky(&a) {
+                    Ok((sky, e)) => {
+                        env = Some(Env3 {
+                            env: e,
+                            intensity: scale * color[1].max(color[0]).max(color[2]),
+                            rotation: Mat4::from_quat(world.to_scale_rotation_translation().1),
+                            visible: flag(&a, "environmentVisible", false),
+                            sky: None,
+                            physical: Some(sky.uniforms()),
+                        })
+                    }
+                    Err(e) => plan.stats.errors.push(format!("{}: {e}", l.id)),
+                }
                 continue;
             }
             if kind == "dome" {
@@ -2471,6 +2493,7 @@ impl Renderer {
                         rotation: Mat4::from_quat(world.to_scale_rotation_translation().1),
                         visible: flag(&a, "environmentVisible", false),
                         sky: None,
+                        physical: None,
                     });
                 }
                 continue;
@@ -2539,23 +2562,100 @@ impl Renderer {
         )
     }
 
+    /// A dome's physical sky at this frame and its lighting image (the physical-sky draft): the last frame's when the
+    /// document gives the same options.
+    fn physical_sky(&mut self, a: &Attrs) -> Result<(Arc<PhysicalSky>, Arc<crate::three::EnvGpu>), String> {
+        let o = self.physical_options(a)?;
+        let key = format!("{o:?}");
+        if let Some((k, sky, e)) = &self.physical_sky {
+            if *k == key {
+                return Ok((sky.clone(), e.clone()));
+            }
+        }
+        let sky = Arc::new(PhysicalSky::from_document(&o).map_err(|e| e.to_string())?);
+        let e = self.three_engine().upload_env_seen(&sky.equirect(SKY_BAKE_WIDTH), &sky.visible(PHYSICAL_SEEN_WIDTH));
+        self.physical_sky = Some((key, sky.clone(), e.clone()));
+        Ok((sky, e))
+    }
+
+    /// A dome's physical sky as its attributes write it at this frame, colours in linear working values: an absent
+    /// `sunIntensity` reads as 1, and `sunColor` tints the disc alone.
+    fn physical_options(&self, a: &Attrs) -> Result<PhysicalSkyOptions, String> {
+        let c3 = |name: &str| {
+            let c = self.working_color(a.paint(name), self.literal_linear([1.0; 4]));
+            [c[0] as f64, c[1] as f64, c[2] as f64]
+        };
+        let date = a.str("date").ok_or("sky: sky=\"physical\" has no date")?;
+        let observer = Observer {
+            latitude: a.num("latitude", 0.0),
+            longitude: a.num("longitude", 0.0),
+            altitude: a.num("altitude", 0.0),
+            pressure: a.num("pressure", 1013.25),
+            temperature: a.num("temperature", 10.0),
+            delta_t: a.opt("deltaT"),
+        };
+        let irradiance =
+            effective_sun_irradiance(c3("sunIrradiance"), a.opt("sunIntensity")).map_err(|e| e.to_string())?;
+        let atmosphere = atmosphere_options(
+            a.str("atmosphere").as_deref() != Some("none"),
+            a.num("aerosol", 1.0),
+            a.num("ozone", 1.0),
+            a.num("planetRadius", 6_360_000.0),
+            a.num("atmosphereHeight", 100_000.0),
+            a.num("groundAlbedo", 0.3),
+            irradiance,
+        );
+        Ok(PhysicalSkyOptions {
+            date,
+            observer,
+            atmosphere,
+            sun_size: a.num("sunSize", 0.53),
+            sun_color: c3("sunColor"),
+            moon: flag(a, "moon", true),
+            moon_intensity: a.num("moonIntensity", 1.0),
+        })
+    }
+
     /// The visible procedural sky of a frame that has no 3D pass to draw it (SREP 71): an empty composition under a
     /// dome with `sky="gradient"` and `environmentVisible="true"`. The sky is evaluated per pixel along the frame
     /// camera's rays, as the 3D pass's background is, scaled by the dome's intensity and the camera's exposure, and
     /// stored in the working representation. With its cache key. Lens distortion and depth of field, which have no
     /// effect on a sky at infinity but its distortion, are not applied here.
-    pub(super) fn sky_background(&mut self, ctx: &Ctx, space: &Space) -> Option<(Arc<resources::Tex>, u64)> {
+    pub(super) fn sky_background(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        space: &Space,
+    ) -> Option<(Arc<resources::Tex>, u64)> {
         let g = ctx.g;
         if (0..g.nodes.len()).any(|j| sr_eval::draws_in_3d(g.nodes[j].kind) && visible3(g, j)) {
             return None;
         }
         let ls = ctx.p.scene.lights.as_ref()?;
-        let l = ls.lights.iter().find(|l| l.r#type == m::LightKind::Dome && l.sky == m::Sky::Gradient)?;
+        let l = ls
+            .lights
+            .iter()
+            .find(|l| l.r#type == m::LightKind::Dome && matches!(l.sky, m::Sky::Gradient | m::Sky::Physical))?;
         let a = Attrs { e: l as &dyn Element, props: element_props(g, &l.id) };
         if !flag(&a, "environmentVisible", false) {
             return None;
         }
-        let sky = self.dome_sky(&a);
+        let sky = if l.sky == m::Sky::Physical {
+            match self.physical_sky(&a) {
+                Ok((sky, _)) => {
+                    let key = self.physical_sky.as_ref().map_or("", |(k, _, _)| k.as_str());
+                    let mut f = std::hash::DefaultHasher::new();
+                    std::hash::Hash::hash(key, &mut f);
+                    DomeSky::Physical(sky, std::hash::Hasher::finish(&f))
+                }
+                Err(e) => {
+                    plan.stats.errors.push(format!("{}: {e}", l.id));
+                    return None;
+                }
+            }
+        } else {
+            DomeSky::Gradient(self.dome_sky(&a))
+        };
         let intensity = self.dome_gain(&a);
         let world = Self::pose_world(g, &ls.lights, l, &a, 0);
         let to_env = Mat4::from_quat(world.to_scale_rotation_translation().1).transpose();
@@ -2564,7 +2664,7 @@ impl Renderer {
         let inv = vp.inverse();
         let [w, hgt] = space.size;
         let key = h(&[
-            h(&sky.uniforms().iter().flatten().map(|v| v.to_bits() as u64).collect::<Vec<_>>()),
+            sky.key(),
             h(&inv.to_cols_array().map(|v| v.to_bits() as u64)),
             h(&to_env.to_cols_array().map(|v| v.to_bits() as u64)),
             (intensity * ex.exposure).to_bits() as u64,
@@ -4006,6 +4106,32 @@ impl Renderer {
 
 /// Width of the image a procedural sky is baked into for image-based lighting (the lighting chain is at most 512 wide).
 const SKY_BAKE_WIDTH: u32 = 512;
+/// Width of a physical sky's visible image: the sky-view table's 128 elevations over a quarter turn spread over 512 rows.
+const PHYSICAL_SEEN_WIDTH: u32 = 2048;
+
+/// A dome's sky as the background draws it per pixel: SREP 71's gradient or the physical-sky draft's.
+enum DomeSky {
+    Gradient(sr_3d::sky::Sky),
+    /// The sky and a hash of the options it is built from.
+    Physical(Arc<PhysicalSky>, u64),
+}
+
+impl DomeSky {
+    fn radiance(&self, d: Vec3) -> Vec3 {
+        match self {
+            DomeSky::Gradient(s) => s.radiance(d),
+            DomeSky::Physical(s, _) => s.radiance(d),
+        }
+    }
+
+    /// A hash of the sky: a gradient's uniforms, a physical sky's options.
+    fn key(&self) -> u64 {
+        match self {
+            DomeSky::Gradient(s) => h(&s.uniforms().iter().flatten().map(|v| v.to_bits() as u64).collect::<Vec<_>>()),
+            DomeSky::Physical(_, key) => *key,
+        }
+    }
+}
 
 fn visible3(g: &FrameGraph, j: usize) -> bool {
     g.nodes[j].draw && flag(&attrs(&g.nodes[j]), "visible", true)

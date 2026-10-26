@@ -859,6 +859,12 @@ fn vs_full(@builtin(vertex_index) vi: u32) -> BgOut {
 fn fs_dome(i: BgOut) -> @location(0) vec4<f32> {
     let far = fr.inv_view_proj * vec4(i.ndc, 0.0001, 1.0);
     let dir = far.xyz / far.w - fr.eye.xyz;
+    if (fr.sky[1].w > 1.5) {
+        // a physical sky: its table baked at the source's resolution, its discs exact per pixel
+        let d = normalize((fr.env_rot * vec4(dir, 0.0)).xyz);
+        let c = textureSampleLevel(sky_tex, env_smp, env_uv(dir), 0.0).rgb + sky_discs(d, fr.sky);
+        return vec4(c * fr.params.w, 1.0);
+    }
     if (fr.sky[1].w > 0.5) {
         // a procedural sky (SREP 71), exact per pixel
         return vec4(sky_radiance(normalize((fr.env_rot * vec4(dir, 0.0)).xyz), fr.sky) * fr.params.w, 1.0);

@@ -38,6 +38,18 @@ fn sky_radiance(d: vec3<f32>, p: array<vec4<f32>, 5>) -> vec3<f32> {
     return c;
 }
 
+// The discs of a physical sky (sr_3d::physical_sky::PhysicalSky::radiance less its sky) at a unit direction of the
+// dome's space, for the five vec4 of sr_3d::physical_sky::PhysicalSky::uniforms: moon direction (xyz, cos of half
+// its size), mode (w = 2), moon radiance, sun direction (xyz, cos of half its size), sun radiance (rgb, the sine of
+// the horizon's elevation). Each disc is drawn above the horizon only.
+fn sky_discs(d: vec3<f32>, p: array<vec4<f32>, 5>) -> vec3<f32> {
+    var c = vec3(0.0);
+    if (-d.y < p[4].w) { return c; }
+    if (any(p[4].rgb > vec3(0.0)) && dot(d, p[3].xyz) >= p[3].w) { c += p[4].rgb; }
+    if (any(p[2].rgb > vec3(0.0)) && dot(d, p[0].xyz) >= p[0].w) { c += p[2].rgb; }
+    return c;
+}
+
 // The subsurface lobe (sr_3d::subsurface::lobe): the mean clamped cosine over the rings at the profile's quantiles
 // (sr_3d::subsurface::QUANTILES, in units of the shape parameter d) on a surface of curvature 1 / radius.
 const SSS_Q = array<f32, 16>(0.06383456, 0.20014349, 0.34958202, 0.51450014, 0.69787014, 0.90351087, 1.1364199, 1.4032811, 1.7132746, 2.0794415, 2.5211546, 3.0690293, 3.776038, 4.7477603, 6.25375, 9.535895);
