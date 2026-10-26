@@ -231,7 +231,8 @@ fn xs_number(value: &str) -> f64 {
     xpath_number(v.strip_prefix('+').unwrap_or(v))
 }
 
-/// TF3 and TF4: the bodies with IAU rotation elements in the time-frames draft's rule 6.
+/// TF3, TF4 and PL1: the bodies with IAU rotation elements in the time-frames draft's rule 6, which are the bodies with
+/// IAU radii in the planets draft's rule 1.
 fn rotating(body: f64) -> bool {
     [10.0, 199.0, 299.0, 399.0, 499.0, 599.0, 699.0, 799.0, 899.0, 301.0].contains(&body)
 }
@@ -257,6 +258,23 @@ const PHYSICAL_SKY_ATTRIBUTES: [&str; 19] = [
     "aerialPerspective",
     "fogDensity",
     "fogHeight",
+];
+
+/// The attributes of the planets draft, written only with `primitive="planet"` (PL2).
+const PLANET_ATTRIBUTES: [&str; 13] = [
+    "flattening",
+    "nightLights",
+    "twilight",
+    "cloudMap",
+    "cloudHeight",
+    "cloudRotation",
+    "cloudShadow",
+    "ringMap",
+    "ringInner",
+    "ringOuter",
+    "limbDarkening",
+    "atmosphere",
+    "atmosphereHeight",
 ];
 
 /// PSKY2 as the Schematron reads the text: an optional "-", then YYYY-MM-DDThh:mm:ss, an optional fraction of
@@ -1289,9 +1307,15 @@ impl<'a> Eval<'a> {
                 || kids(n, "assets").any(|s| has_kid(s, "catalogue"))
                 || n.descendants().any(|d| is(d, "starField") && d.parent_element().is_some_and(|p| is(p, "light")))
                 // the physical-sky draft's sky
-                || n.descendants().any(|d| is(d, "light") && d.attribute("sky") == Some("physical"));
+                || n.descendants().any(|d| is(d, "light") && d.attribute("sky") == Some("physical"))
+                // the planets draft's primitive and attributes
+                || n.descendants().any(|d| {
+                    is(d, "object3D")
+                        && (d.attribute("primitive") == Some("planet")
+                            || PLANET_ATTRIBUTES.iter().any(|k| d.has_attribute(*k)))
+                });
             self.check(!uses, n, "V17", || {
-                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets, starField and sky=\"physical\" need version=\"1.8\".".into()
+                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets, starField, sky=\"physical\", primitive=\"planet\" and its attributes need version=\"1.8\".".into()
             });
         }
         // the time-frames draft (p-srep-time-frames)
@@ -1413,6 +1437,48 @@ impl<'a> Eval<'a> {
                         ),
                     );
                 }
+            }
+        }
+        // the planets draft (p-srep-planets; W19 is the draft's warning for a flattening the body's radii override)
+        if local == "object3D" {
+            if a("primitive") == Some("planet") {
+                let iau = has("body") && rotating(num(n, "body"));
+                self.check(!has("body") || iau || has("radius"), n, "PL1", || {
+                    "a planet's body is one with IAU radii (10, 199, 299, 399, 499, 599, 699, 799, 899 or 301), else the planet has a radius.".into()
+                });
+                let or = |k: &str, d: f64| if has(k) { num(n, k) } else { d };
+                let (inner, outer) = (or("ringInner", 1.239), or("ringOuter", 2.269));
+                let ok = (!has("flattening") || num(n, "flattening") < 1.0)
+                    && (!has("twilight") || num(n, "twilight") <= 90.0)
+                    && (!has("cloudHeight") || num(n, "cloudHeight") <= 1.0)
+                    && (!(has("ringInner") || has("ringOuter")) || (inner > 1.0 && outer > inner))
+                    && (!has("atmosphereHeight") || num(n, "atmosphereHeight") > 0.0);
+                self.check(ok, n, "PL3", || {
+                    "a planet's flattening is below 1, twilight at most 90, cloudHeight at most 1, ringInner above 1 and ringOuter above ringInner, atmosphereHeight positive.".into()
+                });
+                let ok = (has("cloudMap") || !["cloudHeight", "cloudRotation", "cloudShadow"].iter().any(|k| has(k)))
+                    && (has("ringMap") || !(has("ringInner") || has("ringOuter")));
+                self.check(ok, n, "PL4", || {
+                    "cloudHeight, cloudRotation and cloudShadow are written only with cloudMap; ringInner and ringOuter only with ringMap.".into()
+                });
+                if a("limbDarkening") == Some("solar") {
+                    let emissive = n.document().descendants().any(|m| {
+                        is(m, "material")
+                            && m.attribute("id").is_some()
+                            && m.attribute("id") == a("material")
+                            && (m.has_attribute("emissiveMap") || m.has_attribute("emissive"))
+                    });
+                    self.check(emissive && (!has("body") || num(n, "body") == 10.0), n, "PL5", || {
+                        "limbDarkening=\"solar\" needs a material with emissiveMap or emissive and is written with body=\"10\" or without body.".into()
+                    });
+                }
+                if iau && has("flattening") {
+                    self.warn(n, "W19", "a planet's body gives its radii: its flattening is ignored.".to_string());
+                }
+            } else {
+                self.check(!PLANET_ATTRIBUTES.iter().any(|k| has(k)), n, "PL2", || {
+                    "flattening, nightLights, twilight, cloudMap, cloudHeight, cloudRotation, cloudShadow, ringMap, ringInner, ringOuter, limbDarkening, atmosphere and atmosphereHeight are written only with primitive=\"planet\".".into()
+                });
             }
         }
         // the fields draft (p-srep-fields)

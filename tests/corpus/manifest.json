@@ -841,6 +841,45 @@
     "physical-atmosphere-enum.scene.xml": [
       "S06"
     ],
+    "pl1-body-without-radii.scene.xml": [
+      "PL1"
+    ],
+    "pl2-sphere-clouds.scene.xml": [
+      "PL2"
+    ],
+    "pl3-cloud-height.scene.xml": [
+      "PL3"
+    ],
+    "pl3-flattening.scene.xml": [
+      "PL3"
+    ],
+    "pl3-ring-inner.scene.xml": [
+      "PL3"
+    ],
+    "pl3-ring-outer-default.scene.xml": [
+      "PL3"
+    ],
+    "pl3-twilight.scene.xml": [
+      "PL3"
+    ],
+    "pl4-cloud-rotation.scene.xml": [
+      "PL4"
+    ],
+    "pl4-ring-outer.scene.xml": [
+      "PL4"
+    ],
+    "pl5-body.scene.xml": [
+      "PL5"
+    ],
+    "pl5-material.scene.xml": [
+      "PL5"
+    ],
+    "planet-atmosphere-enum.scene.xml": [
+      "S06"
+    ],
+    "planet-limb-darkening-enum.scene.xml": [
+      "S06"
+    ],
     "plot-kind-enum.scene.xml": [
       "S06",
       "PLT1"
@@ -1550,6 +1589,9 @@
     "v17-physical-sky.scene.xml": [
       "V17"
     ],
+    "v17-planet.scene.xml": [
+      "V17"
+    ],
     "v17-reactive-values.scene.xml": [
       "V17"
     ],
@@ -1859,6 +1901,10 @@
     "physical-sky.scene.xml": [],
     "physics-internal-edges.scene.xml": [],
     "pinned-fonts.scene.xml": [],
+    "planet-knobs.scene.xml": [],
+    "planet-radius.scene.xml": [],
+    "planet-sun.scene.xml": [],
+    "planet.scene.xml": [],
     "plots-3d.scene.xml": [],
     "plots.scene.xml": [],
     "prec1-f32-3d.scene.xml": [],
@@ -2054,6 +2100,9 @@
     ],
     "w18-physical-attributes.scene.xml": [
       "W18"
+    ],
+    "w19-planet-flattening.scene.xml": [
+      "W19"
     ]
   }
 }

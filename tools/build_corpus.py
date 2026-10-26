@@ -1021,6 +1021,34 @@ CASES += [
     ("psky4-sun-elevation", ["PSKY4"], lambda _: PHYS.replace(' sunSize="0.6"', ' sunSize="0.6" sunElevation="30"')),
     ("physical-atmosphere-enum", ["S06"], lambda _: PHYS.replace(' sunSize="0.6"', ' sunSize="0.6" atmosphere="mars"')),
 ]
+# the planets draft: primitive="planet" and its attributes, PL1 to PL5, V17 and the warning W19
+PLANET = ('<scene version="1.8"><project width="64" height="64" fps="24" duration="1"/>'
+    '<materials><material id="earth" baseColorMap="../media/logo.png" emissiveMap="../media/spin_0001.png"/><material id="photosphere" emissive="#FFF0E0"/></materials>'
+    '<composition><camera id="eye" z="-10"/><object3D id="world" primitive="planet" body="399" material="earth" cloudMap="../media/spin_0002.png" cloudRotation="0.01"/></composition></scene>\n')
+VALID["planet"] = PLANET
+VALID["planet-knobs"] = PLANET.replace(' cloudRotation="0.01"', ' cloudRotation="-1.5e-2" cloudHeight="1" cloudShadow="false" nightLights="false" twilight="90" atmosphere="earth" atmosphereHeight="+11.1e3" ringMap="../media/spin_0003.png" ringInner="1.0001" ringOuter="+1.0002"')
+VALID["planet-sun"] = PLANET.replace('body="399" material="earth"', 'body="10" material="photosphere" limbDarkening="solar"')
+VALID["planet-radius"] = PLANET.replace('body="399"', 'body="2000001" radius="4" flattening="0.999"')
+CASES += [
+    ("v17-planet", ["V17"], lambda _: PLANET.replace('version="1.8"', 'version="1.7"')),
+    ("pl1-body-without-radii", ["PL1"], lambda _: PLANET.replace('body="399"', 'body="401"')),
+    ("pl2-sphere-clouds", ["PL2"], lambda _: PLANET.replace('primitive="planet" body="399"', 'primitive="sphere"')),
+    ("pl3-flattening", ["PL3"], lambda _: PLANET.replace('body="399"', 'radius="4" flattening="1"')),
+    ("pl3-twilight", ["PL3"], lambda _: PLANET.replace(' cloudRotation', ' twilight="90.5" cloudRotation')),
+    ("pl3-cloud-height", ["PL3"], lambda _: PLANET.replace(' cloudRotation', ' cloudHeight="1.01" cloudRotation')),
+    ("pl3-ring-inner", ["PL3"], lambda _: PLANET.replace(' cloudRotation', ' ringMap="../media/spin_0003.png" ringInner="1" cloudRotation')),
+    ("pl3-ring-outer-default", ["PL3"], lambda _: PLANET.replace(' cloudRotation', ' ringMap="../media/spin_0003.png" ringInner="3" cloudRotation')),
+    ("pl4-cloud-rotation", ["PL4"], lambda _: PLANET.replace(' cloudMap="../media/spin_0002.png"', '')),
+    ("pl4-ring-outer", ["PL4"], lambda _: PLANET.replace(' cloudRotation', ' ringOuter="2" cloudRotation')),
+    ("pl5-body", ["PL5"], lambda _: PLANET.replace('material="earth"', 'material="earth" limbDarkening="solar"')),
+    ("pl5-material", ["PL5"], lambda _: PLANET.replace('body="399" material="earth"', 'body="10" limbDarkening="solar"')),
+    ("planet-limb-darkening-enum", ["S06"], lambda _: PLANET.replace('material="earth"', 'material="earth" limbDarkening="quadratic"')),
+    ("planet-atmosphere-enum", ["S06"], lambda _: PLANET.replace('material="earth"', 'material="earth" atmosphere="mars"')),
+]
+WARN_CASES += [
+    # the planets draft: a body's radii override the flattening
+    ("w19-planet-flattening", ["W19"], lambda _: PLANET.replace('body="399"', 'body="399" flattening="0.5"')),
+]
 CASES += [
     ("v16-fractal", ["V16"], lambda _: FRACTAL.replace('version="1.6"', 'version="1.5"')),
     ("frc1-julia-without-c", ["FRC1"], lambda _: FRACTAL.replace(' juliaX="-0.8" juliaY="0.156"', ' juliaX="-0.8"')),

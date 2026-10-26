@@ -72,16 +72,25 @@ ignored. SREP 71's SKY1 and SKY2 (a sky on a dome only, never beside an environm
 The draft's one change to an existing attribute: lightType's sunIntensity loses its default="0", its documentation
 stating the readings (absent is 0 under none and gradient, 1 under physical), since a schema default is filled before a
 consumer can see absence.
++ the diff of sr-core srep/srep-0000-planets.md (draft, Schema-Version 1.8, as of sr-core 21a0070): the value planet
+of object3DType's primitive and its attributes flattening, nightLights, twilight, cloudMap, cloudHeight, cloudRotation,
+cloudShadow, ringMap, ringInner, ringOuter, limbDarkening none|solar, atmosphere earth|none and atmosphereHeight with the
+draft's types and defaults, PL1 to PL5 (pattern p-srep-planets, last) and V17's clause. The asserts write the draft's
+prose out: PL1 is a body with IAU radii (10, 199, 299, 399, 499, 599, 699, 799, 899, 301) or a radius; PL2 (rule
+context object3D, after the planet's rule) is none of the attributes on another primitive; PL3 reads ringInner and
+ringOuter with their defaults when either is written, so a lone ringInner of 3 is refused against the default
+ringOuter; PL5 finds the material by id anywhere in the document. The draft's "ignored, with a warning" for a
+flattening beside a body with radii is the native warning W19.
 V17 is SREP 12's one shared 1.8 gate: one pattern, p-v17 (after p-srep75), whose one assert is the conjunction of
 the drafts' clauses.
 The branch merges when those SREPs are accepted; this file then names the schema-1.8.0 tag.
 Source: https://github.com/pedroanisio/sr-core
 
-Canonical upstream files (SHA-256; the files of that tag with the ten drafts' diffs; at the tag the .xsd is
+Canonical upstream files (SHA-256; the files of that tag with the eleven drafts' diffs; at the tag the .xsd is
 5ef91e6ca9a6d860047f2a5347c59fa17423cb99ef7535b7ceaca16619f8ce2c and the .sch, as in sr-core's schema/SHA256SUMS,
 868863e9ea4caf04e7f0bd9873c23ce5f723205714178349a4f385c4778fd368):
-  scene-render.xsd: 542caf77034b52e3a2d729a6e7841c4f3c5b401ff7c09fcc414535c25fd2348c
-  scene-render.sch: 89f47b061305f0b294e57797f4f4dac82151fe77fcc5759781e4ff9f69c976af
+  scene-render.xsd: d1f6034590a1d6355e7900db6c4cd25fbebfc94e47fc37c8ab8e04bf7a94db27
+  scene-render.sch: 51ce115cdc515fa468a831d5694c44ec394cfbfc984bdba08110ac6be936382c
   capabilities-1.schema.json: 6cb35c8ec6d37df32c9a0ad12eb33332d2abe4f11ac6000a9311d9891ec2e8b3
 
 scene-render-1.1.xsd, scene-render-1.1.sch and capabilities-1.schema.json are byte-identical to these files. Local
@@ -94,11 +103,11 @@ native OCN7 refuses an animated tracking on an ocean collider, as P3D6 and PYRO8
 document (corpus case ocn7-text-tracking, a native-only rule case). It is an erratum of sr-core's OCN7 for an SREP to
 settle. The warnings W05, W11 and W12 (SREP 76) and the program diagnostics are native only, as the SREPs define them.
 
-Document version 1.8 (sr_model::SCHEMA_VERSION is "1.8") is the random-streams, media, plots, space-transforms, semantic-tex, reactive-values, fields, time-frames, star-fields and physical-sky drafts', a local addition
+Document version 1.8 (sr_model::SCHEMA_VERSION is "1.8") is the random-streams, media, plots, space-transforms, semantic-tex, reactive-values, fields, time-frames, star-fields, physical-sky and planets drafts', a local addition
 on this branch: a 1.8 document is a 1.7 document whose simulations draw from the D24 streams of the random-streams
-draft's section 5, whose media may name a phase function and which may hold axes, plots, the space transforms, tagged formula parts and morphs, value assets, fields, a space, ephemerides, star fields and a physical sky (MED4 refuses the media
-attributes and V17 the plots elements, space transforms, semantic-tex syntax, value assets, fields, the time-frames, the star-fields and the physical-sky syntax before 1.8; crates/sr-model/tests/version_1_8.rs,
-plots_rules.rs, space_rules.rs, semantic_tex_rules.rs, reactive_values_rules.rs, fields_rules.rs, time_frames_rules.rs, star_fields_rules.rs and physical_sky_rules.rs). Document version 1.7 is schema 1.7.0's. It adds no syntax and has no version
+draft's section 5, whose media may name a phase function and which may hold axes, plots, the space transforms, tagged formula parts and morphs, value assets, fields, a space, ephemerides, star fields, a physical sky and planets (MED4 refuses the media
+attributes and V17 the plots elements, space transforms, semantic-tex syntax, value assets, fields, the time-frames, the star-fields, the physical-sky and the planets syntax before 1.8; crates/sr-model/tests/version_1_8.rs,
+plots_rules.rs, space_rules.rs, semantic_tex_rules.rs, reactive_values_rules.rs, fields_rules.rs, time_frames_rules.rs, star_fields_rules.rs, physical_sky_rules.rs and planets_rules.rs). Document version 1.7 is schema 1.7.0's. It adds no syntax and has no version
 gate: SREP 87's scoping applies to documents of every version, and a 1.7 document validates and renders as the same
 document at 1.6 (crates/sr-model/tests/version_1_7.rs). Document version 1.6 is schema 1.6.0's. A 1.6 document holding
 1.5 content

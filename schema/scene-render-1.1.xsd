@@ -2682,7 +2682,7 @@
         <xs:enumeration value="clay"/><xs:enumeration value="map"/><xs:enumeration value="globe"/>
         <xs:enumeration value="volume"/><xs:enumeration value="voxels"/>
         <xs:enumeration value="parametric"/><xs:enumeration value="heightfield"/>
-        <xs:enumeration value="axes"/>
+        <xs:enumeration value="axes"/><xs:enumeration value="planet"/>
       </xs:restriction></xs:simpleType>
     </xs:attribute>
     <xs:attribute name="material" type="xs:IDREF"/>
@@ -2779,6 +2779,48 @@
     <xs:attribute name="orientation" default="document">
       <xs:annotation><xs:documentation>bodyFixed: the object's axes are its body's IAU body-fixed axes in the space's frame at the frame's time.</xs:documentation></xs:annotation>
       <xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="document"/><xs:enumeration value="bodyFixed"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <!-- planets draft, version 1.8: read with primitive="planet" (PL2) -->
+    <xs:attribute name="flattening" type="nonNegativeDecimal" default="0">
+      <xs:annotation><xs:documentation>(a - c) / a, below 1 (PL3); ignored, with a warning, when body gives the radii.</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="nightLights" type="xs:boolean" default="true">
+      <xs:annotation><xs:documentation>true: the material's emissiveMap is masked to the night side; false leaves it an ordinary emissive map.</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="twilight" type="nonNegativeDecimal" default="6">
+      <xs:annotation><xs:documentation>Degrees, at most 90 (PL3): the band of the Sun's elevation over which the night lights fade.</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="cloudMap" type="xs:anyURI">
+      <xs:annotation><xs:documentation>An equirectangular RGBA texture of a cloud shell.</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="cloudHeight" type="positiveDecimal" default="0.004">
+      <xs:annotation><xs:documentation>The shell's height as a fraction of the equatorial radius, at most 1 (PL3); only with cloudMap (PL4).</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="cloudRotation" type="xs:double" default="0">
+      <xs:annotation><xs:documentation>Degrees of longitude per scene second, eastward; only with cloudMap (PL4).</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="cloudShadow" type="xs:boolean" default="true">
+      <xs:annotation><xs:documentation>true: the shell's alpha darkens the ground below it; only with cloudMap (PL4).</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="ringMap" type="xs:anyURI">
+      <xs:annotation><xs:documentation>A one-row RGBA strip from the ring's inner to its outer edge.</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="ringInner" type="positiveDecimal" default="1.239">
+      <xs:annotation><xs:documentation>The ring's inner edge in equatorial radii, above 1 (PL3); only with ringMap (PL4).</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="ringOuter" type="positiveDecimal" default="2.269">
+      <xs:annotation><xs:documentation>The ring's outer edge in equatorial radii, above ringInner (PL3); only with ringMap (PL4).</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="limbDarkening" default="none">
+      <xs:annotation><xs:documentation>solar: the emissive map darkens toward the limb by the Sun's limb-darkening law; needs an emissive material and body 10 or no body (PL5).</xs:documentation></xs:annotation>
+      <xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="none"/><xs:enumeration value="solar"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="atmosphere" default="none">
+      <xs:annotation><xs:documentation>earth: the body carries the physical-sky draft's atmosphere as a scattering shell.</xs:documentation></xs:annotation>
+      <xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="earth"/><xs:enumeration value="none"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="atmosphereHeight" type="positiveDecimal" default="100000">
+      <xs:annotation><xs:documentation>Metres of atmosphere above the equatorial radius.</xs:documentation></xs:annotation>
     </xs:attribute>
     <xs:attribute name="map" type="xs:IDREF">
       <xs:annotation><xs:documentation>

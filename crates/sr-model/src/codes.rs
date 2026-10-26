@@ -124,6 +124,11 @@ const FIXED: &[(&str, &str, &str)] = &[
         "rules",
         "A dome light writes an attribute of the physical sky (date, the observer, the moon, the atmosphere or the fog) under sky=\"none\" or \"gradient\": it is read only with sky=\"physical\", so it is ignored (the physical-sky draft, PSKY1).",
     ),
+    (
+        "W19",
+        "rules",
+        "A planet whose body has IAU radii (10, 199, 299, 399, 499, 599, 699, 799, 899 or 301) also sets flattening: the body's radii give its shape, so the attribute is ignored (the planets draft, PL1).",
+    ),
     ("A01", "assets", "A referenced input file does not exist."),
     (
         "TF1",

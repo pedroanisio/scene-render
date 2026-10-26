@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- expect: valid -->
+<scene version="1.8"><project width="64" height="64" fps="24" duration="1"/><materials><material id="earth" baseColorMap="../media/logo.png" emissiveMap="../media/spin_0001.png"/><material id="photosphere" emissive="#FFF0E0"/></materials><composition><camera id="eye" z="-10"/><object3D id="world" primitive="planet" body="2000001" radius="4" flattening="0.999" material="earth" cloudMap="../media/spin_0002.png" cloudRotation="0.01"/></composition></scene>
