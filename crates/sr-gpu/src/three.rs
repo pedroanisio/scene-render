@@ -2946,7 +2946,8 @@ impl ThreeEngine {
             view_proj: vp.to_cols_array_2d(),
             view: scene.cam.view.to_cols_array_2d(),
             inv_view_proj: vp.inverse().to_cols_array_2d(),
-            eye: scene.cam.eye.extend(1.0).to_array(),
+            // w: 1 through a perspective camera, 0 through an orthographic one (the line of sight is the view axis)
+            eye: scene.cam.eye.extend(if scene.cam.orthographic { 0.0 } else { 1.0 }).to_array(),
             screen: [size[0] as f32, size[1] as f32, 1.0 / size[0] as f32, 1.0 / size[1] as f32],
             params: [
                 scene.exposure,

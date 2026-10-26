@@ -344,6 +344,13 @@ fn night_weight(n: vec3<f32>) -> f32 {
     return clamp(0.5 - e / (2.0 * mat.planet.w), 0.0, 1.0);
 }
 
+// The line of sight from `world` toward the eye: through an orthographic camera (eye.w 0) every point's is the view
+// axis, back along the camera's +z.
+fn toward_eye(world: vec3<f32>) -> vec3<f32> {
+    if (fr.eye.w < 0.5) { return -normalize(vec3(fr.view[0].z, fr.view[1].z, fr.view[2].z)); }
+    return normalize(fr.eye.xyz - world);
+}
+
 fn luma(c: vec3<f32>) -> f32 {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
 }
@@ -556,7 +563,7 @@ fn surface(i: VOut, front: bool) -> Surface {
     s.b = normalize(cross(n, s.t));
     s.n = n;
     s.world = i.world;
-    s.v = normalize(fr.eye.xyz - i.world);
+    s.v = toward_eye(i.world);
     s.occlusion = 1.0;
     if ((bits & 8u) != 0u) { s.occlusion = 1.0 + mat.irid.w * (material_fragment(occ_map, i.occ_uv, 3u).r - 1.0); }
     let ior = mat.p2.w;

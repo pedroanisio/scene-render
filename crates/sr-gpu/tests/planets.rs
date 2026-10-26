@@ -332,3 +332,31 @@ fn a_planet_the_ephemeris_places_takes_the_sun_from_its_own_body() {
     // the disc covers about pi 30^2 = 2827 pixels
     assert!(night > 300 && day > 300 && night + day > 2400, "night {night} day {day}");
 }
+
+#[test]
+fn through_an_orthographic_camera_the_line_of_sight_is_the_view_axis() {
+    // the camera 50 units in front of the Sun's surface: toward its position the cosines would be far from the axis's
+    let alpha: [f64; 3] = [610.0, 550.0, 465.0].map(|nm| sr_3d::planet::limb_alpha(nm).unwrap());
+    let xml = format!(
+        r##"<scene version="1.8"><project width="{SIZE}" height="{SIZE}" fps="24" duration="1" background="#000000FF"/><materials><material id="m" baseColor="#000000FF" specular="0" emissive="#FFFFFF"/></materials><composition><camera id="eye" projection="orthographic" orthoHeight="{SIZE}" z="-150"/><object3D id="p" primitive="planet" material="m" radius="100" segments="256" limbDarkening="solar"/></composition><lights><light id="sun" type="directional" yaw="-90"/></lights></scene>"##
+    );
+    let doc = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap_or_else(|e| panic!("{e:?}"));
+    let Some(r) = render(&doc) else { return };
+    assert!(r.stats.errors.is_empty(), "{:?}", r.stats.errors);
+    let c = SIZE / 2;
+    let mut checked = 0;
+    for x in c..SIZE {
+        let u = (x as f64 + 0.5 - c as f64) / 100.0;
+        let mu = (1.0 - u * u).max(0.0).sqrt();
+        if mu < 0.2 {
+            continue;
+        }
+        let got = r.at(x, c);
+        for k in 0..3 {
+            let want = mu.powf(alpha[k]);
+            assert!((got[k] as f64 - want).abs() < 0.02, "x {x} mu {mu:.3} channel {k}: {got:?} want {want}");
+        }
+        checked += 1;
+    }
+    assert!(checked > 80, "{checked} pixels checked");
+}
