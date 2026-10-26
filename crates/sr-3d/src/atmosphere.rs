@@ -659,3 +659,32 @@ impl Fog {
         (-depth).exp()
     }
 }
+
+/// Rules 10 and 11's scale: `physics/@pixelsPerMeter`, positive and finite.
+fn pixels_per_meter(k: f64) -> Result<f64, SkyError> {
+    if !(k > 0.0 && k.is_finite()) {
+        return err("pixelsPerMeter is a positive number");
+    }
+    Ok(k)
+}
+
+/// Rules 10 and 11: a scene point `p` (pixels, +y down) in the planet frame. The scene's origin is rule 9's observer at
+/// `altitude` metres, a metre is `pixels_per_meter` pixels (SREP 14 rule 4), scene up (−y) is +z and the scene's x and
+/// z span the tangent plane: (x, z, R + `altitude` − y) with the lengths in metres.
+pub fn atmosphere_position(a: &Atmosphere, p: V3, altitude: f64, pixels_per_meter: f64) -> Result<V3, SkyError> {
+    let k = self::pixels_per_meter(pixels_per_meter)?;
+    if !(p.iter().all(|c| c.is_finite()) && altitude.is_finite()) {
+        return err("a scene point and the altitude are finite");
+    }
+    Ok([p[0] / k, p[2] / k, a.planet_radius + altitude - p[1] / k])
+}
+
+/// Rule 11: the altitude of the fog at scene height `y` (pixels, +y down): `altitude` − y / `pixels_per_meter`, the
+/// tangent plane's altitude.
+pub fn scene_altitude(y: f64, altitude: f64, pixels_per_meter: f64) -> Result<f64, SkyError> {
+    let k = self::pixels_per_meter(pixels_per_meter)?;
+    if !(y.is_finite() && altitude.is_finite()) {
+        return err("a scene height and the altitude are finite");
+    }
+    Ok(altitude - y / k)
+}

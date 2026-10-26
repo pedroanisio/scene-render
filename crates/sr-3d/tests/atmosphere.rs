@@ -3,8 +3,9 @@
 //! from orbit, over a length, with the aerosol and ozone knobs), and the failure paths of the rules.
 
 use sr_3d::atmosphere::{
-    atmosphere, disc_solid_angle, effective_sun_irradiance, hg_phase, integrate_phase, lambert_phase, rayleigh_phase,
-    unit, Atmosphere, AtmosphereOptions, Fog, Scattering, SkyError, MAX_SAMPLES, MOON_ALBEDO,
+    atmosphere, atmosphere_position, disc_solid_angle, effective_sun_irradiance, hg_phase, integrate_phase,
+    lambert_phase, rayleigh_phase, scene_altitude, unit, Atmosphere, AtmosphereOptions, Fog, Scattering, SkyError,
+    MAX_SAMPLES, MOON_ALBEDO,
 };
 use sr_3d::space::moon::moon_from_document;
 use sr_3d::space::sun::Observer;
@@ -333,4 +334,31 @@ fn the_moon_rows() {
     let mut set = full;
     set.zenith = 95.0;
     assert_eq!(a.moon_radiance(ground(&a), &set, 1.0).unwrap(), [0.0; 3]);
+}
+
+#[test]
+fn scene_points_in_the_atmosphere() {
+    // rules 10 and 11 at sr-core 1ba4012: a metre is pixelsPerMeter pixels, the origin is the observer at altitude,
+    // scene up (−y) is +z and x, z span the tangent plane
+    let a = earth();
+    assert_eq!(atmosphere_position(&a, [100.0, -5000.0, 250.0], 10.0, 1.0).unwrap(), [100.0, 250.0, 6365010.0]);
+    assert_eq!(
+        (scene_altitude(-50000.0, 0.0, 100.0).unwrap(), scene_altitude(0.0, 1830.14, 1.0).unwrap()),
+        (500.0, 1830.14)
+    );
+    // the scale divides every axis, and the camera at the origin is the observer
+    assert_eq!(
+        atmosphere_position(&a, [200.0, 300.0, -400.0], 0.0, 100.0).unwrap(),
+        [2.0, -4.0, a.planet_radius - 3.0]
+    );
+    assert_eq!(atmosphere_position(&a, [0.0; 3], 1830.14, 100.0).unwrap(), [0.0, 0.0, a.planet_radius + 1830.14]);
+    for k in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(matches!(atmosphere_position(&a, [0.0; 3], 0.0, k), Err(SkyError(_))), "pixelsPerMeter {k}");
+        assert!(matches!(scene_altitude(0.0, 0.0, k), Err(SkyError(_))), "pixelsPerMeter {k}");
+    }
+    assert!(atmosphere_position(&a, [f64::NAN, 0.0, 0.0], 0.0, 1.0).is_err());
+    assert!(atmosphere_position(&a, [0.0, f64::INFINITY, 0.0], 0.0, 1.0).is_err());
+    assert!(atmosphere_position(&a, [0.0; 3], f64::NAN, 1.0).is_err());
+    assert!(scene_altitude(f64::NAN, 0.0, 1.0).is_err());
+    assert!(scene_altitude(0.0, f64::INFINITY, 1.0).is_err());
 }
