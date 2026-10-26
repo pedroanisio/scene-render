@@ -36,6 +36,8 @@ struct Params {
     perm: vec4<u32>,
     // SREP 71 procedural sky (sr_3d::sky::Sky::uniforms); sky[1].w is 1 when the dome is one
     sky: array<vec4<f32>, 5>,
+    // the physical-sky draft's rules 10 and 11 on surfaces, as the rasteriser's frame holds them (three_types.wgsl)
+    aerial: array<vec4<f32>, 2>,
 };
 
 struct Mat {
@@ -90,6 +92,9 @@ fn tmat_of(k: u32) -> u32 { return bitcast<u32>(tverts[k * 24u].w); }
 @group(0) @binding(10) var env_tex: texture_2d<f32>;
 @group(0) @binding(11) var smp: sampler;
 @group(0) @binding(12) var backdrop: texture_2d<f32>;
+// the camera's aerial volume (radiance slices, then transmittance slices) and the fog's horizon table
+@group(0) @binding(13) var aerial_tex: texture_3d<f32>;
+@group(0) @binding(14) var aerial_horizon: texture_2d<f32>;
 
 fn tuv(k: u32, c: u32, slot: u32) -> vec2<f32> {
     let row = tverts[k * 24u + c * 6u + 3u + slot / 2u];
@@ -318,6 +323,54 @@ fn env_radiance(d: vec3<f32>, diffuse: vec3<f32>, specular: vec3<f32>) -> vec3<f
         c += light.color.rgb * (diffuse * lobes.x + specular * lobes.y);
     }
     return c;
+}
+
+// The light the air and the fog add between the camera and a surface point, and the fraction of the surface's that
+// arrives (rules 10 and 11, the rasteriser's aerial_apply).
+struct Aerial {
+    l: vec3<f32>,
+    t: vec3<f32>,
+};
+
+fn aerial_segment(world: vec3<f32>) -> Aerial {
+    let mode = u32(pp.aerial[0].x);
+    if (mode == 0u) { return Aerial(vec3(0.0), vec3(1.0)); }
+    let k = pp.aerial[0].y;
+    let c = pp.view_proj * vec4(world, 1.0);
+    let ndc = c.xy / c.w;
+    // the segment leaves the eye, or the near plane (reverse-Z: depth 1) through an orthographic camera
+    var origin = (pp.cam_to_world * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+    if (pp.aerial[1].w > 0.5) {
+        let n = pp.inv_view_proj * vec4(ndc, 1.0, 1.0);
+        origin = n.xyz / n.w;
+    }
+    let s = length(world - origin) / k;
+    if (mode == 1u) {
+        let dims = vec3<f32>(textureDimensions(aerial_tex));
+        let slices = dims.z * 0.5;
+        let z = sqrt(clamp(s / pp.aerial[0].w, 0.0, 1.0)) * (slices - 1.0);
+        let uv = (clamp(ndc * 0.5 + 0.5, vec2(0.0), vec2(1.0)) * (dims.xy - 1.0) + 0.5) / dims.xy;
+        let l = textureSampleLevel(aerial_tex, smp, vec3(uv, (z + 0.5) / dims.z), 0.0).rgb;
+        let t = textureSampleLevel(aerial_tex, smp, vec3(uv, (z + 0.5 + slices) / dims.z), 0.0).rgb;
+        return Aerial(l * pp.env.y, t);
+    }
+    let p0 = (pp.env_rot * vec4(origin, 1.0)).xyz;
+    let p1 = (pp.env_rot * vec4(world, 1.0)).xyz;
+    let h0 = max(pp.aerial[0].z - p0.y / k, 0.0);
+    let h1 = max(pp.aerial[0].z - p1.y / k, 0.0);
+    let hs = pp.aerial[1].y;
+    let x = (h1 - h0) / hs;
+    let slope = select((1.0 - exp(-x)) / x, 1.0 - x * 0.5 + x * x / 6.0, abs(x) < 1e-2);
+    let tf = exp(-pp.aerial[1].x * s * exp(-h0 / hs) * slope);
+    let d = p1 - p0;
+    var a = 0.0;
+    if (length(d.xz) > 1e-6 * length(d)) { a = atan2(d.z, d.x); }
+    let nodes = pp.aerial[1].z;
+    let ax = fract(a / (2.0 * PI) + 1.0) * nodes;
+    let i0 = u32(floor(ax)) % u32(nodes);
+    let hz = textureLoad(aerial_horizon, vec2(i32(i0), 0), 0).rgb;
+    let lh = mix(hz, textureLoad(aerial_horizon, vec2(i32((i0 + 1u) % u32(nodes)), 0), 0).rgb, ax - floor(ax));
+    return Aerial((1.0 - tf) * lh * pp.env.y, vec3(tf));
 }
 
 // ---------------------------------------------------------------- BSDF (the rasteriser's lobes)
@@ -714,6 +767,12 @@ fn radiance(px: vec2<f32>, pix: u32, first: bool) -> vec4<f32> {
         if (met == 1u && first) {
             guide[pix * 2u] += vec4(m.base.rgb, 1.0);
             guide[pix * 2u + 1u] += vec4(n, hit.t);
+        }
+        if (met == 1u) {
+            // the camera's segment to the first surface it sees: what follows from the surface crosses the air
+            let air = aerial_segment(p);
+            col += thr * air.l;
+            thr *= air.t;
         }
         col += thr * m.emissive.rgb;
         if (m.emissive.w > 0.5) { break; }

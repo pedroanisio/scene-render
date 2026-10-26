@@ -1462,6 +1462,9 @@ struct Params {
     perm: [u32; 4],
     /// SREP 71 procedural sky (sr_3d::sky::Sky::uniforms); sky[1][3] is 1 when the dome is one
     sky: [[f32; 4]; 5],
+    /// The physical-sky draft's rules 10 and 11 on the surfaces the camera sees (crate::three::AerialGpu::uniforms;
+    /// mode 0 applies nothing)
+    aerial: [[f32; 4]; 2],
 }
 
 /// The stride of the trace workgroup permutation for `n` workgroups: the coprime number nearest n / phi, so that
@@ -1894,6 +1897,8 @@ struct Pipelines {
     bgl_rays: Option<wgpu::BindGroupLayout>,
     hardware: [std::sync::OnceLock<wgpu::ComputePipeline>; 45],
     output: wgpu::RenderPipeline,
+    /// The aerial volume and horizon table bound when a pass has none (zeros; its mode 0 reads neither).
+    no_aerial: (wgpu::TextureView, wgpu::TextureView),
 }
 
 /// The pipelines of the tracers alive, by device and output format.
@@ -2115,6 +2120,26 @@ impl Pipelines {
                     count: None,
                 },
                 tex(12),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 13,
+                    visibility: vis,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 14,
+                    visibility: vis,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let bgl_pair = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2211,6 +2236,25 @@ impl Pipelines {
             bgl_rays,
             hardware: std::array::from_fn(|_| std::sync::OnceLock::new()),
             output,
+            no_aerial: {
+                let zeros = |dimension, format| {
+                    d.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("pathtrace-no-aerial"),
+                        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension,
+                        format,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default())
+                };
+                (
+                    zeros(wgpu::TextureDimension::D3, wgpu::TextureFormat::Rgba16Float),
+                    zeros(wgpu::TextureDimension::D2, wgpu::TextureFormat::Rgba32Float),
+                )
+            },
         }
     }
 
@@ -2427,6 +2471,13 @@ pub struct PtInputs<'a> {
     pub sampler: &'a wgpu::Sampler,
     /// Mip 0 of the dome as the shader samples it (f16-rounded), for the CPU tracer.
     pub env_texels: Option<&'a (u32, u32, Vec<[f32; 4]>)>,
+    /// A physical sky's aerial perspective and height fog on the surfaces of the pass's camera (rules 10 and 11).
+    pub aerial: Option<&'a crate::three::AerialGpu>,
+}
+
+/// The aerial volume and horizon table a pass binds: its camera's, or the pipelines' zeros.
+fn aerial_views<'a>(pt: &'a PtGpu, inputs: &PtInputs<'a>) -> (&'a wgpu::TextureView, &'a wgpu::TextureView) {
+    inputs.aerial.map_or((&pt.pipelines.no_aerial.0, &pt.pipelines.no_aerial.1), |a| (&a.volume, &a.horizon))
 }
 
 /// The CPU tracer's view of a pass's uniform block.
@@ -2468,6 +2519,7 @@ fn cpu_trace_selected(
         && !grid
         && !counter
         && base.sky[1][3] <= 0.5
+        && base.aerial[0][0] <= 0.5
         && (base.env[0] <= 0.5 || env_available)
 }
 
@@ -2526,6 +2578,7 @@ fn build_light_grids(
         contents: &bytes,
         usage: wgpu::BufferUsages::UNIFORM,
     });
+    let aerial = aerial_views(pt, inputs);
     let entries = |acc: &wgpu::Buffer| {
         d.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("pathtrace-grid-build"),
@@ -2551,6 +2604,8 @@ fn build_light_grids(
                     binding: 12,
                     resource: wgpu::BindingResource::TextureView(inputs.backdrop.unwrap_or(inputs.black)),
                 },
+                wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(aerial.0) },
+                wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(aerial.1) },
             ],
         })
     };
@@ -2741,6 +2796,7 @@ pub(crate) fn render_cached(
         media,
         perm: [trace_stride_for(pt.cpu_adapter, tile.size[0].div_ceil(8) * tile.size[1].div_ceil(8)), 0, 0, 0],
         sky: scene.env.as_ref().and_then(|e| e.sky).map(|s| s.uniforms()).unwrap_or([[0.0; 4]; 5]),
+        aerial: inputs.aerial.map_or([[0.0; 4]; 2], |a| a.uniforms),
     };
 
     // the grids are built once, before the tiles
@@ -2836,6 +2892,7 @@ pub(crate) fn render_cached(
             contents: &ubytes,
             usage: wgpu::BufferUsages::UNIFORM,
         });
+        let aerial = aerial_views(pt, inputs);
         let group0 = |acc: &wgpu::Buffer| {
             d.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("pathtrace"),
@@ -2861,6 +2918,8 @@ pub(crate) fn render_cached(
                         binding: 12,
                         resource: wgpu::BindingResource::TextureView(inputs.backdrop.unwrap_or(inputs.black)),
                     },
+                    wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(aerial.0) },
+                    wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(aerial.1) },
                 ],
             })
         };
@@ -3096,6 +3155,12 @@ mod wgsl_layout_tests {
         let mut p = zero_params();
         p.sky[1][3] = 1.0;
         assert!(!sel(&p, on));
+        // the CPU loop has no aerial perspective or fog (rules 10 and 11 of the physical-sky draft)
+        for mode in [1.0, 2.0] {
+            let mut p = zero_params();
+            p.aerial[0][0] = mode;
+            assert!(!sel(&p, on), "aerial mode {mode}");
+        }
         // a backdrop is read only by paths that have met nothing but glass, and the CPU loop has no transmission
         let mut p = zero_params();
         p.misc[0] = 1.0;
@@ -3104,7 +3169,7 @@ mod wgsl_layout_tests {
 
     #[test]
     fn params_matches_wgsl_params() {
-        let fields = rust_fields!(super::Params; cam_to_world, view_proj, inv_view_proj, env_rot, size, cam, env, ambient, misc, out, tile, media, perm, sky);
+        let fields = rust_fields!(super::Params; cam_to_world, view_proj, inv_view_proj, env_rot, size, cam, env, ambient, misc, out, tile, media, perm, sky, aerial);
         assert_agree(include_str!("pathtrace.wgsl"), "Params", std::mem::size_of::<super::Params>(), &fields);
     }
 }

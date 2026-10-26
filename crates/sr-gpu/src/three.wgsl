@@ -654,7 +654,8 @@ fn aerial_apply(col: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     let nodes = fr.aerial[1].z;
     let ax = fract(a / (2.0 * PI) + 1.0) * nodes;
     let i0 = u32(floor(ax)) % u32(nodes);
-    let lh = mix(aerial_horizon[i0].rgb, aerial_horizon[(i0 + 1u) % u32(nodes)].rgb, ax - floor(ax));
+    let hz = textureLoad(aerial_horizon, vec2(i32(i0), 0), 0).rgb;
+    let lh = mix(hz, textureLoad(aerial_horizon, vec2(i32((i0 + 1u) % u32(nodes)), 0), 0).rgb, ax - floor(ax));
     return col * tf + (1.0 - tf) * lh * fr.params.w;
 }
 

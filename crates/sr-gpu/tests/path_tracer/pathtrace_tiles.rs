@@ -81,7 +81,8 @@ fn tiled_paths_match_whole_frame_at_edges_and_denoise_seams() {
     };
     let black = eng.upload_f16([1, 1], &[[0.0; 4]]).create_view(&Default::default());
     let sampler = g.device.create_sampler(&Default::default());
-    let inputs = PtInputs { env: &black, backdrop: None, black: &black, sampler: &sampler, env_texels: None };
+    let inputs =
+        PtInputs { env: &black, backdrop: None, black: &black, sampler: &sampler, env_texels: None, aerial: None };
     let mut pt = PtGpu::new(&g.device, wgpu::TextureFormat::Rgba16Float);
     assert!(pt.limit_buffers(1024).is_err(), "must reject a budget unable to hold denoising halos");
     assert!(
@@ -177,7 +178,8 @@ fn cpu_traced_tiles_share_one_scene_build_per_pass() {
     };
     let black = eng.upload_f16([1, 1], &[[0.0; 4]]).create_view(&Default::default());
     let sampler = g.device.create_sampler(&Default::default());
-    let inputs = PtInputs { env: &black, backdrop: None, black: &black, sampler: &sampler, env_texels: None };
+    let inputs =
+        PtInputs { env: &black, backdrop: None, black: &black, sampler: &sampler, env_texels: None, aerial: None };
     let mut pt = PtGpu::new(&g.device, wgpu::TextureFormat::Rgba16Float);
     pt.cpu_adapter = true;
     let data = pathtrace::build(&sc);

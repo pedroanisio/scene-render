@@ -385,8 +385,8 @@ pub struct Env3 {
 /// packed along z as its radiance slices then its transmittance slices, and the fog's horizon table.
 pub struct AerialGpu {
     pub uniforms: [[f32; 4]; 2],
-    volume: wgpu::TextureView,
-    horizon: wgpu::Buffer,
+    pub(crate) volume: wgpu::TextureView,
+    pub(crate) horizon: wgpu::TextureView,
 }
 
 /// One star of a dome light's field (the star-fields draft): its world direction, and its flux per channel with
@@ -1169,12 +1169,25 @@ fn aerial_gpu(
         wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size[0] * 8), rows_per_image: Some(size[1]) },
         extent,
     );
-    let horizon = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    // a row of f32 texels, read without filtering: the shaders interpolate around the azimuth's wrap themselves
+    let width = horizon.len() as u32;
+    let row = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("three-aerial-horizon"),
-        contents: bytemuck::cast_slice(horizon),
-        usage: wgpu::BufferUsages::STORAGE,
+        size: wgpu::Extent3d { width, height: 1, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba32Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
     });
-    AerialGpu { uniforms, volume: tex.create_view(&Default::default()), horizon }
+    queue.write_texture(
+        row.as_image_copy(),
+        bytemuck::cast_slice(horizon),
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width * 16), rows_per_image: Some(1) },
+        wgpu::Extent3d { width, height: 1, depth_or_array_layers: 1 },
+    );
+    AerialGpu { uniforms, volume: tex.create_view(&Default::default()), horizon: row.create_view(&Default::default()) }
 }
 
 fn half4(v: [f32; 4]) -> [u16; 4] {
@@ -1267,7 +1280,7 @@ impl Kit {
                 tex_entry(13, VS_FS, wgpu::TextureSampleType::Float { filterable: false }, D2, false),
                 tex_entry(14, VS_FS, F, D2, false),
                 tex_entry(15, VS_FS, F, wgpu::TextureViewDimension::D3, false),
-                buf_entry(16, VS_FS, ro, false),
+                tex_entry(16, VS_FS, wgpu::TextureSampleType::Float { filterable: false }, D2, false),
             ],
             "three-frame",
         );
@@ -2630,6 +2643,7 @@ impl ThreeEngine {
                 black: &self.black_env,
                 sampler: &self.repeat_smp,
                 env_texels: scene.env.as_ref().map(|e| &*e.env.mip0),
+                aerial: scene.env.as_ref().and_then(|e| e.aerial.as_deref()),
             };
             let timing = crate::pathtrace::render_cached(
                 self.pt.as_ref().expect("built"),
@@ -3419,7 +3433,7 @@ impl ThreeEngine {
                     wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(gbz) },
                     wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(sky_view) },
                     wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::TextureView(&aerial.volume) },
-                    wgpu::BindGroupEntry { binding: 16, resource: aerial.horizon.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 16, resource: wgpu::BindingResource::TextureView(&aerial.horizon) },
                 ],
             })
         };

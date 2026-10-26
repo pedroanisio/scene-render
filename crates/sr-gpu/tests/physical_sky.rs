@@ -549,3 +549,159 @@ fn a_camera_under_the_ground_sees_sea_level_air() {
         near(rgb(foggy.at(x, y)), rgb(clear.at(x, y)).map(|v| v * t), 0.01, &format!("pixel ({x}, {y}), T_f {t}"));
     }
 }
+
+/// [`metres`] through the path tracer: unlit walls are emitters, so a pixel's colour is its surface's, jittered.
+fn traced(y: f64, extra: &str, body: &str, light: &str) -> String {
+    scaled(
+        1.0,
+        &format!("y=\"{y}\" far=\"20000\" {extra} renderer=\"pathtrace\" pathSamples=\"4\" denoise=\"false\""),
+        body,
+        light,
+    )
+}
+
+#[test]
+fn the_path_tracer_applies_the_march_and_the_closed_form() {
+    // the march's wall, through the air and through the air and the fog
+    let body = wall("far", -600.0, 5000.0, 1200.0);
+    let Some(plain) = render_xml(&traced(-2.0, "", &body, &golden("aerialPerspective=\"false\""))) else { return };
+    let (s, sun) = (earth(), golden_sun());
+    let r = s.atmosphere.planet_radius;
+    let f = Fog::new(0.0002, 300.0).unwrap();
+    for fog in [None, Some(f)] {
+        let attrs = fog.map_or(String::new(), |f| format!("fogDensity=\"{}\" fogHeight=\"{}\"", f.density, f.height));
+        let seen = render_xml(&traced(-2.0, "", &body, &golden(&attrs))).unwrap();
+        for (x, y) in [(320, 170), (370, 140), (275, 175)] {
+            let (o, d, l) = pixel_ray(x, y, -2.0, 4995.0);
+            let (camera, dp) = (atmosphere_position(&s.atmosphere, o, 0.0, 1.0).unwrap(), to_planet(d));
+            let c = rgb(plain.at(x, y));
+            let want = match fog {
+                None => s.aerial_perspective(camera, dp, l, c, sun).unwrap(),
+                Some(f) => {
+                    let horizon = s.horizon_radiance([0.0, 0.0, r], dp, sun).unwrap();
+                    s.aerial_perspective_fogged(camera, dp, l, c, sun, &f, horizon).unwrap()
+                }
+            };
+            // past the tolerance below: the surface's colour alone fails
+            assert!((0..3).any(|i| (want[i] - c[i]).abs() > 0.03 * c[i]), "the air shows: {want:?} {c:?}");
+            near(rgb(seen.at(x, y)), want, 0.02, &format!("traced pixel ({x}, {y}), fog {fog:?}"));
+        }
+    }
+    // the closed form over the air, at the dome's intensity 2, and without air through both projections
+    let body = format!("{}{}", wall("low", 0.0, 1000.0, 200.0), wall("high", -150.0, 1000.0, 60.0));
+    let fog = Fog::new(0.001, 100.0).unwrap();
+    let foggy = "fogDensity=\"0.001\" fogHeight=\"100\"";
+    let over = |a: &str| golden(&format!("aerialPerspective=\"false\" intensity=\"2\" {a}"));
+    let (clear, seen) = (
+        render_xml(&traced(0.0, "", &body, &over(""))).unwrap(),
+        render_xml(&traced(0.0, "", &body, &over(foggy))).unwrap(),
+    );
+    for (x, y) in [(320, 180), (330, 96)] {
+        let (o, d, l) = pixel_ray(x, y, 0.0, 995.0);
+        let horizon = s.horizon_radiance([0.0, 0.0, r], to_planet(d), sun).unwrap().map(|c| c * 2.0);
+        let want = fog.fogged(rgb(clear.at(x, y)), alt(-o[1]), alt(-(o[1] + d[1] * l)), l, horizon);
+        near(rgb(seen.at(x, y)), want, 0.02, &format!("traced pixel ({x}, {y}) over the air"));
+    }
+    let none = |a: &str| golden(&format!("atmosphere=\"none\" {a}"));
+    // a near plane 200 m deep: the perspective segment leaves the eye, the orthographic one the near plane
+    for (camera, length) in [("near=\"200\"", 995.0), ("near=\"200\" projection=\"orthographic\"", 795.0)] {
+        let clear = render_xml(&traced(0.0, camera, &body, &none(""))).unwrap();
+        let seen = render_xml(&traced(0.0, camera, &body, &none(foggy))).unwrap();
+        let t = fog.transmittance(0.0, 0.0, length);
+        near(rgb(seen.at(320, 180)), rgb(clear.at(320, 180)).map(|v| v * t), 0.01, &format!("traced {camera}"));
+    }
+    // e^(−3) over 1 km near level, to 0.4 %: rows whose every jittered sample ends 7 to 10 m up, x = h₁/H under 0.01
+    let dense = Fog::new(0.003, 1000.0).unwrap();
+    let thick = "fogDensity=\"0.003\" fogHeight=\"1000\"";
+    let (clear, seen) = (
+        render_xml(&traced(0.0, "", &body, &none(""))).unwrap(),
+        render_xml(&traced(0.0, "", &body, &none(thick))).unwrap(),
+    );
+    for (x, y) in [(320, 175), (330, 176)] {
+        let (o, d, l) = pixel_ray(x, y, 0.0, 995.0);
+        let t = dense.transmittance(alt(-o[1]), alt(-(o[1] + d[1] * l)), l);
+        near(rgb(seen.at(x, y)), rgb(clear.at(x, y)).map(|v| v * t), 0.004, &format!("traced dense ({x}, {y})"));
+    }
+    // a camera 500 m under the sphere: both ends read as altitude 0
+    let low = wall("w", 500.0, 1000.0, 200.0);
+    let (clear, seen) = (
+        render_xml(&traced(500.0, "", &low, &none(""))).unwrap(),
+        render_xml(&traced(500.0, "", &low, &none(foggy))).unwrap(),
+    );
+    let (_, _, l) = pixel_ray(320, 150, 500.0, 995.0);
+    near(
+        rgb(seen.at(320, 150)),
+        rgb(clear.at(320, 150)).map(|v| v * (-0.001 * l).exp()),
+        0.01,
+        "traced under the sphere",
+    );
+    // 100 pixels a metre: the segment's length and heights in metres
+    let (k, cy) = (100.0, -5000.0);
+    let far = "<object3D id=\"w\" primitive=\"box\" width=\"40000\" height=\"10000\" depth=\"100\" y=\"-5000\" z=\"100050\" material=\"u\"/>";
+    let camera =
+        format!("y=\"{cy}\" near=\"20000\" far=\"1000000\" renderer=\"pathtrace\" pathSamples=\"4\" denoise=\"false\"");
+    let (clear, seen) = (
+        render_xml(&scaled(k, &camera, far, &none(""))).unwrap(),
+        render_xml(&scaled(k, &camera, far, &none(foggy))).unwrap(),
+    );
+    for (x, y) in [(320, 180), (330, 140)] {
+        let (o, d, l) = pixel_ray(x, y, cy, 100000.0);
+        let t = fog.transmittance(alt(-o[1] / k), alt(-(o[1] + d[1] * l) / k), l / k);
+        near(
+            rgb(seen.at(x, y)),
+            rgb(clear.at(x, y)).map(|v| v * t),
+            0.01,
+            &format!("traced ({x}, {y}) at 100 px a metre"),
+        );
+    }
+}
+
+#[test]
+fn the_path_tracer_scales_the_march_by_the_dome() {
+    // with the dome's intensity 2 the air's light doubles and its transmittance stays: ap(c) + ap(0)
+    let body = wall("far", -600.0, 5000.0, 1200.0);
+    let light = |a: &str| golden(&format!("intensity=\"2\" {a}"));
+    let Some(plain) = render_xml(&traced(-2.0, "", &body, &light("aerialPerspective=\"false\""))) else { return };
+    let seen = render_xml(&traced(-2.0, "", &body, &light(""))).unwrap();
+    let (s, sun) = (earth(), golden_sun());
+    for (x, y) in [(320, 170), (370, 140)] {
+        let (o, d, l) = pixel_ray(x, y, -2.0, 4995.0);
+        let (camera, dp) = (atmosphere_position(&s.atmosphere, o, 0.0, 1.0).unwrap(), to_planet(d));
+        let c = rgb(plain.at(x, y));
+        let (lit, air) = (
+            s.aerial_perspective(camera, dp, l, c, sun).unwrap(),
+            s.aerial_perspective(camera, dp, l, [0.0; 3], sun).unwrap(),
+        );
+        near(rgb(seen.at(x, y)), [0, 1, 2].map(|i| lit[i] + air[i]), 0.02, &format!("traced pixel ({x}, {y})"));
+    }
+}
+
+#[test]
+fn a_thick_fog_shows_the_horizon_between_its_nodes() {
+    // e^(−10) over 1 km under the midnight sun, low in the camera's view: the wall is the horizon's radiance in each
+    // pixel's azimuth, which changes by 2 to 6 % a node there; the pixels lie halfway between the table's nodes
+    let body = wall("low", 0.0, 1000.0, 600.0);
+    let light = midnight("aerialPerspective=\"false\" fogDensity=\"0.01\" fogHeight=\"100\"");
+    let (s, sun) = (earth(), to_planet(sun_from_document(MIDNIGHT, &observer(75.0, 0.0)).unwrap().1));
+    let r = s.atmosphere.planet_radius;
+    for extra in ["", "renderer=\"pathtrace\" pathSamples=\"4\" denoise=\"false\""] {
+        let Some(seen) = render_xml(&scaled(1.0, &format!("far=\"20000\" {extra}"), &body, &light)) else { return };
+        for x in [217, 256, 373, 402, 442] {
+            let (_, d, _) = pixel_ray(x, 180, 0.0, 995.0);
+            let want = s.horizon_radiance([0.0, 0.0, r], to_planet(d), sun).unwrap();
+            near(rgb(seen.at(x, 180)), want, 0.005, &format!("{extra} pixel ({x}, 180)"));
+        }
+    }
+}
+
+#[test]
+fn the_path_tracer_leaves_the_sky_alone() {
+    let body = wall("low", 0.0, 1000.0, 200.0);
+    let light = |fog: &str| golden(&format!("environmentVisible=\"true\" {fog}"));
+    let Some(clear) = render_xml(&traced(0.0, "", &body, &light(""))) else { return };
+    let foggy = render_xml(&traced(0.0, "", &body, &light("fogDensity=\"0.01\" fogHeight=\"100\""))).unwrap();
+    for (x, y) in [(20, 20), (600, 20), (320, 30)] {
+        assert_eq!(rgb(clear.at(x, y)), rgb(foggy.at(x, y)), "sky ({x}, {y})");
+    }
+    assert!(rgb(clear.at(320, 180))[0] != rgb(foggy.at(320, 180))[0], "the wall is fogged");
+}

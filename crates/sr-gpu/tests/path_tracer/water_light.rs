@@ -579,7 +579,7 @@ fn tiled_frames_equal_whole_frames_with_light_through_glass() {
     let eng = ThreeEngine::new(g.device.clone(), g.queue.clone());
     let black = eng.upload_f16([1, 1], &[[0.0; 4]]).create_view(&Default::default());
     let smp = g.device.create_sampler(&Default::default());
-    let input = PtInputs { env: &black, backdrop: None, black: &black, sampler: &smp, env_texels: None };
+    let input = PtInputs { env: &black, backdrop: None, black: &black, sampler: &smp, env_texels: None, aerial: None };
     let size = [200, 120];
     let block = prim::cuboid(60.0, 60.0, 60.0);
     let wall = prim::cuboid(30.0, 30.0, 2.0);

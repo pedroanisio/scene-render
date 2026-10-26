@@ -19,4 +19,4 @@
 // the aerial volume (sr_3d::aerial::AerialVolume): its radiance slices, then its transmittance slices, along z
 @group(0) @binding(15) var aerial_tex: texture_3d<f32>;
 // the fog's horizon radiance over the azimuth (sr_3d::aerial::HorizonTable)
-@group(0) @binding(16) var<storage, read> aerial_horizon: array<vec4<f32>>;
+@group(0) @binding(16) var aerial_horizon: texture_2d<f32>;
