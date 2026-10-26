@@ -22,6 +22,7 @@
 #![allow(unknown_lints, clippy::chunks_exact_to_as_chunks, clippy::manual_is_multiple_of)]
 
 pub mod anim;
+pub mod atmosphere;
 pub mod camera;
 pub mod clay;
 pub mod crater;
