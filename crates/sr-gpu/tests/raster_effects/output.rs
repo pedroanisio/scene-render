@@ -67,6 +67,23 @@ fn rgba_letterboxing_and_float_planes() {
 }
 
 #[test]
+fn opaque_float_planes_are_the_first_three_of_the_four() {
+    // an opaque EXR is fed G, B and R alone (InputFormat::Gbrpf32): the planes of the four-plane format, over black
+    let Some((r, f)) = frame_of("#3080C080") else { return };
+    let gpu = r.gpu().clone();
+    let mut st = OutputStage::new(gpu.device.clone(), gpu.queue.clone());
+    let lin = OutputColor::new(ColorSpace::LinearSrgb, Transfer::Linear, true);
+    let p = st.submit(&f.texture, &r.working(), &lin, InputFormat::Gbrapf32, [8, 4], false);
+    let four = st.wait(p).to_vec();
+    let p = st.submit(&f.texture, &r.working(), &lin, InputFormat::Gbrpf32, [8, 4], false);
+    let three = st.wait(p).to_vec();
+    assert_eq!(three.len(), 3 * 4 * 32);
+    assert_eq!(three, four[..3 * 4 * 32]);
+    let g0 = f32::from_le_bytes(three[..4].try_into().unwrap());
+    assert!((g0 - lin8(0x80) * 128.0 / 255.0).abs() < 2e-3, "{g0}");
+}
+
+#[test]
 fn pq_output_places_reference_white_at_203_nits() {
     let Some((r, f)) = frame_of("#FFFFFF") else { return };
     let gpu = r.gpu().clone();

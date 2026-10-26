@@ -8,7 +8,8 @@ struct Out {
   offset: vec2<f32>,      // letterbox offset (output pixels)
   scale: f32,             // output pixels per frame pixel
   format: u32,            // 0 NV12, 1 P010, 2 RGBA8, 3 RGBA16, 4 GBRAPF32, then the planar YUV formats:
-                          // 5 yuv420p, 6 yuv420p10, 7 yuv422p, 8 yuv422p10, 9 yuv444p, 10 yuv444p10, 11 yuva444p10
+                          // 5 yuv420p, 6 yuv420p10, 7 yuv422p, 8 yuv422p10, 9 yuv444p, 10 yuv444p10, 11 yuva444p10;
+                          // 12 GBRPF32
   transfer: u32,          // output transfer id
   full_range: u32,
   linear_light: u32,
@@ -106,7 +107,7 @@ fn px(x: u32, y: u32) -> vec4<f32> {
   var rgb = select(vec3(0.0), c.rgb / a, a > 0.0);
   if (out_linear_light() == 0u) { rgb = tf_decode3(out_store_transfer(), rgb); }
   rgb = o.to_out * rgb;
-  if (out_format() == 4u) {
+  if (out_format() == 4u || out_format() == 12u) {
     // scene-linear, premultiplied
     if (o.keep_alpha == 0u) { return vec4(rgb * a, 1.0); }
     return vec4(rgb * a, a);

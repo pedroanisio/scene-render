@@ -239,7 +239,9 @@ fn resolve(dir: &Path, p: &str) -> PathBuf {
 fn input_format(o: &m::Output, codec: Codec, hardware: Hardware) -> InputFormat {
     let deep = o.pixel_format.contains("10") || o.pixel_format.contains("12") || o.pixel_format.contains("16");
     match codec {
-        Codec::ExrSequence => InputFormat::Gbrapf32,
+        // the planes the file holds: FFmpeg converts between its float formats through 16-bit integers
+        Codec::ExrSequence if o.alpha => InputFormat::Gbrapf32,
+        Codec::ExrSequence => InputFormat::Gbrpf32,
         Codec::TiffSequence => InputFormat::Rgba16,
         Codec::Prores => {
             let profile = o.prores_profile.map(|p| p.as_str().to_string()).unwrap_or_else(|| "hq".into());
@@ -1346,6 +1348,12 @@ fn run_delivery(
         let d = sr_model::Diagnostic::error("OUT1", message, sr_model::Loc::default(), "/scene/output");
         return Err(DeliverError::Document(sr_model::Report { diagnostics: vec![d] }));
     }
+    if output.max_file_size.is_some() && codec.is_sequence() {
+        return Err(DeliverError::Invalid(format!(
+            "maxFileSize fits a file by its bitrate, and {} writes a file a frame at no bitrate",
+            output.codec.as_str()
+        )));
+    }
     *report = Report {
         path: resolve(&base, &output.path),
         range: [start, end],
@@ -1837,14 +1845,16 @@ fn run_delivery(
             plan.workers = 1;
         }
         let workers = plan.workers;
-        if output.two_pass || fit.is_some() {
+        // a sequence takes no bitrate and no passes: its frames are encoded once, from the frames themselves (the
+        // intermediate's 16-bit planes would clip an EXR's values above 1)
+        if (output.two_pass && !codec.is_sequence()) || fit.is_some() {
             // render once into a lossless intermediate, then encode it as often as needed
             let inter = tmp.join("intermediate.mkv");
             let ipix = match format {
                 InputFormat::Nv12 => "yuv420p",
                 InputFormat::P010 => "yuv420p10le",
                 InputFormat::Rgba8 => "bgra",
-                InputFormat::Rgba16 | InputFormat::Gbrapf32 => "gbrap16le",
+                InputFormat::Rgba16 | InputFormat::Gbrapf32 | InputFormat::Gbrpf32 => "gbrap16le",
                 planar => planar.ffmpeg(),
             };
             let ispec = EncodeSpec {
@@ -3043,6 +3053,9 @@ mod tests {
         assert_eq!(f(&out("a.mp4", "h265", r#"pixelFormat="yuv444p""#), Software), InputFormat::Rgba16);
         assert_eq!(f(&out("a.webm", "vp9", r#"alpha="true""#), Software), InputFormat::Rgba16);
         assert_eq!(f(&out("a.tif", "tiff-sequence", ""), Auto), InputFormat::Rgba16);
+        // an EXR takes the float planes it holds: FFmpeg would clip values above 1 converting the four to three
+        assert_eq!(f(&out("f_%04d.exr", "exr-sequence", ""), Auto), InputFormat::Gbrpf32);
+        assert_eq!(f(&out("f_%04d.exr", "exr-sequence", r#"alpha="true""#), Auto), InputFormat::Gbrapf32);
     }
 
     #[test]

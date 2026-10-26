@@ -207,6 +207,9 @@ pub enum InputFormat {
     Rgba16,
     /// 32-bit float planar G, B, R, A, scene-linear.
     Gbrapf32,
+    /// 32-bit float planar G, B, R, scene-linear: an opaque EXR's own planes. FFmpeg 7.1 converts between its float
+    /// formats through 16-bit integers, clipping at 1, so an opaque EXR is fed these rather than `Gbrapf32`.
+    Gbrpf32,
     /// 8-bit 4:2:0 planar: the Y plane, then Cb, then Cr (I420).
     Yuv420p,
     /// 10-bit 4:2:0 planar in 16-bit words, LSB aligned.
@@ -232,6 +235,7 @@ impl InputFormat {
             InputFormat::Rgba8 => "rgba",
             InputFormat::Rgba16 => "rgba64le",
             InputFormat::Gbrapf32 => "gbrapf32le",
+            InputFormat::Gbrpf32 => "gbrpf32le",
             InputFormat::Yuv420p => "yuv420p",
             InputFormat::Yuv420p10 => "yuv420p10le",
             InputFormat::Yuv422p => "yuv422p",
@@ -266,6 +270,7 @@ impl InputFormat {
             InputFormat::Rgba8 => 4 * w * h,
             InputFormat::Rgba16 => 8 * w * h,
             InputFormat::Gbrapf32 => 16 * w * h,
+            InputFormat::Gbrpf32 => 12 * w * h,
             planar => {
                 let (sx, sy, bytes, alpha) = planar.planes().expect("planar");
                 let luma = w * h;
@@ -276,7 +281,7 @@ impl InputFormat {
 
     /// Whether the frames arrive as YUV samples already (no `scale` filter converts them from RGB).
     fn is_yuv(&self) -> bool {
-        !matches!(self, InputFormat::Rgba8 | InputFormat::Rgba16 | InputFormat::Gbrapf32)
+        !matches!(self, InputFormat::Rgba8 | InputFormat::Rgba16 | InputFormat::Gbrapf32 | InputFormat::Gbrpf32)
     }
 }
 

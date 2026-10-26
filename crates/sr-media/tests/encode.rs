@@ -193,8 +193,9 @@ fn frame(input: InputFormat, k: u32, w: usize, h: usize) -> Vec<u8> {
                     .concat()
             })
             .collect(),
-        InputFormat::Gbrapf32 => {
-            (0..4).flat_map(|p| (0..w * h).flat_map(move |_| (0.25f32 * p as f32).to_le_bytes())).collect()
+        InputFormat::Gbrapf32 | InputFormat::Gbrpf32 => {
+            let planes = input.frame_bytes(w as u32, h as u32) / (4 * w * h);
+            (0..planes).flat_map(|p| (0..w * h).flat_map(move |_| (0.25f32 * p as f32).to_le_bytes())).collect()
         }
         InputFormat::P010 => vec![0x40; input.frame_bytes(w as u32, h as u32)],
         InputFormat::Yuv420p | InputFormat::Yuv422p | InputFormat::Yuv444p => {
@@ -867,5 +868,52 @@ fn a_dnxhr_file_takes_a_frame_rate_outside_the_broadcast_set() {
         encode(&s, 4);
         let v = probe(&p).unwrap().video.unwrap();
         assert!((v.fps - fps).abs() < 1e-6, "{fps} fps: {}", v.fps);
+    }
+}
+
+/// The float planes of `path` as FFmpeg decodes them, in `pix` (`gbrpf32le` or `gbrapf32le`).
+fn decoded_floats(path: &Path, pix: &str) -> Vec<f32> {
+    let out = std::process::Command::new(sr_media::ffmpeg())
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args(["-f", "rawvideo", "-pix_fmt", pix, "-"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    out.stdout.chunks(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect()
+}
+
+/// Scene-linear frames reach an OpenEXR file whole: values above 1 are kept, which a conversion between FFmpeg's
+/// float formats would clip (FFmpeg 7.1 converts them through 16-bit integers), so an EXR is fed the planes it holds.
+#[test]
+fn exr_frames_keep_values_above_one() {
+    if !common::ffmpeg_available("exr_frames_keep_values_above_one") {
+        return;
+    }
+    let d = dir();
+    for (alpha, input, pix, planes) in
+        [(false, InputFormat::Gbrpf32, "gbrpf32le", 3), (true, InputFormat::Gbrapf32, "gbrapf32le", 4)]
+    {
+        let pat = format!("hdr{planes}/f_%04d.exr");
+        let mut s = spec(&d.join(&pat), Codec::ExrSequence, input);
+        s.alpha = alpha;
+        let (args, _) = s.args().unwrap();
+        // the rawvideo input's format and the encoder's are one
+        let formats: Vec<&str> = args.windows(2).filter(|w| w[0] == "-pix_fmt").map(|w| w[1].as_str()).collect();
+        assert_eq!(formats, [pix, pix], "{args:?}");
+        let n = (s.width * s.height) as usize;
+        let mut frame = Vec::with_capacity(input.frame_bytes(s.width, s.height));
+        for p in 0..planes {
+            let v = if p == 3 { 0.5f32 } else { 4.0 + p as f32 };
+            frame.extend((0..n).flat_map(|_| v.to_le_bytes()));
+        }
+        let mut e = Encoder::start(&s).unwrap();
+        e.write(&frame).unwrap();
+        e.finish().unwrap();
+        let got = decoded_floats(&d.join(pat.replace("%04d", "0000")), pix);
+        let want: Vec<f32> = (0..planes).flat_map(|p| vec![if p == 3 { 0.5 } else { 4.0 + p as f32 }; n]).collect();
+        assert_eq!(got.len(), want.len(), "{planes} planes");
+        // EXR stores half or float; 4, 5 and 6 are exact in both
+        assert!(got.iter().zip(&want).all(|(g, w)| (g - w).abs() < 1e-3), "{planes} planes: {:?}", &got[..4]);
     }
 }
