@@ -998,7 +998,16 @@ impl Renderer {
             self.three_engine().param_meshes.insert(n.id.clone(), (pm.key, m.clone()));
             return Some(m);
         }
+        // the planets draft's rule 1: a body's IAU radii in scene units, else radius and flattening
+        let spheroid = (kind == "planet").then(|| match a.opt("body") {
+            Some(b) if sr_3d::planet::radii(b as i32).is_ok() => {
+                let b = b as i32;
+                Ok((sr_3d::planet::scene_radius(b, pixels_per_meter(ctx.p))?, sr_3d::planet::flattening(b)?))
+            }
+            _ => Ok::<_, sr_3d::planet::PlanetError>((f64::from(r), a.num("flattening", 0.0))),
+        });
         let key = match kind.as_str() {
+            "planet" => format!("planet|{spheroid:?}|{segs}"),
             "text" => format!(
                 "text|{}|{:?}|{:?}|{depth}|{bevel}|{}",
                 n.text.as_deref().or(a.str("text").as_deref()).unwrap_or(""),
@@ -1058,6 +1067,11 @@ impl Renderer {
                 polys.iter_mut().flatten().for_each(|p| *p -= c);
                 sr_3d::prim::extrude(&polys, depth, bevel)
             }
+            "planet" => match spheroid {
+                Some(Ok((ra, f))) => sr_3d::prim::spheroid(ra as f32, f as f32, segs).map_err(|e| e.to_string()),
+                Some(Err(e)) => Err(e.to_string()),
+                None => Err("a planet without its spheroid".into()),
+            },
             "mesh" => return None,
             other => Err(format!("unknown primitive {other}")),
         };

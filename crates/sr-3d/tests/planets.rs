@@ -207,3 +207,62 @@ fn rule_7_spin_drift_and_the_seek_check() {
     }
     assert!((lon - s.cloud_longitude).abs() < 1e-6 && (spin - s.spin).abs() < 1e-6 * s.spin.abs());
 }
+
+/// Rules 1 and 2 as the mesh carries them: `prim::spheroid` is the engine's UV sphere bent to the spheroid, each vertex
+/// at its geodetic longitude 360 u and latitude 90 − 180 w, with the spheroid's normal and the texel of `texture_uv`.
+#[test]
+fn rules_1_and_2_the_spheroids_mesh() {
+    let (a, f, segs) = (50.0f64, 0.0979624f64, 48u32);
+    let c = a * (1.0 - f);
+    let mesh = sr_3d::prim::spheroid(a as f32, f as f32, segs).unwrap();
+    assert_eq!(mesh.vertices.len(), ((segs + 1) * (segs / 2 + 1)) as usize);
+    assert_eq!(mesh.indices.len(), (6 * segs * (segs / 2)) as usize);
+    for v in &mesh.vertices {
+        let (p, n, uv) = (v.pos.map(f64::from), v.normal.map(f64::from), v.uv.map(f64::from));
+        // on the spheroid: the equator in the scene's xz plane, the pole on y
+        let on = (p[0] * p[0] + p[2] * p[2]) / (a * a) + p[1] * p[1] / (c * c);
+        assert!((on - 1.0).abs() < 1e-5, "{p:?} is off the spheroid: {on}");
+        // the texel is the geodetic longitude and latitude of the vertex's place in the grid, read half a turn on
+        let (u, w) = (uv[0] - 0.5, uv[1]);
+        let (lon, lat) = (360.0 * u, 90.0 - 180.0 * w);
+        let want = scene_from_body(surface_point(a, f, lon, lat).unwrap());
+        for k in 0..3 {
+            assert!((p[k] - want[k]).abs() < 1e-3, "{lon} {lat}: {p:?} != {want:?}");
+        }
+        let texel = texture_uv(lon, lat).unwrap();
+        assert!((uv[0].rem_euclid(1.0) - texel[0]).abs().min(1.0 - (uv[0].rem_euclid(1.0) - texel[0]).abs()) < 1e-6);
+        assert!((uv[1] - texel[1]).abs() < 1e-6);
+        // the normal is the spheroid's, not the centre's direction
+        let want = scene_from_body(surface_normal(a, f, surface_point(a, f, lon, lat).unwrap()));
+        for k in 0..3 {
+            assert!((n[k] - want[k]).abs() < 1e-5, "{lon} {lat}: normal {n:?} != {want:?}");
+        }
+    }
+    // the north pole is the scene's −y, the prime meridian +x at the texture's centre, 90° E +z at three quarters
+    let at = |want: [f64; 3]| {
+        mesh.vertices
+            .iter()
+            .find(|v| (0..3).all(|k| (f64::from(v.pos[k]) - want[k]).abs() < 1e-3))
+            .unwrap_or_else(|| panic!("no vertex at {want:?}"))
+    };
+    assert!(at([0.0, -c, 0.0]).uv[1].abs() < 1e-6);
+    assert!((at([a, 0.0, 0.0]).uv[0].rem_euclid(1.0) - 0.5).abs() < 1e-6);
+    assert!((at([0.0, 0.0, a]).uv[0].rem_euclid(1.0) - 0.75).abs() < 1e-6);
+    // the triangles wind outward
+    for t in mesh.indices.as_chunks::<3>().0 {
+        let [p0, p1, p2] = t.map(|i| glam::Vec3::from(mesh.vertices[i as usize].pos));
+        let g = (p1 - p0).cross(p2 - p0);
+        if g.length() > 1e-6 {
+            assert!(g.dot(p0 + p1 + p2) > 0.0, "a triangle winds inward");
+        }
+    }
+    // a sphere at no flattening
+    let sphere = sr_3d::prim::spheroid(a as f32, 0.0, segs).unwrap();
+    let plain = sr_3d::prim::sphere(a as f32, segs);
+    for (s, q) in sphere.vertices.iter().zip(&plain.vertices) {
+        assert!((0..3).all(|k| (s.pos[k] - q.pos[k]).abs() < 1e-3), "{:?} != {:?}", s.pos, q.pos);
+    }
+    for bad in [(0.0, 0.1), (-1.0, 0.1), (f32::NAN, 0.1), (50.0, 1.0), (50.0, -0.1), (50.0, f32::NAN)] {
+        assert!(sr_3d::prim::spheroid(bad.0, bad.1, segs).is_err(), "{bad:?}");
+    }
+}

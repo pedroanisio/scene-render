@@ -90,6 +90,34 @@ pub fn sphere(r: f32, segs: u32) -> Primitive {
     finish(vs, idx)
 }
 
+/// The planets draft's spheroid (rules 1 and 2): [`sphere`]'s grid with each vertex at the geodetic longitude 360 u and
+/// latitude 90 − 180 w of the spheroid of equatorial radius `a` and flattening `f`, its normal the spheroid's, and its
+/// texel u + 1/2 so that an equirectangular map has longitude −180 at its left edge (the sampler repeats).
+pub fn spheroid(a: f32, f: f32, segs: u32) -> Result<Primitive, crate::planet::PlanetError> {
+    use crate::planet::{scene_from_body, surface_normal, surface_point};
+    let (a, f) = (f64::from(a), f64::from(f));
+    surface_point(a, f, 0.0, 0.0)?;
+    let segs = segs.max(3);
+    let (nu, nv) = (segs, (segs / 2).max(2));
+    let (mut vs, mut idx) = (Vec::new(), Vec::new());
+    let to = |q: [f64; 3]| Vec3::new(q[0] as f32, q[1] as f32, q[2] as f32);
+    grid(
+        nu,
+        nv,
+        |u, w| {
+            let (lon, lat) = (360.0 * f64::from(u), 90.0 - 180.0 * f64::from(w));
+            let p = surface_point(a, f, lon, lat).expect("a latitude of the grid is within [-90, 90]");
+            (to(scene_from_body(p)), to(scene_from_body(surface_normal(a, f, p))))
+        },
+        &mut vs,
+        &mut idx,
+    );
+    for v in &mut vs {
+        v.uv[0] += 0.5;
+    }
+    Ok(finish(vs, idx))
+}
+
 /// Box of the given width (x), height (y) and depth (z).
 pub fn cuboid(w: f32, h: f32, d: f32) -> Primitive {
     let (mut vs, mut idx) = (Vec::new(), Vec::new());
