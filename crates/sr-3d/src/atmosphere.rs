@@ -687,8 +687,22 @@ impl Scattering {
         if distance <= 0.0 {
             return Ok(colour);
         }
-        let ends = segments(distance, 16, true);
-        let (inscatter, trans) = self.integrate(obs, d, sun, &ends, true, fog, true, |_, _, _| ())?;
+        // the samples start where the segment enters the atmosphere, a segment wholly outside leaving the colour,
+        // and cluster toward the segment's lower end (3aa10dd)
+        let a = &self.atmosphere;
+        let (mut start, mut total) = (0.0, distance);
+        if norm(obs) > a.top_radius {
+            match sphere_hit(obs, d, a.top_radius) {
+                Some(t) if t < total => (start, total) = (t, total - t),
+                _ => return Ok(colour),
+            }
+        }
+        let q = march(obs, d, start);
+        let mut ends = segments(total, 16, true);
+        if a.height(march(q, d, total)) < a.height(q) {
+            ends = ends.iter().rev().map(|e| total - e).collect();
+        }
+        let (inscatter, trans) = self.integrate(q, d, sun, &ends, true, fog, true, |_, _, _| ())?;
         Ok(std::array::from_fn(|c| colour[c] * trans[c] + inscatter[c]))
     }
 

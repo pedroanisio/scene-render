@@ -135,8 +135,8 @@ fn the_horizon_table_follows_the_horizon_radiance() {
 #[test]
 fn a_camera_above_the_air_marches_from_the_top() {
     // from 400 km the surface segment is walked from the camera, 300 km of vacuum before the air (78251fd): the
-    // nodes hold the converged march (1024 slices) to 5e-4, and the reference's 16 segments, clustered toward the camera and
-    // so coarse in the air, to the kit's 2 %
+    // nodes hold the converged march (1024 slices) to 5e-4, and the reference, whose 16 segments start at the air
+    // and cluster toward the ground (3aa10dd), to 1e-3
     let s = earth();
     let r = s.atmosphere.planet_radius;
     let (obs, camera) = ([0.0, 0.0, r], [0.0, 0.0, r + 400000.0]);
@@ -149,7 +149,8 @@ fn a_camera_above_the_air_marches_from_the_top() {
         let d = 400000.0 * (k as f64 / 64.0).powi(2);
         within(v.apply(0.5, 0.5, d, colour), fine.apply(0.5, 0.5, d, colour), 5e-4, &format!("slice {k}"));
         let want = s.aerial_perspective(camera, down(0.5, 0.5).1, d, colour, sun).unwrap();
-        within(v.apply(0.5, 0.5, d, colour), want, 0.02, &format!("slice {k} against the reference"));
+        within(v.apply(0.5, 0.5, d, colour), want, 1e-3, &format!("slice {k} against the reference"));
+        assert_eq!(want == colour, k < 60, "the reference's slice {k}");
         // the air begins 300 km down: slice 50 (244 km) is vacuum, slices 60 on (351 km) are in the air
         assert_eq!(v.apply(0.5, 0.5, d, colour) == colour, k < 60, "slice {k}");
     }

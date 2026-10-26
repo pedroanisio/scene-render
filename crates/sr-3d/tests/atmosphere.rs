@@ -306,13 +306,14 @@ fn the_fog_joins_the_aerial_march() {
     let f = Fog::new(0.001, 100.0).unwrap();
     let row = s.aerial_perspective_fogged(g, d, 1000.0, colour, sun, &f, [0.1, 0.2, 0.3]).unwrap();
     assert_eq!(row.map(|x| round(x, 6)), [0.247111, 0.308912, 0.370049]);
-    // off the rows: from 500 m, oblique, a denser and shallower fog over 2 km
+    // off the rows: from 500 m, oblique, a denser and shallower fog over 2 km (the reference at sr-core 3aa10dd, its
+    // samples clustered toward the lower end)
     let (high, od, c2) = ([0.0, 0.0, a.planet_radius + 500.0], unit([0.3, 0.8, -0.2]).unwrap(), [0.2, 0.4, 0.1]);
     let h = s.horizon_radiance(high, od, sun).unwrap();
     let g2 = Fog::new(0.002, 250.0).unwrap();
     close(
         s.aerial_perspective_fogged(high, od, 2000.0, c2, sun, &g2, h).unwrap(),
-        [0.11192760076504107, 0.20081021334279253, 0.20741390962767797],
+        [0.11192756114243256, 0.200810130482644, 0.20741392998038305],
         "from 500 m",
     );
     assert_eq!(s.aerial_perspective_fogged(high, od, 0.0, c2, sun, &f, h).unwrap(), c2);
@@ -486,4 +487,21 @@ fn a_surface_segment_is_walked_wherever_its_ends_lie() {
         shallow != s.aerial_perspective([0.0, 0.0, r - 1.8], d, 1000.0, colour, sun).unwrap(),
         "the fog is marched"
     );
+}
+
+#[test]
+fn a_surface_segment_from_orbit_is_sampled_in_the_air() {
+    // the ruling of 3aa10dd: a surface segment's samples start where it enters the atmosphere and cluster toward its
+    // lower end ("aerial from orbit"), and a segment wholly outside the atmosphere leaves the colour (orbit_segment_test)
+    let s = Scattering::new(earth());
+    let camera = [0.0, 0.0, s.atmosphere.planet_radius + 400000.0];
+    let (down, colour, sun) = ([0.0, 0.0, -1.0], [0.2, 0.3, 0.4], unit([0.3, 0.2, 0.9]).unwrap());
+    let seen = s.aerial_perspective(camera, down, 400000.0, colour, sun).unwrap();
+    assert_eq!(seen.map(|x| round(x, 6)), [0.196691, 0.286413, 0.399554]);
+    assert_eq!(s.aerial_perspective(camera, down, 50000.0, colour, sun).unwrap(), colour);
+    // a fog does not reach a segment the atmosphere does not hold, even one whose density reaches orbit
+    let f = Fog::new(0.001, 1.0e6).unwrap();
+    let r = s.atmosphere.planet_radius;
+    let horizon = s.horizon_radiance([0.0, 0.0, r], down, sun).unwrap();
+    assert_eq!(s.aerial_perspective_fogged(camera, down, 50000.0, colour, sun, &f, horizon).unwrap(), colour);
 }
