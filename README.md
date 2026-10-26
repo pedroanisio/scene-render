@@ -1030,7 +1030,8 @@ crates/sr-sim/src/          physics (Rapier world, joints, checkpoints), physics
 crates/sr-space/src/         the time-frames draft: time (UTC, TT and TDB, the frame clock), spk (JPL SPK ephemerides),
                             elements (approximate Keplerian elements), frames (ICRF, ecliptic, IAU body-fixed frames);
                             the star-fields draft: stars (Bright Star Catalogue, flux, blackbody colour, proper motion,
-                            constellations)
+                            constellations); the physical-sky draft: sun (the solar position algorithm of Reda and
+                            Andreas, a date's topocentric sun in scene axes)
 crates/sr-volume/src/        sparse volumetric grids and bounded deterministic caches: openvdb (OpenVDB ingestion), sequence
                             (cache timing), bake (content-addressed bakes, SRVSEQ), advection (motion-aware interpolation),
                             medium (participating media), thermal (blackbody emission)
