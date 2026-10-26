@@ -229,6 +229,12 @@ impl PhysicalSky {
     /// Rules 1 to 9 for a frame: the sun and the moon of `o.date` for its observer, the sky of its atmosphere. Nothing
     /// is carried between frames (rule 12): the multiple-scattering table is filled anew.
     pub fn from_document(o: &PhysicalSkyOptions) -> Result<PhysicalSky, SkyError> {
+        Ok(PhysicalSky::from_document_parts(o)?.0)
+    }
+
+    /// [`PhysicalSky::from_document`] with the scattering it was made of and the sun's unit direction in the scene's
+    /// axes: what the aerial perspective and fog of rules 10 and 11 march through.
+    pub fn from_document_parts(o: &PhysicalSkyOptions) -> Result<(PhysicalSky, Scattering, V3), SkyError> {
         let space = |e: SpaceError| SkyError(e.to_string());
         let (_, sun) = sun_from_document(&o.date, &o.observer).map_err(space)?;
         let s = Scattering::new(atmosphere(&o.atmosphere)?);
@@ -241,7 +247,7 @@ impl PhysicalSky {
             p.moon_cos = (moon.angular_diameter.to_radians() as f32 / 2.0).cos();
             p.moon = l.map(|c| c as f32);
         }
-        Ok(p)
+        Ok((p, s, sun))
     }
 
     /// Whether a sun disc is drawn.

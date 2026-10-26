@@ -21,6 +21,7 @@
 // lints some clippy versions lack: allowed where known
 #![allow(unknown_lints, clippy::chunks_exact_to_as_chunks, clippy::manual_is_multiple_of)]
 
+pub mod aerial;
 pub mod anim;
 pub mod atmosphere;
 pub mod camera;

@@ -58,7 +58,7 @@ pub fn unit(a: V3) -> Result<V3, SkyError> {
     Ok(mul(a, 1.0 / n))
 }
 
-fn march(p: V3, d: V3, length: f64) -> V3 {
+pub(crate) fn march(p: V3, d: V3, length: f64) -> V3 {
     add(p, mul(d, length))
 }
 
@@ -304,7 +304,7 @@ impl Atmosphere {
 
     /// The distance along the ray to the atmosphere, the ray's length inside it and whether it ends on the ground.
     /// A ray that starts on the ground and heads inward has length 0 and ends on the ground.
-    fn path_end(&self, p: V3, d: V3) -> Result<(f64, f64, bool), SkyError> {
+    pub(crate) fn path_end(&self, p: V3, d: V3) -> Result<(f64, f64, bool), SkyError> {
         let r = norm(p);
         if r < self.planet_radius - 1e-6 {
             return err("the observer is below the ground");
@@ -552,13 +552,33 @@ impl Scattering {
         if total <= 0.0 {
             return Ok(([0.0; 3], [1.0; 3]));
         }
-        let q = march(p, d, start);
-        let ends = segments(total, samples, true);
+        self.integrate(march(p, d, start), d, sun, &segments(total, samples, true), multiple, fog, |_, _, _| ())
+    }
+
+    /// The in-scattering along d from q over the consecutive segments between `ends` (distances from q, ascending),
+    /// as [`Scattering::inscatter`] marches them; `record(i, radiance, transmittance)` sees the running values at
+    /// `ends[i + 1]`. An empty segment adds nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn integrate(
+        &self,
+        q: V3,
+        d: V3,
+        sun: V3,
+        ends: &[f64],
+        multiple: bool,
+        fog: Option<(&Fog, V3)>,
+        mut record: impl FnMut(usize, V3, V3),
+    ) -> Result<(V3, V3), SkyError> {
+        let a = &self.atmosphere;
         let mu = dot(d, sun);
         let (pr, pm) = (rayleigh_phase(mu), hg_phase(mu, a.mie_anisotropy));
         let (mut trans, mut out) = ([1.0; 3], [0.0; 3]);
-        for i in 0..samples {
+        for i in 0..ends.len().saturating_sub(1) {
             let (s0, s1) = (ends[i], ends[i + 1]);
+            if s1 <= s0 {
+                record(i, out, trans);
+                continue;
+            }
             let (half, mid) = ((s1 - s0) / 2.0, (s1 + s0) / 2.0);
             let mut inner = [0.0; 3];
             for (x, w) in GL {
@@ -585,6 +605,7 @@ impl Scattering {
                 out[c] += inner[c] * half;
                 trans[c] *= (-seg[c] - fog_seg).exp();
             }
+            record(i, out, trans);
         }
         Ok((out, trans))
     }

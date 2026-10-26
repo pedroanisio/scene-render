@@ -330,6 +330,23 @@ mod document {
     }
 
     #[test]
+    fn the_document_gives_its_sky_air_and_sun_for_the_aerial_perspective() {
+        // the parts are the sky of `from_document`, its scattering and the sun of rule 6 in the scene's axes
+        let o = PhysicalSkyOptions {
+            atmosphere: atmosphere_options(true, 2.0, 1.0, 6360000.0, 100000.0, 0.3, [1.0; 3]),
+            ..options(FULL)
+        };
+        let (p, s, sun) = PhysicalSky::from_document_parts(&o).unwrap();
+        assert_eq!(p, PhysicalSky::from_document(&o).unwrap());
+        assert_eq!(sun, sun_from_document(FULL, &o.observer).unwrap().1);
+        let air = Scattering::new(atmosphere(&o.atmosphere).unwrap());
+        let (obs, d) = ([0.0, 0.0, air.atmosphere.planet_radius + 10.0], unit([1.0, 0.2, 0.1]).unwrap());
+        assert_eq!(s.sky_radiance(obs, d, to_planet(sun)).unwrap(), air.sky_radiance(obs, d, to_planet(sun)).unwrap());
+        let bad = PhysicalSkyOptions { date: "not a date".into(), ..options(FULL) };
+        assert!(PhysicalSky::from_document_parts(&bad).is_err());
+    }
+
+    #[test]
     fn the_full_moon_is_drawn_at_its_place_size_and_radiance() {
         let a = sr_3d::atmosphere::atmosphere(&AtmosphereOptions::default()).unwrap();
         let p = PhysicalSky::from_document(&options(FULL)).unwrap();
