@@ -12,7 +12,7 @@ use std::f64::consts::{FRAC_PI_2, PI};
 use glam::Vec3;
 use rayon::prelude::*;
 
-use crate::atmosphere::{atmosphere, AtmosphereOptions, Scattering, SkyError};
+use crate::atmosphere::{atmosphere, Atmosphere, AtmosphereOptions, Scattering, SkyError};
 use crate::env::{dir_of, Equirect};
 use crate::sky::add_disc;
 use crate::space::moon::moon_from_document;
@@ -145,6 +145,10 @@ impl SkyView {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhysicalSky {
     view: SkyView,
+    /// The atmosphere the table was made of and the observer in its planet frame, for the transmittance toward a
+    /// direction.
+    atmosphere: Atmosphere,
+    observer: V3,
     /// Unit direction toward the sun's centre.
     sun_dir: [f32; 3],
     /// Cosine of half the disc's angular diameter.
@@ -219,6 +223,8 @@ impl PhysicalSky {
         let disc = s.atmosphere.sun_disc_radiance(obs, up, sun_size, sun_color)?;
         Ok(PhysicalSky {
             view,
+            atmosphere: s.atmosphere,
+            observer: obs,
             sun_dir: sun.map(|c| c as f32),
             sun_cos: (sun_size.to_radians() / 2.0).cos() as f32,
             sun: disc.map(|c| c as f32),
@@ -250,6 +256,16 @@ impl PhysicalSky {
             p.moon = l.map(|c| c as f32);
         }
         Ok((p, s, sun))
+    }
+
+    /// Rule 9's transmittance from the observer toward the unit direction `d` of the dome, zero below the horizon:
+    /// what the star-fields draft's rule 6 dims each star by.
+    pub fn transmittance(&self, d: V3) -> Result<V3, SkyError> {
+        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if (n - 1.0).abs() >= 1e-6 || n.is_nan() {
+            return Err(SkyError("a direction is a unit".into()));
+        }
+        self.atmosphere.transmittance(self.observer, to_planet(d))
     }
 
     /// Whether a sun disc is drawn.

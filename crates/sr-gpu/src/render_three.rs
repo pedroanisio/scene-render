@@ -2864,6 +2864,16 @@ impl Renderer {
             Err(e) => return fail(plan, e.to_string()),
         };
         let a = Attrs { e: l as &dyn Element, props: element_props(ctx.g, &l.id) };
+        // under a physical sky each star is dimmed by the transmittance toward it, and the ground hides those below
+        // the horizon (rule 6); the dome's directions are the sky's
+        let sky = if l.sky == m::Sky::Physical {
+            match self.physical_sky(&a, pixels_per_meter(ctx.p)) {
+                Ok((sky, _)) => Some(sky),
+                Err(e) => return fail(plan, e),
+            }
+        } else {
+            None
+        };
         let ss = self.star_scale as f32;
         let dome = self.dome_gain(&a) * exposure;
         let gain = dome * ss * ss;
@@ -2871,14 +2881,19 @@ impl Renderer {
         let rotation = Mat4::from_quat(world.to_scale_rotation_translation().1);
         let turn = |d: [f64; 3]| rotation.transform_vector3(Vec3::from(d.map(|v| v as f32)));
         let radius = f.point_size.get() as f32 / 2.0 * ss;
-        let stars = stars
-            .iter()
-            .map(|s| {
-                let dir = turn(s.direction);
-                let c = self.lin_srgb(s.colour.map(|v| v as f32)).map(|v| v * s.flux as f32 * gain);
-                StarInstance { dir: [dir.x, dir.y, dir.z, 0.0], rgb: [c[0], c[1], c[2], radius] }
-            })
-            .collect();
+        let mut drawn = Vec::with_capacity(stars.len());
+        for s in &stars {
+            let t = match sky.as_ref().map(|sky| sky.transmittance(s.direction)) {
+                None => [1.0; 3],
+                Some(Ok(t)) => t,
+                Some(Err(e)) => return fail(plan, e.to_string()),
+            };
+            let dir = turn(s.direction);
+            let c = self.lin_srgb(s.colour.map(|v| v as f32));
+            let c: [f32; 3] = std::array::from_fn(|k| c[k] * (s.flux * t[k]) as f32 * gain);
+            drawn.push(StarInstance { dir: [dir.x, dir.y, dir.z, 0.0], rgb: [c[0], c[1], c[2], radius] });
+        }
+        let stars = drawn;
         let overlay = match (f.constellations, view) {
             (m::Constellations::None, _) | (_, None) => None,
             (kind, Some((vp, size))) => {

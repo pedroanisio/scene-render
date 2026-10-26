@@ -170,6 +170,72 @@ fn a_frame_rendered_alone_equals_the_frame_reached_by_playing() {
     assert_eq!(alone.px, played.px);
 }
 
+/// The field of the stars to magnitude 1 under a dome with `sky="physical"` at midnight of the June solstice on the
+/// equator, with the dome's `atmosphere` and `pose` attributes, through the camera turned by `yaw` and `pitch`.
+fn under_the_sky(atmosphere: &str, pose: &str, yaw: f64, pitch: f64) -> Option<Rendered> {
+    let light = format!(
+        r#" sky="physical" atmosphere="{atmosphere}" latitude="0" longitude="0" moon="false" date="2026-06-21T00:00:00Z"{pose}"#
+    );
+    rendered(&document_seen(r#" limitMagnitude="1""#, &light, "", &format!(r#" yaw="{yaw}" pitch="{pitch}""#)), 0.0)
+}
+
+/// The flux of the pixels within `radius` of the frame's centre.
+fn central_flux(r: &Rendered, radius: f64) -> [f64; 3] {
+    let mut sum = [0.0; 3];
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            if from_centre(x, y) <= radius {
+                for (total, v) in sum.iter_mut().zip(r.at(x, y)) {
+                    *total += v as f64;
+                }
+            }
+        }
+    }
+    sum
+}
+
+#[test]
+fn the_physical_sky_dims_each_star_by_the_transmittance_toward_it() {
+    // rule 6: Vega, 38.8° up at this midnight, is the clear field's star times rule 9's transmittance toward it; the
+    // sky itself is not drawn (environmentVisible is false), and `atmosphere="none"` has no layers to dim it. A dome
+    // pitched by −30° turns its sky and its field together: the camera follows Vega, which stays 38.8° up its sky
+    let (yaw, pitch) = (170.76542f64.to_radians(), 38.78361f64.to_radians());
+    let vega = [yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos()];
+    let s = sr_3d::atmosphere::atmosphere(&sr_3d::atmosphere::AtmosphereOptions::default()).unwrap();
+    let t = s.transmittance([0.0, 0.0, s.planet_radius], sr_3d::physical_sky::to_planet(vega)).unwrap();
+    assert!(t[2] < 0.75 * t[0], "the air is decisive: {t:?}");
+    for tilt in [0.0f64, -30.0] {
+        let (c, n) = (tilt.to_radians().cos(), tilt.to_radians().sin());
+        let [x, y, z] = [vega[0], vega[1] * c - vega[2] * n, vega[1] * n + vega[2] * c];
+        let (yaw, pitch) = (x.atan2(z).to_degrees(), (-y).asin().to_degrees());
+        let pose = format!(r#" pitch="{tilt}""#);
+        let (Some(air), Some(clear)) =
+            (under_the_sky("earth", &pose, yaw, pitch), under_the_sky("none", &pose, yaw, pitch))
+        else {
+            return;
+        };
+        let (got, base) = (central_flux(&air, 4.0), central_flux(&clear, 4.0));
+        assert!(base.iter().all(|v| *v > 0.05), "{tilt}: Vega is in the clear frame: {base:?}");
+        for c in 0..3 {
+            let ratio = got[c] / base[c];
+            assert!((ratio - t[c]).abs() <= 0.01 * t[c], "{tilt}, channel {c}: {got:?} over {base:?} against {t:?}");
+        }
+    }
+}
+
+#[test]
+fn the_ground_hides_the_stars_below_the_horizon() {
+    let (Some(down), Some(free)) = (
+        under_the_sky("earth", "", 0.0, -40.0),
+        rendered(&document_seen(r#" limitMagnitude="1""#, "", "", r#" pitch="-40""#), 0.0),
+    ) else {
+        return;
+    };
+    let flux = |r: &Rendered| central_flux(r, SIZE as f64).iter().sum::<f64>();
+    assert!(flux(&free) > 0.05, "stars lie there without a sky: {}", flux(&free));
+    assert_eq!(flux(&down), 0.0);
+}
+
 /// What a frame reports it does not draw.
 fn unsupported(d: &sr_model::Document) -> Option<Vec<String>> {
     let r = render_times(d, &[0.0])?;

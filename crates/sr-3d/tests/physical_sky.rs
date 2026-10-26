@@ -199,6 +199,28 @@ mod dome {
     }
 
     #[test]
+    fn the_transmittance_toward_a_direction_is_rule_9s_from_the_observer() {
+        // the star-fields draft, rule 6: a star is dimmed by the transmittance toward it, zero below the horizon
+        let s = earth();
+        for h in [0.0, 3000.0] {
+            let p = PhysicalSky::new(&s, h, scene(30.0, 30.0), 0.53, [1.0; 3]).unwrap();
+            for (e, a) in [(90.0, 0.0), (38.8, 170.0), (4.0, -60.0)] {
+                let want = s.atmosphere.transmittance([0.0, 0.0, R + h], to_planet(scene(e, a))).unwrap();
+                assert!(rel(p.transmittance(scene(e, a)).unwrap(), want) < 1e-12, "{h} {e} {a}");
+            }
+            assert_eq!(p.transmittance(scene(-5.0, 10.0)).unwrap(), [0.0; 3]);
+        }
+        // lower in the sky, longer through the air: dimmer, and bluer light lost first
+        let p = PhysicalSky::new(&s, 0.0, scene(30.0, 30.0), 0.53, [1.0; 3]).unwrap();
+        let (high, low) = (p.transmittance(scene(60.0, 0.0)).unwrap(), p.transmittance(scene(10.0, 0.0)).unwrap());
+        assert!((0..3).all(|c| low[c] < high[c]) && low[2] < low[0], "{high:?} {low:?}");
+        // an observer below the sphere is lifted onto it
+        let under = PhysicalSky::new(&s, -430.0, scene(30.0, 30.0), 0.53, [1.0; 3]).unwrap();
+        assert_eq!(under.transmittance(scene(20.0, 0.0)).unwrap(), p.transmittance(scene(20.0, 0.0)).unwrap());
+        assert!(p.transmittance([0.0, 0.0, 2.0]).is_err());
+    }
+
+    #[test]
     fn a_disc_is_drawn_above_the_horizon_only() {
         // a sun whose centre is 0.1° up: the half of its disc below the horizon is the ground's, black
         let (_, p) = sky(0.1, 1.0);
