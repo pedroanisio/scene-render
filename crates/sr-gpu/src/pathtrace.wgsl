@@ -859,7 +859,9 @@ fn radiance(px: vec2<f32>, pix: u32, first: bool) -> vec4<f32> {
             if (max(rad.r, max(rad.g, rad.b)) <= 0.0) { continue; }
             var visible = 1.0;
             if (lt.size.y > 0.5 && m.extra.z > 0.5) { visible = visibility(p + ng * 1e-2, l, ls.w - 2e-2); }
-            if (ty == 1u) { visible *= cloud_through(m, p); }
+            // rule 3's sun alone, the directional light toward the layer's sun
+            let cloud_sun = vec3(m.cloud[0].w, m.cloud[1].w, m.cloud[2].w);
+            if (ty == 1u && dot(-normalize(lt.dir.xyz), cloud_sun) > 0.9999) { visible *= cloud_through(m, p); }
             if (HAS_MEDIA && m.extra.z > 0.5) { visible *= volume_transmittance(p + ng * 1e-2, l, ls.w - 2e-2); }
             var c = vec3(0.0);
             if (sss > 0.0) {

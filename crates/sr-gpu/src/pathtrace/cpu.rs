@@ -1675,7 +1675,9 @@ pub(crate) fn radiance(
             if lt.size[1] > 0.5 && m.extra[2] > 0.5 {
                 visible = visibility(scene, add(pt, scale(ng, 1e-2)), l, dist - 2e-2);
             }
-            if ty == 1 {
+            // rule 3's sun alone, the directional light toward the layer's sun
+            let sun = [m.cloud[0][3], m.cloud[1][3], m.cloud[2][3]];
+            if ty == 1 && dot(scale(normalize(xyz(&lt.dir)), -1.0), sun) > 0.9999 {
                 visible *= cloud_through(&scene.top.pixels, &m, pt);
             }
             let flags = lt.right[3] as u32;

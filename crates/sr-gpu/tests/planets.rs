@@ -672,6 +672,52 @@ fn the_clouds_shadow_falls_where_the_sunward_ray_leaves_the_shell() {
 }
 
 #[test]
+fn the_clouds_shadow_only_the_suns_light() {
+    // rule 4 darkens rule 3's sun, the first directional light: a second directional light from another side lights
+    // the ground as it would without the shadow, so the frame is the sun's under the shadow plus its own without
+    let map = cloud_band("planet-cloud-patch.png", [0, 0, 0], (-50.0, -30.0), (10.0, 60.0));
+    let material = r##"<material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/>"##;
+    let clouds = |shadow: bool| format!(r#"cloudMap="{}" cloudHeight="0.2" cloudShadow="{shadow}""#, map.display());
+    let sun = r#"<light id="sun" type="directional" yaw="-90" intensity="1.5"/>"#;
+    let side = r#"<light id="side" type="directional" yaw="39" pitch="-17" intensity="1.5"/>"#;
+    for camera in ["", r#"renderer="pathtrace" pathSamples="1" maxBounces="1" denoise="false""#] {
+        let at = |attrs: &str, lights: &str| {
+            let xml = format!(
+                r##"<scene version="1.8"><project width="{SIZE}" height="{SIZE}" fps="24" duration="1" background="#000000FF"/><materials>{material}</materials><composition><camera id="eye" x="0" y="0" z="0" fov="60" {camera}/><object3D id="p" primitive="planet" material="m" radius="100" z="400" segments="256" {attrs}/></composition><lights>{lights}</lights></scene>"##
+            );
+            let opts = sr_model::LoadOptions { verify_assets: true, base_dir: Some(fixtures()) };
+            let doc = sr_model::load_str(&xml, &opts).unwrap_or_else(|e| panic!("{e:?}\n{xml}"));
+            let r = render(&doc)?;
+            assert!(r.stats.errors.is_empty(), "{:?}", r.stats.errors);
+            Some(r)
+        };
+        let (Some(both), Some(sun_alone), Some(sun_bare), Some(side_alone)) = (
+            at(&clouds(true), &format!("{sun}{side}")),
+            at(&clouds(true), sun),
+            at(&clouds(false), sun),
+            at(&clouds(false), side),
+        ) else {
+            return;
+        };
+        let (mut checked, mut apart) = (0, 0);
+        for y in (8..SIZE - 8).step_by(4) {
+            for x in (8..SIZE - 8).step_by(2) {
+                let want = sun_alone.at(x, y)[0] + side_alone.at(x, y)[0];
+                if want > 0.9 {
+                    continue;
+                }
+                let got = both.at(x, y)[0];
+                assert!((got - want).abs() < 0.02, "{camera:?} ({x}, {y}): {got}, want {want}");
+                checked += 1;
+                // where the sun's light is shadowed
+                apart += (sun_bare.at(x, y)[0] + side_alone.at(x, y)[0] - got > 0.05) as u32;
+            }
+        }
+        assert!(checked > 1000 && apart > 20, "{camera:?}: {checked} pixels checked, {apart} in the sun's shadow");
+    }
+}
+
+#[test]
 fn an_oblate_bodys_cloud_shell_is_its_spheroid_scaled() {
     // white clouds everywhere over a black ground of flattening 0.3, the light from the eye: over the pole the shell
     // ends at c (1 + h), well inside a sphere of a (1 + h)
