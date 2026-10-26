@@ -1031,7 +1031,8 @@ crates/sr-space/src/         the time-frames draft: time (UTC, TT and TDB, the f
                             elements (approximate Keplerian elements), frames (ICRF, ecliptic, IAU body-fixed frames);
                             the star-fields draft: stars (Bright Star Catalogue, flux, blackbody colour, proper motion,
                             constellations); the physical-sky draft: sun (the solar position algorithm of Reda and
-                            Andreas, a date's topocentric sun in scene axes)
+                            Andreas, a date's topocentric sun in scene axes), moon (Montenbruck and Pfleger's
+                            low-precision moon, its disc and phase)
 crates/sr-volume/src/        sparse volumetric grids and bounded deterministic caches: openvdb (OpenVDB ingestion), sequence
                             (cache timing), bake (content-addressed bakes, SRVSEQ), advection (motion-aware interpolation),
                             medium (participating media), thermal (blackbody emission)

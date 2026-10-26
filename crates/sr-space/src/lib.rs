@@ -5,7 +5,8 @@
 //! * [`spk`]: our own reader of JPL SPK files (DAF, type 2 Chebyshev segments, either byte order) pinned by a
 //!   sha256 digest; positions through the chain of centres, velocities and light time.
 //! * [`elements`]: the approximate Keplerian elements of Standish and Williams, the fallback without a file.
-//! * [`sun`]: the solar position algorithm of the physical-sky draft (`srep/srep-0000-physical-sky.md`).
+//! * [`sun`] and [`moon`]: the solar position algorithm and the low-precision moon of the physical-sky draft
+//!   (`srep/srep-0000-physical-sky.md`).
 //! * [`frames`]: the ICRF, the ecliptic of J2000 and the IAU 2009 body-fixed frames, the mapping into scene
 //!   pixels and bodies placed at a frame's time.
 //!
@@ -17,6 +18,7 @@
 
 pub mod elements;
 pub mod frames;
+pub mod moon;
 pub mod spk;
 pub mod stars;
 pub mod sun;
