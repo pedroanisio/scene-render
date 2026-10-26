@@ -74,6 +74,14 @@ impl Sky {
         self.file.as_ref().map_or(Positions::Approximate, Positions::File)
     }
 
+    /// The star-fields draft's epoch and axes at `t` seconds of scene time (rule 4): the Julian years since J2000 of
+    /// the frame's ephemeris time, and the scene axes of the ICRF through the space's frame (rows first).
+    pub fn star_frame(&self, t: f64) -> Result<(f64, sr_space::Mat3), String> {
+        let et = self.space.time_at(t).map_err(|e| e.to_string())?;
+        let frame = self.space.frame_matrix(et).map_err(|e| e.to_string())?;
+        Ok((sr_space::stars::years_since_j2000(et), sr_space::mat_mul(&sr_space::SCENE_FROM_ICRF_AXES, &frame)))
+    }
+
     /// Places an object at `t` seconds of scene time: its position, its orientation or both replace its properties.
     pub(crate) fn place(&self, o: &m::Object3D, t: f64, props: &mut Props) -> Result<(), String> {
         let by_position = o.position_from == m::PositionFrom::Ephemeris;

@@ -161,3 +161,23 @@ fn a_frame_past_the_elements_years_fails_and_names_the_object() {
     // a frame that fails is a frame of the run, not a stuck one: an earlier time evaluates again
     frame(&ev, 0.0);
 }
+
+#[test]
+fn a_space_gives_a_star_field_its_epoch_and_axes() {
+    let ev = evaluator(
+        "",
+        r#"<space epoch="2451545.0" timeScale="tdb" rate="31557600" frame="eclipticJ2000" ephemeris="de"/>"#,
+    );
+    let Some(Some(Ok(sky))) = ev.program().skies.first() else { panic!("no space") };
+    // at a Julian year per second, 2.5 s of scene time are 2.5 years after J2000
+    let (years, axes) = sky.star_frame(2.5).unwrap();
+    assert!((years - 2.5).abs() < 1e-12, "{years}");
+    assert_eq!(axes, sr_space::mat_mul(&sr_space::SCENE_FROM_ICRF_AXES, &sr_space::ecliptic_from_icrf()));
+    let ev = evaluator("", r#"<space epoch="2026-01-01T00:00:00Z" ephemeris="de"/>"#);
+    let Some(Some(Ok(sky))) = ev.program().skies.first() else { panic!("no space") };
+    let (years, axes) = sky.star_frame(0.0).unwrap();
+    // 2026-01-01 UTC is 26 Julian years after J2000 less half a day, plus TT − UTC (69.184 s)
+    let want = (sr_space::julian_day(2026, 1, 1, 0, 0, 0.0) - 2451545.0) / 365.25 + 69.184 / 31557600.0;
+    assert!((years - want).abs() < 1e-6 / 365.25, "{years} {want}");
+    assert_eq!(axes, sr_space::SCENE_FROM_ICRF_AXES);
+}
