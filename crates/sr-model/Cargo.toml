@@ -28,6 +28,7 @@ roxmltree.workspace = true
 
 [dev-dependencies]
 wat = "1.243"
+flate2 = "1"
 serde_json.workspace = true
 sr-testkit.workspace = true
 

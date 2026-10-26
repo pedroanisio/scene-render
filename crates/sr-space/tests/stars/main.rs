@@ -12,7 +12,7 @@ use sha2::Digest;
 use sr_space::stars::{
     angle, blackbody_xyz, chromaticity, colour, constellation, direction, flux, load_catalogue, magnitude, moved,
     parse_catalogue, planck, precess, radec, scene_direction, spectral_class, star_field, temperature,
-    years_since_j2000, Star, BOUNDARIES, CATALOGUE_DIGEST, CLASS_BV_G, JULIAN_YEAR_S, MAX_STARS,
+    years_since_j2000, Star, BOUNDARIES, CATALOGUE_DIGEST, CLASS_BV_G, JULIAN_YEAR_S, MAX_PROPER_MOTION, MAX_STARS,
 };
 
 fn path() -> PathBuf {
@@ -209,6 +209,9 @@ fn a_catalogue_is_refused_as_rule_1_says() {
     let ok = gz(&format!("{HEADER}1,a,10.0,5.0,4.0,0.5,0.0,0.0,G0\n2,\"b\",11.0,6.0,5.0,,0.1,0.2,\"C5,4\"\n"));
     let stars = parse_catalogue(&ok, None).unwrap();
     assert_eq!((stars[1].bv, stars[1].sptype.as_str()), (None, "C5,4"));
+    // SF1: proper motions at most MAX_PROPER_MOTION arcseconds a year in magnitude
+    let fast = gz(&format!("{HEADER}1,a,10,5,4,0.5,100,-100,G0\n"));
+    assert_eq!(parse_catalogue(&fast, None).unwrap()[0].pm_dec, -MAX_PROPER_MOTION);
     let quoted = gz(&format!("{HEADER}1,\"a \"\"b\"\"\",10.0,5.0,4.0,0.5,0.0,0.0,G0\n"));
     assert_eq!(parse_catalogue(&quoted, None).unwrap()[0].name, "a \"b\"");
     for bad in [
@@ -220,6 +223,9 @@ fn a_catalogue_is_refused_as_rule_1_says() {
         gz(&format!("{HEADER}1,a,10,5,4,0.5,nan,0,G0\n")),
         gz(&format!("{HEADER}1,a,10,5,4,0.5,0,nan,G0\n")),
         gz(&format!("{HEADER}1,a,10,5,4,inf,0,0,G0\n")),
+        gz(&format!("{HEADER}1,a,10,5,4,0.5,100.001,0,G0\n")),
+        gz(&format!("{HEADER}1,a,10,5,4,0.5,0,-100.5,G0\n")),
+        gz(&format!("{HEADER}1,a,10,5,4,0.5,-inf,0,G0\n")),
         gz(&format!("{HEADER}1,a,360,5,4,0.5,0,0,G0\n")),
         gz(&format!("{HEADER}1,a,10,90.5,4,0.5,0,0,G0\n")),
         gz(&format!("{HEADER}1,a,10,5,31,0.5,0,0,G0\n")),

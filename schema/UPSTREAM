@@ -51,9 +51,9 @@ epoch, constellations none|labels|boundaries), SF2 to SF4 (pattern p-srep-star-f
 the catalogue file and is the asset stage's, as TF1 is. The asserts write the draft's prose out: SF2 is a field on a dome
 light, once (the child choice is unbounded, so "at most one" is the Schematron's) and naming a catalogue asset; SF3 is
 limitMagnitude's finiteness, magnitudeZero and pointSize being positiveDecimal; SF4 is the epoch in [-8000, 12000].
-SF4's second clause (no epoch beside a space) is the native warning W17, as the draft's attribute text states that
-such an epoch is ignored with a warning. SF5 has no assert: rule 1 reads every catalogue's places as J2000, and no
-column carries an equinox for a rule to read.
+SF4's second clause (no epoch beside a space) is the native warning W17: the epoch is ignored with a warning, as
+the draft states since c91308a, which also withdraws SF5 (every catalogue is read as J2000) and bounds SF1's proper
+motions to 100 arcseconds a year.
 V17 is SREP 12's one shared 1.8 gate: one pattern, p-v17 (after p-srep75), whose one assert is the conjunction of
 the drafts' clauses.
 The branch merges when those SREPs are accepted; this file then names the schema-1.8.0 tag.

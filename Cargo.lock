@@ -3295,6 +3295,7 @@ dependencies = [
 name = "sr-model"
 version = "0.8.0"
 dependencies = [
+ "flate2",
  "image",
  "rayon",
  "regex",

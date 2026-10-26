@@ -21,6 +21,8 @@ pub const CATALOGUE_DIGEST: &str = "cd18b1c9b8c009d922edfed020ba718aa14a577416fb
 pub const COLUMNS: [&str; 9] = ["HR", "Name", "RA", "Dec", "V", "B-V", "pmRA", "pmDE", "SpType"];
 /// The most stars a catalogue holds and a field draws (rule 6).
 pub const MAX_STARS: usize = 16384;
+/// The largest proper motion in either coordinate, arcseconds a Julian year (SF1; Barnard's star moves 10.4″).
+pub const MAX_PROPER_MOTION: f64 = 100.0;
 /// The span of linear proper motion about J2000, Julian years (SF4, rule 4).
 pub const MAX_YEARS: f64 = 10_000.0;
 /// Seconds of a Julian year.
@@ -104,6 +106,9 @@ pub fn parse_catalogue(raw: &[u8], digest: Option<&str>) -> Result<Vec<Star>, Sp
         }
         if !(pm_ra.is_finite() && pm_dec.is_finite() && bv.is_none_or(f64::is_finite)) {
             return Err(err(format!("catalogue row {row}: HR {hr} has a value that is not finite")));
+        }
+        if pm_ra.abs().max(pm_dec.abs()) > MAX_PROPER_MOTION {
+            return Err(err(format!("catalogue row {row}: HR {hr} moves more than {MAX_PROPER_MOTION}″ a year")));
         }
         if stars.len() >= MAX_STARS {
             return Err(err(format!("catalogue has more than {MAX_STARS} stars")));
