@@ -82,6 +82,10 @@ pub struct PtMat {
     pub cloud: [[f32; 4]; 5],
     /// The cloud layer's pixel map, as `maps`.
     pub cloud_map: [u32; 4],
+    /// A planet's ring or its ground under the ring's shadow (the planets draft's rule 5), as `three::ring_u`.
+    pub ring: [[f32; 4]; 5],
+    /// The ring strip's pixel map, as `maps`.
+    pub ring_map: [u32; 4],
 }
 
 /// Beer-Lambert coefficients per scene unit: the light left after `distance` units is `color`.
@@ -405,7 +409,7 @@ fn build_inner(scene: &Scene3, cache: &mut BuildCache, take: bool) -> (PtScene, 
     // a shadow catcher has no colour of its own and the tracer cannot evaluate its darkening: it is left out (see `notes`)
     for dr in scene.draws.iter().filter(|d| !d.shadow_catcher) {
         let m = &dr.material;
-        let maps: [[u32; 4]; 7] = std::array::from_fn(|slot| {
+        let maps: [[u32; 4]; 8] = std::array::from_fn(|slot| {
             dr.maps[slot].as_ref().map_or([0; 4], |texture| {
                 let offset = *texture_offsets.entry(texture.key).or_insert_with(|| {
                     s.push_atlas(AtlasPart::Texture { key: texture.key, rgba: texture.rgba.clone() })
@@ -475,6 +479,8 @@ fn build_inner(scene: &Scene3, cache: &mut BuildCache, take: bool) -> (PtScene, 
             planet: crate::three::planet_u(m),
             cloud: crate::three::cloud_u(m),
             cloud_map: maps[6],
+            ring: crate::three::ring_u(m),
+            ring_map: maps[7],
         });
         if reused.is_some() {
             continue;
@@ -654,6 +660,8 @@ fn build_inner(scene: &Scene3, cache: &mut BuildCache, take: bool) -> (PtScene, 
             planet: [[0.0; 4]; 2],
             cloud: [[0.0; 4]; 5],
             cloud_map: [0; 4],
+            ring: [[0.0; 4]; 5],
+            ring_map: [0; 4],
         });
     }
     if s.pos.is_empty() {
@@ -2723,7 +2731,7 @@ pub(crate) fn render_cached(
     let packed::Buffers { verts: tverts, nodes, offset } = geometry;
     let mut materials = data.mats.clone();
     for material in &mut materials {
-        for map in material.maps.iter_mut().chain([&mut material.cloud_map]) {
+        for map in material.maps.iter_mut().chain([&mut material.cloud_map, &mut material.ring_map]) {
             map[0] += offset;
         }
     }
@@ -3061,7 +3069,7 @@ mod wgsl_layout_tests {
 
     #[test]
     fn pt_mat_matches_wgsl_mat() {
-        let fields = rust_fields!(super::PtMat; base, params, emissive, extra, maps, texture_params, borders, attenuation, sss, sss_color, planet, cloud, cloud_map);
+        let fields = rust_fields!(super::PtMat; base, params, emissive, extra, maps, texture_params, borders, attenuation, sss, sss_color, planet, cloud, cloud_map, ring, ring_map);
         assert_agree(include_str!("pathtrace.wgsl"), "Mat", std::mem::size_of::<super::PtMat>(), &fields);
     }
 

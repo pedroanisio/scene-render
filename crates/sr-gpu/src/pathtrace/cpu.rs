@@ -1292,6 +1292,9 @@ pub(crate) struct Shaded {
     /// The material's cloud shadow and the cloud layer's map (`PtMat::cloud`).
     pub cloud: [[f32; 4]; 5],
     pub cloud_map: [u32; 4],
+    /// The material's ring role and the ring strip's map (`PtMat::ring`).
+    pub ring: [[f32; 4]; 5],
+    pub ring_map: [u32; 4],
 }
 
 /// The shader's `cloud_through`: the light a planet's cloud layer lets through to world point `p` of its ground (the
@@ -1322,6 +1325,65 @@ pub(crate) fn cloud_through(pixels: &[u32], m: &Shaded, p: [f32; 3]) -> f32 {
     let lat = (-l[1]).atan2(g * g * (l[0] * l[0] + l[2] * l[2]).sqrt());
     let uv = [(lon / (2.0 * std::f32::consts::PI) + 0.5).rem_euclid(1.0), 0.5 - lat / std::f32::consts::PI];
     1.0 - map_sample(pixels, m.cloud_map, uv, [0.0; 4])[3]
+}
+
+/// The shader's `planet_sun`: the direction toward rule 3's sun of a planet's ground, cloud shell or ring; zero on
+/// other surfaces.
+pub(crate) fn planet_sun(m: &Shaded) -> [f32; 3] {
+    let cloud = [m.cloud[0][3], m.cloud[1][3], m.cloud[2][3]];
+    if dot(cloud, cloud) > 0.0 {
+        cloud
+    } else {
+        [m.ring[0][3], m.ring[1][3], m.ring[2][3]]
+    }
+}
+
+/// The shader's `ring_sample`: the ring strip's RGBA at radius `rho`, linear between its texels spread evenly from the
+/// annulus' inner to its outer edge (the planets draft's rule 5); transparent outside.
+pub(crate) fn ring_sample(pixels: &[u32], m: &Shaded, rho: f32) -> [f32; 4] {
+    let (inner, outer, n) = (m.ring[4][1], m.ring[4][2], m.ring_map[1]);
+    if n < 2 || rho < inner || rho > outer {
+        return [0.0; 4];
+    }
+    let x = (rho - inner) / (outer - inner) * (n - 1) as f32;
+    let i = (x as u32).min(n - 2);
+    let at = |i: u32| texel(pixels, m.ring_map, i as i32, 0, [0.0; 4]);
+    mix4(at(i), at(i + 1), x - i as f32)
+}
+
+/// The shader's `ring_body`: world point `p` in the ringed body's own scene axes.
+pub(crate) fn ring_body(m: &Shaded, p: [f32; 3]) -> [f32; 3] {
+    let p = sub(p, xyz(&m.ring[3]));
+    [0, 1, 2].map(|r| dot(xyz(&m.ring[r]), p))
+}
+
+/// The shader's `ring_through`: the share of the Sun's light reaching world point `p` (the planets draft's rule 5),
+/// on the ring 0 where its ray toward the Sun meets the body's spheroid, on the ground 1 − alpha of the strip where
+/// that ray crosses the ring plane ahead of it; 1 elsewhere and without a sun.
+pub(crate) fn ring_through(pixels: &[u32], m: &Shaded, p: [f32; 3]) -> f32 {
+    let role = m.ring[4][3];
+    let sw = [m.ring[0][3], m.ring[1][3], m.ring[2][3]];
+    if role < 0.5 || dot(sw, sw) == 0.0 {
+        return 1.0;
+    }
+    let p = ring_body(m, p);
+    let sun = [0, 1, 2].map(|r| dot(xyz(&m.ring[r]), sw));
+    if role < 1.5 {
+        // stretched along the pole by 1 / (1 − f) the spheroid is the sphere of its equatorial radius
+        let k = 1.0 / (1.0 - m.ring[4][0]);
+        let ps = [p[0], p[1] * k, p[2]];
+        let ds = normalize([sun[0], sun[1] * k, sun[2]]);
+        let b = dot(ps, ds);
+        let disc = b * b - (dot(ps, ps) - m.ring[3][3] * m.ring[3][3]);
+        return if disc >= 0.0 && -b + disc.max(0.0).sqrt() > 0.0 { 0.0 } else { 1.0 };
+    }
+    // the Sun on the point's own side of the plane casts no ring shadow on it
+    let t = -p[1] / sun[1];
+    if sun[1] == 0.0 || t <= 0.0 {
+        return 1.0;
+    }
+    let q = add(p, scale(sun, t));
+    1.0 - ring_sample(pixels, m, (q[0] * q[0] + q[2] * q[2]).sqrt())[3].clamp(0.0, 1.0)
 }
 
 /// The shader's planet emission (the planets draft's rule 3) of a hit seen along `d` with the oriented normal `n`:
@@ -1425,6 +1487,8 @@ pub(crate) fn shade_hit(scene: &Dense, hit: &Hit) -> Shaded {
         planet: m.planet,
         cloud: m.cloud,
         cloud_map: m.cloud_map,
+        ring: m.ring,
+        ring_map: m.ring_map,
     }
 }
 
@@ -1631,8 +1695,15 @@ pub(crate) fn radiance(
             col = add(col, mul3(thr, env_term(env, p, d)));
             break;
         }
-        let m = shade_hit(scene, &hit);
+        let mut m = shade_hit(scene, &hit);
         let pt = add(o, scale(d, hit.t));
+        // a planet's ring takes the strip's colour and alpha at its radius (the planets draft's rule 5)
+        let ring = m.ring[4][3] > 0.5 && m.ring[4][3] < 1.5;
+        if ring {
+            let q = ring_body(&m, pt);
+            let c = ring_sample(&scene.top.pixels, &m, (q[0] * q[0] + q[2] * q[2]).sqrt());
+            m.base = [0, 1, 2, 3].map(|i| m.base[i] * c[i]);
+        }
         if m.base[3] < 1.0 && rng.rnd() > m.base[3] {
             o = add(pt, scale(d, 1e-3));
             continue;
@@ -1640,10 +1711,14 @@ pub(crate) fn radiance(
         alpha = 1.0;
         met += 1;
         let ng0 = m.ng;
-        let ng = if dot(d, ng0) < 0.0 { ng0 } else { scale(ng0, -1.0) };
+        let mut ng = if dot(d, ng0) < 0.0 { ng0 } else { scale(ng0, -1.0) };
         let mut n = m.n;
         if dot(n, ng) < 0.0 {
             n = scale(n, -1.0);
+        }
+        // both faces of a ring are lit alike, the plane's normal on the Sun's side
+        if ring && dot(ng, planet_sun(&m)) < 0.0 {
+            (n, ng) = (scale(n, -1.0), scale(ng, -1.0));
         }
         if met == 1 {
             *guide = Some(([m.base[0], m.base[1], m.base[2], 1.0], [n[0], n[1], n[2], hit.t]));
@@ -1653,7 +1728,11 @@ pub(crate) fn radiance(
             break;
         }
         let s = surf_of(m.base, m.params, m.extra);
-        let v = scale(d, -1.0);
+        let mut v = scale(d, -1.0);
+        // seen from the unlit side a ring shades as its lit face seen from the eye's mirror image through its plane
+        if ring && dot(v, n) < 0.0 {
+            v = sub(v, scale(n, 2.0 * dot(v, n)));
+        }
         if bounce >= max_b {
             break;
         }
@@ -1675,10 +1754,9 @@ pub(crate) fn radiance(
             if lt.size[1] > 0.5 && m.extra[2] > 0.5 {
                 visible = visibility(scene, add(pt, scale(ng, 1e-2)), l, dist - 2e-2);
             }
-            // rule 3's sun alone, the directional light toward the layer's sun
-            let sun = [m.cloud[0][3], m.cloud[1][3], m.cloud[2][3]];
-            if ty == 1 && dot(scale(normalize(xyz(&lt.dir)), -1.0), sun) > 0.9999 {
-                visible *= cloud_through(&scene.top.pixels, &m, pt);
+            // rule 3's sun alone, the directional light toward the planet's sun
+            if ty == 1 && dot(scale(normalize(xyz(&lt.dir)), -1.0), planet_sun(&m)) > 0.9999 {
+                visible *= cloud_through(&scene.top.pixels, &m, pt) * ring_through(&scene.top.pixels, &m, pt);
             }
             let flags = lt.right[3] as u32;
             let lobes = [(flags & 1) as f32, ((flags >> 1) & 1) as f32];

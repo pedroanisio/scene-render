@@ -46,6 +46,9 @@ struct Material {
     // the cloud shadow: world-to-layer rows with the direction toward the Sun in w, the shell's centre and equatorial
     // radius (0: none), the body's flattening
     cloud: array<vec4<f32>, 5>,
+    // the rings: world-to-body rows with the direction toward the Sun in w, the body's centre and equatorial radius,
+    // its flattening, the annulus' inner and outer radii, the role (0 none, 1 the ring, 2 the ground under it)
+    ring: array<vec4<f32>, 5>,
 };
 
 @group(1) @binding(0) var<uniform> mat: Material;
@@ -56,6 +59,8 @@ struct Material {
 @group(1) @binding(5) var emissive_map: texture_2d<f32>;
 @group(1) @binding(6) var disp_map: texture_2d<f32>;
 @group(1) @binding(7) var mat_smp: sampler;
+// a planet's ring strip in linear RGBA, inner edge first (the planets draft's rule 5)
+@group(1) @binding(8) var<storage, read> ring_strip: array<vec4<f32>>;
 
 fn material_texel(tex: texture_2d<f32>, xy: vec2<i32>, slot: u32) -> vec4<f32> {
     let size = vec2<i32>(textureDimensions(tex));
@@ -347,11 +352,58 @@ fn night_weight(n: vec3<f32>) -> f32 {
     return clamp(0.5 - e / (2.0 * mat.planet.w), 0.0, 1.0);
 }
 
-// The share of light `li` (of type `ty`) the cloud layer lets through: `cloud` for rule 3's sun, the directional
-// light toward the layer's sun (the planets draft's rule 4), 1 for every other light.
-fn cloud_for(li: Light, ty: u32, cloud: f32) -> f32 {
-    let sun = vec3(mat.cloud[0].w, mat.cloud[1].w, mat.cloud[2].w);
-    return select(1.0, cloud, ty == 1u && dot(-normalize(li.dir.xyz), sun) > 0.9999);
+// The direction toward rule 3's sun of a planet's ground, cloud shell or ring; zero on other surfaces.
+fn planet_sun() -> vec3<f32> {
+    let cloud = vec3(mat.cloud[0].w, mat.cloud[1].w, mat.cloud[2].w);
+    return select(vec3(mat.ring[0].w, mat.ring[1].w, mat.ring[2].w), cloud, dot(cloud, cloud) > 0.0);
+}
+
+// The share of light `li` (of type `ty`) the clouds and the rings let through: `through` for rule 3's sun, the
+// directional light toward the planet's sun (the planets draft's rules 4 and 5), 1 for every other light.
+fn sun_for(li: Light, ty: u32, through: f32) -> f32 {
+    return select(1.0, through, ty == 1u && dot(-normalize(li.dir.xyz), planet_sun()) > 0.9999);
+}
+
+// The planets draft's rule 5: the ring strip's RGBA at radius `rho`, linear between its texels spread evenly from the
+// annulus' inner to its outer edge; transparent outside.
+fn ring_sample(rho: f32) -> vec4<f32> {
+    let inner = mat.ring[4].y;
+    let outer = mat.ring[4].z;
+    let n = arrayLength(&ring_strip);
+    if (n < 2u || rho < inner || rho > outer) { return vec4(0.0); }
+    let x = (rho - inner) / (outer - inner) * f32(n - 1u);
+    let i = min(u32(x), n - 2u);
+    return mix(ring_strip[i], ring_strip[i + 1u], x - f32(i));
+}
+
+// A world point in the ringed body's own scene axes, its pole −y and its ring plane y = 0.
+fn ring_body(world: vec3<f32>) -> vec3<f32> {
+    let pw = world - mat.ring[3].xyz;
+    return vec3(dot(mat.ring[0].xyz, pw), dot(mat.ring[1].xyz, pw), dot(mat.ring[2].xyz, pw));
+}
+
+// The planets draft's rule 5: the share of the Sun's light reaching `world`, on the ring 0 where its ray toward the
+// Sun meets the body's spheroid, on the ground 1 − alpha of the strip where that ray crosses the ring plane ahead of
+// it; 1 elsewhere and without a sun.
+fn ring_through(world: vec3<f32>) -> f32 {
+    let role = mat.ring[4].w;
+    let sw = vec3(mat.ring[0].w, mat.ring[1].w, mat.ring[2].w);
+    if (role < 0.5 || dot(sw, sw) == 0.0) { return 1.0; }
+    let p = ring_body(world);
+    let sun = vec3(dot(mat.ring[0].xyz, sw), dot(mat.ring[1].xyz, sw), dot(mat.ring[2].xyz, sw));
+    if (role < 1.5) {
+        // stretched along the pole by 1 / (1 − f) the spheroid is the sphere of its equatorial radius
+        let k = 1.0 / (1.0 - mat.ring[4].x);
+        let ps = vec3(p.x, p.y * k, p.z);
+        let ds = normalize(vec3(sun.x, sun.y * k, sun.z));
+        let b = dot(ps, ds);
+        let disc = b * b - (dot(ps, ps) - mat.ring[3].w * mat.ring[3].w);
+        return select(1.0, 0.0, disc >= 0.0 && -b + sqrt(max(disc, 0.0)) > 0.0);
+    }
+    // the Sun on the point's own side of the plane casts no ring shadow on it
+    let t = -p.y / sun.y;
+    if (sun.y == 0.0 || t <= 0.0) { return 1.0; }
+    return 1.0 - clamp(ring_sample(length((p + sun * t).xz)).a, 0.0, 1.0);
 }
 
 // The planets draft's rule 4: the share of the Sun's light a planet's cloud layer lets through to the ground point
@@ -555,6 +607,9 @@ fn surface(i: VOut, front: bool) -> Surface {
     let bits = select(u32(mat.aniso.w), 0u, PLAIN_MATERIAL);
     var base = mat.base_color * i.color;
     if ((bits & 1u) != 0u) { base = base * material_fragment(base_map, i.uv, 0u); }
+    // a planet's ring takes the strip's colour and alpha at its radius (the planets draft's rule 5)
+    let ring = !PLAIN_MATERIAL && mat.ring[4].w > 0.5 && mat.ring[4].w < 1.5;
+    if (ring) { base = base * ring_sample(length(ring_body(i.world).xz)); }
     s.albedo = base.rgb;
     s.alpha = base.a * mat.p0.z * obj.params.x;
     var metallic = mat.p0.x;
@@ -571,6 +626,8 @@ fn surface(i: VOut, front: bool) -> Surface {
     s.rough = clamp(rough, 0.03, 1.0);
     var n = normalize(i.normal);
     if (!front) { n = -n; }
+    // both faces of a ring are lit alike, the plane's normal on the Sun's side
+    if (ring && dot(n, planet_sun()) < 0.0) { n = -n; }
     var t = normalize(i.tangent.xyz - n * dot(n, i.tangent.xyz));
     var b = cross(n, t) * i.tangent.w;
     if ((bits & 2u) != 0u) {
@@ -602,6 +659,8 @@ fn surface(i: VOut, front: bool) -> Surface {
     s.n = n;
     s.world = i.world;
     s.v = toward_eye(i.world);
+    // seen from the unlit side a ring shades as its lit face seen from the eye's mirror image through its plane
+    if (ring && dot(s.v, s.n) < 0.0) { s.v = s.v - 2.0 * dot(s.v, s.n) * s.n; }
     s.occlusion = 1.0;
     if ((bits & 8u) != 0u) { s.occlusion = 1.0 + mat.irid.w * (material_fragment(occ_map, i.occ_uv, 3u).r - 1.0); }
     let ior = mat.p2.w;
@@ -731,9 +790,10 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
         return o;
     }
     var col = vec3(0.0);
-    // a planet's cloud layer shades its ground from the directional lights (the planets draft's rule 4)
-    var cloud = 1.0;
-    if (!PLAIN_MATERIAL) { cloud = cloud_through(s.world); }
+    // a planet's cloud layer and rings shade its ground, and the planet its rings, from rule 3's sun (the planets
+    // draft's rules 4 and 5)
+    var through = 1.0;
+    if (!PLAIN_MATERIAL) { through = cloud_through(s.world) * ring_through(s.world); }
     // a shadow catcher compares the light that arrives (lit_sh) with the light that would arrive without casters (lit_un)
     var lit_un = 0.0;
     var lit_sh = 0.0;
@@ -773,7 +833,7 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
             } else if (ty == 0u) {
                 sh = ao;
             }
-            col += contribution * sh * cloud_for(li, ty, cloud);
+            col += contribution * sh * sun_for(li, ty, through);
             if (catcher) {
                 lit_un += luma(contribution * select(1.0, ao, ty == 0u));
                 lit_sh += luma(contribution * sh);
@@ -796,7 +856,7 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
             } else if (ty == 0u) {
                 sh = ao;
             }
-            col += contribution * sh * cloud_for(li, ty, cloud);
+            col += contribution * sh * sun_for(li, ty, through);
             if (catcher) {
                 lit_un += luma(contribution * select(1.0, ao, ty == 0u));
                 lit_sh += luma(contribution * sh);
@@ -819,7 +879,7 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
             } else if (ty == 0u) {
                 sh = ao;
             }
-            col += contribution * sh * cloud_for(li, ty, cloud);
+            col += contribution * sh * sun_for(li, ty, through);
             if (catcher) {
                 lit_un += luma(contribution * select(1.0, ao, ty == 0u));
                 lit_sh += luma(contribution * sh);
@@ -842,7 +902,7 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
             } else if (ty == 0u) {
                 sh = ao;
             }
-            col += contribution * sh * cloud_for(li, ty, cloud);
+            col += contribution * sh * sun_for(li, ty, through);
             if (catcher) {
                 lit_un += luma(contribution * select(1.0, ao, ty == 0u));
                 lit_sh += luma(contribution * sh);
@@ -868,7 +928,7 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
             } else if (ty == 0u) {
                 sh = ao;
             }
-            col += contribution * sh * cloud_for(li, ty, cloud);
+            col += contribution * sh * sun_for(li, ty, through);
             if (catcher) {
                 lit_un += luma(contribution * select(1.0, ao, ty == 0u));
                 lit_sh += luma(contribution * sh);

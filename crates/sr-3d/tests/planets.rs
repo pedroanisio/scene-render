@@ -297,3 +297,34 @@ fn rules_1_and_2_the_spheroids_mesh() {
         assert!(sr_3d::prim::spheroid(bad.0, bad.1, segs).is_err(), "{bad:?}");
     }
 }
+
+/// Rule 5 as the mesh carries it: `prim::annulus` is the ring plane's annulus from the inner to the outer radius, its
+/// normal the pole (the scene's −y), every triangle winding toward it.
+#[test]
+fn rule_5_the_annulus_spans_the_ring() {
+    let (inner, outer, segs) = (130.0f32, 220.0f32, 64);
+    let mesh = sr_3d::prim::annulus(inner, outer, segs).unwrap();
+    let (mut at_inner, mut at_outer) = (0, 0);
+    for v in &mesh.vertices {
+        let rho = v.pos[0].hypot(v.pos[2]);
+        assert_eq!(v.pos[1], 0.0, "{v:?}");
+        assert!(rho > inner - 1e-3 && rho < outer + 1e-3, "{v:?}");
+        at_inner += ((rho - inner).abs() < 1e-3) as u32;
+        at_outer += ((rho - outer).abs() < 1e-3) as u32;
+        assert_eq!(v.normal, [0.0, -1.0, 0.0]);
+    }
+    assert!(at_inner > segs && at_outer > segs, "{at_inner} inner and {at_outer} outer vertices");
+    // the triangles cover the annulus' area, each wound toward −y
+    let mut area = 0.0f64;
+    for t in mesh.indices.as_chunks::<3>().0 {
+        let [a, b, c] = t.map(|i| glam::Vec3::from(mesh.vertices[i as usize].pos));
+        let g = (b - a).cross(c - a);
+        assert!(g.y < 0.0, "{t:?} winds away from the pole");
+        area += f64::from(g.length()) / 2.0;
+    }
+    let polygon = |r: f64| segs as f64 / 2.0 * r * r * (std::f64::consts::TAU / segs as f64).sin();
+    assert!((area - (polygon(outer as f64) - polygon(inner as f64))).abs() < 1e-2 * area, "{area}");
+    for bad in [(0.0, 1.0), (2.0, 1.0), (1.0, 1.0), (-1.0, 2.0)] {
+        assert!(sr_3d::prim::annulus(bad.0, bad.1, segs).is_err(), "{bad:?}");
+    }
+}

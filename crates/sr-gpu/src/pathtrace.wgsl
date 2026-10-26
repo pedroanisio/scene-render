@@ -61,6 +61,11 @@ struct Mat {
     // shell's centre and equatorial radius (0: none), the body's flattening; the cloud layer's map
     cloud: array<vec4<f32>, 5>,
     cloud_map: vec4<u32>,
+    // a planet's ring or its ground under the ring's shadow: the world-to-body rows with the direction toward the Sun
+    // in w, the body's centre and equatorial radius, its flattening, the annulus' radii and the role (1 the ring, 2
+    // the ground); the ring strip's map
+    ring: array<vec4<f32>, 5>,
+    ring_map: vec4<u32>,
 };
 
 struct Node {
@@ -514,6 +519,52 @@ fn sample_dir(s: Surf, n: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
 
 // Alpha-tested and blended surfaces attenuate shadow rays using the same base map
 // as camera rays. Captured Gaussian splats do not cast shadows.
+// The direction toward rule 3's sun of a planet's ground, cloud shell or ring; zero on other surfaces.
+fn planet_sun(m: Mat) -> vec3<f32> {
+    let cloud = vec3(m.cloud[0].w, m.cloud[1].w, m.cloud[2].w);
+    return select(vec3(m.ring[0].w, m.ring[1].w, m.ring[2].w), cloud, dot(cloud, cloud) > 0.0);
+}
+
+// The planets draft's rule 5: the ring strip's RGBA at radius `rho`, linear between its texels spread evenly from the
+// annulus' inner to its outer edge; transparent outside.
+fn ring_sample(m: Mat, rho: f32) -> vec4<f32> {
+    let n = m.ring_map.y;
+    if (n < 2u || rho < m.ring[4].y || rho > m.ring[4].z) { return vec4(0.0); }
+    let x = (rho - m.ring[4].y) / (m.ring[4].z - m.ring[4].y) * f32(n - 1u);
+    let i = min(u32(x), n - 2u);
+    return mix(texel(m.ring_map, vec2(i32(i), 0), vec4(0.0)), texel(m.ring_map, vec2(i32(i + 1u), 0), vec4(0.0)), x - f32(i));
+}
+
+// A world point in the ringed body's own scene axes, its pole −y and its ring plane y = 0.
+fn ring_body(m: Mat, world: vec3<f32>) -> vec3<f32> {
+    let pw = world - m.ring[3].xyz;
+    return vec3(dot(m.ring[0].xyz, pw), dot(m.ring[1].xyz, pw), dot(m.ring[2].xyz, pw));
+}
+
+// The planets draft's rule 5: the share of the Sun's light reaching `world`, on the ring 0 where its ray toward the
+// Sun meets the body's spheroid, on the ground 1 − alpha of the strip where that ray crosses the ring plane ahead of
+// it; 1 elsewhere and without a sun.
+fn ring_through(m: Mat, world: vec3<f32>) -> f32 {
+    let role = m.ring[4].w;
+    let sw = vec3(m.ring[0].w, m.ring[1].w, m.ring[2].w);
+    if (role < 0.5 || dot(sw, sw) == 0.0) { return 1.0; }
+    let p = ring_body(m, world);
+    let sun = vec3(dot(m.ring[0].xyz, sw), dot(m.ring[1].xyz, sw), dot(m.ring[2].xyz, sw));
+    if (role < 1.5) {
+        // stretched along the pole by 1 / (1 − f) the spheroid is the sphere of its equatorial radius
+        let k = 1.0 / (1.0 - m.ring[4].x);
+        let ps = vec3(p.x, p.y * k, p.z);
+        let ds = normalize(vec3(sun.x, sun.y * k, sun.z));
+        let b = dot(ps, ds);
+        let disc = b * b - (dot(ps, ps) - m.ring[3].w * m.ring[3].w);
+        return select(1.0, 0.0, disc >= 0.0 && -b + sqrt(max(disc, 0.0)) > 0.0);
+    }
+    // the Sun on the point's own side of the plane casts no ring shadow on it
+    let t = -p.y / sun.y;
+    if (sun.y == 0.0 || t <= 0.0) { return 1.0; }
+    return 1.0 - clamp(ring_sample(m, length((p + sun * t).xz)).a, 0.0, 1.0);
+}
+
 // The light a planet's cloud layer lets through to world point `world` of its ground (the planets draft's rule 4):
 // 1 − alpha of the texel where the ray toward the Sun leaves the shell; 1 without a cloud shadow or on the night side.
 fn cloud_through(m: Mat, world: vec3<f32>) -> f32 {
@@ -787,6 +838,9 @@ fn radiance(px: vec2<f32>, pix: u32, first: bool) -> vec4<f32> {
             }
         }
         let p = o + d * hit.t;
+        // a planet's ring takes the strip's colour and alpha at its radius (the planets draft's rule 5)
+        let ring = m.ring[4].w > 0.5 && m.ring[4].w < 1.5;
+        if (ring) { m.base = m.base * ring_sample(m, length(ring_body(m, p).xz)); }
         // stochastic opacity: pass straight through
         if (m.base.a < 1.0 && rnd() > m.base.a) {
             o = p + d * 1e-3;
@@ -795,8 +849,10 @@ fn radiance(px: vec2<f32>, pix: u32, first: bool) -> vec4<f32> {
         alpha = 1.0;
         met += 1u;
         let entering = dot(d, ng0) < 0.0;
-        let ng = select(-ng0, ng0, entering);
+        var ng = select(-ng0, ng0, entering);
         if (dot(n, ng) < 0.0) { n = -n; }
+        // both faces of a ring are lit alike, the plane's normal on the Sun's side
+        if (ring && dot(ng, planet_sun(m)) < 0.0) { n = -n; ng = -ng; }
         if (met == 1u && first) {
             guide[pix * 2u] += vec4(m.base.rgb, 1.0);
             guide[pix * 2u + 1u] += vec4(n, hit.t);
@@ -821,7 +877,9 @@ fn radiance(px: vec2<f32>, pix: u32, first: bool) -> vec4<f32> {
         col += thr * m.emissive.rgb;
         if (m.emissive.w > 0.5) { break; }
         let s = surf_of(m);
-        let v = -d;
+        var v = -d;
+        // seen from the unlit side a ring shades as its lit face seen from the eye's mirror image through its plane
+        if (ring && dot(v, n) < 0.0) { v = v - 2.0 * dot(v, n) * n; }
         // dielectric transmission (smooth): Fresnel picks reflection or refraction
         if (s.trans > 0.0 && rnd() < s.trans) {
             ambient_diffuse = vec3(0.0);
@@ -860,8 +918,9 @@ fn radiance(px: vec2<f32>, pix: u32, first: bool) -> vec4<f32> {
             var visible = 1.0;
             if (lt.size.y > 0.5 && m.extra.z > 0.5) { visible = visibility(p + ng * 1e-2, l, ls.w - 2e-2); }
             // rule 3's sun alone, the directional light toward the layer's sun
-            let cloud_sun = vec3(m.cloud[0].w, m.cloud[1].w, m.cloud[2].w);
-            if (ty == 1u && dot(-normalize(lt.dir.xyz), cloud_sun) > 0.9999) { visible *= cloud_through(m, p); }
+            if (ty == 1u && dot(-normalize(lt.dir.xyz), planet_sun(m)) > 0.9999) {
+                visible *= cloud_through(m, p) * ring_through(m, p);
+            }
             if (HAS_MEDIA && m.extra.z > 0.5) { visible *= volume_transmittance(p + ng * 1e-2, l, ls.w - 2e-2); }
             var c = vec3(0.0);
             if (sss > 0.0) {

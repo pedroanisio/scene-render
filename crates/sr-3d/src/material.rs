@@ -43,6 +43,27 @@ pub struct CloudShadow {
     pub to_layer: [[f32; 3]; 3],
 }
 
+/// The planets draft's rings (rule 5) on a surface, in the scene's world axes: on the ring itself its colour and
+/// alpha are the strip's at the point's radius and the light toward the Sun is cut where the ray toward it meets the
+/// body's spheroid; on the ground the light toward the Sun is 1 − alpha of the strip where that ray crosses the ring
+/// plane ahead of the point.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlanetRings {
+    /// The unit direction toward the Sun; zero without one.
+    pub sun: [f32; 3],
+    /// The body's centre, its equatorial radius and its flattening.
+    pub centre: [f32; 3],
+    pub radius: f32,
+    pub flattening: f32,
+    /// The annulus' inner and outer radii (scene units).
+    pub inner: f32,
+    pub outer: f32,
+    /// World axes to the body's own scene axes (its pole −y), rows first.
+    pub to_body: [[f32; 3]; 3],
+    /// The surface is the ring itself, not the ground under it.
+    pub on_ring: bool,
+}
+
 /// Every scalar and colour input of the shading model. Colours are linear.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialParams {
@@ -97,6 +118,8 @@ pub struct MaterialParams {
     pub planet: Option<PlanetEmission>,
     /// A planet's ground under its cloud layer's shadow; none on other surfaces.
     pub cloud_shadow: Option<CloudShadow>,
+    /// A planet's ring, or its ground under the ring's shadow; none on other surfaces.
+    pub rings: Option<PlanetRings>,
 }
 
 impl Default for MaterialParams {
@@ -145,6 +168,7 @@ impl Default for MaterialParams {
             subsurface_radius_scale: [1.0, 0.5, 0.25],
             planet: None,
             cloud_shadow: None,
+            rings: None,
         }
     }
 }

@@ -198,8 +198,9 @@ impl MeshSrc {
 /// Texture slots: base colour, normal, metallic-roughness, occlusion, emissive, displacement, and a planet's cloud
 /// layer, which its ground reads for the clouds' shadow (the planets draft's rule 4). The cloud layer is bound in the
 /// occlusion map's place, which a ground with one leaves it (a stage holds 16 sampled textures and the pass uses them
-/// all).
-pub type Maps = [Option<Arc<TexGpu>>; 7];
+/// all). Last, a planet's ring strip, which the ring and its ground read through a storage buffer of its linear
+/// texels (the planets draft's rule 5).
+pub type Maps = [Option<Arc<TexGpu>>; 8];
 
 /// One mesh draw.
 pub struct Draw3 {
@@ -676,6 +677,9 @@ struct MaterialU {
     /// the cloud shadow: the world-to-layer rows with the direction toward the Sun in w, the shell's centre and
     /// equatorial radius (0: none), the body's flattening
     cloud: [[f32; 4]; 5],
+    /// the rings: the world-to-body rows with the direction toward the Sun in w, the body's centre and equatorial
+    /// radius, then its flattening, the annulus' inner and outer radii and the role (0 none, 1 the ring, 2 its ground)
+    ring: [[f32; 4]; 5],
 }
 
 #[repr(C)]
@@ -778,7 +782,36 @@ fn material_u(m: &MaterialParams, maps: &Maps) -> MaterialU {
         planet_limb: planet_u(m)[1],
         // the occlusion map's binding holds the cloud layer only on a ground without one (`Maps`)
         cloud: if maps[3].is_some() { [[0.0; 4]; 5] } else { cloud_u(m) },
+        ring: if maps[7].is_some() { ring_u(m) } else { [[0.0; 4]; 5] },
     }
+}
+
+/// A planet's ring or the ground under it for the shaders (the planets draft's rule 5): the world-to-body rows with
+/// the direction toward the Sun in w, the body's centre and equatorial radius, then its flattening, the annulus' radii
+/// and the role (1 the ring, 2 the ground); zeros without one.
+pub(crate) fn ring_u(m: &MaterialParams) -> [[f32; 4]; 5] {
+    m.rings.map_or([[0.0; 4]; 5], |g| {
+        let r = g.to_body;
+        [
+            [r[0][0], r[0][1], r[0][2], g.sun[0]],
+            [r[1][0], r[1][1], r[1][2], g.sun[1]],
+            [r[2][0], r[2][1], r[2][2], g.sun[2]],
+            [g.centre[0], g.centre[1], g.centre[2], g.radius],
+            [g.flattening, g.inner, g.outer, if g.on_ring { 1.0 } else { 2.0 }],
+        ]
+    })
+}
+
+/// The first row of a ring strip's texels in linear RGBA: the colour decoded from sRGB when the texture is, the
+/// alpha as stored.
+pub(crate) fn ring_texels(t: &TexGpu) -> Vec<[f32; 4]> {
+    let c = |v: u8| if t.srgb { sr_3d::material::srgb_to_linear(f32::from(v) / 255.0) } else { f32::from(v) / 255.0 };
+    t.rgba[..t.size[0] as usize * 4]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| [c(p[0]), c(p[1]), c(p[2]), f32::from(p[3]) / 255.0])
+        .collect()
 }
 
 /// A planet's ground under its clouds' shadow for the shaders (the planets draft's rule 4): the world-to-layer rows
@@ -836,6 +869,7 @@ fn plain_material(draw: &Draw3) -> bool {
         && m.subsurface == 0.0
         && m.planet.is_none()
         && m.cloud_shadow.is_none()
+        && m.rings.is_none()
 }
 
 /// The buffers one rasterised pass binds and the material bind groups over its material buffer, kept for the
@@ -845,7 +879,7 @@ fn plain_material(draw: &Draw3) -> bool {
 #[derive(Default)]
 struct PassSet {
     bufs: [Option<Grown>; 7],
-    mat_binds: HashMap<[u64; 7], wgpu::BindGroup>,
+    mat_binds: HashMap<[u64; 8], wgpu::BindGroup>,
     /// The vertices of the pass's deformed draws, in draw order. As the two lists below, it stays as long as the
     /// most a pass used, so a pass with fewer leaves the rest for the next one with more.
     deformed: Vec<Option<Grown>>,
@@ -1001,6 +1035,8 @@ pub struct ThreeEngine {
     clamp_smp: wgpu::Sampler,
     cmp_smp: wgpu::Sampler,
     white: Arc<TexGpu>,
+    /// The ring strip's binding without a ring: one transparent texel.
+    no_ring: wgpu::Buffer,
     brdf: wgpu::TextureView,
     black_env: wgpu::TextureView,
     /// The frame group's aerial bindings when the pass has none.
@@ -1330,6 +1366,7 @@ impl Kit {
             mat_entries.push(tex_entry(b, VS_FS, F, D2, false));
         }
         mat_entries.push(smp_entry(7, VS_FS, filt));
+        mat_entries.push(buf_entry(8, wgpu::ShaderStages::FRAGMENT, ro, false));
         let bgl_mat = bgl(&mat_entries, "three-material");
         let bgl_obj = bgl(
             &[
@@ -1985,6 +2022,11 @@ impl ThreeEngine {
                 srgb: false,
                 sampler: None,
             }),
+            no_ring: d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("three-no-ring"),
+                contents: &[0u8; 16],
+                usage: wgpu::BufferUsages::STORAGE,
+            }),
             brdf: texture(d, [1, 1], FORMAT, 1, 1, 1, "brdf").create_view(&Default::default()),
             black_env: texture(d, [1, 1], FORMAT, 1, 1, 1, "black-env").create_view(&Default::default()),
             no_aerial,
@@ -2384,11 +2426,11 @@ impl ThreeEngine {
     /// The key of the bind group over `maps` and `uniform` in `binds`, made when it is missing (counted in `made`).
     fn mat_bind(
         &self,
-        binds: &mut HashMap<[u64; 7], wgpu::BindGroup>,
+        binds: &mut HashMap<[u64; 8], wgpu::BindGroup>,
         maps: &Maps,
         uniform: &wgpu::Buffer,
         made: &mut usize,
-    ) -> [u64; 7] {
+    ) -> [u64; 8] {
         let key = std::array::from_fn(|k| maps[k].as_ref().map(|t| t.key).unwrap_or(0));
         if let std::collections::hash_map::Entry::Vacant(e) = binds.entry(key) {
             let slot = |k: usize| match k {
@@ -2414,6 +2456,18 @@ impl ThreeEngine {
             }
             entries
                 .push(wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(&self.repeat_smp) });
+            // a ring's strip, its texels read exactly (the planets draft's rule 5); the bind group keeps the buffer
+            let strip = maps[7].as_ref().map(|t| {
+                self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("three-ring-strip"),
+                    contents: bytemuck::cast_slice(&ring_texels(t)),
+                    usage: wgpu::BufferUsages::STORAGE,
+                })
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 8,
+                resource: strip.as_ref().unwrap_or(&self.no_ring).as_entire_binding(),
+            });
             let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("three-material"),
                 layout: &self.bgl_mat,
@@ -3042,7 +3096,7 @@ impl ThreeEngine {
             kind: Kind,
             obj: u32,
             mat: u32,
-            key: [u64; 7],
+            key: [u64; 8],
             vbuf: Option<Bound>,
             depth: f32,
             pipe: PipeKey,
@@ -3069,7 +3123,7 @@ impl ThreeEngine {
                     kind: Kind::Opaque,
                     obj: 0,
                     mat: 0,
-                    key: [0; 7],
+                    key: [0; 8],
                     vbuf: None,
                     depth: 0.0,
                     pipe: PipeKey {
@@ -3150,7 +3204,7 @@ impl ThreeEngine {
                 kind,
                 obj,
                 mat,
-                key: [0; 7],
+                key: [0; 8],
                 vbuf,
                 depth: scene.cam.depth_of(center),
                 pipe,
@@ -3629,7 +3683,7 @@ impl ThreeEngine {
             rp.set_bind_group(0, &fb_plain, &[]);
             if env.map(|e| e.visible).unwrap_or(false) {
                 rp.set_pipeline(&self.dome_pipe);
-                rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 7])], &[0]);
+                rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 8])], &[0]);
                 rp.set_bind_group(2, &obj_bind, &[]);
                 rp.draw(0..3, 0..1);
             }
@@ -3639,12 +3693,12 @@ impl ThreeEngine {
                 rp.set_bind_group(0, overlay, &[]);
                 rp.draw(0..3, 0..1);
                 rp.set_bind_group(0, &fb_plain, &[]);
-                rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 7])], &[0]);
+                rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 8])], &[0]);
                 rp.set_bind_group(2, &obj_bind, &[]);
             }
             if let Some(stars) = &star_buf {
                 rp.set_pipeline(&self.star_pipe);
-                rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 7])], &[0]);
+                rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 8])], &[0]);
                 rp.set_bind_group(2, &obj_bind, &[]);
                 rp.set_vertex_buffer(0, stars.slice(..));
                 rp.draw(0..4, 0..scene.stars.len() as u32);
@@ -5780,7 +5834,7 @@ mod wgsl_layout_tests {
 
     #[test]
     fn material_u_matches_wgsl_material() {
-        let fields = rust_fields!(super::MaterialU; base_color, emissive, p0, p1, p2, p3, attenuation, sheen, specular_color, irid, aniso, uv, finish, sampling, borders, sss, sss_color, planet, planet_limb, cloud);
+        let fields = rust_fields!(super::MaterialU; base_color, emissive, p0, p1, p2, p3, attenuation, sheen, specular_color, irid, aniso, uv, finish, sampling, borders, sss, sss_color, planet, planet_limb, cloud, ring);
         assert_agree(include_str!("three.wgsl"), "Material", std::mem::size_of::<super::MaterialU>(), &fields);
     }
 

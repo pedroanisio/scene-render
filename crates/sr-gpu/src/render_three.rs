@@ -1743,6 +1743,92 @@ impl Renderer {
     /// A planet's cloud layer (the planets draft's rule 4): the body's spheroid scaled by 1 + `cloudHeight`
     /// drawn with `cloudMap`, alpha-blended and lit as a white diffuse surface, turned eastward by its drift, and, with
     /// `cloudShadow`, its texture and the ground's shadow inputs toward `sun`; none without a `cloudMap`.
+    /// A planet's ring (the planets draft's rule 5): the annulus from `ringInner` to `ringOuter` equatorial radii in
+    /// its equatorial plane, both faces drawn with `ringMap`'s strip across its radius, alpha-blended and lit as a
+    /// diffuse surface on the Sun's side, cut where the planet stands toward `sun`; with its texture and the ground's
+    /// inputs for the ring's shadow. None without a `ringMap`.
+    #[allow(clippy::too_many_arguments)]
+    fn planet_rings(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        n: &FrameNode,
+        a: &Attrs,
+        world: Mat4,
+        opacity: f32,
+        receive: bool,
+        sun: Option<[f32; 3]>,
+    ) -> Option<(Draw3, Arc<crate::three::TexGpu>, sr_3d::PlanetRings)> {
+        let uri = a.str("ringMap")?;
+        let texture = match uri.trim().strip_prefix('#') {
+            Some(asset) => self.asset_map_texture(plan, ctx, n.doc, asset, true, &n.id),
+            None => self.map_texture(plan, &ctx.p.doc_base(n.doc), &uri, true, &n.id),
+        }?;
+        let (radius, flattening) = match planet_spheroid(ctx, a) {
+            Ok(rf) => rf,
+            Err(e) => {
+                plan.stats.errors.push(format!("{}: {e}", n.id));
+                return None;
+            }
+        };
+        let (inner, outer) = (radius * a.num("ringInner", 1.239), radius * a.num("ringOuter", 2.269));
+        let segs = a.num("segments", 32.0).clamp(3.0, 512.0) as u32 * 2;
+        let key = format!("planet-ring|{inner}|{outer}|{segs}");
+        let mesh = match self.three_engine().meshes.get(&key) {
+            Some(m) => m.clone(),
+            None => match sr_3d::prim::annulus(inner as f32, outer as f32, segs) {
+                Ok(p) => {
+                    let m = self.three_engine().upload_mesh(&p.vertices, &p.indices);
+                    self.three_engine().meshes.insert(key, m.clone());
+                    m
+                }
+                Err(e) => {
+                    plan.stats.errors.push(format!("{}: {e}", n.id));
+                    return None;
+                }
+            },
+        };
+        if sun.is_some() && self.planet_sun.is_some_and(|(_, physical)| physical) {
+            let m = format!("{}: the rings' shadows under a physical sky's sun are not drawn", n.id);
+            if !plan.stats.unsupported.contains(&m) {
+                plan.stats.unsupported.push(m);
+            }
+        }
+        let (scale, rotation, centre) = world.to_scale_rotation_translation();
+        let to_body = glam::Mat3::from_quat(rotation).transpose();
+        let rings = |on_ring| sr_3d::PlanetRings {
+            sun: sun.unwrap_or([0.0; 3]),
+            centre: centre.to_array(),
+            radius: radius as f32 * scale.x,
+            flattening: flattening as f32,
+            inner: inner as f32 * scale.x,
+            outer: outer as f32 * scale.x,
+            to_body: [to_body.row(0), to_body.row(1), to_body.row(2)].map(|r| r.to_array()),
+            on_ring,
+        };
+        let mut maps: Maps = Default::default();
+        maps[7] = Some(texture.clone());
+        let draw = Draw3 {
+            mesh: MeshSrc::Cached(mesh),
+            model: world,
+            material: MaterialParams {
+                roughness: 1.0,
+                specular: 0.0,
+                alpha_mode: AlphaMode::Blend,
+                double_sided: true,
+                rings: Some(rings(true)),
+                ..Default::default()
+            },
+            maps,
+            opacity,
+            // its shadow is the ground's to draw (`rings`)
+            cast_shadow: false,
+            receive_shadow: receive,
+            shadow_catcher: false,
+        };
+        Some((draw, texture, rings(false)))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn planet_clouds(
         &mut self,
@@ -1915,13 +2001,13 @@ impl Renderer {
                     }
                 }
                 let mut maps = maps;
-                let mut shell = None;
+                let (mut shell, mut ring) = (None, None);
                 if n.kind == "object3D" && primitive_kind(n) == "planet" {
                     match self.planet_emission(ctx, n, &a, &maps) {
                         Ok(p) => material.planet = p,
                         Err(e) => plan.stats.errors.push(format!("{}: {e}", n.id)),
                     }
-                    let sun = if a.str("cloudMap").is_some() {
+                    let sun = if a.str("cloudMap").is_some() || a.str("ringMap").is_some() {
                         self.planet_sun_of(ctx, n, &a).unwrap_or_else(|e| {
                             plan.stats.errors.push(format!("{}: {e}", n.id));
                             None
@@ -1945,6 +2031,13 @@ impl Renderer {
                         }
                         shell = Some(draw);
                     }
+                    if let Some((draw, texture, ground)) =
+                        self.planet_rings(plan, ctx, n, &a, world, opacity, receive, sun)
+                    {
+                        maps[7] = Some(texture);
+                        material.rings = Some(ground);
+                        ring = Some(draw);
+                    }
                 }
                 draws.push(Draw3 {
                     mesh: MeshSrc::Cached(mesh),
@@ -1957,6 +2050,7 @@ impl Renderer {
                     shadow_catcher: catcher,
                 });
                 draws.extend(shell);
+                draws.extend(ring);
             }
             // the tubes of an axes object's plots with a material of their own (the plots draft)
             for (id, pm) in &n.param_parts {

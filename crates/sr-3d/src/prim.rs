@@ -118,6 +118,27 @@ pub fn spheroid(a: f32, f: f32, segs: u32) -> Result<Primitive, crate::planet::P
     Ok(finish(vs, idx))
 }
 
+/// The planets draft's ring (rule 5): the annulus from `inner` to `outer` in the plane y = 0, facing the pole (−y),
+/// `segs` quads around; an error unless 0 < inner < outer.
+pub fn annulus(inner: f32, outer: f32, segs: u32) -> Result<Primitive, crate::planet::PlanetError> {
+    if !(inner > 0.0 && outer > inner) {
+        return Err(crate::planet::PlanetError("the ring's radii satisfy 0 < inner < outer".into()));
+    }
+    let (mut vs, mut idx) = (Vec::new(), Vec::new());
+    grid(
+        segs.max(3),
+        1,
+        |u, w| {
+            let (s, c) = (u * std::f32::consts::TAU).sin_cos();
+            let r = inner + (outer - inner) * w;
+            (Vec3::new(c * r, 0.0, s * r), Vec3::NEG_Y)
+        },
+        &mut vs,
+        &mut idx,
+    );
+    Ok(finish(vs, idx))
+}
+
 /// Box of the given width (x), height (y) and depth (z).
 pub fn cuboid(w: f32, h: f32, d: f32) -> Primitive {
     let (mut vs, mut idx) = (Vec::new(), Vec::new());
