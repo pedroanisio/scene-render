@@ -994,7 +994,7 @@ mod map_read_tests {
                         gpu.queue.write_buffer(&src, 0, &vec![(t * 31 + i) as u8; SIZE as usize]);
                         let mut enc = gpu.device.create_command_encoder(&Default::default());
                         enc.copy_buffer_to_buffer(&src, 0, &dst, 0, SIZE);
-                        let idx = gpu.queue.submit([enc.finish()]);
+                        let idx = super::submit(&gpu.queue, [enc.finish()]);
                         if i % 2 == 0 {
                             gpu.wait_for(idx);
                         }
@@ -1135,16 +1135,17 @@ mod submit_tests {
                 sources(&root.join(dir), &mut files);
             }
         }
+        // this file's tests included: only [`super::submit`]'s own call is exempt
         let this = root.join("src/gpu.rs");
         let bare: Vec<String> = files
             .iter()
-            .filter(|f| **f != this)
             .flat_map(|f| {
                 let text = std::fs::read_to_string(f).unwrap();
                 let lines: Vec<String> = text
                     .lines()
                     .enumerate()
-                    .filter(|(_, l)| l.contains("queue.submit("))
+                    .filter(|(_, l)| l.contains(concat!("queue.", "submit(")))
+                    .filter(|(_, l)| !(*f == this && l.trim() == concat!("queue.", "submit(buffers)")))
                     .map(|(n, _)| format!("{}:{}", f.strip_prefix(root).unwrap().display(), n + 1))
                     .collect();
                 lines
