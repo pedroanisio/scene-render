@@ -1,9 +1,6 @@
 //! The physical-sky draft (sr-core srep/srep-0000-physical-sky.md) on the GPU: a dome with `sky="physical"` draws its
 //! sky and the discs of the dated sun and moon where SREP 71's gradient sky draws a sun of the same azimuth and
 //! elevation, the same with and without a 3D pass, and lights the scene with the sun's power.
-//!
-//! The documents write sunIntensity: the draft's XSD gives it SREP 71's default of 0, which a typed model reads in
-//! place of the absent value its rule 6 reads as 1.
 
 mod common;
 use common::*;
@@ -248,6 +245,15 @@ fn a_sky_the_atmosphere_refuses_is_reported() {
     .unwrap();
     let r = render_times(&d, &[1.0]).unwrap();
     assert!(r.stats.errors.iter().any(|e| e.contains("sky: ") && e.contains("latitude")), "{:?}", r.stats.errors);
+}
+
+#[test]
+fn an_absent_sun_intensity_reads_as_one() {
+    let Some(written) = render_xml(&kit("", &midnight(""))) else { return };
+    let absent = render_xml(&kit("", &midnight("").replace(" sunIntensity=\"1\"", ""))).unwrap();
+    let bx = [0, 0, 40, 40];
+    let (a, b) = (mean(&written, &display(&written), bx), mean(&absent, &display(&absent), bx));
+    assert!(a[2] > 10.0 && a == b, "sunIntensity=\"1\" {a:?}, absent {b:?}");
 }
 
 #[test]

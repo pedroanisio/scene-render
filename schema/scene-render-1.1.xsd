@@ -4087,8 +4087,8 @@
     <xs:attribute name="sunElevation" type="xs:double" default="45"/>
     <xs:attribute name="sunSize" type="nonNegativeDecimal" default="0.53"/>
     <xs:attribute name="sunColor" type="colorType" default="#FFFFFFFF"/>
-    <xs:attribute name="sunIntensity" type="nonNegativeDecimal" default="0">
-      <xs:annotation><xs:documentation>With sky="physical" an absent sunIntensity reads as 1: the sun's effective irradiance is sunIrradiance times sunIntensity (physical-sky draft, rule 6).</xs:documentation></xs:annotation>
+    <xs:attribute name="sunIntensity" type="nonNegativeDecimal">
+      <xs:annotation><xs:documentation>No schema default: an absent sunIntensity reads as 0 under sky="none" and "gradient" (SREP 71's sunless sky) and as 1 under sky="physical", where the sun's effective irradiance is sunIrradiance times sunIntensity (physical-sky draft, rule 6). A schema default is filled before a consumer of the validated infoset sees the document, so it would make absence and 0 the same value.</xs:documentation></xs:annotation>
     </xs:attribute>
     <!-- physical-sky draft, version 1.8: read with sky="physical" only, ignored with the warning PSKY1 otherwise -->
     <xs:attribute name="date" type="xs:string">

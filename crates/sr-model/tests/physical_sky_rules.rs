@@ -151,3 +151,20 @@ fn the_model_reads_the_physical_sky() {
     assert_eq!((l.planet_radius.get(), l.atmosphere_height.get(), l.ground_albedo), (6360000.0, 100000.0, 0.3));
     assert_eq!((l.fog_density.get(), l.fog_height.get()), (0.0, 100.0));
 }
+
+#[test]
+fn an_absent_sun_intensity_stays_absent() {
+    // the draft's schema diff gives sunIntensity no default: absent reads as 0 under none and gradient and as 1 under
+    // physical, which only the renderer knows
+    let load = |attrs: &str| {
+        let xml = format!(
+            r#"<scene version="1.8"><project width="64" height="64" fps="24" duration="1"/><composition/><lights><light id="sky" type="dome" {attrs}/></lights></scene>"#
+        );
+        sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap().scene.lights.unwrap().lights[0]
+            .sun_intensity
+            .map(|v| v.get())
+    };
+    assert_eq!(load(&format!(r#"sky="physical" {GOLDEN}"#)), None);
+    assert_eq!(load(r#"sky="gradient""#), None);
+    assert_eq!(load(r#"sky="gradient" sunIntensity="0""#), Some(0.0));
+}

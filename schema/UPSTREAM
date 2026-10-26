@@ -57,7 +57,7 @@ motions to 100 arcseconds a year.
 Rule 5 is drawn as the draft rules since 5e6f46a: labels 14 output pixels high in the default sans-serif face, centred
 on the mean direction of every catalogue star of the constellation whatever limitMagnitude keeps, boundaries one output
 pixel wide and precessed from 1875 to J2000 only, both grey at 0.18 times the dome's gain behind every surface.
-+ the diff of sr-core srep/srep-0000-physical-sky.md (draft, Schema-Version 1.8, as of sr-core 5f98280): the value
++ the diff of sr-core srep/srep-0000-physical-sky.md (draft, Schema-Version 1.8, as of sr-core 1ba4012): the value
 physical of lightType's sky, its attributes date, latitude, longitude, altitude, pressure, temperature, deltaT, moon,
 moonIntensity, atmosphere earth|none, aerosol, ozone, planetRadius, atmosphereHeight, groundAlbedo, sunIrradiance,
 aerialPerspective, fogDensity and fogHeight with the draft's types and defaults (date and deltaT have none: date is
@@ -69,6 +69,9 @@ longitude, temperature, deltaT and groundAlbedo, pressure, atmosphereHeight and 
 positiveDecimal; PSKY4 is no sunAzimuth or sunElevation beside physical. PSKY1 is the native warning W18 (the draft's
 warning, as SF4's second clause is W17): the physical sky's attributes written under sky="none" or "gradient" are
 ignored. SREP 71's SKY1 and SKY2 (a sky on a dome only, never beside an environment) hold for physical as for gradient.
+The draft's one change to an existing attribute: lightType's sunIntensity loses its default="0", its documentation
+stating the readings (absent is 0 under none and gradient, 1 under physical), since a schema default is filled before a
+consumer can see absence.
 V17 is SREP 12's one shared 1.8 gate: one pattern, p-v17 (after p-srep75), whose one assert is the conjunction of
 the drafts' clauses.
 The branch merges when those SREPs are accepted; this file then names the schema-1.8.0 tag.
@@ -77,7 +80,7 @@ Source: https://github.com/pedroanisio/sr-core
 Canonical upstream files (SHA-256; the files of that tag with the ten drafts' diffs; at the tag the .xsd is
 5ef91e6ca9a6d860047f2a5347c59fa17423cb99ef7535b7ceaca16619f8ce2c and the .sch, as in sr-core's schema/SHA256SUMS,
 868863e9ea4caf04e7f0bd9873c23ce5f723205714178349a4f385c4778fd368):
-  scene-render.xsd: 49969cfc3bd0f55307c0540ea18fd9b4c8bb25a9531220acbcdc5beb8ed4214b
+  scene-render.xsd: 542caf77034b52e3a2d729a6e7841c4f3c5b401ff7c09fcc414535c25fd2348c
   scene-render.sch: 89f47b061305f0b294e57797f4f4dac82151fe77fcc5759781e4ff9f69c976af
   capabilities-1.schema.json: 6cb35c8ec6d37df32c9a0ad12eb33332d2abe4f11ac6000a9311d9891ec2e8b3
 

@@ -157,7 +157,7 @@ fn the_model_reads_the_new_attributes() {
     assert_eq!(l.sky_exponent.get(), 0.5);
     assert_eq!(l.sun_elevation, 45.0);
     assert_eq!(l.sun_size.get(), 0.53);
-    assert_eq!(l.sun_intensity.get(), 2.0);
+    assert_eq!(l.sun_intensity.map(|v| v.get()), Some(2.0));
 }
 
 #[test]
