@@ -498,13 +498,13 @@ fn a_moving_camera_is_a_new_volume_each_frame() {
 
 #[test]
 fn a_camera_under_the_ground_sees_sea_level_air() {
-    // 78251fd: a surface segment is walked wherever its ends lie, an altitude below 0 reading as 0. The default
-    // camera at the default scale (100 px a metre, no physics element) stands 1.8 m under the sphere, looking at a
-    // grey wall 500,000 px (5 km) away at y = 330, with `far` raised past it (the default is 10,000 px): the kit's
-    // companion row
+    // 78251fd: a surface segment is walked wherever its ends lie, an altitude below 0 reading as 0. A camera at the
+    // implicit camera's eye and lens at the default scale (100 px a metre, no physics element) stands 1.8 m under
+    // the sphere, looking at a grey wall 500,000 px (5 km) away at y = 330, with `far` raised past it (the default
+    // is 10,000 px): the kit's companion row. An explicit camera's x, y and z default to 0, so the eye is written
     let (k, focal) = (100.0, FOCAL);
     let eye = [320.0, 180.0, -focal];
-    let body = "<camera id=\"c\" far=\"600000\"/><object3D id=\"w\" primitive=\"box\" width=\"200000\" height=\"200000\" depth=\"100\" x=\"320\" y=\"330\" z=\"500050\" material=\"u\"/>";
+    let body = "<camera id=\"c\" x=\"320\" y=\"180\" z=\"-554.2562584220407\" far=\"600000\"/><object3D id=\"w\" primitive=\"box\" width=\"200000\" height=\"200000\" depth=\"100\" x=\"320\" y=\"330\" z=\"500050\" material=\"u\"/>";
     let xml = |light: &str| {
         kit(body, light)
             .replace("</materials>", "<material id=\"u\" baseColor=\"#808080FF\" unlit=\"true\"/></materials>")
@@ -704,4 +704,35 @@ fn the_path_tracer_leaves_the_sky_alone() {
         assert_eq!(rgb(clear.at(x, y)), rgb(foggy.at(x, y)), "sky ({x}, {y})");
     }
     assert!(rgb(clear.at(320, 180))[0] != rgb(foggy.at(320, 180))[0], "the wall is fogged");
+}
+
+#[test]
+fn a_keyed_date_holds_each_key_until_the_next() {
+    // a string-valued key steps: halfway between the keys the sky is the first key's, at the second key the second's
+    let noon = "2024-06-21T12:00:00Z";
+    let keyed = kit("", &midnight_keyed("date", MIDNIGHT, noon));
+    let d = sr_model::load_str(&keyed, &sr_model::LoadOptions::without_assets()).unwrap();
+    let Some(half) = render_times(&d, &[0.5]) else { return };
+    let end = render_times(&d, &[0.5, 1.0]).unwrap();
+    assert!(
+        half.stats.errors.is_empty() && end.stats.errors.is_empty(),
+        "{:?} {:?}",
+        half.stats.errors,
+        end.stats.errors
+    );
+    let first = render_xml(&kit("", &midnight(""))).unwrap();
+    let second = render_xml(&kit("", &midnight("")).replace(MIDNIGHT, noon)).unwrap();
+    let sky = |r: &Rendered| mean(r, &display(r), [0, 0, 40, 40]);
+    let same = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1.0);
+    assert!(!same(sky(&first), sky(&second)), "the two dates differ: {:?} {:?}", sky(&first), sky(&second));
+    assert!(same(sky(&half), sky(&first)), "halfway: {:?}, the first key {:?}", sky(&half), sky(&first));
+    assert!(same(sky(&end), sky(&second)), "at the second key: {:?}, {:?}", sky(&end), sky(&second));
+}
+
+#[test]
+fn the_sun_disc_is_brighter_than_one_in_linear_values() {
+    // the frame keeps radiance above 1.0 for float outputs: the midnight sun's disc is far brighter than white
+    let Some(r) = render_xml(&kit("", &midnight("sunSize=\"5\""))) else { return };
+    let peak = r.px.iter().map(|p| p[0].max(p[1]).max(p[2])).fold(0.0f32, f32::max);
+    assert!(peak > 10.0, "the disc's peak linear value {peak}");
 }
