@@ -931,7 +931,7 @@ fn vs_full(@builtin(vertex_index) vi: u32) -> BgOut {
 @fragment
 fn fs_dome(i: BgOut) -> @location(0) vec4<f32> {
     let far = fr.inv_view_proj * vec4(i.ndc, 0.0001, 1.0);
-    let dir = far.xyz / far.w - fr.eye.xyz;
+    let dir = -toward_eye(far.xyz / far.w);
     if (fr.sky[1].w > 1.5) {
         // a physical sky: its table baked at the source's resolution, its discs exact per pixel
         let d = normalize((fr.env_rot * vec4(dir, 0.0)).xyz);

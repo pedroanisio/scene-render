@@ -349,3 +349,25 @@ fn a_moving_sun_keeps_one_environment() {
     assert!(r.stats.errors.is_empty(), "{:?}", r.stats.errors);
     assert_eq!(r.renderer.cached_environments(), 1);
 }
+
+#[test]
+fn through_an_orthographic_camera_the_sky_is_its_axis_s_radiance_over_the_frame() {
+    // every ray of an orthographic camera looks along its axis, here level: the horizon's colour at every pixel, with
+    // the far plane near enough that rays from the eye point would climb 31 degrees at the top edge
+    let camera = r#"<camera id="eye" projection="orthographic" orthoHeight="360" far="300"/>"#;
+    // without a 3D pass the frame's background draws the sky; with one, the pass's background does
+    let speck = r##"<materials><material id="m" baseColor="#000000FF"/></materials>"##;
+    for (materials, body) in [
+        ("", camera.to_string()),
+        (
+            speck,
+            format!(r#"{camera}<object3D id="o" primitive="sphere" material="m" radius="2" x="310" y="170" z="100"/>"#),
+        ),
+    ] {
+        let Some(r) = render_xml(&kit("", materials, &body, GRADIENT)) else { return };
+        let d = display(&r);
+        for (x, y) in [(320, 0), (320, 359), (0, 0), (639, 180)] {
+            region(&r, &d, [x, y, x + 1, y + 1], [192.0, 208.0, 224.0]);
+        }
+    }
+}

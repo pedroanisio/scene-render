@@ -2820,6 +2820,7 @@ impl Renderer {
             }
         }
         let gain = intensity * ex.exposure;
+        let axis = cam.view.inverse().transform_vector3(Vec3::Z);
         let mut px = Vec::with_capacity((w * hgt) as usize);
         for y in 0..hgt {
             for x in 0..w {
@@ -2830,7 +2831,8 @@ impl Renderer {
                     1.0,
                 );
                 let far = inv * ndc;
-                let dir = far.truncate() / far.w - cam.eye;
+                // an orthographic camera's every ray is its axis
+                let dir = if cam.orthographic { axis } else { far.truncate() / far.w - cam.eye };
                 let d = to_env.transform_vector3(dir).normalize_or_zero();
                 let c = sky.radiance(d) * gain;
                 let st = self.working.store([c.x as f64, c.y as f64, c.z as f64, 1.0]);
