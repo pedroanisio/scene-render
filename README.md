@@ -991,7 +991,8 @@ crates/sr-3d/src/           import (glTF, OBJ, PLY, splats, FBX, USD), usdc (USD
                             graphs), sky (procedural dome sky), atmosphere (the physical sky's transmittance, scattering, aerial
                             perspective and height fog), aerial (a camera's aerial-perspective volume and the fog's
                             horizon table), physical_sky (the sky-view table, sun and moon discs of a dated
-                            dome), subsurface (SREP 71 lobe), stars (a dome's star field: scene directions,
+                            dome), planet (a body's radii, texture placement, limb, terminator, night side, the Sun's
+                            limb darkening, clouds, rings and spin), subsurface (SREP 71 lobe), stars (a dome's star field: scene directions,
                             pixel discs, constellation labels and boundaries); `space` re-exports sr-space
 crates/sr-gpu/src/          gpu (device), color, drape (drawings rasterised on the CPU), render_map3d (3D maps and
                             globes), resources (textures, images, pool), paint, render (planning,
