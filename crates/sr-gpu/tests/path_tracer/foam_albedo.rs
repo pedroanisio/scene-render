@@ -83,6 +83,7 @@ fn scene(eng: &ThreeEngine, draws: Vec<Draw3>, dome: Option<f32>, sun: bool, eye
             visible: true,
             sky: None,
             physical: None,
+            aerial: None,
         }
     });
     let lights = if sun {

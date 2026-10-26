@@ -377,6 +377,16 @@ pub struct Env3 {
     /// sun's power, its visible image holds the sky alone, and the raster background draws the discs over it. The
     /// path tracer sees `env` alone.
     pub physical: Option<[[f32; 4]; 5]>,
+    /// A physical sky's aerial perspective and height fog on the surfaces of this pass's camera (rules 10 and 11).
+    pub aerial: Option<Arc<AerialGpu>>,
+}
+
+/// The physical-sky draft's rules 10 and 11 for one camera (`sr_3d::aerial`): the frame's uniforms, the aerial volume
+/// packed along z as its radiance slices then its transmittance slices, and the fog's horizon table.
+pub struct AerialGpu {
+    pub uniforms: [[f32; 4]; 2],
+    volume: wgpu::TextureView,
+    horizon: wgpu::Buffer,
 }
 
 /// One star of a dome light's field (the star-fields draft): its world direction, and its flux per channel with
@@ -618,6 +628,7 @@ struct FrameU {
     sh: [[f32; 4]; 9],
     env_rot: [[f32; 4]; 4],
     sky: [[f32; 4]; 5],
+    aerial: [[f32; 4]; 2],
 }
 
 #[repr(C)]
@@ -951,6 +962,8 @@ pub struct ThreeEngine {
     white: Arc<TexGpu>,
     brdf: wgpu::TextureView,
     black_env: wgpu::TextureView,
+    /// The frame group's aerial bindings when the pass has none.
+    no_aerial: AerialGpu,
     /// The aperture of a camera without depth of field: zeroed, never written.
     no_aperture: wgpu::Buffer,
     /// The sets of the passes recorded since the last submit, in order, and the kept ones after them.
@@ -1129,6 +1142,41 @@ fn texture(
     })
 }
 
+/// The aerial bindings: `slices` = [columns across, columns up, 2 × depth] of half-float texels, x fastest, and the
+/// horizon nodes.
+fn aerial_gpu(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    uniforms: [[f32; 4]; 2],
+    size: [u32; 3],
+    texels: &[[u16; 4]],
+    horizon: &[[f32; 4]],
+) -> AerialGpu {
+    let extent = wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: size[2] };
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("three-aerial"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D3,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        tex.as_image_copy(),
+        bytemuck::cast_slice(texels),
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size[0] * 8), rows_per_image: Some(size[1]) },
+        extent,
+    );
+    let horizon = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("three-aerial-horizon"),
+        contents: bytemuck::cast_slice(horizon),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    AerialGpu { uniforms, volume: tex.create_view(&Default::default()), horizon }
+}
+
 fn half4(v: [f32; 4]) -> [u16; 4] {
     v.map(|x| half::f16::from_f32(x).to_bits())
 }
@@ -1218,6 +1266,8 @@ impl Kit {
                 tex_entry(12, VS_FS, F, D2, false),
                 tex_entry(13, VS_FS, wgpu::TextureSampleType::Float { filterable: false }, D2, false),
                 tex_entry(14, VS_FS, F, D2, false),
+                tex_entry(15, VS_FS, F, wgpu::TextureViewDimension::D3, false),
+                buf_entry(16, VS_FS, ro, false),
             ],
             "three-frame",
         );
@@ -1866,6 +1916,7 @@ impl ThreeEngine {
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
+        let no_aerial = aerial_gpu(d, &queue, [[0.0; 4]; 2], [1, 1, 2], &[[0; 4]; 2], &[[0.0; 4]]);
         let mut eng = ThreeEngine {
             gbuffer,
             scalar,
@@ -1882,6 +1933,7 @@ impl ThreeEngine {
             }),
             brdf: texture(d, [1, 1], FORMAT, 1, 1, 1, "brdf").create_view(&Default::default()),
             black_env: texture(d, [1, 1], FORMAT, 1, 1, 1, "black-env").create_view(&Default::default()),
+            no_aerial,
             no_aperture: d.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("three-no-aperture"),
                 size: APERTURE_BYTES,
@@ -2135,6 +2187,26 @@ impl ThreeEngine {
         });
         let count = indices.len() as u32;
         Arc::new(MeshGpu { vbuf, ibuf, count, cpu, lo, hi })
+    }
+
+    /// Uploads a camera's aerial perspective and fog (`sr_3d::aerial::AerialSky`): the volume of its march when it
+    /// has one, the horizon table of its closed form.
+    pub fn upload_aerial(
+        &self,
+        uniforms: [[f32; 4]; 2],
+        volume: Option<&sr_3d::aerial::AerialVolume>,
+        horizon: &[[f64; 3]],
+    ) -> Arc<AerialGpu> {
+        let horizon: Vec<[f32; 4]> = horizon.iter().map(|c| [c[0] as f32, c[1] as f32, c[2] as f32, 1.0]).collect();
+        let (size, texels) = match volume {
+            Some(v) => {
+                let [w, h, n] = v.size();
+                let texels: Vec<[u16; 4]> = v.inscatter().iter().chain(v.transmittance()).map(|t| half4(*t)).collect();
+                ([w as u32, h as u32, 2 * n as u32], texels)
+            }
+            None => ([1, 1, 2], vec![[0; 4]; 2]),
+        };
+        Arc::new(aerial_gpu(&self.device, &self.queue, uniforms, size, &texels, &horizon))
     }
 
     /// Prefilters and uploads an environment.
@@ -2875,6 +2947,7 @@ impl ThreeEngine {
             sh,
             env_rot: env.map(|e| e.rotation.transpose()).unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
             sky: env.and_then(|e| e.sky.map(|s| s.uniforms()).or(e.physical)).unwrap_or([[0.0; 4]; 5]),
+            aerial: env.and_then(|e| e.aerial.as_ref()).map(|a| a.uniforms).unwrap_or([[0.0; 4]; 2]),
         };
         let (slot, mut set) = self.take_set();
         let mut deformed_draws = 0;
@@ -3205,6 +3278,7 @@ impl ThreeEngine {
         });
         // the visible sky at the source's resolution, apart from the prefiltered chain
         let sky_view = env.map(|e| &e.env.sky).unwrap_or(&self.black_env);
+        let aerial = env.and_then(|e| e.aerial.as_deref()).unwrap_or(&self.no_aerial);
         let no_tiles = pool([1, 1], self.scalar, 1, 1, 1, "three-no-tiles").create_view(&Default::default());
         // a camera with depth of field fills its blade-shaped aperture each render
         let aperture = if scene.dof.is_some() {
@@ -3344,6 +3418,8 @@ impl ThreeEngine {
                     wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(ao) },
                     wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(gbz) },
                     wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(sky_view) },
+                    wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::TextureView(&aerial.volume) },
+                    wgpu::BindGroupEntry { binding: 16, resource: aerial.horizon.as_entire_binding() },
                 ],
             })
         };
@@ -5631,7 +5707,7 @@ mod wgsl_layout_tests {
 
     #[test]
     fn frame_u_matches_wgsl_frame() {
-        let fields = rust_fields!(super::FrameU; view_proj, view, inv_view_proj, eye, screen, params, params2, dof, post, lens, fx, sh, env_rot, sky);
+        let fields = rust_fields!(super::FrameU; view_proj, view, inv_view_proj, eye, screen, params, params2, dof, post, lens, fx, sh, env_rot, sky, aerial);
         assert_agree(include_str!("three_types.wgsl"), "Frame", std::mem::size_of::<super::FrameU>(), &fields);
     }
 

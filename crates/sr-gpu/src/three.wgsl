@@ -611,6 +611,53 @@ fn contact_shadow(world: vec3<f32>, l: vec3<f32>, len: f32) -> f32 {
     return 1.0;
 }
 
+// The physical-sky draft's rules 10 and 11: a surface colour at `world` seen through the air and the fog to the camera,
+// in the dome's axes (planet up is the scene's −y). The march is the aerial volume's, trilinear in the screen point and
+// √(distance / depth); the closed form is the fog's alone, toward the horizon radiance in the view's azimuth.
+fn aerial_apply(col: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
+    let mode = u32(fr.aerial[0].x);
+    if (mode == 0u) { return col; }
+    let k = fr.aerial[0].y;
+    let c = fr.view_proj * vec4(world, 1.0);
+    let ndc = c.xy / c.w;
+    // the ray leaves the eye, or the near plane (reverse-Z: depth 1) through an orthographic camera, as the volume's
+    // columns do
+    var origin = fr.eye.xyz;
+    if (fr.aerial[1].w > 0.5) {
+        let n = fr.inv_view_proj * vec4(ndc, 1.0, 1.0);
+        origin = n.xyz / n.w;
+    }
+    let s = length(world - origin) / k;
+    if (mode == 1u) {
+        let dims = vec3<f32>(textureDimensions(aerial_tex));
+        let slices = dims.z * 0.5;
+        let z = sqrt(clamp(s / fr.aerial[0].w, 0.0, 1.0)) * (slices - 1.0);
+        let uv = (clamp(ndc * 0.5 + 0.5, vec2(0.0), vec2(1.0)) * (dims.xy - 1.0) + 0.5) / dims.xy;
+        let l = textureSampleLevel(aerial_tex, clamp_smp, vec3(uv, (z + 0.5) / dims.z), 0.0).rgb;
+        let t = textureSampleLevel(aerial_tex, clamp_smp, vec3(uv, (z + 0.5 + slices) / dims.z), 0.0).rgb;
+        return col * t + l * fr.params.w;
+    }
+    let p0 = (fr.env_rot * vec4(origin, 1.0)).xyz;
+    let p1 = (fr.env_rot * vec4(world, 1.0)).xyz;
+    // an altitude below 0 reads as 0 (rule 10: the model's ground is the sphere)
+    let h0 = max(fr.aerial[0].z - p0.y / k, 0.0);
+    let h1 = max(fr.aerial[0].z - p1.y / k, 0.0);
+    // the closed form e^(−h0/H) (1 − e^(−x)) / x with x = (h1 − h0) / H, its series near level, where f32 cancels
+    let hs = fr.aerial[1].y;
+    let x = (h1 - h0) / hs;
+    let slope = select((1.0 - exp(-x)) / x, 1.0 - x * 0.5 + x * x / 6.0, abs(x) < 1e-2);
+    let tf = exp(-fr.aerial[1].x * s * exp(-h0 / hs) * slope);
+    // the azimuth in the planet frame, (x, y) = the dome's (x, z); a vertical ray takes +x
+    let d = p1 - p0;
+    var a = 0.0;
+    if (length(d.xz) > 1e-6 * length(d)) { a = atan2(d.z, d.x); }
+    let nodes = fr.aerial[1].z;
+    let ax = fract(a / (2.0 * PI) + 1.0) * nodes;
+    let i0 = u32(floor(ax)) % u32(nodes);
+    let lh = mix(aerial_horizon[i0].rgb, aerial_horizon[(i0 + 1u) % u32(nodes)].rgb, ax - floor(ax));
+    return col * tf + (1.0 - tf) * lh * fr.params.w;
+}
+
 @fragment
 fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
     obj = objects[i.object_index];
@@ -622,7 +669,7 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
     if (mat.p1.z > 0.5 && !catcher) {
         // unlit
         let a = select(1.0, s.alpha, mode == 2u);
-        o.color = vec4(s.albedo * a, a);
+        o.color = vec4(aerial_apply(s.albedo, s.world) * a, a);
         return o;
     }
     var col = vec3(0.0);
@@ -801,7 +848,7 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
     }
     var em = mat.emissive.rgb * mat.emissive.w;
     if (!PLAIN_MATERIAL && (u32(mat.aniso.w) & 16u) != 0u) { em = em * material_fragment(emissive_map, i.emissive_uv, 4u).rgb; }
-    col += em;
+    col = aerial_apply(col + em, s.world);
     // transmissive surfaces are opaque layers over what they refract
     var a = 1.0;
     if (mode == 2u) { a = s.alpha; }

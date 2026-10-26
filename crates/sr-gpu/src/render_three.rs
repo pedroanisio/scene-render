@@ -9,7 +9,9 @@ use super::*;
 use crate::three::{Dof, Draw3, Env3, Light3, LightKind, Maps, MeshSrc, Scene3, SplatDraw, StarInstance, ThreeEngine};
 use crate::vector::Attrs;
 use glam::{DMat3, DMat4, DVec3, DVec4, Mat4, Vec3};
+use sr_3d::aerial::AerialSky;
 use sr_3d::atmosphere::effective_sun_irradiance;
+use sr_3d::atmosphere::Fog;
 use sr_3d::camera::{self, CameraParams, CameraView};
 use sr_3d::physical_sky::{atmosphere_options, PhysicalSky, PhysicalSkyOptions};
 use sr_3d::space::sun::Observer;
@@ -213,6 +215,23 @@ impl Plane {
         );
         Some((lift * k * e(&from_space).0).as_mat4())
     }
+}
+
+/// The aerial volume's columns across and up and its slices (the physical-sky draft's rules 10 and 11).
+const AERIAL_SIZE: [usize; 3] = [33, 33, 64];
+
+/// SREP 14's scale: `physics/@pixelsPerMeter`, 100 without a physics element.
+fn pixels_per_meter(p: &Program) -> f64 {
+    p.scene.physics.as_ref().map_or(100.0, |ph| ph.pixels_per_meter.get())
+}
+
+/// A physical sky's rules 10 and 11 as its dome writes them: the march with `aerialPerspective="true"` over an
+/// atmosphere of air, and the fog of `fogDensity` and `fogHeight`.
+fn aerial_options(a: &Attrs, o: &PhysicalSkyOptions) -> Result<(bool, Option<Fog>), String> {
+    let air = o.atmosphere.rayleigh > 0.0;
+    let march = flag(a, "aerialPerspective", true) && air;
+    let fog = Fog::new(a.num("fogDensity", 0.0), a.num("fogHeight", 100.0)).map_err(|e| e.to_string())?;
+    Ok((march, Some(fog)))
 }
 
 /// A node's own 3D transform: T(x, y, z) · Rz · Ry · Rx · S.
@@ -2436,13 +2455,14 @@ impl Renderer {
                     visible: flag(&a, "environmentVisible", false),
                     sky: Some(sky),
                     physical: None,
+                    aerial: None,
                 });
                 continue;
             }
             if kind == "dome" && a.str("sky").as_deref() == Some("physical") {
                 // a physical sky (the physical-sky draft): lit by its sky and the discs' power; the visible image is the
                 // sky alone and the background draws the discs from their formula
-                match self.physical_sky(&a) {
+                match self.physical_sky(&a, pixels_per_meter(ctx.p)) {
                     Ok((sky, e)) => {
                         env = Some(Env3 {
                             env: e,
@@ -2451,6 +2471,7 @@ impl Renderer {
                             visible: flag(&a, "environmentVisible", false),
                             sky: None,
                             physical: Some(sky.uniforms()),
+                            aerial: None,
                         })
                     }
                     Err(e) => plan.stats.errors.push(format!("{}: {e}", l.id)),
@@ -2497,6 +2518,7 @@ impl Renderer {
                         visible: flag(&a, "environmentVisible", false),
                         sky: None,
                         physical: None,
+                        aerial: None,
                     });
                 }
                 continue;
@@ -2565,20 +2587,73 @@ impl Renderer {
         )
     }
 
-    /// A dome's physical sky at this frame and its lighting image (the physical-sky draft): the last frame's when the
-    /// document gives the same options.
-    fn physical_sky(&mut self, a: &Attrs) -> Result<(Arc<PhysicalSky>, Arc<crate::three::EnvGpu>), String> {
+    /// A dome's physical sky at this frame and its lighting image (the physical-sky draft), with its aerial perspective
+    /// and fog kept in the slot for the pass's camera: the last frame's when the document gives the same options and
+    /// scene scale (`pixels_per_meter`).
+    fn physical_sky(
+        &mut self,
+        a: &Attrs,
+        pixels_per_meter: f64,
+    ) -> Result<(Arc<PhysicalSky>, Arc<crate::three::EnvGpu>), String> {
         let o = self.physical_options(a)?;
-        let key = format!("{o:?}");
-        if let Some((k, sky, e)) = &self.physical_sky {
-            if *k == key {
-                return Ok((sky.clone(), e.clone()));
+        let (march, fog) = aerial_options(a, &o)?;
+        let key = format!("{o:?} {march} {fog:?} {pixels_per_meter}");
+        if let Some(slot) = &self.physical_sky {
+            if slot.key == key {
+                return Ok((slot.sky.clone(), slot.env.clone()));
             }
         }
-        let sky = Arc::new(PhysicalSky::from_document(&o).map_err(|e| e.to_string())?);
+        let (sky, s, sun) = PhysicalSky::from_document_parts(&o).map_err(|e| e.to_string())?;
+        let aerial = AerialSky::new(s, o.observer.altitude, sun, march, fog, pixels_per_meter)
+            .map_err(|e| e.to_string())?
+            .map(Arc::new);
+        let sky = Arc::new(sky);
         let e = self.three_engine().upload_env_seen(&sky.equirect(SKY_BAKE_WIDTH), &sky.visible(PHYSICAL_SEEN_WIDTH));
-        self.physical_sky = Some((key, sky.clone(), e.clone()));
+        self.physical_sky = Some(PhysicalSkySlot { key, sky: sky.clone(), env: e.clone(), aerial, camera: None });
         Ok((sky, e))
+    }
+
+    /// The physical sky's aerial perspective and fog through `cam` (rules 10 and 11), its volume over the camera's rays
+    /// from the near plane to the far plane in the dome's axes (`to_world`, the dome's environment → world rotation):
+    /// the last upload when the camera and the dome are the same, none without a physical sky or with nothing to apply.
+    fn aerial3(
+        &mut self,
+        cam: &CameraView,
+        clip_fix: Mat4,
+        to_world: Mat4,
+    ) -> Result<Option<Arc<crate::three::AerialGpu>>, String> {
+        let Some(sky) = self.physical_sky.as_ref().and_then(|s| s.aerial.clone()) else {
+            return Ok(None);
+        };
+        let vp = clip_fix * cam.view_proj();
+        let key = format!("{vp:?} {to_world:?}");
+        if let Some((k, g)) = self.physical_sky.as_ref().and_then(|s| s.camera.as_ref()) {
+            if *k == key {
+                return Ok(Some(g.clone()));
+            }
+        }
+        let (inv, to_env) = (vp.inverse(), to_world.transpose());
+        // reverse-Z: the near plane at depth 1, the far plane at 0
+        let at = |u: f64, v: f64, z: f32| inv.project_point3(Vec3::new(2.0 * u as f32 - 1.0, 2.0 * v as f32 - 1.0, z));
+        // a ray leaves the eye, or the near plane through an orthographic camera, whose rays share no point
+        let origin = |u: f64, v: f64| if cam.orthographic { at(u, v, 1.0) } else { cam.eye };
+        let ray = |u: f64, v: f64| {
+            let o = origin(u, v);
+            let d = to_env.transform_vector3((at(u, v, 0.5) - o).normalize());
+            (to_env.transform_point3(o).to_array().map(f64::from), d.to_array().map(f64::from))
+        };
+        let corners = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)];
+        let depth = corners.iter().map(|&(u, v)| at(u, v, 0.0).distance(origin(u, v)) as f64).fold(0.0, f64::max);
+        let volume = sky.volume(&ray, depth, AERIAL_SIZE).map_err(|e| e.to_string())?;
+        let nodes = sky.horizon().nodes();
+        let k = sky.uniforms(1.0)[0][1] as f64;
+        let mut uniforms = sky.uniforms(depth / k);
+        uniforms[1][3] = f32::from(u8::from(cam.orthographic));
+        let g = self.three_engine().upload_aerial(uniforms, volume.as_ref(), nodes);
+        if let Some(slot) = self.physical_sky.as_mut() {
+            slot.camera = Some((key, g.clone()));
+        }
+        Ok(Some(g))
     }
 
     /// A dome's physical sky as its attributes write it at this frame, colours in linear working values: an absent
@@ -2644,9 +2719,9 @@ impl Renderer {
             return None;
         }
         let sky = if l.sky == m::Sky::Physical {
-            match self.physical_sky(&a) {
+            match self.physical_sky(&a, pixels_per_meter(ctx.p)) {
                 Ok((sky, _)) => {
-                    let key = self.physical_sky.as_ref().map_or("", |(k, _, _)| k.as_str());
+                    let key = self.physical_sky.as_ref().map_or("", |s| s.key.as_str());
                     let mut f = std::hash::DefaultHasher::new();
                     std::hash::Hash::hash(key, &mut f);
                     DomeSky::Physical(sky, std::hash::Hasher::finish(&f))
@@ -3652,7 +3727,7 @@ impl Renderer {
                 return;
             }
         };
-        let (mut lights, env) = self.lights3(plan, ctx, only.as_deref());
+        let (mut lights, mut env) = self.lights3(plan, ctx, only.as_deref());
         if lights.is_empty()
             && env.is_none()
             && ctx.p.scene.lights.as_ref().map(|l| l.lights.is_empty()).unwrap_or(true)
@@ -3742,6 +3817,12 @@ impl Renderer {
         }
         // the post pass applies the camera's exposure to the stars as to the rest of the pass
         let clip_fix = Self::clip_fix(&to_target, space.size, cam_size);
+        if let Some(e) = env.as_mut().filter(|e| e.physical.is_some()) {
+            match self.aerial3(&cam, clip_fix, e.rotation) {
+                Ok(g) => e.aerial = g,
+                Err(error) => plan.stats.errors.push(format!("{}: {error}", n.id)),
+            }
+        }
         let view = (!cam.orthographic).then(|| (clip_fix * cam.view_proj(), space.size));
         let StarDraw { stars, overlay: star_overlay } = self.star_field3(plan, ctx, only.as_deref(), 1.0, view);
         let star_overlay = star_overlay.map(|(coverage, grey)| crate::three::StarOverlay { coverage, grey });

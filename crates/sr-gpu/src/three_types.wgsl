@@ -31,6 +31,11 @@ struct Frame {
     // SREP 71 procedural sky (sr_3d::sky::Sky::uniforms); sky[1].w is 1 when the dome is one, 2 for a physical
     // sky (sr_3d::physical_sky::PhysicalSky::uniforms)
     sky: array<vec4<f32>, 5>,
+    // the physical-sky draft's rules 10 and 11 on surfaces (sr_3d::aerial::AerialSky::uniforms): mode (0 none, 1 the
+    // volume's march, 2 the fog's closed form), pixels per metre, the observer's altitude (m), the volume's depth (m);
+    // fog density (per metre), fog height (m), horizon nodes, 1 through an orthographic camera (its rays leave the near
+    // plane, not the eye)
+    aerial: array<vec4<f32>, 2>,
 };
 
 struct Light {

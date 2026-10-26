@@ -4,6 +4,8 @@
 
 mod common;
 use common::*;
+use sr_3d::atmosphere::{atmosphere, atmosphere_position, AtmosphereOptions, Fog, Scattering};
+use sr_3d::physical_sky::to_planet;
 use sr_3d::space::moon::moon_from_document;
 use sr_3d::space::sun::{sun_from_document, Observer};
 
@@ -283,4 +285,267 @@ fn the_horizon_cuts_a_setting_sun_in_both_passes() {
     let disc = measure(&alone, hot).expect("no setting sun drawn");
     assert!(disc[3] < disc[2] * 0.75, "the disc is not cut: {disc:?}");
     same_disc(measure(&pass, hot), Some(disc), "setting sun of the 3D pass");
+}
+
+// ---------------------------------------------------------------- rules 10 and 11: aerial perspective and height fog
+
+/// The draft's Golden observer at noon on a dome of the scene's axes, with `attrs`.
+fn golden(attrs: &str) -> String {
+    format!("<light id=\"sky\" type=\"dome\" sky=\"physical\" sunIntensity=\"1\" date=\"2003-10-17T12:30:30-07:00\" latitude=\"39.742476\" longitude=\"-105.1786\" moon=\"false\" {attrs}/>")
+}
+
+fn golden_sun() -> [f64; 3] {
+    let o = Observer { latitude: 39.742476, longitude: -105.1786, ..observer(0.0, 0.0) };
+    to_planet(sun_from_document("2003-10-17T12:30:30-07:00", &o).unwrap().1)
+}
+
+/// A scene in metres (`physics pixelsPerMeter="1"`) seen by a camera at (0, `y`, 0) looking along +z, with an unlit
+/// grey material `u`.
+fn metres(y: f64, body: &str, light: &str) -> String {
+    scaled(1.0, &format!("y=\"{y}\" far=\"20000\""), body, light)
+}
+
+/// [`metres`] at `k` pixels a metre with the camera's attributes `camera`.
+fn scaled(k: f64, camera: &str, body: &str, light: &str) -> String {
+    kit(&format!("<camera id=\"c\" {camera}/>{body}"), light)
+        .replace("</materials>", "<material id=\"u\" baseColor=\"#808080FF\" unlit=\"true\"/></materials>")
+        .replace("</lights>", &format!("</lights><physics pixelsPerMeter=\"{k}\"/>"))
+}
+
+/// An unlit wall facing the camera, its near face at `z` − 5, centred on (0, `y`).
+fn wall(id: &str, y: f64, z: f64, side: f64) -> String {
+    format!("<object3D id=\"{id}\" primitive=\"box\" width=\"{side}\" height=\"{side}\" depth=\"10\" y=\"{y}\" z=\"{z}\" material=\"u\"/>")
+}
+
+/// The default lens: the focal length of a 60° frame 640 pixels wide.
+const FOCAL: f64 = 554.2562584220407;
+
+/// The scene ray through the centre of pixel (x, y) from a camera at (0, `cy`, 0): its origin at the eye, its unit
+/// direction, and the length to the plane z = `z`.
+fn pixel_ray(x: u32, y: u32, cy: f64, z: f64) -> ([f64; 3], [f64; 3], f64) {
+    let d = [(x as f64 + 0.5 - 320.0) / FOCAL, (y as f64 + 0.5 - 180.0) / FOCAL, 1.0];
+    let n = (d[0] * d[0] + d[1] * d[1] + 1.0).sqrt();
+    ([0.0, cy, 0.0], d.map(|c| c / n), z * n)
+}
+
+fn rgb(p: [f32; 4]) -> [f64; 3] {
+    [p[0] as f64, p[1] as f64, p[2] as f64]
+}
+
+/// A segment end's altitude for the closed form: below 0 it reads as 0 (rule 10, sr-core 78251fd).
+fn alt(h: f64) -> f64 {
+    h.max(0.0)
+}
+
+#[track_caller]
+fn near(got: [f64; 3], want: [f64; 3], tol: f64, what: &str) {
+    assert!(
+        (0..3).all(|c| (got[c] - want[c]).abs() <= tol * want[c].abs().max(1e-3)),
+        "{what}: {got:?}, the reference {want:?}"
+    );
+}
+
+fn earth() -> Scattering {
+    Scattering::new(atmosphere(&AtmosphereOptions::default()).unwrap())
+}
+
+#[test]
+fn fog_without_air_is_the_closed_form() {
+    // atmosphere="none": L_h is 0, so a wall keeps T_f of its colour, at ground level and 150 m up
+    let body = format!("{}{}", wall("low", 0.0, 1000.0, 200.0), wall("high", -150.0, 1000.0, 60.0));
+    let light = |fog: &str| golden(&format!("atmosphere=\"none\" {fog}"));
+    let Some(clear) = render_xml(&metres(0.0, &body, &light(""))) else { return };
+    let foggy = render_xml(&metres(0.0, &body, &light("fogDensity=\"0.001\" fogHeight=\"100\""))).unwrap();
+    let f = Fog::new(0.001, 100.0).unwrap();
+    for (x, y) in [(320, 180), (330, 96)] {
+        let (o, d, l) = pixel_ray(x, y, 0.0, 995.0);
+        let t = f.transmittance(alt(-o[1]), alt(-(o[1] + d[1] * l)), l);
+        let c = rgb(clear.at(x, y));
+        near(rgb(foggy.at(x, y)), c.map(|v| v * t), 0.01, &format!("pixel ({x}, {y}), T_f {t}"));
+    }
+    // through an orthographic camera the ray leaves the near plane straight along +z
+    let ortho = |fog: &str| {
+        metres(0.0, &body, &light(fog)).replace("far=\"20000\"", "far=\"20000\" projection=\"orthographic\"")
+    };
+    let (oc, of) =
+        (render_xml(&ortho("")).unwrap(), render_xml(&ortho("fogDensity=\"0.001\" fogHeight=\"100\"")).unwrap());
+    near(
+        rgb(of.at(320, 180)),
+        rgb(oc.at(320, 180)).map(|v| v * f.transmittance(0.0, 0.0, 995.0)),
+        0.01,
+        "orthographic",
+    );
+    // the ground-level wall loses e^(−1) of its light to the kit's digits
+    assert!((rgb(foggy.at(320, 180))[0] / rgb(clear.at(320, 180))[0] - (-0.995f64).exp()).abs() < 0.005);
+}
+
+#[test]
+fn the_closed_form_is_in_metres_from_the_eye_at_its_height() {
+    // 100 pixels a metre, the eye 50 m up behind a near plane 200 m deep, a wall 1 km away from 0 to 100 m up: the
+    // segment runs from the eye, its length and end altitudes in metres
+    let (k, cy) = (100.0, -5000.0);
+    let body = "<object3D id=\"w\" primitive=\"box\" width=\"40000\" height=\"10000\" depth=\"100\" y=\"-5000\" z=\"100050\" material=\"u\"/>";
+    let camera = format!("y=\"{cy}\" near=\"20000\" far=\"1000000\"");
+    let light = |fog: &str| golden(&format!("atmosphere=\"none\" {fog}"));
+    let Some(clear) = render_xml(&scaled(k, &camera, body, &light(""))) else { return };
+    let foggy = render_xml(&scaled(k, &camera, body, &light("fogDensity=\"0.001\" fogHeight=\"100\""))).unwrap();
+    let f = Fog::new(0.001, 100.0).unwrap();
+    for (x, y) in [(320, 180), (330, 140), (300, 215)] {
+        let (o, d, l) = pixel_ray(x, y, cy, 100000.0);
+        let t = f.transmittance(alt(-o[1] / k), alt(-(o[1] + d[1] * l) / k), l / k);
+        let c = rgb(clear.at(x, y));
+        near(rgb(foggy.at(x, y)), c.map(|v| v * t), 0.01, &format!("pixel ({x}, {y}), T_f {t}"));
+    }
+}
+
+#[test]
+fn a_dense_fog_near_level_keeps_its_digits() {
+    // e^(−3) over 1 km with the wall's point 0.9 m above the eye: the closed form near level, to 0.4 %
+    let body = wall("low", 0.0, 1000.0, 200.0);
+    let light = |fog: &str| golden(&format!("atmosphere=\"none\" {fog}"));
+    let Some(clear) = render_xml(&metres(0.0, &body, &light(""))) else { return };
+    let foggy = render_xml(&metres(0.0, &body, &light("fogDensity=\"0.003\" fogHeight=\"100\""))).unwrap();
+    let f = Fog::new(0.003, 100.0).unwrap();
+    for (x, y) in [(320, 179), (320, 180)] {
+        let (o, d, l) = pixel_ray(x, y, 0.0, 995.0);
+        let t = f.transmittance(alt(-o[1]), alt(-(o[1] + d[1] * l)), l);
+        near(rgb(foggy.at(x, y)), rgb(clear.at(x, y)).map(|v| v * t), 0.004, &format!("pixel ({x}, {y}), T_f {t}"));
+    }
+}
+
+#[test]
+fn fog_over_air_without_the_march_is_the_closed_form() {
+    // aerialPerspective="false": the wall goes toward the sky's horizon radiance in its azimuth
+    // with the dome's intensity 2 the horizon radiance doubles
+    let body = format!("{}{}", wall("low", 0.0, 1000.0, 200.0), wall("high", -150.0, 1000.0, 60.0));
+    let (s, f, sun) = (earth(), Fog::new(0.001, 100.0).unwrap(), golden_sun());
+    let obs = [0.0, 0.0, s.atmosphere.planet_radius];
+    for gain in [1.0, 2.0] {
+        let light = |fog: &str| golden(&format!("aerialPerspective=\"false\" intensity=\"{gain}\" {fog}"));
+        let Some(clear) = render_xml(&metres(0.0, &body, &light(""))) else { return };
+        let foggy = render_xml(&metres(0.0, &body, &light("fogDensity=\"0.001\" fogHeight=\"100\""))).unwrap();
+        for (x, y) in [(320, 180), (330, 96)] {
+            let (o, d, l) = pixel_ray(x, y, 0.0, 995.0);
+            let horizon = s.horizon_radiance(obs, to_planet(d), sun).unwrap().map(|c| c * gain);
+            let want = f.fogged(rgb(clear.at(x, y)), alt(-o[1]), alt(-(o[1] + d[1] * l)), l, horizon);
+            near(rgb(foggy.at(x, y)), want, 0.02, &format!("pixel ({x}, {y}), intensity {gain}"));
+        }
+    }
+}
+
+#[test]
+fn the_march_holds_the_reference_on_far_walls() {
+    // a camera 2 m up, a wall 5 km away standing on the ground, seen above the camera's level so that every ray
+    // ends on the wall above the ground: the colour through the air, then through the air and the fog
+    let body = wall("far", -600.0, 5000.0, 1200.0);
+    let Some(plain) = render_xml(&metres(-2.0, &body, &golden("aerialPerspective=\"false\""))) else { return };
+    let (s, sun) = (earth(), golden_sun());
+    let r = s.atmosphere.planet_radius;
+    let f = Fog::new(0.0002, 300.0).unwrap();
+    for fog in [None, Some(f)] {
+        let attrs = fog.map_or(String::new(), |f| format!("fogDensity=\"{}\" fogHeight=\"{}\"", f.density, f.height));
+        let seen = render_xml(&metres(-2.0, &body, &golden(&attrs))).unwrap();
+        for (x, y) in [(320, 170), (370, 140), (275, 175)] {
+            let (o, d, l) = pixel_ray(x, y, -2.0, 4995.0);
+            let (camera, dp) = (atmosphere_position(&s.atmosphere, o, 0.0, 1.0).unwrap(), to_planet(d));
+            let c = rgb(plain.at(x, y));
+            let want = match fog {
+                None => s.aerial_perspective(camera, dp, l, c, sun).unwrap(),
+                Some(f) => {
+                    let horizon = s.horizon_radiance([0.0, 0.0, r], dp, sun).unwrap();
+                    s.aerial_perspective_fogged(camera, dp, l, c, sun, &f, horizon).unwrap()
+                }
+            };
+            near(rgb(seen.at(x, y)), want, 0.02, &format!("pixel ({x}, {y}), fog {fog:?}"));
+        }
+    }
+}
+
+#[test]
+fn the_fog_leaves_the_sky_alone() {
+    let body = wall("low", 0.0, 1000.0, 200.0);
+    let light = |fog: &str| golden(&format!("environmentVisible=\"true\" {fog}"));
+    let Some(clear) = render_xml(&metres(0.0, &body, &light(""))) else { return };
+    let foggy = render_xml(&metres(0.0, &body, &light("fogDensity=\"0.01\" fogHeight=\"100\""))).unwrap();
+    let (a, b) = (display(&clear), display(&foggy));
+    for bx in [[0, 0, 40, 40], [580, 0, 620, 40], [300, 20, 340, 40]] {
+        assert_eq!(mean(&clear, &a, bx), mean(&foggy, &b, bx), "sky {bx:?}");
+    }
+    assert!(
+        mean(&clear, &a, [310, 170, 330, 190])[0] != mean(&foggy, &b, [310, 170, 330, 190])[0],
+        "the wall is fogged"
+    );
+}
+
+#[test]
+fn a_moving_camera_is_a_new_volume_each_frame() {
+    // the camera keyed 500 m back between frames: frame 1 is the far camera's volume, not frame 0's kept
+    let body = wall("far", -2.0, 5000.0, 1200.0);
+    let keyed = metres(-2.0, &body, &golden("")).replace(
+        "far=\"20000\"/>",
+        "far=\"20000\"><animate property=\"z\"><key time=\"0\" value=\"0\"/><key time=\"1\" value=\"-500\"/></animate></camera>",
+    );
+    let d = sr_model::load_str(&keyed, &sr_model::LoadOptions::without_assets()).unwrap();
+    let Some(r) = render_times(&d, &[0.0, 1.0]) else { return };
+    assert!(r.stats.errors.is_empty(), "{:?}", r.stats.errors);
+    assert_eq!(r.renderer.cached_aerial_volumes(), 1, "one camera's volume is kept");
+    let fixed =
+        render_xml(&metres(-2.0, &body, &golden("")).replace("far=\"20000\"", "z=\"-500\" far=\"20000\"")).unwrap();
+    for (x, y) in [(320, 180), (370, 140)] {
+        near(rgb(r.at(x, y)), rgb(fixed.at(x, y)), 0.002, &format!("pixel ({x}, {y})"));
+    }
+}
+
+#[test]
+fn a_camera_under_the_ground_sees_sea_level_air() {
+    // 78251fd: a surface segment is walked wherever its ends lie, an altitude below 0 reading as 0. The default
+    // camera at the default scale (100 px a metre, no physics element) stands 1.8 m under the sphere, looking at a
+    // grey wall 500,000 px (5 km) away at y = 330, with `far` raised past it (the default is 10,000 px): the kit's
+    // companion row
+    let (k, focal) = (100.0, FOCAL);
+    let eye = [320.0, 180.0, -focal];
+    let body = "<camera id=\"c\" far=\"600000\"/><object3D id=\"w\" primitive=\"box\" width=\"200000\" height=\"200000\" depth=\"100\" x=\"320\" y=\"330\" z=\"500050\" material=\"u\"/>";
+    let xml = |light: &str| {
+        kit(body, light)
+            .replace("</materials>", "<material id=\"u\" baseColor=\"#808080FF\" unlit=\"true\"/></materials>")
+    };
+    let Some(plain) = render_xml(&xml(&golden("aerialPerspective=\"false\""))) else { return };
+    let (s, sun) = (earth(), golden_sun());
+    let r = s.atmosphere.planet_radius;
+    let camera = atmosphere_position(&s.atmosphere, eye, 0.0, k).unwrap();
+    assert!(camera[2] < r - 1.7, "the camera is under the sphere: {camera:?}");
+    // the air alone (the kit's companion), then the air with a fog, whose 500 m change the colour decisively
+    let f = Fog::new(0.002, 100.0).unwrap();
+    for fog in [None, Some(f)] {
+        let attrs = fog.map_or(String::new(), |f| format!("fogDensity=\"{}\" fogHeight=\"{}\"", f.density, f.height));
+        let seen = render_xml(&xml(&golden(&attrs))).unwrap();
+        for (x, y) in [(320, 180), (330, 186), (300, 175)] {
+            let d = [(x as f64 + 0.5 - 320.0) / focal, (y as f64 + 0.5 - 180.0) / focal, 1.0];
+            let n = (d[0] * d[0] + d[1] * d[1] + 1.0).sqrt();
+            let (dp, l) = (to_planet(d.map(|v| v / n)), (500000.0 - eye[2]) * n / k);
+            let c = rgb(plain.at(x, y));
+            let want = match fog {
+                None => s.aerial_perspective(camera, dp, l, c, sun).unwrap(),
+                Some(f) => {
+                    let horizon = s.horizon_radiance([0.0, 0.0, r], dp, sun).unwrap();
+                    let fogged = s.aerial_perspective_fogged(camera, dp, l, c, sun, &f, horizon).unwrap();
+                    assert!((0..3).any(|i| (fogged[i] - c[i]).abs() > 0.2 * c[i]), "{fogged:?} {c:?}");
+                    fogged
+                }
+            };
+            near(rgb(seen.at(x, y)), want, 0.02, &format!("pixel ({x}, {y}), fog {fog:?}"));
+        }
+    }
+    // the fog's closed form reads both ends' altitudes below 0 as 0: a camera 500 m under the sphere (1 px a metre)
+    // sees e^(−density × length) to a wall 1 km away at its own height, not the fog of 500 m below sea level
+    let body = wall("w", 500.0, 1000.0, 200.0);
+    let light = |fog: &str| golden(&format!("atmosphere=\"none\" {fog}"));
+    let clear = render_xml(&metres(500.0, &body, &light(""))).unwrap();
+    let foggy = render_xml(&metres(500.0, &body, &light("fogDensity=\"0.001\" fogHeight=\"100\""))).unwrap();
+    for (x, y) in [(320, 180), (330, 150)] {
+        let (_, _, l) = pixel_ray(x, y, 500.0, 995.0);
+        let t = (-0.001 * l).exp();
+        assert!(rgb(clear.at(x, y))[0] > 0.1, "the wall is seen at ({x}, {y})");
+        near(rgb(foggy.at(x, y)), rgb(clear.at(x, y)).map(|v| v * t), 0.01, &format!("pixel ({x}, {y}), T_f {t}"));
+    }
 }

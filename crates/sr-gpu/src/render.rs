@@ -415,6 +415,16 @@ struct MaskCoverage {
 
 type CachedVolume = Result<Option<Arc<sr_volume::Volume>>, String>;
 
+/// A dome's physical sky by its options: its lighting image, its aerial perspective and fog (rules 10 and 11), and
+/// their upload for the last camera, by its key.
+pub(crate) struct PhysicalSkySlot {
+    pub key: String,
+    pub sky: Arc<sr_3d::physical_sky::PhysicalSky>,
+    pub env: Arc<crate::three::EnvGpu>,
+    pub aerial: Option<Arc<sr_3d::aerial::AerialSky>>,
+    pub camera: Option<(String, Arc<crate::three::AerialGpu>)>,
+}
+
 /// The compositor for one program.
 pub struct Renderer {
     gpu: Gpu,
@@ -547,9 +557,9 @@ pub struct Renderer {
     clay_keys: HashMap<Arc<str>, String>,
     /// The visible procedural sky of the last frame without a 3D pass, by its key (SREP 71).
     sky_bg: Option<(u64, Arc<Tex>)>,
-    /// The physical sky of the last frame that had one, by its options, with its lighting image (the physical-sky
-    /// draft): one slot, as a dated sky is a new sky every frame it moves.
-    physical_sky: Option<(String, Arc<sr_3d::physical_sky::PhysicalSky>, Arc<crate::three::EnvGpu>)>,
+    /// The physical sky of the last frame that had one (the physical-sky draft): one slot, as a dated sky is a new sky
+    /// every frame it moves.
+    physical_sky: Option<PhysicalSkySlot>,
     /// Star fields by catalogue file, limiting magnitude and magnitudeZero (the star-fields draft).
     /// The star field a frame without a 3D pass draws, by its key (the star-fields draft).
     stars_bg: Option<(u64, Arc<Tex>)>,
@@ -4590,6 +4600,11 @@ impl Renderer {
     /// Prefiltered dome environments held for reuse: image files, gradient skies and the physical sky's slot.
     pub fn cached_environments(&self) -> usize {
         self.three.as_ref().map_or(0, |t| t.envs.len()) + self.physical_sky.is_some() as usize
+    }
+
+    /// Aerial volumes held for reuse: the physical sky's slot keeps the last camera's.
+    pub fn cached_aerial_volumes(&self) -> usize {
+        self.physical_sky.as_ref().map_or(0, |s| s.camera.is_some() as usize)
     }
 
     /// Texels of the pooled offscreen textures.
