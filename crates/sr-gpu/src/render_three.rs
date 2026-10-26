@@ -1793,7 +1793,6 @@ impl Renderer {
         plan: &mut Plan,
         cam: &CameraView,
         clip_fix: Mat4,
-        traced: bool,
     ) -> Option<Arc<crate::three::PlanetShellGpu>> {
         let airs = std::mem::take(&mut self.planet_airs);
         let mut note = |id: &str, m: &str| {
@@ -1808,8 +1807,6 @@ impl Renderer {
                 note(&air.id, "the atmosphere shell under a dome with sky=\"physical\" is not drawn");
             } else if cam.orthographic {
                 note(&air.id, "the atmosphere shell is not drawn through an orthographic camera");
-            } else if traced {
-                note(&air.id, "the atmosphere shell is drawn by the raster renderer only");
             } else if drawn.is_some() {
                 note(&air.id, "the atmosphere shell is drawn for the first planet that has one alone");
             } else {
@@ -4258,7 +4255,7 @@ impl Renderer {
                 Err(error) => plan.stats.errors.push(format!("{}: {error}", n.id)),
             }
         }
-        let planet_shell = self.planet_shell3(plan, &cam, clip_fix, ex.path.is_some() || geodesic.is_some());
+        let planet_shell = self.planet_shell3(plan, &cam, clip_fix);
         let view = (!cam.orthographic).then(|| (clip_fix * cam.view_proj(), space.size));
         let StarDraw { stars, overlay: star_overlay } = self.star_field3(plan, ctx, only.as_deref(), 1.0, view);
         let star_overlay = star_overlay.map(|(coverage, grey)| crate::three::StarOverlay { coverage, grey });

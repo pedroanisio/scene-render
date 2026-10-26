@@ -22,3 +22,6 @@
 @group(0) @binding(16) var aerial_horizon: texture_2d<f32>;
 // a planet's atmosphere shell for this eye (sr_3d::planet_shell::PlanetShell::table)
 @group(0) @binding(17) var<storage, read> shell: array<vec4<f32>>;
+
+// Row i of the shell table (sampling.wgsl's shell lookups).
+fn shell_at(i: u32) -> vec4<f32> { return shell[i]; }

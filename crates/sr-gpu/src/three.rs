@@ -398,6 +398,8 @@ pub struct AerialGpu {
 /// perspective's place.
 pub struct PlanetShellGpu {
     pub(crate) table: wgpu::Buffer,
+    /// The table as the path tracer binds it (its sampled textures leave room for one more, its storage buffers not).
+    pub(crate) texture: wgpu::TextureView,
     pub aerial: Arc<AerialGpu>,
 }
 
@@ -1237,6 +1239,40 @@ fn texture(
 
 /// The aerial bindings: `slices` = [columns across, columns up, 2 × depth] of half-float texels, x fastest, and the
 /// horizon nodes.
+/// The texels a row of a shell table's texture holds (the path tracer's `shell_at` reads its width).
+const SHELL_TABLE_WIDTH: usize = 1024;
+
+/// A planet's shell table ([`sr_3d::planet_shell::PlanetShell::table`]) as an f32 texture, row-major in rows of
+/// [`SHELL_TABLE_WIDTH`] texels, the last one padded with zeros, read without filtering.
+fn shell_table_gpu(device: &wgpu::Device, queue: &wgpu::Queue, table: &[[f32; 4]]) -> wgpu::TextureView {
+    let width = table.len().min(SHELL_TABLE_WIDTH);
+    let height = table.len().div_ceil(width);
+    let mut texels = table.to_vec();
+    texels.resize(width * height, [0.0; 4]);
+    let size = wgpu::Extent3d { width: width as u32, height: height as u32, depth_or_array_layers: 1 };
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("three-planet-shell"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba32Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        tex.as_image_copy(),
+        bytemuck::cast_slice(&texels),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(size.width * 16),
+            rows_per_image: Some(size.height),
+        },
+        size,
+    );
+    tex.create_view(&Default::default())
+}
+
 fn aerial_gpu(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -2336,12 +2372,13 @@ impl ThreeEngine {
         uniforms: [[f32; 4]; 2],
         volume: &sr_3d::aerial::AerialVolume,
     ) -> Arc<PlanetShellGpu> {
+        let texture = shell_table_gpu(&self.device, &self.queue, table);
         let table = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("three-planet-shell"),
             contents: bytemuck::cast_slice(table),
             usage: wgpu::BufferUsages::STORAGE,
         });
-        Arc::new(PlanetShellGpu { table, aerial: self.upload_aerial(uniforms, Some(volume), &[[0.0; 3]]) })
+        Arc::new(PlanetShellGpu { table, texture, aerial: self.upload_aerial(uniforms, Some(volume), &[[0.0; 3]]) })
     }
 
     /// Prefilters and uploads an environment.
@@ -2782,7 +2819,13 @@ impl ThreeEngine {
                 black: &self.black_env,
                 sampler: &self.repeat_smp,
                 env_texels: scene.env.as_ref().map(|e| &*e.env.mip0),
-                aerial: scene.env.as_ref().and_then(|e| e.aerial.as_deref()),
+                // a planet's atmosphere shell takes the dome's aerial perspective's place, as in the raster pass
+                aerial: scene
+                    .planet_shell
+                    .as_ref()
+                    .map(|s| &*s.aerial)
+                    .or_else(|| scene.env.as_ref().and_then(|e| e.aerial.as_deref())),
+                shell: scene.planet_shell.as_ref().map(|s| &s.texture),
             };
             let timing = crate::pathtrace::render_cached(
                 self.pt.as_ref().expect("built"),

@@ -1487,6 +1487,8 @@ struct Params {
     /// The physical-sky draft's rules 10 and 11 on the surfaces the camera sees (crate::three::AerialGpu::uniforms;
     /// mode 0 applies nothing)
     aerial: [[f32; 4]; 2],
+    /// A planet's atmosphere shell (the planets draft's rule 6): 1 when the shell table is bound, unused
+    shell: [f32; 4],
 }
 
 /// The stride of the trace workgroup permutation for `n` workgroups: the coprime number nearest n / phi, so that
@@ -1919,7 +1921,8 @@ struct Pipelines {
     bgl_rays: Option<wgpu::BindGroupLayout>,
     hardware: [std::sync::OnceLock<wgpu::ComputePipeline>; 45],
     output: wgpu::RenderPipeline,
-    /// The aerial volume and horizon table bound when a pass has none (zeros; its mode 0 reads neither).
+    /// The aerial volume and horizon table bound when a pass has none (zeros; its mode 0 reads neither). The table
+    /// also stands in for a missing shell table, which a pass without a shell does not read.
     no_aerial: (wgpu::TextureView, wgpu::TextureView),
 }
 
@@ -2154,6 +2157,16 @@ impl Pipelines {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 14,
+                    visibility: vis,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 15,
                     visibility: vis,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
@@ -2493,13 +2506,21 @@ pub struct PtInputs<'a> {
     pub sampler: &'a wgpu::Sampler,
     /// Mip 0 of the dome as the shader samples it (f16-rounded), for the CPU tracer.
     pub env_texels: Option<&'a (u32, u32, Vec<[f32; 4]>)>,
-    /// A physical sky's aerial perspective and height fog on the surfaces of the pass's camera (rules 10 and 11).
+    /// A physical sky's aerial perspective and height fog on the surfaces of the pass's camera (rules 10 and 11), or
+    /// a planet's atmosphere shell's march.
     pub aerial: Option<&'a crate::three::AerialGpu>,
+    /// A planet's atmosphere shell's table for the rays that meet no surface (the planets draft's rule 6).
+    pub shell: Option<&'a wgpu::TextureView>,
 }
 
 /// The aerial volume and horizon table a pass binds: its camera's, or the pipelines' zeros.
 fn aerial_views<'a>(pt: &'a PtGpu, inputs: &PtInputs<'a>) -> (&'a wgpu::TextureView, &'a wgpu::TextureView) {
     inputs.aerial.map_or((&pt.pipelines.no_aerial.0, &pt.pipelines.no_aerial.1), |a| (&a.volume, &a.horizon))
+}
+
+/// The shell table a pass binds: its planet's, or the pipelines' zeros.
+fn shell_view<'a>(pt: &'a PtGpu, inputs: &PtInputs<'a>) -> &'a wgpu::TextureView {
+    inputs.shell.unwrap_or(&pt.pipelines.no_aerial.1)
 }
 
 /// The CPU tracer's view of a pass's uniform block.
@@ -2519,7 +2540,7 @@ fn radiance_params(base: &Params, lights: &[PtLight]) -> cpu::RadianceParams {
 
 /// Whether a pass runs on the CPU tracer: a software adapter, `SR_PT_CPU` not "0", a scene the plain shader traces
 /// (`plain`: no media, water or foam), and none of the features the CPU loop leaves out (adaptive sampling, light
-/// grids, counters, procedural sky). It takes the pass ahead of the adapter's ray queries, which are then not built.
+/// grids, counters, procedural sky, aerial perspective, a planet's shell). It takes the pass ahead of the adapter's ray queries, which are then not built.
 /// A backdrop does not count: only paths that have met nothing but glass read it, and the CPU loop has no
 /// transmission.
 #[allow(clippy::too_many_arguments)]
@@ -2542,6 +2563,7 @@ fn cpu_trace_selected(
         && !counter
         && base.sky[1][3] <= 0.5
         && base.aerial[0][0] <= 0.5
+        && base.shell[0] <= 0.5
         && (base.env[0] <= 0.5 || env_available)
 }
 
@@ -2628,6 +2650,10 @@ fn build_light_grids(
                 },
                 wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(aerial.0) },
                 wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(aerial.1) },
+                wgpu::BindGroupEntry {
+                    binding: 15,
+                    resource: wgpu::BindingResource::TextureView(shell_view(pt, inputs)),
+                },
             ],
         })
     };
@@ -2819,6 +2845,7 @@ pub(crate) fn render_cached(
         perm: [trace_stride_for(pt.cpu_adapter, tile.size[0].div_ceil(8) * tile.size[1].div_ceil(8)), 0, 0, 0],
         sky: scene.env.as_ref().and_then(|e| e.sky).map(|s| s.uniforms()).unwrap_or([[0.0; 4]; 5]),
         aerial: inputs.aerial.map_or([[0.0; 4]; 2], |a| a.uniforms),
+        shell: [inputs.shell.is_some() as u32 as f32, 0.0, 0.0, 0.0],
     };
 
     // the grids are built once, before the tiles
@@ -2942,6 +2969,10 @@ pub(crate) fn render_cached(
                     },
                     wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::TextureView(aerial.0) },
                     wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(aerial.1) },
+                    wgpu::BindGroupEntry {
+                        binding: 15,
+                        resource: wgpu::BindingResource::TextureView(shell_view(pt, inputs)),
+                    },
                 ],
             })
         };
@@ -3183,6 +3214,10 @@ mod wgsl_layout_tests {
             p.aerial[0][0] = mode;
             assert!(!sel(&p, on), "aerial mode {mode}");
         }
+        // nor a planet's atmosphere shell (the planets draft's rule 6)
+        let mut p = zero_params();
+        p.shell[0] = 1.0;
+        assert!(!sel(&p, on));
         // a backdrop is read only by paths that have met nothing but glass, and the CPU loop has no transmission
         let mut p = zero_params();
         p.misc[0] = 1.0;
@@ -3191,7 +3226,7 @@ mod wgsl_layout_tests {
 
     #[test]
     fn params_matches_wgsl_params() {
-        let fields = rust_fields!(super::Params; cam_to_world, view_proj, inv_view_proj, env_rot, size, cam, env, ambient, misc, out, tile, media, perm, sky, aerial);
+        let fields = rust_fields!(super::Params; cam_to_world, view_proj, inv_view_proj, env_rot, size, cam, env, ambient, misc, out, tile, media, perm, sky, aerial, shell);
         assert_agree(include_str!("pathtrace.wgsl"), "Params", std::mem::size_of::<super::Params>(), &fields);
     }
 }

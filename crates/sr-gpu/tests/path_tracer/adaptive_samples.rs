@@ -71,8 +71,15 @@ struct Run {
 fn run(g: &sr_gpu::Gpu, eng: &ThreeEngine, pt: &PtGpu, sc: &Scene3, opts: PathOpts) -> Run {
     let black = eng.upload_f16([1, 1], &[[0.0; 4]]).create_view(&Default::default());
     let sampler = g.device.create_sampler(&Default::default());
-    let inputs =
-        PtInputs { env: &black, backdrop: None, black: &black, sampler: &sampler, env_texels: None, aerial: None };
+    let inputs = PtInputs {
+        env: &black,
+        backdrop: None,
+        black: &black,
+        sampler: &sampler,
+        env_texels: None,
+        aerial: None,
+        shell: None,
+    };
     let data = pathtrace::build(sc);
     let target = eng.target(sc.size);
     let mut enc = g.device.create_command_encoder(&Default::default());

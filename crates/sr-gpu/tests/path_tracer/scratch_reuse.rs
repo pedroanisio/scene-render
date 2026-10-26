@@ -68,8 +68,15 @@ fn tile_scratch_is_kept_between_passes_and_grows_only_for_larger_tiles() {
     let eng = ThreeEngine::new(g.device.clone(), g.queue.clone());
     let black = eng.upload_f16([1, 1], &[[0.0; 4]]).create_view(&Default::default());
     let sampler = g.device.create_sampler(&Default::default());
-    let inputs =
-        PtInputs { env: &black, backdrop: None, black: &black, sampler: &sampler, env_texels: None, aerial: None };
+    let inputs = PtInputs {
+        env: &black,
+        backdrop: None,
+        black: &black,
+        sampler: &sampler,
+        env_texels: None,
+        aerial: None,
+        shell: None,
+    };
     let mut pt = PtGpu::new(&g.device, wgpu::TextureFormat::Rgba16Float);
     let pass = |pt: &PtGpu, size: [u32; 2], denoise: bool| {
         let sc = scene(&eng, size);

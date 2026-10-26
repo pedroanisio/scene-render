@@ -1348,6 +1348,23 @@ fn air_measures(profile: &[(f64, f64)]) -> (f64, f64, f64, f64) {
 #[test]
 fn an_earths_atmosphere_shell_is_the_physical_skys_from_orbit() {
     let Some(r) = air_frame("", &air_sun()) else { return };
+    air_from_orbit(&r, 0.01);
+}
+
+/// The path tracer's camera of 64 samples a pixel, their mean undenoised: their spread over a pixel near the shell's
+/// top, where the light falls by a sixth from one pixel to the next, leaves about 1.5 % of noise.
+const AIR_TRACED: &str = r#"renderer="pathtrace" pathSamples="64" maxBounces="1" denoise="false""#;
+
+#[test]
+fn the_path_tracer_draws_the_shell_as_the_physical_skys_from_orbit() {
+    // its samples spread over each pixel where the raster pass reads the pixel's centre
+    let Some(r) = air_frame(AIR_TRACED, &air_sun()) else { return };
+    assert!(!r.stats.unsupported.iter().any(|m| m.contains("atmosphere shell")), "{:?}", r.stats.unsupported);
+    air_from_orbit(&r, 0.02);
+}
+
+/// [`air_frame`]'s measures against the physical sky's reference, the band's pixels within `tol` of it.
+fn air_from_orbit(r: &Rendered, tol: f64) {
     let (ground, top) = air_band();
     let rows = AIR_H / 2 - 2..=AIR_H / 2 + 2;
     let measured: Vec<(f64, f64)> = (0..AIR_W)
@@ -1380,7 +1397,7 @@ fn an_earths_atmosphere_shell_is_the_physical_skys_from_orbit() {
             let got = r.at(x, y);
             for c in 0..3 {
                 assert!(
-                    (got[c] as f64 - l[c]).abs() <= 0.01 * l[c] + 1e-4,
+                    (got[c] as f64 - l[c]).abs() <= tol * l[c] + 1e-4,
                     "({x}, {y}) at {angle:.3}°: {got:?}, the reference's {l:?}"
                 );
             }
@@ -1442,6 +1459,15 @@ fn the_shell_dims_the_dome_behind_it_and_adds_its_light() {
 }
 
 #[test]
+fn the_path_tracer_sees_the_dome_through_the_shell() {
+    let dome = srgb_linear(128.0 / 255.0);
+    let Some(r) = air_frame(AIR_TRACED, &format!("{}{AIR_DOME}", air_sun())) else { return };
+    assert!(air_through_dome(&r, dome, true) > 40);
+    let Some(r) = air_frame(AIR_TRACED, AIR_DOME) else { return };
+    assert!(air_through_dome(&r, dome, false) > 40);
+}
+
+#[test]
 fn without_a_sun_the_shell_only_dims_what_lies_beyond_it() {
     let Some(r) = air_frame("", AIR_DOME) else { return };
     assert!(air_through_dome(&r, srgb_linear(128.0 / 255.0), false) > 40);
@@ -1467,11 +1493,10 @@ fn the_raster_pass_names_the_shells_it_does_not_draw() {
     assert!(u.iter().any(|m| m == r#"p: the atmosphere shell under a dome with sky="physical" is not drawn"#), "{u:?}");
     let Some(u) = notes(r#"projection="orthographic" orthoHeight="10""#, &air_sun()) else { return };
     assert!(u.iter().any(|m| m == "p: the atmosphere shell is not drawn through an orthographic camera"), "{u:?}");
-    let traced = r#"renderer="pathtrace" pathSamples="1" maxBounces="1" denoise="false""#;
-    let Some(u) = notes(traced, &air_sun()) else { return };
-    assert!(u.iter().any(|m| m == "p: the atmosphere shell is drawn by the raster renderer only"), "{u:?}");
-    let Some(u) = notes("", &air_sun()) else { return };
-    assert!(!u.iter().any(|m| m.contains("atmosphere shell")), "{u:?}");
+    for camera in ["", TRACED] {
+        let Some(u) = notes(camera, &air_sun()) else { return };
+        assert!(!u.iter().any(|m| m.contains("atmosphere shell")), "{camera}: {u:?}");
+    }
     // a second planet with air, behind the eye: the first is drawn and the second named
     let second = r#"<object3D id="q" primitive="planet" radius="1" z="-50" material="m" atmosphere="earth"/>"#;
     let Some(r) = air_frame_with("", &air_sun(), 1.0, "#000000FF", second) else { return };
@@ -1497,14 +1522,20 @@ fn a_scaled_planet_takes_its_air_at_its_scale() {
 #[test]
 fn the_shell_adds_its_light_over_the_backdrop() {
     // without a visible dome nothing of the 3D pass lies beyond the shell: its light adds to what the pass is
-    // composited over, and above its top that shows through untouched
-    let Some(r) = air_frame_with("", &air_sun(), 1.0, "#336699FF", "") else { return };
+    // composited over, and above its top that shows through untouched; alike in both renderers
+    for camera in ["", AIR_TRACED] {
+        let Some(r) = air_frame_with(camera, &air_sun(), 1.0, "#336699FF", "") else { return };
+        air_over_backdrop(&r);
+    }
+}
+
+fn air_over_backdrop(r: &Rendered) {
     let bg = [0x33, 0x66, 0x99].map(|v| srgb_linear(v as f64 / 255.0));
     let (ground, top) = air_band();
     let mut seen = 0;
     for x in 0..AIR_W {
         let (angle, l, _) = air_reference_rgb(x as f64 + 0.5);
-        let got = air_row(&r, x);
+        let got = air_row(r, x);
         if angle > top + 0.1 {
             for c in 0..3 {
                 assert!((got[c] - bg[c]).abs() < 2e-3, "above the top at {angle:.3}°: {got:?}, the backdrop {bg:?}");

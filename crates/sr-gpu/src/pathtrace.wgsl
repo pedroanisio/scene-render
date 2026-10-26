@@ -38,6 +38,8 @@ struct Params {
     sky: array<vec4<f32>, 5>,
     // the physical-sky draft's rules 10 and 11 on surfaces, as the rasteriser's frame holds them (three_types.wgsl)
     aerial: array<vec4<f32>, 2>,
+    // a planet's atmosphere shell (the planets draft's rule 6): 1 when `shell_tex` holds its table, unused
+    shell: vec4<f32>,
 };
 
 struct Mat {
@@ -107,6 +109,14 @@ fn tmat_of(k: u32) -> u32 { return bitcast<u32>(tverts[k * 24u].w); }
 // the camera's aerial volume (radiance slices, then transmittance slices) and the fog's horizon table
 @group(0) @binding(13) var aerial_tex: texture_3d<f32>;
 @group(0) @binding(14) var aerial_horizon: texture_2d<f32>;
+// a planet's atmosphere shell for the camera (sr_3d::planet_shell::PlanetShell::table, sampling.wgsl's shell_at)
+@group(0) @binding(15) var shell_tex: texture_2d<f32>;
+
+// Row i of the shell table, which the texture holds in rows of its width.
+fn shell_at(i: u32) -> vec4<f32> {
+    let w = textureDimensions(shell_tex).x;
+    return textureLoad(shell_tex, vec2(i32(i % w), i32(i / w)), 0);
+}
 
 fn tuv(k: u32, c: u32, slot: u32) -> vec2<f32> {
     let row = tverts[k * 24u + c * 6u + 3u + slot / 2u];
@@ -364,7 +374,8 @@ fn aerial_segment(world: vec3<f32>) -> Aerial {
         let uv = (clamp(ndc * 0.5 + 0.5, vec2(0.0), vec2(1.0)) * (dims.xy - 1.0) + 0.5) / dims.xy;
         let l = textureSampleLevel(aerial_tex, smp, vec3(uv, (z + 0.5) / dims.z), 0.0).rgb;
         let t = textureSampleLevel(aerial_tex, smp, vec3(uv, (z + 0.5 + slices) / dims.z), 0.0).rgb;
-        return Aerial(l * pp.env.y, t);
+        // the dome's intensity scales its sky's light; a planet's shell is lit by rule 3's sun alone
+        return Aerial(l * select(pp.env.y, 1.0, pp.shell.x > 0.5), t);
     }
     let p0 = (pp.env_rot * vec4(origin, 1.0)).xyz;
     let p1 = (pp.env_rot * vec4(world, 1.0)).xyz;
@@ -769,7 +780,15 @@ fn radiance(px: vec2<f32>, pix: u32, first: bool) -> vec4<f32> {
         if (hit.tri == 0xffffffffu) {
             if (met == 0u) {
                 // a primary miss: the pass is transparent there (the environment when visible)
-                if (pp.env.x > 1.5) { col += thr * env_radiance(d, ambient_diffuse, ambient_specular); alpha = 1.0; }
+                var beyond = vec3(0.0);
+                if (pp.env.x > 1.5) { beyond = env_radiance(d, ambient_diffuse, ambient_specular); alpha = 1.0; }
+                if (pp.shell.x > 0.5) {
+                    // a planet's atmosphere shell over the dome (rule 6), as the rasteriser's fs_dome: what lies beyond
+                    // it seen through it, and its light, which adds to what the pass is composited over
+                    let u = normalize(d);
+                    beyond = beyond * shell_transmittance(u) + shell_radiance(u);
+                }
+                col += thr * beyond;
                 break;
             }
             if (only_glass && pp.misc.x > 0.5) {
