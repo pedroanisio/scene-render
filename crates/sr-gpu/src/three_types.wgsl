@@ -36,6 +36,8 @@ struct Frame {
     // fog density (per metre), fog height (m), horizon nodes, 1 through an orthographic camera (its rays leave the near
     // plane, not the eye)
     aerial: array<vec4<f32>, 2>,
+    // 1 with a planet's atmosphere shell (the planets draft's rule 6: the table `shell`), unused ×3
+    shell: vec4<f32>,
 };
 
 struct Light {

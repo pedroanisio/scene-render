@@ -49,6 +49,7 @@ fn gpu_volume_transport_matches_analytic_slabs_and_overlapping_media() {
         ssr: false,
         path: None,
         geodesic: None,
+        planet_shell: None,
     };
     let black = eng.upload_f16([1, 1], &[[0.0; 4]]).create_view(&Default::default());
     let smp = g.device.create_sampler(&Default::default());
@@ -1026,6 +1027,7 @@ fn shadow_march_dims_by_the_optical_depth_of_thin_dense_media_and_ignores_neglig
             ssr: false,
             path: Some(PathOpts { samples: 1, bounces: 1, denoise: false, noise: None }),
             geodesic: None,
+            planet_shell: None,
         };
         let data = pathtrace::build(&scene);
         let target = eng.target([4, 4]);
@@ -1090,6 +1092,7 @@ fn multiple_scattering_matches_the_independent_homogeneous_slab_reference() {
         ssr: false,
         path: Some(PathOpts { samples: 128, bounces: 1, denoise: false, noise: None }),
         geodesic: None,
+        planet_shell: None,
     };
     scene.lights.push(sr_gpu::three::Light3 {
         kind: sr_gpu::three::LightKind::Directional,

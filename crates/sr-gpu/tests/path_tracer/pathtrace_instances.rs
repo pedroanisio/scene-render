@@ -50,6 +50,7 @@ fn repeated_prototypes_fit_without_triangle_expansion_and_match_expanded_pixels(
         ssr: false,
         path: Some(PathOpts { samples: 4, bounces: 2, denoise: false, noise: None }),
         geodesic: None,
+        planet_shell: None,
     };
     let mut limits = gpu.device.limits();
     limits.max_storage_buffer_binding_size = 2 << 20;

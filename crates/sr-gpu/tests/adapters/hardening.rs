@@ -279,6 +279,7 @@ fn more_shadow_views_than_layers_render_without_a_validation_error() {
         ssr: false,
         path: None,
         geodesic: None,
+        planet_shell: None,
     };
     let px = eng.render_now(&scene, None);
     assert_eq!(px.len(), 32 * 32);

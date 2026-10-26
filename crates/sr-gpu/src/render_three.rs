@@ -156,6 +156,23 @@ fn planet_sun(lights: &[Light3], physical: Option<(Mat4, [[f32; 4]; 5])>) -> Opt
     lights.iter().find(|l| l.kind == LightKind::Directional).map(|l| -l.dir.normalize())
 }
 
+/// A planet of the pass that carries an atmosphere shell (the planets draft's rule 6).
+pub(super) struct PlanetAir {
+    id: String,
+    /// Its centre in the pass's world.
+    centre: Vec3,
+    /// World units per metre.
+    metre: f64,
+    /// Its equatorial radius and the atmosphere's height, metres.
+    radius: f64,
+    height: f64,
+    /// Rule 3's sun (world) and its irradiance; none, and no irradiance, when only the space's Sun lights it.
+    sun: Option<Vec3>,
+    irradiance: [f64; 3],
+    /// Under a dome with a physical sky, whose atmosphere is the document's one.
+    under_physical: bool,
+}
+
 fn primitive_kind(n: &FrameNode) -> String {
     let a = attrs(n);
     if n.kind == "particles3D" {
@@ -244,6 +261,10 @@ impl Plane {
 
 /// The aerial volume's columns across and up and its slices (the physical-sky draft's rules 10 and 11).
 const AERIAL_SIZE: [usize; 3] = [33, 33, 64];
+/// A planet's atmosphere shell's march (the planets draft's rule 6): from orbit the air a ray crosses lies thousands of
+/// kilometres away, most of its light in the last tens of kilometres above the ground, and near the limb the ground's
+/// distance changes fast across the frame: its slices and columns are finer.
+const SHELL_AERIAL_SIZE: [usize; 3] = [65, 65, 256];
 
 /// SREP 14's scale: `physics/@pixelsPerMeter`, 100 without a physics element.
 fn pixels_per_meter(p: &Program) -> f64 {
@@ -1740,6 +1761,105 @@ impl Renderer {
         }
     }
 
+    /// A planet's atmosphere shell as `n` asks for it (the planets draft's rule 6): the physical sky's atmosphere about
+    /// its centre, of its equatorial radius and `atmosphereHeight`, lit by rule 3's sun with the first directional
+    /// light's colour × intensity, or by nothing (its transmittance alone) when the sun is the space's.
+    fn planet_air(&self, ctx: &Ctx, n: &FrameNode, a: &Attrs, world: Mat4) -> Result<PlanetAir, String> {
+        let (radius, _) = planet_spheroid(ctx, a).map_err(|e| e.to_string())?;
+        let ppm = pixels_per_meter(ctx.p);
+        let sun = self.planet_sun_of(ctx, n, a)?;
+        let light = self.planet_sun_light.filter(|_| self.planet_sun.is_some_and(|(_, physical)| !physical));
+        let (sun, irradiance) = match (sun, light) {
+            (Some(s), Some(c)) => (Some(Vec3::from(s)), [c.x as f64, c.y as f64, c.z as f64]),
+            _ => (None, [0.0; 3]),
+        };
+        Ok(PlanetAir {
+            id: n.id.to_string(),
+            centre: world.w_axis.truncate(),
+            metre: ppm * f64::from(world.x_axis.truncate().length()),
+            radius: radius / ppm,
+            height: a.num("atmosphereHeight", 100_000.0),
+            sun,
+            irradiance,
+            under_physical: self.planet_sun.is_some_and(|(_, physical)| physical),
+        })
+    }
+
+    /// The atmosphere shell of the pass's first planet that has one, seen from `cam` (rule 6): its table for the rays
+    /// that meet no surface and its march over the camera's rays to the surfaces. Shells the pass does not draw are
+    /// reported.
+    fn planet_shell3(
+        &mut self,
+        plan: &mut Plan,
+        cam: &CameraView,
+        clip_fix: Mat4,
+        traced: bool,
+    ) -> Option<Arc<crate::three::PlanetShellGpu>> {
+        let airs = std::mem::take(&mut self.planet_airs);
+        let mut note = |id: &str, m: &str| {
+            let m = format!("{id}: {m}");
+            if !plan.stats.unsupported.contains(&m) {
+                plan.stats.unsupported.push(m);
+            }
+        };
+        let mut drawn = None;
+        for air in &airs {
+            if air.under_physical {
+                note(&air.id, "the atmosphere shell under a dome with sky=\"physical\" is not drawn");
+            } else if cam.orthographic {
+                note(&air.id, "the atmosphere shell is not drawn through an orthographic camera");
+            } else if traced {
+                note(&air.id, "the atmosphere shell is drawn by the raster renderer only");
+            } else if drawn.is_some() {
+                note(&air.id, "the atmosphere shell is drawn for the first planet that has one alone");
+            } else {
+                drawn = Some(air);
+            }
+        }
+        let air = drawn?;
+        let vp = clip_fix * cam.view_proj();
+        let k = air.metre;
+        let observer = ((cam.eye - air.centre).as_dvec3() / k).to_array();
+        let key =
+            format!("{vp:?} {:?} {k} {} {} {:?} {:?}", air.centre, air.radius, air.height, air.sun, air.irradiance);
+        if let Some((_, g)) = self.planet_shell.as_ref().filter(|(k, _)| *k == key) {
+            return Some(g.clone());
+        }
+        let result = (|| {
+            let sun = air.sun.map(|s| s.as_dvec3().normalize().to_array());
+            let shell = sr_3d::planet_shell::PlanetShell::new(air.radius, air.height, observer, sun, air.irradiance)
+                .map_err(|e| e.to_string())?;
+            let inv = vp.inverse();
+            // reverse-Z: the near plane at depth 1, the far plane at 0
+            let at =
+                |u: f64, v: f64, z: f32| inv.project_point3(Vec3::new(2.0 * u as f32 - 1.0, 2.0 * v as f32 - 1.0, z));
+            let ray = |u: f64, v: f64| {
+                let d = (at(u, v, 0.5) - cam.eye).normalize();
+                (observer, d.as_dvec3().to_array())
+            };
+            // the march reaches the far plane or the farthest point of the air, whichever is nearer: no ray stays in
+            // the air longer than the ground's tangent and the chord the top cuts along it
+            let corners = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)];
+            let far = corners.iter().map(|&(u, v)| f64::from(at(u, v, 0.0).distance(cam.eye))).fold(0.0, f64::max) / k;
+            let (d, r, top) = (glam::DVec3::from(observer).length(), air.radius, air.radius + air.height);
+            let across = (d * d - r * r).max(0.0).sqrt() + (top * top - r * r).sqrt();
+            let depth = far.min(across);
+            let volume = shell.volume(&ray, depth, SHELL_AERIAL_SIZE).map_err(|e| e.to_string())?;
+            let uniforms = [[1.0, k as f32, 0.0, depth as f32], [0.0, 100.0, 0.0, 0.0]];
+            Ok::<_, String>(self.three_engine().upload_planet_shell(&shell.table(), uniforms, &volume))
+        })();
+        match result {
+            Ok(g) => {
+                self.planet_shell = Some((key, g.clone()));
+                Some(g)
+            }
+            Err(e) => {
+                plan.stats.errors.push(format!("{}: {e}", air.id));
+                None
+            }
+        }
+    }
+
     /// A planet's cloud layer (the planets draft's rule 4): the body's spheroid scaled by 1 + `cloudHeight`
     /// drawn with `cloudMap`, alpha-blended and lit as a white diffuse surface, turned eastward by its drift, and, with
     /// `cloudShadow`, its texture and the ground's shadow inputs toward `sun`; none without a `cloudMap`.
@@ -2037,6 +2157,12 @@ impl Renderer {
                         maps[7] = Some(texture);
                         material.rings = Some(ground);
                         ring = Some(draw);
+                    }
+                    if a.str("atmosphere").as_deref() == Some("earth") {
+                        match self.planet_air(ctx, n, &a, world) {
+                            Ok(air) => self.planet_airs.push(air),
+                            Err(e) => plan.stats.errors.push(format!("{}: {e}", n.id)),
+                        }
                     }
                 }
                 draws.push(Draw3 {
@@ -4035,6 +4161,8 @@ impl Renderer {
         let (mut lights, mut env) = self.lights3(plan, ctx, only.as_deref());
         let physical = env.as_ref().and_then(|e| Some((e.rotation, e.physical?)));
         self.planet_sun = planet_sun(&lights, physical).map(|d| (d, physical.is_some()));
+        self.planet_sun_light = lights.iter().find(|l| l.kind == LightKind::Directional).map(|l| l.color);
+        self.planet_airs.clear();
         if lights.is_empty()
             && env.is_none()
             && ctx.p.scene.lights.as_ref().map(|l| l.lights.is_empty()).unwrap_or(true)
@@ -4130,6 +4258,7 @@ impl Renderer {
                 Err(error) => plan.stats.errors.push(format!("{}: {error}", n.id)),
             }
         }
+        let planet_shell = self.planet_shell3(plan, &cam, clip_fix, ex.path.is_some() || geodesic.is_some());
         let view = (!cam.orthographic).then(|| (clip_fix * cam.view_proj(), space.size));
         let StarDraw { stars, overlay: star_overlay } = self.star_field3(plan, ctx, only.as_deref(), 1.0, view);
         let star_overlay = star_overlay.map(|(coverage, grey)| crate::three::StarOverlay { coverage, grey });
@@ -4178,6 +4307,7 @@ impl Renderer {
             ao: ex.ao,
             ssr: ex.ssr,
             path: None,
+            planet_shell,
             geodesic: geodesic.map(|mut scene| {
                 scene.encode_srgb = !self.working.linear;
                 scene

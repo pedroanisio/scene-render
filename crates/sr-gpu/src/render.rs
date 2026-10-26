@@ -564,6 +564,12 @@ pub struct Renderer {
     /// physical sky's sun or the first directional light's, and whether it is the physical sky's; none leaves each
     /// planet the space's Sun.
     planet_sun: Option<(glam::Vec3, bool)>,
+    /// The colour × intensity of the 3D pass's first directional light: rule 3's sun's irradiance (rule 6).
+    planet_sun_light: Option<glam::Vec3>,
+    /// The planets of the 3D pass being drawn that carry an atmosphere shell (rule 6), in drawing order.
+    planet_airs: Vec<render_three::PlanetAir>,
+    /// The last atmosphere shell uploaded, by its key: its table is rule 9's integrals over a whole hemisphere.
+    planet_shell: Option<(String, Arc<crate::three::PlanetShellGpu>)>,
     /// Star fields by catalogue file, limiting magnitude and magnitudeZero (the star-fields draft).
     /// The star field a frame without a 3D pass draws, by its key (the star-fields draft).
     stars_bg: Option<(u64, Arc<Tex>)>,
@@ -1509,6 +1515,9 @@ impl Renderer {
             sky_bg: None,
             physical_sky: None,
             planet_sun: None,
+            planet_sun_light: None,
+            planet_airs: Vec::new(),
+            planet_shell: None,
             stars_bg: None,
             star_fields: HashMap::new(),
             star_scale: 1,

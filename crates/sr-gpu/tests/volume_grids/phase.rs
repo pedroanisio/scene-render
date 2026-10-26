@@ -216,6 +216,7 @@ fn single_scattering_is_weighted_by_the_media_phase() {
         ssr: false,
         path: Some(sr_gpu::pathtrace::PathOpts { samples: 4, bounces: 1, denoise: false, noise: None }),
         geodesic: None,
+        planet_shell: None,
     };
     let mut radiance = |phase: Phase| {
         let medium = Medium::new(

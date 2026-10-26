@@ -133,6 +133,7 @@ fn scene(eng: &ThreeEngine, draws: Vec<Draw3>, dome: Option<f32>, sun: bool, eye
         ssr: false,
         path: Some(PathOpts { samples: 256, bounces: 4, denoise: false, noise: None }),
         geodesic: None,
+        planet_shell: None,
     }
 }
 

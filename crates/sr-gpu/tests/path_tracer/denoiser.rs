@@ -99,6 +99,7 @@ fn scene(eng: &mut ThreeEngine, floor: f32) -> Scene3 {
         ssr: false,
         path: None,
         geodesic: None,
+        planet_shell: None,
     }
 }
 

@@ -111,6 +111,7 @@ fn scene(eng: &ThreeEngine, samples: u32) -> Scene3 {
         ssr: false,
         path: Some(PathOpts { samples, bounces: 3, denoise: false, noise: None }),
         geodesic: None,
+        planet_shell: None,
     }
 }
 

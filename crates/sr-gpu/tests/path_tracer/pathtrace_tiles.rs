@@ -78,6 +78,7 @@ fn tiled_paths_match_whole_frame_at_edges_and_denoise_seams() {
         ssr: false,
         path: None,
         geodesic: None,
+        planet_shell: None,
     };
     let black = eng.upload_f16([1, 1], &[[0.0; 4]]).create_view(&Default::default());
     let sampler = g.device.create_sampler(&Default::default());
@@ -175,6 +176,7 @@ fn cpu_traced_tiles_share_one_scene_build_per_pass() {
         ssr: false,
         path: None,
         geodesic: None,
+        planet_shell: None,
     };
     let black = eng.upload_f16([1, 1], &[[0.0; 4]]).create_view(&Default::default());
     let sampler = g.device.create_sampler(&Default::default());

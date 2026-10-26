@@ -20,3 +20,5 @@
 @group(0) @binding(15) var aerial_tex: texture_3d<f32>;
 // the fog's horizon radiance over the azimuth (sr_3d::aerial::HorizonTable)
 @group(0) @binding(16) var aerial_horizon: texture_2d<f32>;
+// a planet's atmosphere shell for this eye (sr_3d::planet_shell::PlanetShell::table)
+@group(0) @binding(17) var<storage, read> shell: array<vec4<f32>>;

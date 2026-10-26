@@ -1197,3 +1197,325 @@ fn a_material_without_specular_reflection_takes_the_whole_dome() {
     assert!(seen.len() > 5000 && lo > 0.0, "{} pixels, darkest {lo}", seen.len());
     assert!(hi / lo < 1.01, "the disc runs from {lo} to {hi}");
 }
+
+/// Rule 6's frame: Earth (equatorial radius 63.78137 scene units at 1e-5 px/m) under `atmosphere="earth"` of 100 km,
+/// seen from 400 km over its equator through 10° across the limb. The nadir lies in the frame's middle row, `NADIR`
+/// degrees left of the view axis, so that the axis is midway between the limb and the grazing ray of the shell's top.
+/// The ground is black and unlit, and the sun is 48° from the eye's zenith. Returns the frame and the nadir and sun.
+const AIR_W: u32 = 320;
+const AIR_H: u32 = 180;
+const AIR_PPM: f64 = 1e-5;
+const AIR_ALTITUDE: f64 = 400_000.0;
+const AIR_HEIGHT: f64 = 100_000.0;
+const EARTH_A: f64 = 6_378_137.0;
+
+fn air_band() -> (f64, f64) {
+    let b = sr_3d::planet::shell_band(EARTH_A + AIR_ALTITUDE, EARTH_A, AIR_HEIGHT).unwrap();
+    (b.planet.unwrap(), b.shell.unwrap())
+}
+
+fn air_geometry() -> ([f64; 3], [f64; 3]) {
+    let (ground, top) = air_band();
+    let m = ((ground + top) / 2.0).to_radians();
+    let nadir = [-m.sin(), 0.0, m.cos()];
+    let up = nadir.map(|v| -v);
+    // 48° from the zenith, toward the view's side of the vertical and the frame's top
+    let e1 = [m.cos(), 0.0, m.sin()];
+    let (c, s) = (48f64.to_radians().cos(), 48f64.to_radians().sin());
+    let sun: [f64; 3] = std::array::from_fn(|i| c * up[i] + s * (0.6 * e1[i] + 0.8 * [0.0, -1.0, 0.0][i]));
+    (nadir, sun)
+}
+
+/// Rule 3's sun's irradiance in [`air_frame`].
+const AIR_IRRADIANCE: f64 = 2.0;
+
+/// The directional light of rule 3's sun in [`air_frame`], of irradiance [`AIR_IRRADIANCE`].
+fn air_sun() -> String {
+    let (_, sun) = air_geometry();
+    let (yaw, pitch) = ((-sun[0]).atan2(-sun[2]).to_degrees(), sun[1].asin().to_degrees());
+    format!(r#"<light id="sun" type="directional" intensity="{AIR_IRRADIANCE}" yaw="{yaw}" pitch="{pitch}"/>"#)
+}
+
+/// A uniform dome of #808080 (0.2158 linear), visible behind everything.
+const AIR_DOME: &str = r##"<light id="sky" type="dome" sky="gradient" skyZenith="#808080" skyHorizon="#808080" skyGround="#808080" environmentVisible="true"/>"##;
+
+fn air_frame(camera: &str, lights: &str) -> Option<Rendered> {
+    air_frame_with(camera, lights, 1.0, "#000000FF", "")
+}
+
+/// [`air_frame`] under a space of `space`'s attributes.
+fn air_frame_in(space: &str, lights: &str) -> Option<Rendered> {
+    air_doc("", lights, 1.0, "#000000FF", "", &format!("<space {space}/>"))
+}
+
+/// [`air_frame`] with the planet scaled by `scale` at 1/`scale` of the pixels per metre (the same frame), over the
+/// project's `background` and with `more` in the composition.
+fn air_frame_with(camera: &str, lights: &str, scale: f64, background: &str, more: &str) -> Option<Rendered> {
+    air_doc(camera, lights, scale, background, more, "")
+}
+
+fn air_doc(camera: &str, lights: &str, scale: f64, background: &str, more: &str, after: &str) -> Option<Rendered> {
+    let (nadir, _) = air_geometry();
+    let k = (EARTH_A + AIR_ALTITUDE) * AIR_PPM;
+    let centre = nadir.map(|v| v * k);
+    let ppm = AIR_PPM / scale;
+    let xml = format!(
+        r##"<scene version="1.8"><project width="{AIR_W}" height="{AIR_H}" fps="24" duration="1" background="{background}"/><materials><material id="m" baseColor="#000000FF" unlit="true"/></materials><composition><camera id="eye" x="0" y="0" z="0" fov="10" far="1000" {camera}/><object3D id="p" primitive="planet" body="399" material="m" x="{}" y="{}" z="{}" scaleX="{scale}" scaleY="{scale}" scaleZ="{scale}" segments="512" atmosphere="earth" atmosphereHeight="{AIR_HEIGHT}"/>{more}</composition><lights>{lights}</lights><physics pixelsPerMeter="{ppm}"/>{after}</scene>"##,
+        centre[0], centre[1], centre[2]
+    );
+    let opts = sr_model::LoadOptions { verify_assets: true, base_dir: Some(fixtures()) };
+    let doc = sr_model::load_str(&xml, &opts).unwrap_or_else(|e| panic!("{e:?}\n{xml}"));
+    let r = render(&doc)?;
+    assert!(r.stats.errors.is_empty(), "{:?}", r.stats.errors);
+    Some(r)
+}
+
+const LUMA: [f64; 3] = [0.2126, 0.7152, 0.0722];
+
+/// The unit ray through the middle row at column x + 0.5 (camera at the origin looking down +z, x to the right).
+fn air_ray(x: f64) -> [f64; 3] {
+    air_ray_at(x, AIR_H as f64 / 2.0)
+}
+
+/// The unit ray through the point (x, y) of the frame, in pixels.
+fn air_ray_at(x: f64, y: f64) -> [f64; 3] {
+    let f = AIR_W as f64 / 2.0 / 5f64.to_radians().tan();
+    let d = [(x - AIR_W as f64 / 2.0) / f, (y - AIR_H as f64 / 2.0) / f, 1.0];
+    let n = (d[0] * d[0] + d[1] * d[1] + 1.0).sqrt();
+    d.map(|v| v / n)
+}
+
+/// The reference along the middle row: the luminance of rule 9's sky where the ray misses the planet and of rule 10's
+/// aerial perspective of the black ground where it meets it, and the column's angle from the nadir.
+fn air_reference(x: f64) -> (f64, f64) {
+    let (angle, l, _) = air_reference_rgb(x);
+    (angle, (0..3).map(|i| l[i] * LUMA[i]).sum())
+}
+
+/// [`air_reference`]'s angle and radiance per channel, and the transmittance to space of a ray that misses the planet.
+fn air_reference_rgb(x: f64) -> (f64, [f64; 3], [f64; 3]) {
+    air_reference_through(air_ray(x))
+}
+
+/// [`air_reference_rgb`] along the unit ray d.
+fn air_reference_through(d: [f64; 3]) -> (f64, [f64; 3], [f64; 3]) {
+    let (nadir, sun) = air_geometry();
+    let s = sr_3d::atmosphere::Scattering::new(
+        sr_3d::atmosphere::atmosphere(&sr_3d::atmosphere::AtmosphereOptions {
+            planet_radius: EARTH_A,
+            top_radius: EARTH_A + AIR_HEIGHT,
+            sun_irradiance: [AIR_IRRADIANCE; 3],
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    let obs = nadir.map(|v| -v * (EARTH_A + AIR_ALTITUDE));
+    let b = obs.iter().zip(d).map(|(o, d)| o * d).sum::<f64>();
+    let c = obs.iter().map(|o| o * o).sum::<f64>() - EARTH_A * EARTH_A;
+    let (l, t) = if b * b - c >= 0.0 && -b - (b * b - c).sqrt() > 0.0 {
+        (s.aerial_perspective(obs, d, -b - (b * b - c).sqrt(), [0.0; 3], sun).unwrap(), [0.0; 3])
+    } else {
+        (s.sky_radiance(obs, d, sun).unwrap(), s.atmosphere.transmittance(obs, d).unwrap())
+    };
+    let angle = d.iter().zip(nadir).map(|(d, n)| d * n).sum::<f64>().clamp(-1.0, 1.0).acos().to_degrees();
+    (angle, l, t)
+}
+
+/// The kit's measures of a profile over increasing angles: the peak's angle and luminance, the largest angle that
+/// still reaches 1 % of the peak, and the angle of the largest rise between neighbours (the limb).
+fn air_measures(profile: &[(f64, f64)]) -> (f64, f64, f64, f64) {
+    let (peak_angle, peak) = profile.iter().fold((0.0, 0.0f64), |b, &(a, l)| if l > b.1 { (a, l) } else { b });
+    let level = peak * 0.01;
+    let mut edge = f64::NAN;
+    for w in profile.windows(2) {
+        let ((a0, l0), (a1, l1)) = (w[0], w[1]);
+        if l0 >= level && level > l1 {
+            edge = a0 + (a1 - a0) * (l0 - level) / (l0 - l1);
+        } else if l1 >= level {
+            edge = a1;
+        }
+    }
+    let (mut jump, mut limb) = (f64::NEG_INFINITY, f64::NAN);
+    for w in profile.windows(2) {
+        if w[1].1 - w[0].1 > jump {
+            jump = w[1].1 - w[0].1;
+            limb = (w[0].0 + w[1].0) / 2.0;
+        }
+    }
+    (peak_angle, peak, edge, limb)
+}
+
+#[test]
+fn an_earths_atmosphere_shell_is_the_physical_skys_from_orbit() {
+    let Some(r) = air_frame("", &air_sun()) else { return };
+    let (ground, top) = air_band();
+    let rows = AIR_H / 2 - 2..=AIR_H / 2 + 2;
+    let measured: Vec<(f64, f64)> = (0..AIR_W)
+        .map(|x| {
+            let l = rows.clone().map(|y| (0..3).map(|i| r.at(x, y)[i] as f64 * LUMA[i]).sum::<f64>()).sum::<f64>();
+            (air_reference(x as f64 + 0.5).0, l / 5.0)
+        })
+        .collect();
+    let reference: Vec<(f64, f64)> = (0..AIR_W).map(|x| air_reference(x as f64 + 0.5)).collect();
+    let (pa, pl, ea, la) = air_measures(&measured);
+    let (ra, rl, re, rla) = air_measures(&reference);
+    assert!(pl > 0.0, "the shell is drawn");
+    assert!((pa - ra).abs() <= 0.1, "the brightest column at {pa:.3}°, the reference's {ra:.3}°");
+    assert!((ea - re).abs() <= 0.1, "the 1 % edge at {ea:.3}°, the reference's {re:.3}°");
+    assert!(
+        (la - ground).abs() <= 0.1 && (rla - ground).abs() <= 0.1,
+        "the limb at {la:.3}° ({rla:.3}°), {ground:.3}°"
+    );
+    assert!((pl / rl - 1.0).abs() < 0.05, "the peak's luminance {pl} against the reference's {rl}: the sun's light");
+    let above = measured.iter().filter(|(a, _)| *a >= top + 0.1).map(|(_, l)| *l).fold(0.0, f64::max);
+    assert!(above == 0.0, "above the top: {above} of the peak {pl}");
+    // the band's light pixel by pixel, on the middle row and off it, where the azimuth from the sun's vertical turns
+    let mut lit = 0;
+    for y in [12, AIR_H / 2, AIR_H - 12] {
+        for x in 0..AIR_W {
+            let (angle, l, _) = air_reference_through(air_ray_at(x as f64 + 0.5, y as f64 + 0.5));
+            if angle < ground + 0.3 || angle > top - 0.3 || (0..3).map(|i| l[i] * LUMA[i]).sum::<f64>() < 0.01 * rl {
+                continue;
+            }
+            let got = r.at(x, y);
+            for c in 0..3 {
+                assert!(
+                    (got[c] as f64 - l[c]).abs() <= 0.01 * l[c] + 1e-4,
+                    "({x}, {y}) at {angle:.3}°: {got:?}, the reference's {l:?}"
+                );
+            }
+            lit += 1;
+        }
+    }
+    assert!(lit > 80, "{lit} pixels of the band");
+    // the black ground below the limb shows the air between it and the eye (rule 10)
+    let ground_cols: Vec<usize> = (0..AIR_W as usize).filter(|&x| measured[x].0 < ground - 0.3).collect();
+    assert!(ground_cols.len() > 20, "{} columns of ground", ground_cols.len());
+    for &x in &ground_cols {
+        let (got, want) = (measured[x].1, reference[x].1);
+        assert!(
+            want > 0.0 && (got / want - 1.0).abs() < 0.02,
+            "the ground at {:.3}°: {got}, the reference's {want}",
+            measured[x].0
+        );
+    }
+}
+
+/// The middle row's radiance per channel at column x, averaged over five rows.
+fn air_row(r: &Rendered, x: u32) -> [f64; 3] {
+    std::array::from_fn(|c| (AIR_H / 2 - 2..=AIR_H / 2 + 2).map(|y| r.at(x, y)[c] as f64).sum::<f64>() / 5.0)
+}
+
+/// Every column of the middle row whose ray passes through the shell clear of its limb and its top, with what the
+/// reference says lies there: the dome of `dome` linear seen through the air, plus the air's light when `lit`.
+fn air_through_dome(r: &Rendered, dome: f64, lit: bool) -> usize {
+    let (ground, top) = air_band();
+    let mut seen = 0;
+    for x in 0..AIR_W {
+        let (angle, l, t) = air_reference_rgb(x as f64 + 0.5);
+        if angle < ground + 0.3 || angle > top - 0.1 {
+            let got = air_row(r, x);
+            if angle > top + 0.1 {
+                for c in 0..3 {
+                    assert!((got[c] - dome).abs() < 1e-3, "above the top at {angle:.3}°: {got:?}, the dome {dome}");
+                }
+            }
+            continue;
+        }
+        let got = air_row(r, x);
+        for c in 0..3 {
+            let want = dome * t[c] + if lit { l[c] } else { 0.0 };
+            assert!(
+                (got[c] - want).abs() < 0.03 * want + 2e-3,
+                "at {angle:.3}°, channel {c}: {got:?}, the reference's {want}"
+            );
+        }
+        seen += 1;
+    }
+    seen
+}
+
+#[test]
+fn the_shell_dims_the_dome_behind_it_and_adds_its_light() {
+    let Some(r) = air_frame("", &format!("{}{AIR_DOME}", air_sun())) else { return };
+    assert!(air_through_dome(&r, srgb_linear(128.0 / 255.0), true) > 40);
+}
+
+#[test]
+fn without_a_sun_the_shell_only_dims_what_lies_beyond_it() {
+    let Some(r) = air_frame("", AIR_DOME) else { return };
+    assert!(air_through_dome(&r, srgb_linear(128.0 / 255.0), false) > 40);
+    // the space's Sun gives the night lights a direction but the air no light: rule 6's irradiance is a light's
+    let Some(r) = air_frame_in(r#"epoch="2027-03-15T00:00:00Z" origin="3""#, AIR_DOME) else { return };
+    assert!(air_through_dome(&r, srgb_linear(128.0 / 255.0), false) > 40);
+}
+
+fn srgb_linear(c: f64) -> f64 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+#[test]
+fn the_raster_pass_names_the_shells_it_does_not_draw() {
+    let notes = |camera: &str, lights: &str| air_frame(camera, lights).map(|r| r.stats.unsupported);
+    // one atmosphere per document: under a dome with a physical sky the sky's is the one
+    let physical = r#"<light id="sky" type="dome" sky="physical" sunIntensity="1" date="2024-06-21T12:00:00Z" latitude="0" moon="false"/>"#;
+    let Some(u) = notes("", physical) else { return };
+    assert!(u.iter().any(|m| m == r#"p: the atmosphere shell under a dome with sky="physical" is not drawn"#), "{u:?}");
+    let Some(u) = notes(r#"projection="orthographic" orthoHeight="10""#, &air_sun()) else { return };
+    assert!(u.iter().any(|m| m == "p: the atmosphere shell is not drawn through an orthographic camera"), "{u:?}");
+    let traced = r#"renderer="pathtrace" pathSamples="1" maxBounces="1" denoise="false""#;
+    let Some(u) = notes(traced, &air_sun()) else { return };
+    assert!(u.iter().any(|m| m == "p: the atmosphere shell is drawn by the raster renderer only"), "{u:?}");
+    let Some(u) = notes("", &air_sun()) else { return };
+    assert!(!u.iter().any(|m| m.contains("atmosphere shell")), "{u:?}");
+    // a second planet with air, behind the eye: the first is drawn and the second named
+    let second = r#"<object3D id="q" primitive="planet" radius="1" z="-50" material="m" atmosphere="earth"/>"#;
+    let Some(r) = air_frame_with("", &air_sun(), 1.0, "#000000FF", second) else { return };
+    let u = &r.stats.unsupported;
+    assert!(u.iter().any(|m| m == "q: the atmosphere shell is drawn for the first planet that has one alone"), "{u:?}");
+    assert!(air_row(&r, AIR_W / 2).iter().any(|v| *v > 0.01), "the first planet's shell is drawn");
+}
+
+#[test]
+fn a_scaled_planet_takes_its_air_at_its_scale() {
+    // twice the scale at half the pixels per metre is the same planet in the same frame
+    let (Some(a), Some(b)) = (air_frame("", &air_sun()), air_frame_with("", &air_sun(), 2.0, "#000000FF", "")) else {
+        return;
+    };
+    for x in (0..AIR_W).step_by(4) {
+        let (p, q) = (air_row(&a, x), air_row(&b, x));
+        for c in 0..3 {
+            assert!((p[c] - q[c]).abs() <= 0.01 * p[c] + 1e-4, "column {x}: {p:?} and scaled {q:?}");
+        }
+    }
+}
+
+#[test]
+fn the_shell_adds_its_light_over_the_backdrop() {
+    // without a visible dome nothing of the 3D pass lies beyond the shell: its light adds to what the pass is
+    // composited over, and above its top that shows through untouched
+    let Some(r) = air_frame_with("", &air_sun(), 1.0, "#336699FF", "") else { return };
+    let bg = [0x33, 0x66, 0x99].map(|v| srgb_linear(v as f64 / 255.0));
+    let (ground, top) = air_band();
+    let mut seen = 0;
+    for x in 0..AIR_W {
+        let (angle, l, _) = air_reference_rgb(x as f64 + 0.5);
+        let got = air_row(&r, x);
+        if angle > top + 0.1 {
+            for c in 0..3 {
+                assert!((got[c] - bg[c]).abs() < 2e-3, "above the top at {angle:.3}°: {got:?}, the backdrop {bg:?}");
+            }
+        } else if angle > ground + 0.3 && angle < top - 0.1 {
+            for c in 0..3 {
+                let want = bg[c] + l[c];
+                assert!((got[c] - want).abs() < 0.03 * want + 2e-3, "at {angle:.3}°, channel {c}: {got:?}, {want}");
+            }
+            seen += 1;
+        }
+    }
+    assert!(seen > 40, "{seen} columns in the band");
+}

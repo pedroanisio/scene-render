@@ -756,7 +756,8 @@ fn aerial_apply(col: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
         let uv = (clamp(ndc * 0.5 + 0.5, vec2(0.0), vec2(1.0)) * (dims.xy - 1.0) + 0.5) / dims.xy;
         let l = textureSampleLevel(aerial_tex, clamp_smp, vec3(uv, (z + 0.5) / dims.z), 0.0).rgb;
         let t = textureSampleLevel(aerial_tex, clamp_smp, vec3(uv, (z + 0.5 + slices) / dims.z), 0.0).rgb;
-        return col * t + l * fr.params.w;
+        // the dome's intensity scales its sky's light; a planet's shell is lit by rule 3's sun alone
+        return col * t + l * select(fr.params.w, 1.0, fr.shell.x > 0.5);
     }
     let p0 = (fr.env_rot * vec4(origin, 1.0)).xyz;
     let p1 = (fr.env_rot * vec4(world, 1.0)).xyz;
@@ -1038,17 +1039,83 @@ fn vs_full(@builtin(vertex_index) vi: u32) -> BgOut {
 fn fs_dome(i: BgOut) -> @location(0) vec4<f32> {
     let far = fr.inv_view_proj * vec4(i.ndc, 0.0001, 1.0);
     let dir = -toward_eye(far.xyz / far.w);
+    if (fr.shell.x > 0.5) {
+        // a planet's atmosphere shell over the dome (rule 6): what lies beyond it seen through it, and its light;
+        // without a visible dome nothing lies beyond, and the shell adds to what the pass is composited over
+        let d = normalize(dir);
+        let light = shell_radiance(d);
+        if (fr.params2.y < 0.5) { return vec4(light, 0.0); }
+        return vec4(dome_colour(dir) * shell_transmittance(d) + light, 1.0);
+    }
+    return vec4(dome_colour(dir), 1.0);
+}
+
+// The dome's background along the world direction dir, exposed.
+fn dome_colour(dir: vec3<f32>) -> vec3<f32> {
     if (fr.sky[1].w > 1.5) {
         // a physical sky: its table baked at the source's resolution, its discs exact per pixel
         let d = normalize((fr.env_rot * vec4(dir, 0.0)).xyz);
         let c = textureSampleLevel(sky_tex, env_smp, env_uv(dir), 0.0).rgb + sky_discs(d, fr.sky);
-        return vec4(c * fr.params.w, 1.0);
+        return c * fr.params.w;
     }
     if (fr.sky[1].w > 0.5) {
         // a procedural sky (SREP 71), exact per pixel
-        return vec4(sky_radiance(normalize((fr.env_rot * vec4(dir, 0.0)).xyz), fr.sky) * fr.params.w, 1.0);
+        return sky_radiance(normalize((fr.env_rot * vec4(dir, 0.0)).xyz), fr.sky) * fr.params.w;
     }
-    return vec4(textureSampleLevel(sky_tex, env_smp, env_uv(dir), 0.0).rgb * fr.params.w, 1.0);
+    return textureSampleLevel(sky_tex, env_smp, env_uv(dir), 0.0).rgb * fr.params.w;
+}
+
+// ---------------------------------------------------------------- a planet's atmosphere shell (the planets draft)
+
+// sr_3d::planet_shell::PlanetShell's table: rows x, y and up of the eye's frame (w: the horizon's elevation, the top's
+// grazing elevation and the sun's azimuth), then [rows, columns], the radiance nodes row by row from the horizon and
+// the transmittance of every row. Rows are spaced by the square of their index.
+const SHELL_HEADER: u32 = 4u;
+
+// The fractional row of the world direction d's elevation, or −1 outside the rows; its local direction in `l`.
+fn shell_row(d: vec3<f32>, l: ptr<function, vec3<f32>>) -> f32 {
+    *l = vec3(dot(shell[0].xyz, d), dot(shell[1].xyz, d), dot(shell[2].xyz, d));
+    let e = asin(clamp((*l).z, -1.0, 1.0));
+    let h = shell[0].w;
+    let top = shell[1].w;
+    if (e < h || e > top) { return -1.0; }
+    return sqrt(clamp((e - h) / (top - h), 0.0, 1.0)) * (shell[3].x - 1.0);
+}
+
+// Rule 9's radiance along the world direction d of a ray that meets no surface: zero toward the planet and past the
+// shell's top, bilinear between the nodes.
+fn shell_radiance(d: vec3<f32>) -> vec3<f32> {
+    var l: vec3<f32>;
+    let fi = shell_row(d, &l);
+    if (fi < 0.0) { return vec3(0.0); }
+    let rows = u32(shell[3].x);
+    let cols = u32(shell[3].y);
+    var a = 0.0;
+    if (l.x != 0.0 || l.y != 0.0) { a = atan2(l.y, l.x) - shell[2].w; }
+    // the angle from the sun's vertical, 0 to π
+    a = a - 2.0 * PI * floor(a / (2.0 * PI));
+    if (a > PI) { a = 2.0 * PI - a; }
+    let fj = a / PI * f32(cols - 1u);
+    let i0 = min(u32(floor(fi)), rows - 2u);
+    let j0 = min(u32(floor(fj)), cols - 2u);
+    let ti = fi - f32(i0);
+    let tj = fj - f32(j0);
+    let at = SHELL_HEADER + i0 * cols + j0;
+    let lo = mix(shell[at].xyz, shell[at + 1u].xyz, tj);
+    let hi = mix(shell[at + cols].xyz, shell[at + cols + 1u].xyz, tj);
+    return mix(lo, hi, ti);
+}
+
+// The transmittance to space along the world direction d: zero toward the planet, one past the shell's top.
+fn shell_transmittance(d: vec3<f32>) -> vec3<f32> {
+    var l: vec3<f32>;
+    let fi = shell_row(d, &l);
+    if (fi < 0.0) { return select(vec3(0.0), vec3(1.0), asin(clamp(l.z, -1.0, 1.0)) > shell[1].w); }
+    let rows = u32(shell[3].x);
+    let cols = u32(shell[3].y);
+    let i = min(u32(floor(fi)), rows - 2u);
+    let at = SHELL_HEADER + rows * cols + i;
+    return mix(shell[at].xyz, shell[at + 1u].xyz, fi - f32(i));
 }
 
 // ---------------------------------------------------------------- star field (the star-fields draft)
@@ -1067,6 +1134,10 @@ fn vs_star(@builtin(vertex_index) vi: u32, @location(0) dir: vec4<f32>, @locatio
     o.pos = vec4(0.0, 0.0, 2.0, 1.0);
     o.centre = vec2(0.0);
     o.rgb = rgb;
+    if (fr.shell.x > 0.5) {
+        // seen through a planet's atmosphere shell (rule 6)
+        o.rgb = vec4(rgb.xyz * shell_transmittance(normalize(dir.xyz)), rgb.w);
+    }
     let c = fr.view_proj * vec4(dir.xyz, 0.0);
     if (c.w <= 0.0) { return o; }
     let ndc = c.xy / c.w;

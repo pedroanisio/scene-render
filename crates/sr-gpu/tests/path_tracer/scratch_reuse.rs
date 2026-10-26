@@ -58,6 +58,7 @@ fn scene(eng: &ThreeEngine, size: [u32; 2]) -> Scene3 {
         ssr: false,
         path: None,
         geodesic: None,
+        planet_shell: None,
     }
 }
 

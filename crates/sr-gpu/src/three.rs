@@ -393,6 +393,14 @@ pub struct AerialGpu {
     pub(crate) horizon: wgpu::TextureView,
 }
 
+/// A planet's atmosphere shell for one eye (`sr_3d::planet_shell::PlanetShell`): its table, which the background and
+/// the stars read for the rays that meet no surface, and its march to the surfaces, which takes the dome's aerial
+/// perspective's place.
+pub struct PlanetShellGpu {
+    pub(crate) table: wgpu::Buffer,
+    pub aerial: Arc<AerialGpu>,
+}
+
 /// One star of a dome light's field (the star-fields draft): its world direction, and its flux per channel with
 /// the radius of its disc in pixels of the pass.
 #[repr(C)]
@@ -457,6 +465,8 @@ pub struct Scene3 {
     pub path: Option<crate::pathtrace::PathOpts>,
     /// Trace the geodesics of a black hole instead: nothing else of the scene is drawn.
     pub geodesic: Option<crate::geodesic::GeodesicScene>,
+    /// A planet's atmosphere shell (the planets draft's rule 6), seen from this pass's eye.
+    pub planet_shell: Option<Arc<PlanetShellGpu>>,
 }
 
 impl Scene3 {
@@ -494,8 +504,10 @@ impl Scene3 {
             ssr,
             path,
             geodesic,
+            planet_shell,
         } = self;
         if env.is_some()
+            || planet_shell.is_some()
             || !stars.is_empty()
             || star_overlay.is_some()
             || !splats.is_empty()
@@ -633,6 +645,8 @@ struct FrameU {
     env_rot: [[f32; 4]; 4],
     sky: [[f32; 4]; 5],
     aerial: [[f32; 4]; 2],
+    /// 1 with a planet's atmosphere shell, unused ×3
+    shell: [f32; 4],
 }
 
 #[repr(C)]
@@ -1040,7 +1054,9 @@ pub struct ThreeEngine {
     brdf: wgpu::TextureView,
     black_env: wgpu::TextureView,
     /// The frame group's aerial bindings when the pass has none.
-    no_aerial: AerialGpu,
+    no_aerial: Arc<AerialGpu>,
+    /// The shell table bound without a planet's atmosphere shell.
+    no_shell: wgpu::Buffer,
     /// The aperture of a camera without depth of field: zeroed, never written.
     no_aperture: wgpu::Buffer,
     /// The sets of the passes recorded since the last submit, in order, and the kept ones after them.
@@ -1358,6 +1374,7 @@ impl Kit {
                 tex_entry(14, VS_FS, F, D2, false),
                 tex_entry(15, VS_FS, F, wgpu::TextureViewDimension::D3, false),
                 tex_entry(16, VS_FS, wgpu::TextureSampleType::Float { filterable: false }, D2, false),
+                buf_entry(17, VS_FS, ro, false),
             ],
             "three-frame",
         );
@@ -2007,7 +2024,12 @@ impl ThreeEngine {
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
-        let no_aerial = aerial_gpu(d, &queue, [[0.0; 4]; 2], [1, 1, 2], &[[0; 4]; 2], &[[0.0; 4]]);
+        let no_aerial = Arc::new(aerial_gpu(d, &queue, [[0.0; 4]; 2], [1, 1, 2], &[[0; 4]; 2], &[[0.0; 4]]));
+        let no_shell = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("three-no-shell"),
+            contents: bytemuck::cast_slice(&[[0.0f32; 4]]),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
         let mut eng = ThreeEngine {
             gbuffer,
             scalar,
@@ -2030,6 +2052,7 @@ impl ThreeEngine {
             brdf: texture(d, [1, 1], FORMAT, 1, 1, 1, "brdf").create_view(&Default::default()),
             black_env: texture(d, [1, 1], FORMAT, 1, 1, 1, "black-env").create_view(&Default::default()),
             no_aerial,
+            no_shell,
             no_aperture: d.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("three-no-aperture"),
                 size: APERTURE_BYTES,
@@ -2303,6 +2326,22 @@ impl ThreeEngine {
             None => ([1, 1, 2], vec![[0; 4]; 2]),
         };
         Arc::new(aerial_gpu(&self.device, &self.queue, uniforms, size, &texels, &horizon))
+    }
+
+    /// Uploads a planet's atmosphere shell for one eye: its table ([`sr_3d::planet_shell::PlanetShell::table`]) and
+    /// the march to the surfaces, whose uniforms are [`AerialGpu`]'s.
+    pub fn upload_planet_shell(
+        &self,
+        table: &[[f32; 4]],
+        uniforms: [[f32; 4]; 2],
+        volume: &sr_3d::aerial::AerialVolume,
+    ) -> Arc<PlanetShellGpu> {
+        let table = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("three-planet-shell"),
+            contents: bytemuck::cast_slice(table),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        Arc::new(PlanetShellGpu { table, aerial: self.upload_aerial(uniforms, Some(volume), &[[0.0; 3]]) })
     }
 
     /// Prefilters and uploads an environment.
@@ -3026,6 +3065,13 @@ impl ThreeEngine {
             && self.scalar == wgpu::TextureFormat::R32Float
             && matches!(self.gbuffer, wgpu::TextureFormat::Rg32Float | wgpu::TextureFormat::Rgba32Float);
         let dof = scene.dof.unwrap_or(Dof { coc_scale: 0.0, focus: 1.0, max_coc: 0.0, blades: 0 });
+        // a planet's atmosphere shell marches to the surfaces in the dome's aerial perspective's place: under a dome with
+        // a physical sky the shell is not drawn
+        let aerial_of = |e: &ThreeEngine| {
+            let shell = scene.planet_shell.as_ref().map(|s| s.aerial.clone());
+            shell.or(env.and_then(|e| e.aerial.clone())).unwrap_or_else(|| e.no_aerial.clone())
+        };
+        let aerial_uniforms = aerial_of(self).uniforms;
         let frame = FrameU {
             view_proj: vp.to_cols_array_2d(),
             view: scene.cam.view.to_cols_array_2d(),
@@ -3062,7 +3108,8 @@ impl ThreeEngine {
             sh,
             env_rot: env.map(|e| e.rotation.transpose()).unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
             sky: env.and_then(|e| e.sky.map(|s| s.uniforms()).or(e.physical)).unwrap_or([[0.0; 4]; 5]),
-            aerial: env.and_then(|e| e.aerial.as_ref()).map(|a| a.uniforms).unwrap_or([[0.0; 4]; 2]),
+            aerial: aerial_uniforms,
+            shell: [scene.planet_shell.is_some() as u32 as f32, 0.0, 0.0, 0.0],
         };
         let (slot, mut set) = self.take_set();
         let mut deformed_draws = 0;
@@ -3393,7 +3440,8 @@ impl ThreeEngine {
         });
         // the visible sky at the source's resolution, apart from the prefiltered chain
         let sky_view = env.map(|e| &e.env.sky).unwrap_or(&self.black_env);
-        let aerial = env.and_then(|e| e.aerial.as_deref()).unwrap_or(&self.no_aerial);
+        let aerial = aerial_of(self);
+        let shell_table = scene.planet_shell.as_ref().map(|s| &s.table).unwrap_or(&self.no_shell);
         let no_tiles = pool([1, 1], self.scalar, 1, 1, 1, "three-no-tiles").create_view(&Default::default());
         // a camera with depth of field fills its blade-shaped aperture each render
         let aperture = if scene.dof.is_some() {
@@ -3535,6 +3583,7 @@ impl ThreeEngine {
                     wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(sky_view) },
                     wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::TextureView(&aerial.volume) },
                     wgpu::BindGroupEntry { binding: 16, resource: wgpu::BindingResource::TextureView(&aerial.horizon) },
+                    wgpu::BindGroupEntry { binding: 17, resource: shell_table.as_entire_binding() },
                 ],
             })
         };
@@ -3681,7 +3730,8 @@ impl ThreeEngine {
                 multiview_mask: None,
             });
             rp.set_bind_group(0, &fb_plain, &[]);
-            if env.map(|e| e.visible).unwrap_or(false) {
+            // the dome, and a planet's atmosphere shell over it or over nothing
+            if env.map(|e| e.visible).unwrap_or(false) || scene.planet_shell.is_some() {
                 rp.set_pipeline(&self.dome_pipe);
                 rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 8])], &[0]);
                 rp.set_bind_group(2, &obj_bind, &[]);
@@ -4168,6 +4218,150 @@ mod tests {
         assert_eq!(shadow_map_size(8192, 2048, true), 256, "the budget still binds below the cap");
     }
 
+    /// The planets draft's rule 6: the background of a sunlit planet's atmosphere shell is its table read as
+    /// `sr_3d::planet_shell::PlanetShell::radiance` reads it, bilinear over elevation and azimuth, pixel by pixel.
+    #[test]
+    fn a_planets_atmosphere_shell_reads_its_table_as_the_kernel_does() {
+        use super::*;
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "a_planets_atmosphere_shell_reads_its_table_as_the_kernel_does"
+        );
+        let mut e = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+        let (w, h) = (96u32, 64u32);
+        let cam = sr_3d::camera::resolve(&sr_3d::camera::CameraParams::default(), w as f32, h as f32);
+        let inv = cam.view_proj().inverse();
+        let forward = (inv.project_point3(Vec3::new(0.0, 0.0, 0.5)) - cam.eye).normalize();
+        let side = forward.cross(Vec3::Y).normalize();
+        // the nadir below the view axis, 71.5° from it: the frame's width runs along the band, across its azimuths
+        let (r, air) = (6_378_137.0, 100_000.0);
+        let m = 71.5f32.to_radians();
+        let down = side.cross(forward).normalize();
+        let nadir = (forward * m.cos() + down * m.sin()).normalize();
+        let observer = (-nadir.as_dvec3() * (r + 400_000.0)).to_array();
+        let sun = (-nadir * 0.6 + side * 0.8).normalize().as_dvec3().to_array();
+        let shell = sr_3d::planet_shell::PlanetShell::new(r, air, observer, Some(sun), [1.0; 3]).unwrap();
+        let ray = |_: f64, _: f64| (observer, forward.as_dvec3().to_array());
+        let volume = shell.volume(&ray, 1.0, [2, 2, 2]).unwrap();
+        let scene = Scene3 {
+            cam,
+            clip_fix: Mat4::IDENTITY,
+            size: [w, h],
+            exposure: 1.0,
+            dof: None,
+            lens_k1: 0.0,
+            draws: Vec::new(),
+            lights: Vec::new(),
+            env: None,
+            stars: Vec::new(),
+            star_overlay: None,
+            splats: Vec::new(),
+            volumes: Vec::new(),
+            encode_srgb: false,
+            ao: None,
+            ssr: false,
+            path: None,
+            geodesic: None,
+            planet_shell: Some(e.upload_planet_shell(&shell.table(), [[0.0; 4]; 2], &volume)),
+        };
+        let px = e.render_now(&scene, None);
+        let (mut seen, mut dark, mut turned) = (0, 0, (f64::INFINITY, f64::NEG_INFINITY));
+        for y in 0..h {
+            for x in 0..w {
+                let ndc =
+                    Vec3::new((x as f32 + 0.5) / w as f32 * 2.0 - 1.0, 1.0 - (y as f32 + 0.5) / h as f32 * 2.0, 0.5);
+                let d = (inv.project_point3(ndc) - cam.eye).normalize().as_dvec3().to_array();
+                let want = shell.radiance(d);
+                let got = px[(y * w + x) as usize];
+                if want == [0.0; 3] {
+                    // toward the planet and past the top: nothing
+                    assert_eq!(got, [0.0; 4], "({x}, {y})");
+                    dark += 1;
+                    continue;
+                }
+                if want[1] < 1e-3 {
+                    continue;
+                }
+                for c in 0..3 {
+                    assert!(
+                        (got[c] as f64 - want[c]).abs() <= 5e-3 * want[c] + 1e-5,
+                        "({x}, {y}) channel {c}: {got:?}, {want:?}"
+                    );
+                }
+                // the turn about the nadir, across the frame's width
+                let dv = glam::DVec3::from(d);
+                let a = dv.dot(side.as_dvec3()).atan2(dv.dot(forward.as_dvec3()));
+                turned = (turned.0.min(a), turned.1.max(a));
+                seen += 1;
+            }
+        }
+        assert!(seen > 150 && dark > 150, "{seen} pixels of the band, {dark} dark");
+        assert!((turned.1 - turned.0).to_degrees() > 10.0, "the band's pixels span {:?}", turned);
+    }
+
+    /// The planets draft's rule 6: a star seen through a planet's atmosphere shell keeps the shell's transmittance
+    /// toward it, and one above the shell's top its whole flux. The shell has no sun, so it adds no light.
+    #[test]
+    fn a_planets_atmosphere_shell_dims_the_stars_seen_through_it() {
+        use super::*;
+        let gpu = sr_testkit::require_gpu!(
+            crate::gpu::test_gpu(),
+            "a_planets_atmosphere_shell_dims_the_stars_seen_through_it"
+        );
+        let mut e = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
+        let cam = sr_3d::camera::resolve(&sr_3d::camera::CameraParams::default(), 96.0, 64.0);
+        let inv = cam.view_proj().inverse();
+        let forward = (inv.project_point3(Vec3::new(0.0, 0.0, 0.5)) - cam.eye).normalize();
+        let side = forward.cross(Vec3::Y).normalize();
+        // the nadir 71° from the view axis (the limb is at 70.19°), 400 km over a planet of Earth's radius under 100 km of air
+        let (r, h) = (6_378_137.0, 100_000.0);
+        let m = 71f32.to_radians();
+        let nadir = (forward * m.cos() - side * m.sin()).normalize();
+        let observer = (-nadir.as_dvec3() * (r + 400_000.0)).to_array();
+        let shell = sr_3d::planet_shell::PlanetShell::new(r, h, observer, None, [0.0; 3]).unwrap();
+        let ray = |_: f64, _: f64| (observer, forward.as_dvec3().to_array());
+        let volume = shell.volume(&ray, 1.0, [2, 2, 2]).unwrap();
+        let gpu_shell = e.upload_planet_shell(&shell.table(), [[0.0; 4]; 2], &volume);
+        let flux = 0.5f32;
+        let star = |d: Vec3| StarInstance { dir: [d.x, d.y, d.z, 0.0], rgb: [flux, flux, flux, 1.5] };
+        // the axis is in the band; 4° to the other side of it the ray passes above the top (72.87° from the nadir)
+        let above = (forward * 4f32.to_radians().cos() + side * 4f32.to_radians().sin()).normalize();
+        for (d, beyond) in [(forward, false), (above, true)] {
+            let scene = Scene3 {
+                cam,
+                clip_fix: Mat4::IDENTITY,
+                size: [96, 64],
+                exposure: 1.0,
+                dof: None,
+                lens_k1: 0.0,
+                draws: Vec::new(),
+                lights: Vec::new(),
+                env: None,
+                stars: vec![star(d)],
+                star_overlay: None,
+                splats: Vec::new(),
+                volumes: Vec::new(),
+                encode_srgb: false,
+                ao: None,
+                ssr: false,
+                path: None,
+                geodesic: None,
+                planet_shell: Some(gpu_shell.clone()),
+            };
+            let px = e.render_now(&scene, None);
+            let got: [f32; 3] = std::array::from_fn(|c| px.iter().map(|p| p[c]).sum::<f32>() / flux);
+            let want = shell.transmittance(d.as_dvec3().to_array());
+            if beyond {
+                assert_eq!(want, [1.0; 3]);
+            } else {
+                assert!(want.iter().all(|t| *t > 0.05 && *t < 0.95), "a transmittance that tells: {want:?}");
+            }
+            for c in 0..3 {
+                assert!((got[c] as f64 - want[c]).abs() < 0.01 * want[c] + 1e-3, "channel {c}: {got:?}, {want:?}");
+            }
+        }
+    }
+
     #[test]
     fn idle_meshes_and_textures_beyond_the_engine_budget_are_dropped() {
         let gpu = sr_testkit::require_gpu!(
@@ -4364,6 +4558,7 @@ mod tests {
                 ssr: false,
                 path: None,
                 geodesic: None,
+                planet_shell: None,
             };
             for case in 0..8 {
                 let (dof, blended, ao) = (case & 1 != 0, case & 2 != 0, case & 4 != 0);
@@ -4446,6 +4641,7 @@ mod tests {
             ssr: false,
             path: None,
             geodesic: None,
+            planet_shell: None,
         };
         let first = engine.render_now(&scene, None);
         assert_eq!(engine.ies_uploads, 1);
@@ -4526,6 +4722,7 @@ mod tests {
             ssr: false,
             path: None,
             geodesic: None,
+            planet_shell: None,
         };
         // taps one texel apart (softness up to 1): four gathers filter the same 4 x 4 texels with exact weights
         for (kind, softness) in [(LightKind::Directional, 0.0), (LightKind::Spot, 1.0), (LightKind::Point, 0.6)] {
@@ -4607,6 +4804,7 @@ mod tests {
             ssr: false,
             path: None,
             geodesic: None,
+            planet_shell: None,
         };
         let plane = sr_3d::prim::plane(100.0, 80.0, 1);
         scene.draws.push(Draw3 {
@@ -4733,6 +4931,7 @@ mod tests {
             ssr: false,
             path: None,
             geodesic: None,
+            planet_shell: None,
         };
         for case in 0..24 {
             scene.draws[0].material = MaterialParams {
@@ -4936,6 +5135,7 @@ mod tests {
             ssr: false,
             path: None,
             geodesic: None,
+            planet_shell: None,
         };
         let (point, spot) = (LightKind::Point, LightKind::Spot);
         for (case, lights) in [
@@ -5036,6 +5236,7 @@ mod tests {
             ssr: false,
             path: None,
             geodesic: None,
+            planet_shell: None,
         };
         let above = Vec3::new(30.0, 10.0, -60.0);
         let (amb, dir, point, spot) = (LightKind::Ambient, LightKind::Directional, LightKind::Point, LightKind::Spot);
@@ -5151,6 +5352,7 @@ mod tests {
             ssr: false,
             path: None,
             geodesic: None,
+            planet_shell: None,
         };
         let bump = engine.upload_rgba8(2, 2, &[200; 16], false);
         // one spot view and six cube faces
@@ -5296,6 +5498,7 @@ mod tests {
             ssr: false,
             path: None,
             geodesic: None,
+            planet_shell: None,
         };
         for case in 0..8 {
             scene.ao = Some([[6.0, 16.0, 40.0][case % 3], [0.5, 1.0, 2.0][case % 3]]);
@@ -5448,6 +5651,7 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
             ssr: false,
             path: None,
             geodesic: None,
+            planet_shell: None,
         };
         scene.size = [97, 79];
         assert!(scene.size[0] as usize * scene.size[1] as usize >= bits.len() * 11 * 2);
@@ -5609,6 +5813,7 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
             ssr: false,
             path: None,
             geodesic: None,
+            planet_shell: None,
         };
         assert_eq!(engine.render_now(&scene, None).len(), 32 * 32);
         assert_eq!(engine.pipes.len(), 1, "one material and blend/culling configuration");
@@ -5706,6 +5911,7 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
             ssr: true,
             path: None,
             geodesic: None,
+            planet_shell: None,
         };
         let (sa, sb) = (scene(&mut a), scene(&mut b));
         let first = a.render_now(&sa, None);
@@ -5822,7 +6028,7 @@ mod wgsl_layout_tests {
 
     #[test]
     fn frame_u_matches_wgsl_frame() {
-        let fields = rust_fields!(super::FrameU; view_proj, view, inv_view_proj, eye, screen, params, params2, dof, post, lens, fx, sh, env_rot, sky, aerial);
+        let fields = rust_fields!(super::FrameU; view_proj, view, inv_view_proj, eye, screen, params, params2, dof, post, lens, fx, sh, env_rot, sky, aerial, shell);
         assert_agree(include_str!("three_types.wgsl"), "Frame", std::mem::size_of::<super::FrameU>(), &fields);
     }
 

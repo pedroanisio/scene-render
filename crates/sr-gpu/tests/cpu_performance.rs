@@ -27,6 +27,7 @@ fn scene(draws: Vec<Draw3>) -> Scene3 {
         ssr: false,
         path: None,
         geodesic: None,
+        planet_shell: None,
     }
 }
 fn draw(engine: &ThreeEngine, at: Vec3) -> Draw3 {
