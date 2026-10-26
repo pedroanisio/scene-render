@@ -425,7 +425,7 @@ fn tiled_frames_equal_whole_frames_in_grid_mode() {
             &input,
             &target.create_view(&Default::default()),
         );
-        g.queue.submit([enc.finish()]);
+        sr_gpu::gpu::submit(&g.queue, [enc.finish()]);
         eng.read(&target)
     };
     let whole = render(None);

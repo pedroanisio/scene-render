@@ -107,7 +107,7 @@ fn tiled_paths_match_whole_frame_at_edges_and_denoise_seams() {
                     &inputs,
                     &target.create_view(&Default::default()),
                 );
-                g.queue.submit([enc.finish()]);
+                sr_gpu::gpu::submit(&g.queue, [enc.finish()]);
                 images.push(eng.read(&target));
             }
             assert!(images[0].iter().any(|p| p[0] > 0.01 && p[3] > 0.9), "must render lit geometry");
@@ -196,7 +196,7 @@ fn cpu_traced_tiles_share_one_scene_build_per_pass() {
             &target.create_view(&Default::default()),
             false,
         );
-        g.queue.submit([enc.finish()]);
+        sr_gpu::gpu::submit(&g.queue, [enc.finish()]);
         assert_eq!(timing.cpu_scenes, 1, "budget {budget}: one CPU scene per pass, whatever the tiling");
         images.push(eng.read(&target));
     }

@@ -53,7 +53,7 @@ impl Renderer {
         let kept = self.working_texture([w, h]);
         let mut enc = self.gpu.device.create_command_encoder(&Default::default());
         Self::copy(&mut enc, &frame.texture, &kept, [0, 0, w, h]);
-        self.gpu.queue.submit([enc.finish()]);
+        crate::gpu::submit(&self.gpu.queue, [enc.finish()]);
         frame.texture = kept;
         let needs_replay = self.contrast_batch_split;
         // Counterfactuals must not replace the main timeline's subtree cache:
@@ -310,7 +310,7 @@ impl Renderer {
             },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
-        self.gpu.queue.submit([enc.finish()]);
+        crate::gpu::submit(&self.gpu.queue, [enc.finish()]);
         self.gpu.map_read(buf.slice(..)).unwrap_or_else(|e| panic!("reading back a {w}x{h} texture: {e}"));
         let data = buf.slice(..).get_mapped_range().expect("mapped");
         let mut out = Vec::with_capacity((w * h) as usize);
@@ -624,7 +624,7 @@ impl Renderer {
             },
             wgpu::Extent3d { width: FLASH_GRID[0], height: FLASH_GRID[1], depth_or_array_layers: 1 },
         );
-        let submitted = self.gpu.queue.submit([enc.finish()]);
+        let submitted = crate::gpu::submit(&self.gpu.queue, [enc.finish()]);
         let wait = crate::gpu::begin_map_read(buffer.slice(..));
         FlashPending { buffer, submitted, wait }
     }

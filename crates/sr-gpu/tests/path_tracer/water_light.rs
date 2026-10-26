@@ -664,7 +664,7 @@ fn tiled_frames_equal_whole_frames_with_light_through_glass() {
             &input,
             &target.create_view(&Default::default()),
         );
-        g.queue.submit([enc.finish()]);
+        sr_gpu::gpu::submit(&g.queue, [enc.finish()]);
         eng.read(&target)
     };
     let whole = render(None);

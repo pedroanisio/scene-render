@@ -426,7 +426,7 @@ fn emitters_sharing_a_sprite_id_keep_their_own_textures() {
             },
             wgpu::Extent3d { width: 8, height: 8, depth_or_array_layers: 1 },
         );
-        g.queue.submit([enc.finish()]);
+        sr_gpu::gpu::submit(&g.queue, [enc.finish()]);
         buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         g.wait();
         let data = buf.slice(..).get_mapped_range().expect("mapped");
@@ -686,7 +686,7 @@ fn a_multisampled_texture_is_sampled_on_opengl() {
         },
         wgpu::Extent3d { width: 8, height: 8, depth_or_array_layers: 1 },
     );
-    g.queue.submit([enc.finish()]);
+    sr_gpu::gpu::submit(&g.queue, [enc.finish()]);
     buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
     g.wait();
     g.take_error().expect("no device error");

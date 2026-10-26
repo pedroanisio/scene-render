@@ -674,7 +674,7 @@ mod tests {
         let mut render = |job: &RasterJob| {
             let mut encoder = d.create_command_encoder(&Default::default());
             raster.record(&gpu.queue, &mut encoder, job, &paints, &stops, &globals);
-            gpu.queue.submit([encoder.finish()]);
+            crate::gpu::submit(&gpu.queue, [encoder.finish()]);
             raster.submitted();
             reader.read(&job.target)
         };
@@ -733,7 +733,7 @@ mod tests {
             });
             let mut encoder = d.create_command_encoder(&Default::default());
             self.raster.record(&self.gpu.queue, &mut encoder, job, &paints, &stops, &globals);
-            self.gpu.queue.submit([encoder.finish()]);
+            crate::gpu::submit(&self.gpu.queue, [encoder.finish()]);
             self.raster.submitted();
             self.reader.read(&job.target)
         }

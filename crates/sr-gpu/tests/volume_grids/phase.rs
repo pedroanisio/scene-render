@@ -87,7 +87,7 @@ fn run(inputs: &[[f32; 4]], rows: &[[f32; 4]], body: &str) -> Option<Vec<f32>> {
         pass.dispatch_workgroups((inputs.len() as u32).div_ceil(64), 1, 1);
     }
     enc.copy_buffer_to_buffer(&out, 0, &read, 0, size);
-    g.queue.submit([enc.finish()]);
+    sr_gpu::gpu::submit(&g.queue, [enc.finish()]);
     read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
     g.wait();
     let data = read.slice(..).get_mapped_range().expect("mapped");

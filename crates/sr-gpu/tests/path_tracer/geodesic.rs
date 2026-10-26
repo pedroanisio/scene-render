@@ -83,7 +83,7 @@ fn render(scene: &GeodesicScene, output: Output, rows: Option<u32>) -> Option<Ve
         },
         wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
     );
-    g.queue.submit([enc.finish()]);
+    sr_gpu::gpu::submit(&g.queue, [enc.finish()]);
     buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
     g.wait();
     let data = buf.slice(..).get_mapped_range().expect("mapped");

@@ -475,7 +475,7 @@ fn raster_passes_recorded_before_one_submit_keep_their_own_data() {
     engine.render(&mut ea, &a, None, &ta.create_view(&Default::default())).expect("scene a");
     let mut eb = gpu.device.create_command_encoder(&Default::default());
     engine.render(&mut eb, &b, None, &tb.create_view(&Default::default())).expect("scene b");
-    gpu.queue.submit([eb.finish(), ea.finish()]);
+    sr_gpu::gpu::submit(&gpu.queue, [eb.finish(), ea.finish()]);
     let mut fresh = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
     assert_eq!(engine.read(&ta), fresh.render_now(&a, None), "pass a draws its own objects");
     assert_eq!(engine.read(&tb), fresh.render_now(&b, None), "pass b draws its own objects");
@@ -542,7 +542,7 @@ fn packed_geometry_is_immutable_across_reversed_submissions_and_texture_changes(
     s.draws[0].material.base_color = [0.2, 0.7, 0.4, 1.];
     e.render(&mut second, &s, None, &b.create_view(&Default::default())).unwrap();
     assert_eq!(e.stats.pt_geometry_uploads, 0);
-    gpu.queue.submit([second.finish(), first.finish()]);
+    sr_gpu::gpu::submit(&gpu.queue, [second.finish(), first.finish()]);
     let mut fresh = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
     assert_eq!(e.read(&b), fresh.render_now(&s, None));
     s.draws[0].material.base_color = [1.; 4];
@@ -614,7 +614,7 @@ fn splat_cache_ignores_unsubmitted_encoders_and_replaced_clouds() {
     let mut submitted = gpu.device.create_command_encoder(&Default::default());
     e.render(&mut submitted, &s, None, &b.create_view(&Default::default())).unwrap();
     assert_eq!(e.stats.splat_sorts, 1, "unsubmitted data is not reusable");
-    gpu.queue.submit([submitted.finish()]);
+    sr_gpu::gpu::submit(&gpu.queue, [submitted.finish()]);
     let mut fresh = ThreeEngine::new(gpu.device.clone(), gpu.queue.clone());
     assert_eq!(e.read(&b), fresh.render_now(&s, None));
     drop(abandoned);

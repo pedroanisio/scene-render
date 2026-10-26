@@ -3735,7 +3735,7 @@ impl ThreeEngine {
             },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
-        self.queue.submit([enc.finish()]);
+        crate::gpu::submit(&self.queue, [enc.finish()]);
         crate::gpu::map_read(&self.device, buf.slice(..))
             .unwrap_or_else(|e| panic!("reading back a {w}x{h} texture: {e}"));
         let data = buf.slice(..).get_mapped_range().expect("mapped");
@@ -3765,7 +3765,7 @@ impl ThreeEngine {
         let out = self.target(scene.size);
         let mut enc = self.device.create_command_encoder(&Default::default());
         self.render(&mut enc, scene, backdrop, &out.create_view(&Default::default())).expect("valid 3D test scene");
-        self.queue.submit([enc.finish()]);
+        crate::gpu::submit(&self.queue, [enc.finish()]);
         self.submitted();
         self.read(&out)
     }

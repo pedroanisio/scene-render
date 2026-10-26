@@ -302,7 +302,7 @@ impl VideoEngine {
     pub fn run<R>(&mut self, f: impl FnOnce(&mut VideoEngine, &mut wgpu::CommandEncoder) -> R) -> R {
         let mut enc = self.device.create_command_encoder(&Default::default());
         let r = f(self, &mut enc);
-        self.queue.submit([enc.finish()]);
+        crate::gpu::submit(&self.queue, [enc.finish()]);
         self.submitted();
         r
     }
@@ -565,7 +565,7 @@ impl VideoEngine {
             },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
-        self.queue.submit([enc.finish()]);
+        crate::gpu::submit(&self.queue, [enc.finish()]);
         crate::gpu::map_read(&self.device, buf.slice(..))
             .unwrap_or_else(|e| panic!("reading back a {w}x{h} texture: {e}"));
         let data = buf.slice(..).get_mapped_range().expect("mapped");

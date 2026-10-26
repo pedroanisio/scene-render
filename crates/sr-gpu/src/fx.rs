@@ -962,7 +962,7 @@ impl FxEngine {
             }
         }
         enc.copy_buffer_to_buffer(&c.peaks, 0, &c.staging, 0, bytes);
-        self.queue.submit([enc.finish()]);
+        crate::gpu::submit(&self.queue, [enc.finish()]);
         let slice = c.staging.slice(..bytes);
         crate::gpu::map_read(&self.device, slice).unwrap_or_else(|e| panic!("reading a convergence check: {e}"));
         let out = {
@@ -1034,7 +1034,7 @@ impl FxEngine {
             },
             wgpu::Extent3d { width: w, height: hh, depth_or_array_layers: 1 },
         );
-        self.queue.submit([enc.finish()]);
+        crate::gpu::submit(&self.queue, [enc.finish()]);
         crate::gpu::map_read(&self.device, buf.slice(..))
             .unwrap_or_else(|e| panic!("reading back a {w}x{hh} texture: {e}"));
         let data = buf.slice(..).get_mapped_range().expect("mapped");
@@ -1139,7 +1139,7 @@ impl FxEngine {
             // bounded command buffers: submit every 64 steps, and before a convergence check
             if taken % 64 == 0 || check {
                 let done = std::mem::replace(enc, self.device.create_command_encoder(&Default::default()));
-                self.queue.submit([done.finish()]);
+                crate::gpu::submit(&self.queue, [done.finish()]);
                 self.uniforms.rewind_to(mark);
             }
             if check {
@@ -1231,7 +1231,7 @@ impl FxEngine {
             if let Some(op) = &p.cpu {
                 // what was recorded so far runs first: the operation reads its result
                 let done = std::mem::replace(enc, self.device.create_command_encoder(&Default::default()));
-                self.queue.submit([done.finish()]);
+                crate::gpu::submit(&self.queue, [done.finish()]);
                 let mut px = self.read_texels(&p.src);
                 op(&mut px, p.src.size);
                 self.write_texels(&p.out, &px);
@@ -3909,7 +3909,7 @@ mod tests {
             let render = |engine: &mut FxEngine, passes: &[Pass], scissor: bool| {
                 let mut encoder = d.create_command_encoder(&Default::default());
                 engine.record_scissored(&mut encoder, passes, scissor);
-                gpu.queue.submit([encoder.finish()]);
+                crate::gpu::submit(&gpu.queue, [encoder.finish()]);
                 reader.read(&output)
             };
             let expected = render(&mut engine, &reference, false);
@@ -3981,7 +3981,7 @@ mod tests {
         let render = |engine: &mut FxEngine, pass: &Pass| {
             let mut encoder = d.create_command_encoder(&Default::default());
             engine.record(&mut encoder, std::slice::from_ref(pass));
-            gpu.queue.submit([encoder.finish()]);
+            crate::gpu::submit(&gpu.queue, [encoder.finish()]);
             reader.read(&pass.out)
         };
         let cases =

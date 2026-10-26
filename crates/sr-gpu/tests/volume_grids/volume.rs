@@ -187,7 +187,7 @@ fn gpu_volume_transport_matches_analytic_slabs_and_overlapping_media() {
             &input,
             &target.create_view(&Default::default()),
         );
-        g.queue.submit([enc.finish()]);
+        sr_gpu::gpu::submit(&g.queue, [enc.finish()]);
         for pixel in eng.read(&target) {
             for c in 0..3 {
                 assert!((f64::from(pixel[c]) - expected.radiance[c]).abs() < 0.001, "{pixel:?} vs {expected:?}");
@@ -222,7 +222,7 @@ fn gpu_volume_transport_matches_analytic_slabs_and_overlapping_media() {
         &input,
         &target.create_view(&Default::default()),
     );
-    g.queue.submit([enc.finish()]);
+    sr_gpu::gpu::submit(&g.queue, [enc.finish()]);
     for p in eng.read(&target) {
         assert!((p[0] - 0.2 / 0.7 * (1.0 - (-0.7_f32).exp())).abs() < 0.001, "{p:?}");
         assert!((p[1] - (-0.7_f32).exp()).abs() < 0.001, "{p:?}");
@@ -275,7 +275,7 @@ fn gpu_volume_transport_matches_analytic_slabs_and_overlapping_media() {
             &input,
             &target.create_view(&Default::default()),
         );
-        g.queue.submit([enc.finish()]);
+        sr_gpu::gpu::submit(&g.queue, [enc.finish()]);
         let want = if cast && receive { 0.5 * (1.0 - (-2.0_f32).exp()) } else { 1.0 - (-1.0_f32).exp() };
         for p in eng.read(&target) {
             assert!(
@@ -1038,7 +1038,7 @@ fn shadow_march_dims_by_the_optical_depth_of_thin_dense_media_and_ignores_neglig
             &input,
             &target.create_view(&Default::default()),
         );
-        g.queue.submit([enc.finish()]);
+        sr_gpu::gpu::submit(&g.queue, [enc.finish()]);
         eng.read(&target)[5][0]
     };
     let open = render(&mut eng, 0.0, 1.0);

@@ -175,6 +175,16 @@ pub fn poll_wait(
     }
 }
 
+/// Submits `buffers` to `queue` holding the lock of [`poll_wait`]. wgpu-core 30 triages a device's finished submissions
+/// after each submit as a poll does (`Device::maintain`), so a submit on one thread between another's fence read and its
+/// triage in [`poll_wait`] leaves that wait no submission in flight and a fence below its wait index, which wgpu-core
+/// asserts against. The buffers are collected before the lock is taken.
+pub fn submit<I: IntoIterator<Item = wgpu::CommandBuffer>>(queue: &wgpu::Queue, buffers: I) -> wgpu::SubmissionIndex {
+    let buffers: Vec<wgpu::CommandBuffer> = buffers.into_iter().collect();
+    let _one = POLL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    queue.submit(buffers)
+}
+
 /// Which adapters to consider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuOptions {
@@ -1097,5 +1107,49 @@ mod per_device_tests {
         assert!(!Arc::ptr_eq(&a, &b), "each device gets its own object");
         assert_eq!(builds.load(Ordering::SeqCst), 2);
         assert!(Arc::ptr_eq(&a, &registry.get(&gpu.device.clone(), 1, build)), "a clone of the Arc is the same device");
+    }
+}
+
+#[cfg(test)]
+mod submit_tests {
+    /// The files under `dir`, recursively, with extension `rs`.
+    fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn every_submission_holds_the_poll_lock() {
+        // a submit triages the device's finished work as a poll does, so one outside [`super::submit`] races a
+        // [`super::poll_wait`] into wgpu-core's assertion
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        for dir in ["src", "tests", "benches", "examples"] {
+            if root.join(dir).is_dir() {
+                sources(&root.join(dir), &mut files);
+            }
+        }
+        let this = root.join("src/gpu.rs");
+        let bare: Vec<String> = files
+            .iter()
+            .filter(|f| **f != this)
+            .flat_map(|f| {
+                let text = std::fs::read_to_string(f).unwrap();
+                let lines: Vec<String> = text
+                    .lines()
+                    .enumerate()
+                    .filter(|(_, l)| l.contains("queue.submit("))
+                    .map(|(n, _)| format!("{}:{}", f.strip_prefix(root).unwrap().display(), n + 1))
+                    .collect();
+                lines
+            })
+            .collect();
+        assert!(bare.is_empty(), "submit through sr_gpu::gpu::submit: {bare:#?}");
     }
 }

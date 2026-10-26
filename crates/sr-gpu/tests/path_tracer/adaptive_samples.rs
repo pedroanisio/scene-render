@@ -84,7 +84,7 @@ fn run(g: &sr_gpu::Gpu, eng: &ThreeEngine, pt: &PtGpu, sc: &Scene3, opts: PathOp
         &target.create_view(&Default::default()),
         false,
     );
-    g.queue.submit([enc.finish()]);
+    sr_gpu::gpu::submit(&g.queue, [enc.finish()]);
     let image = eng.read(&target);
     Run { image, traced: timing.samples.traced(&g.device), budget: timing.samples.budget }
 }

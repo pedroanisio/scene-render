@@ -2220,7 +2220,7 @@ impl Renderer {
         let stats = self.execute(plan, 0, None, &[]);
         let mut enc = self.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("join") });
         Self::copy(&mut enc, converted.as_ref().unwrap_or(&keep), into, [0, 0, size[0], size[1]]);
-        self.last_submit = Some(self.gpu.queue.submit([enc.finish()]));
+        self.last_submit = Some(crate::gpu::submit(&self.gpu.queue, [enc.finish()]));
         problems.extend(stats.unsupported);
         problems.extend(stats.errors);
         problems

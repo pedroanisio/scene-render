@@ -706,7 +706,7 @@ impl OutputStage {
                 pass.dispatch_workgroups(x, y, 1);
             }
             enc.copy_buffer_to_buffer(storage, 0, staging, 0, *n as u64 * 4);
-            submitted = Some(self.queue.submit([enc.finish()]));
+            submitted = Some(crate::gpu::submit(&self.queue, [enc.finish()]));
             ready.push(crate::gpu::begin_map_read(staging.slice(..)));
         }
         Pending { slot, buffers: staging, bytes, submitted: submitted.expect("a frame has a piece"), ready }
@@ -843,7 +843,7 @@ impl OutputStage {
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(into.size[0].div_ceil(8), into.size[1].div_ceil(8), 1);
         }
-        self.queue.submit([enc.finish()]);
+        crate::gpu::submit(&self.queue, [enc.finish()]);
     }
 
     /// Waits for a conversion and returns its bytes; the staging buffer returns to the ring.

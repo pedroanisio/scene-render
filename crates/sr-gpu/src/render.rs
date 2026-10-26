@@ -2287,7 +2287,7 @@ impl Renderer {
             pass.set_bind_group(3, &gj.bind, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.gpu.queue.submit([enc.finish()]);
+        crate::gpu::submit(&self.gpu.queue, [enc.finish()]);
     }
 
     /// [`Self::generator_texture`] with the key of its picture.
@@ -5379,7 +5379,7 @@ impl Renderer {
         // the video frames' conversions go first, in a submission of their own: the GPU converts them while the
         // frame's draws are uploaded and recorded, and the draws read them
         if let Some(pre) = self.pre.take() {
-            self.gpu.queue.submit([pre.finish()]);
+            crate::gpu::submit(&self.gpu.queue, [pre.finish()]);
             self.submitted();
         }
         let mut enc = d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
@@ -5755,7 +5755,7 @@ impl Renderer {
                         &mut enc,
                         d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") }),
                     );
-                    self.gpu.queue.submit([done.finish()]);
+                    crate::gpu::submit(&self.gpu.queue, [done.finish()]);
                     self.submitted();
                     self.gpu.wait();
                     plan.stats.mid_frame_submits += 1;
@@ -5783,7 +5783,7 @@ impl Renderer {
             t.resolve(&mut enc);
             self.last_timer = Some(t);
         }
-        self.last_submit = Some(self.gpu.queue.submit([enc.finish()]));
+        self.last_submit = Some(crate::gpu::submit(&self.gpu.queue, [enc.finish()]));
         self.submitted();
         for (_, t) in scratch {
             self.pool.put(t);
@@ -5835,7 +5835,7 @@ impl Renderer {
             },
             wgpu::Extent3d { width: w, height: hh, depth_or_array_layers: 1 },
         );
-        self.gpu.queue.submit([enc.finish()]);
+        crate::gpu::submit(&self.gpu.queue, [enc.finish()]);
         self.gpu.map_read(buf.slice(..)).unwrap_or_else(|e| panic!("reading back a {w}x{hh} {format:?} texture: {e}"));
         let data = buf.slice(..).get_mapped_range().expect("mapped");
         let mut out = Vec::with_capacity((w * hh) as usize);

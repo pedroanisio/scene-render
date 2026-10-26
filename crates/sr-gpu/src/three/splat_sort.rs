@@ -97,7 +97,7 @@ fn sorted_timed(eng: &ThreeEngine, keys: &[u32], scatter: &str) -> (Vec<u32>, f6
     enc.copy_buffer_to_buffer(&va, 0, &read, 0, input.len() as u64 * 4);
     let command = enc.finish();
     let clock = std::time::Instant::now();
-    eng.queue.submit([command]);
+    crate::gpu::submit(&eng.queue, [command]);
     read.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
     crate::gpu::poll_wait(d, None, None).unwrap();
     let elapsed = clock.elapsed().as_secs_f64();

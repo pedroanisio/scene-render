@@ -79,7 +79,7 @@ mod tests {
         let put = |c: &mut Cache, key, size| {
             let enc = gpu.device.create_command_encoder(&Default::default());
             c.insert(&cloud, [key; 16], buffer(size), &enc);
-            gpu.queue.submit([enc.finish()]);
+            crate::gpu::submit(&gpu.queue, [enc.finish()]);
             gpu.wait();
         };
         put(&mut c, 0, 16);

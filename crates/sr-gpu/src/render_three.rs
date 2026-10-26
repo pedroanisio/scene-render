@@ -3068,7 +3068,7 @@ impl Renderer {
                         depth_or_array_layers: 1,
                     },
                 );
-                self.gpu.queue.submit([enc.finish()]);
+                crate::gpu::submit(&self.gpu.queue, [enc.finish()]);
                 self.submitted();
                 let fs = f.stats;
                 stats.draws += fs.draws;
@@ -3168,7 +3168,7 @@ impl Renderer {
                 rp.draw(0..3, 0..1);
             }
         }
-        self.gpu.queue.submit([enc.finish()]);
+        crate::gpu::submit(&self.gpu.queue, [enc.finish()]);
         self.submitted();
         stats.targets += 1;
         Frame { texture: out, stats }

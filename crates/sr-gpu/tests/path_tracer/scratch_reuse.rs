@@ -76,7 +76,7 @@ fn tile_scratch_is_kept_between_passes_and_grows_only_for_larger_tiles() {
         let mut enc = g.device.create_command_encoder(&Default::default());
         let view = target.create_view(&Default::default());
         let timing = pathtrace::render_timed(pt, &g.device, &mut enc, &sc, &data, opts, &inputs, &view, false);
-        g.queue.submit([enc.finish()]);
+        sr_gpu::gpu::submit(&g.queue, [enc.finish()]);
         (timing.scratch_buffers, eng.read(&target))
     };
     let (first, image) = pass(&pt, [128, 96], false);
