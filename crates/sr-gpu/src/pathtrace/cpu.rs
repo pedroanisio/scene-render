@@ -729,7 +729,8 @@ pub(crate) fn bsdf(s: &Surf, n: [f32; 3], v: [f32; 3], l: [f32; 3], lobes: [f32;
     let mut out = [0.0; 3];
     for c in 0..3 {
         let spec = f[c] * dv;
-        out[c] = (1.0 - f[c]) * kd * s.albedo[c] / PI * lobes[0] + spec * lobes[1];
+        // the diffuse keeps what the specular layer does not reflect: all of it with no specular reflection
+        out[c] = (1.0 - f[c] * s.specw) * kd * s.albedo[c] / PI * lobes[0] + spec * lobes[1];
     }
     out
 }
@@ -749,7 +750,7 @@ fn frame_apply(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
 pub(crate) fn p_spec(s: &Surf, n: [f32; 3], v: [f32; 3]) -> f32 {
     let f = fresnel(s.f0, dot(n, v).clamp(0.0, 1.0));
     let ls = dot(f, LUMA) * s.specw;
-    let one_minus = [(1.0 - f[0]) * s.albedo[0], (1.0 - f[1]) * s.albedo[1], (1.0 - f[2]) * s.albedo[2]];
+    let one_minus = std::array::from_fn::<f32, 3, _>(|c| (1.0 - f[c] * s.specw) * s.albedo[c]);
     let ld = dot(one_minus, LUMA) * (1.0 - s.metallic) * (1.0 - s.trans);
     if ld <= 0.0 {
         return 1.0;

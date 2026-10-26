@@ -99,9 +99,14 @@ fn lit_frame(materials: &str, attrs: &str, lights: &str, after: &str) -> Option<
 
 /// The sphere's surface under pixel (x, y): its outward normal and the unit vector toward the eye, or none off the disc.
 fn surface_at(x: u32, y: u32) -> Option<([f64; 3], [f64; 3])> {
+    surface_through(x as f64 + 0.5, y as f64 + 0.5)
+}
+
+/// [`surface_at`] through the point (px, py) of the frame, in pixels.
+fn surface_through(px: f64, py: f64) -> Option<([f64; 3], [f64; 3])> {
     let f = SIZE as f64 / 2.0 / 30f64.to_radians().tan();
     let c = SIZE as f64 / 2.0;
-    let d = [(x as f64 + 0.5 - c) / f, (y as f64 + 0.5 - c) / f, 1.0];
+    let d = [(px - c) / f, (py - c) / f, 1.0];
     let n = (d[0] * d[0] + d[1] * d[1] + 1.0).sqrt();
     let d = d.map(|v| v / n);
     // |t d − (0, 0, 400)|² = 100²
@@ -953,9 +958,9 @@ fn the_rings_show_the_strip_across_their_radius_and_the_spheroids_shadow() {
                 "{case}: {beyond} lit where a sphere's shadow would fall"
             );
             factors.push(k);
-            // a diffuse plane lit by |n · s|: intensity × sin β / π, less the share the material's Fresnel term keeps
+            // a diffuse plane with no specular reflection lit by |n · s|: intensity × sin β / π
             let lambert = 3.0 * elevation.abs().to_radians().sin() / std::f64::consts::PI;
-            assert!((0.93..1.0).contains(&(k / lambert)), "{case}: factor {k} against {lambert}");
+            assert!((k / lambert - 1.0).abs() < 0.005, "{case}: factor {k} against {lambert}");
         }
         assert!((factors[2] / factors[1] - 1.0).abs() < 0.005, "{camera:?}: the faces' factors {factors:?}");
     }
@@ -1114,4 +1119,81 @@ fn the_raster_pass_names_the_rings_shadows_it_does_not_draw() {
     let light = r#"<light id="sun" type="directional" yaw="-90" intensity="3"/>"#;
     let Some(r) = planet_at(material, &attrs, light, 0.0) else { return };
     assert!(!r.stats.unsupported.iter().any(|u| u == note), "{:?}", r.stats.unsupported);
+}
+
+/// The draft's Lambert material (`specular="0"`): with no specular reflection the diffuse keeps all the light, not the
+/// share 1 − F(v·h) a reflection would leave it. The sun is 135° from the line of sight, where F of a dielectric at
+/// 1.5 runs from 0.08 to 0.2 across the crescent. Each pixel's radiance over n·s is regressed on the 1 − F it would
+/// carry: a slope of 1 relative to their means is the Fresnel loss, 0 a Lambert surface. The raster pass is exact
+/// enough to hold to one factor; the tracer's 64 jittered points a pixel leave it about 1 % of noise.
+#[test]
+fn a_material_without_specular_reflection_shades_as_lambert() {
+    let s = [0.5f64.sqrt(), 0.0, 0.5f64.sqrt()];
+    let (yaw, pitch) = ((-s[0]).atan2(-s[2]).to_degrees(), s[1].asin().to_degrees());
+    let material = r##"<material id="m" baseColor="#FFFFFFFF" metallic="0" roughness="1" specular="0"/>"##;
+    let lights = format!(r#"<light id="sun" type="directional" intensity="1" yaw="{yaw}" pitch="{pitch}"/>"#);
+    let dot = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).map(|(a, b)| a * b).sum::<f64>();
+    let ns = |px: f64, py: f64| surface_through(px, py).map(|(n, _)| dot(n, s));
+    let averaged = r#"renderer="pathtrace" pathSamples="64" maxBounces="1" denoise="false""#;
+    let mut means = Vec::new();
+    for camera in ["", averaged] {
+        let Some(r) = planet_seen(camera, material, "", &lights, 0.0) else { return };
+        let mut samples = Vec::new();
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let (px, py) = (x as f64, y as f64);
+                let corners = [(px, py), (px + 1.0, py), (px, py + 1.0), (px + 1.0, py + 1.0)];
+                if !corners.iter().all(|&(a, b)| ns(a, b).is_some_and(|v| v >= 0.2)) {
+                    continue;
+                }
+                let (n, v) = surface_through(px + 0.5, py + 0.5).unwrap();
+                let h = [v[0] + s[0], v[1] + s[1], v[2] + s[2]];
+                let vh = dot(v, h) / dot(h, h).sqrt();
+                let kept = 1.0 - (0.04 + 0.96 * (1.0 - vh).powi(5));
+                samples.push((kept, r.at(x, y)[1] as f64 / dot(n, s)));
+            }
+        }
+        let m = samples.len() as f64;
+        assert!(m > 80.0, "{camera:?}: {m} lit pixels");
+        let (gm, km) = samples.iter().fold((0.0, 0.0), |(a, b), (g, k)| (a + g / m, b + k / m));
+        let (cov, var) =
+            samples.iter().fold((0.0, 0.0), |(c, v), (g, k)| (c + (g - gm) * (k - km), v + (g - gm).powi(2)));
+        let slope = cov / var * gm / km;
+        assert!(slope.abs() < 0.35, "{camera:?}: the factor over n·s follows 1 − F with slope {slope}");
+        if camera.is_empty() {
+            let (lo, hi) = samples.iter().fold((f64::INFINITY, 0.0f64), |(a, b), (_, k)| (a.min(*k), b.max(*k)));
+            assert!(hi / lo < 1.01, "the factor over n·s runs from {lo} to {hi}");
+        }
+        means.push(km);
+    }
+    assert!(
+        (means[1] / means[0] - 1.0).abs() < 0.01,
+        "the tracer's factor {} against the raster pass's {}",
+        means[1],
+        means[0]
+    );
+}
+
+/// [`a_material_without_specular_reflection_shades_as_lambert`] under a uniform dome, which the raster pass lights
+/// by its image: a Lambert sphere is as bright at its limb as at its centre.
+#[test]
+fn a_material_without_specular_reflection_takes_the_whole_dome() {
+    let material = r##"<material id="m" baseColor="#FFFFFFFF" metallic="0" roughness="1" specular="0"/>"##;
+    let dome = r##"<light id="sky" type="dome" sky="gradient" skyZenith="#808080" skyHorizon="#808080" skyGround="#808080"/>"##;
+    let Some(r) = planet_seen("", material, "", dome, 0.0) else { return };
+    let mut seen = Vec::new();
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let (px, py) = (x as f64, y as f64);
+            let inside = [(px, py), (px + 1.0, py), (px, py + 1.0), (px + 1.0, py + 1.0)].iter().all(|&(a, b)| {
+                surface_through(a, b).is_some_and(|(n, v)| n.iter().zip(v).map(|(a, b)| a * b).sum::<f64>() > 0.15)
+            });
+            if inside {
+                seen.push(r.at(x, y)[1] as f64);
+            }
+        }
+    }
+    let (lo, hi) = seen.iter().fold((f64::INFINITY, 0.0f64), |(a, b), v| (a.min(*v), b.max(*v)));
+    assert!(seen.len() > 5000 && lo > 0.0, "{} pixels, darkest {lo}", seen.len());
+    assert!(hi / lo < 1.01, "the disc runs from {lo} to {hi}");
 }

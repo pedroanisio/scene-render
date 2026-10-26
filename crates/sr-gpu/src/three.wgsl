@@ -445,6 +445,12 @@ fn luma(c: vec3<f32>) -> f32 {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
 }
 
+// The subsurface lobe's share of the light: what the specular layer does not reflect at normal incidence, all of it
+// with no specular reflection.
+fn sss_kd(s: Surface) -> vec3<f32> {
+    return (vec3(1.0) - s.f0 * s.specular_weight) * (1.0 - s.metallic) * (1.0 - mat.p2.z);
+}
+
 fn shade_light(li: Light, s: Surface, ty: u32) -> vec3<f32> {
     var l = vec3(0.0);
     var radiance = li.color.rgb;
@@ -496,9 +502,8 @@ fn shade_light(li: Light, s: Surface, ty: u32) -> vec3<f32> {
     if (nl <= 0.0) {
         if (sss <= 0.0) { return vec3(0.0); }
         // past the terminator only the subsurface lobe reflects (SREP 71)
-        let kd = (vec3(1.0) - s.f0) * (1.0 - s.metallic) * (1.0 - mat.p2.z);
         let lobe = sss_lobe3(nl, s.curv, mat.sss.xyz);
-        return sss * kd * mat.sss_color.rgb / PI * lobe * radiance * li.flags.x;
+        return sss * sss_kd(s) * mat.sss_color.rgb / PI * lobe * radiance * li.flags.x;
     }
     let nv = max(dot(s.n, s.v), 1e-4);
     let h = normalize(l + s.v);
@@ -515,7 +520,8 @@ fn shade_light(li: Light, s: Surface, ty: u32) -> vec3<f32> {
     } else {
         spec = f * d_ggx(nh, max(a, 1e-3)) * v_smith(nl, nv, max(a, 1e-3));
     }
-    let kd = (vec3(1.0) - f) * (1.0 - s.metallic) * (1.0 - mat.p2.z);
+    // the diffuse keeps what the specular layer does not reflect: all of it with no specular reflection
+    let kd = (vec3(1.0) - f * s.specular_weight) * (1.0 - s.metallic) * (1.0 - mat.p2.z);
     var out = (kd * s.albedo / PI) * li.flags.x + spec * s.specular_weight * li.flags.y;
     // the layers above the base scale it
     var layers = 1.0;
@@ -535,8 +541,7 @@ fn shade_light(li: Light, s: Surface, ty: u32) -> vec3<f32> {
     if (sss > 0.0) {
         // SREP 71: the diffuse base is (1 − w) · Lambert + w · the subsurface lobe
         let lambert = kd * s.albedo / PI * nl;
-        let kd_sss = (vec3(1.0) - s.f0) * (1.0 - s.metallic) * (1.0 - mat.p2.z);
-        let lobe = kd_sss * mat.sss_color.rgb / PI * sss_lobe3(nl, s.curv, mat.sss.xyz);
+        let lobe = sss_kd(s) * mat.sss_color.rgb / PI * sss_lobe3(nl, s.curv, mat.sss.xyz);
         return out * radiance * nl + (lobe - lambert) * sss * layers * radiance * li.flags.x;
     }
     return out * radiance * nl;
@@ -943,7 +948,7 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
         let pre = env_sample(r, s.rough * (fr.params2.w - 1.0));
         let spec = pre * (s.f0 * lut.x + s.f90 * lut.y) * s.specular_weight;
         let fr_avg = s.f0 + (1.0 - s.f0) * pow(1.0 - nv, 5.0);
-        let diff = sh_irradiance(s.n) * uniform_albedo(s) * (1.0 - s.metallic) * (1.0 - mat.p2.z) * (vec3(1.0) - fr_avg);
+        let diff = sh_irradiance(s.n) * uniform_albedo(s) * (1.0 - s.metallic) * (1.0 - mat.p2.z) * (vec3(1.0) - fr_avg * s.specular_weight);
         var ibl = (diff + spec) * s.occlusion * ao;
         if (!PLAIN_MATERIAL && mat.p2.x > 0.0) {
             let fc = (0.04 + 0.96 * pow(1.0 - nv, 5.0)) * mat.p2.x;

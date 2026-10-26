@@ -94,9 +94,8 @@ fn wall_red(r: &common::Rendered) -> (f32, usize) {
 /// The radiance leaving the diffuse wall toward a viewer in the water, for a sun of irradiance
 /// `rad` on a surface facing it: the sun's beam power per area of the interface is T cos(theta_air),
 /// inside it spreads over a cross-section of cos(theta_water), and the wall catches the part along
-/// its normal; the wall's diffuse lobe keeps what its own Fresnel term does not reflect. `view` is the
-/// direction from the wall to the viewer, in the water.
-fn wall_radiance_in_water(rad: f32, view: Vec3, up: Vec3) -> f32 {
+/// its normal; the wall has no specular reflection (`specular="0"`), so its diffuse lobe keeps all of it.
+fn wall_radiance_in_water(rad: f32, up: Vec3) -> f32 {
     let to_sun = -shines(-35.0, -50.0).normalize();
     let cos_air = to_sun.dot(up);
     let travel = refract(-to_sun, up, 1.0, ETA);
@@ -104,9 +103,7 @@ fn wall_radiance_in_water(rad: f32, view: Vec3, up: Vec3) -> f32 {
     let cos_water = to_sun_in_water.dot(up);
     let wall_normal = Vec3::new(0.0, 0.0, -1.0);
     let beam = (1.0 - reflectance(cos_air, 1.0, ETA)) * cos_air / cos_water * to_sun_in_water.dot(wall_normal).max(0.0);
-    let h = (to_sun_in_water + view).normalize();
-    let f = 0.04 + 0.96 * (1.0 - view.dot(h).clamp(0.0, 1.0)).powi(5);
-    (1.0 - f) * linear(0xCC) / std::f32::consts::PI * rad * beam
+    linear(0xCC) / std::f32::consts::PI * rad * beam
 }
 
 /// What a camera above the water sees of the wall: its ray refracts into the water (the share the
@@ -120,17 +117,15 @@ fn expected_wall_red(rad: f32) -> f32 {
 fn expected_wall_red_through(rad: f32, up: Vec3) -> f32 {
     // the camera's ray, pitched 30 degrees below the horizon
     let eye = Vec3::new(0.0, 0.5, 0.866_025_4);
-    let view = -refract(eye, up, 1.0, ETA);
     let camera_share = 1.0 - reflectance(eye.dot(-up), 1.0, ETA);
-    camera_share * wall_radiance_in_water(rad, view, up) / (ETA * ETA)
+    camera_share * wall_radiance_in_water(rad, up) / (ETA * ETA)
 }
 
 /// What a camera inside the water sees of the wall: the radiance in the water, with no interface
-/// between them. Its ray is pitched 10 degrees below the horizontal.
+/// between them. Its ray is pitched 10 degrees below the horizontal, which the wall, with no specular
+/// reflection, does not see.
 fn expected_wall_red_from_water(rad: f32) -> f32 {
-    let pitch = 10f32.to_radians();
-    let view = -Vec3::new(0.0, pitch.sin(), pitch.cos());
-    wall_radiance_in_water(rad, view, Vec3::new(0.0, -1.0, 0.0))
+    wall_radiance_in_water(rad, Vec3::new(0.0, -1.0, 0.0))
 }
 
 /// A vertical wall under water is lit by the sun as physics says: the cosine at the wall (the
@@ -267,9 +262,8 @@ fn floor_under_a_ridge(theta: f32, sun: &str) -> String {
 /// direction (the sun is directional), the ray from the point along it meets the facet's plane
 /// somewhere, and that facet lights the point if the meeting is on its own side of the ridge. Each
 /// solution is T cos(theta_air) / cos(theta_water) times the floor's cosine with the refracted
-/// direction, with that direction (for the floor's Fresnel term). Over some floor two facets reach
-/// it, over some none.
-fn ridge_irradiance(theta: f32, z: f32) -> Vec<(f32, Vec3)> {
+/// direction. Over some floor two facets reach it, over some none.
+fn ridge_irradiance(theta: f32, z: f32) -> Vec<f32> {
     let t = theta.to_radians();
     let to_sun = -shines(-35.0, -50.0).normalize();
     let p = Vec3::new(0.0, 20.0, z);
@@ -286,7 +280,7 @@ fn ridge_irradiance(theta: f32, z: f32) -> Vec<(f32, Vec3)> {
         let meets = p + toward_sun * reach;
         if reach > 0.0 && meets.z * side >= 0.0 {
             let beam = (1.0 - reflectance(cos_air, 1.0, ETA)) * cos_air / along;
-            found.push((beam * toward_sun.dot(Vec3::new(0.0, -1.0, 0.0)), toward_sun));
+            found.push(beam * toward_sun.dot(Vec3::new(0.0, -1.0, 0.0)));
         }
     }
     found
@@ -303,12 +297,8 @@ fn ridge_irradiance(theta: f32, z: f32) -> Vec<(f32, Vec3)> {
 fn a_floor_under_a_ridge_is_lit_by_the_facet_whose_refraction_reaches_the_sun() {
     let theta = 20.0;
     let Some(r) = render(&floor_under_a_ridge(theta, SUN)) else { return };
-    let radiance = |(beam, dir): (f32, Vec3)| {
-        let view = Vec3::new(0.0, -1.0, 0.0);
-        let h = (dir + view).normalize();
-        let f = 0.04 + 0.96 * (1.0 - view.dot(h).clamp(0.0, 1.0)).powi(5);
-        (1.0 - f) * linear(0x80) / std::f32::consts::PI * 3.0 * beam
-    };
+    // the floor has no specular reflection (`specular="0"`): its diffuse lobe keeps all the light
+    let radiance = |beam: f32| linear(0x80) / std::f32::consts::PI * 3.0 * beam;
     let (mut single, mut double, mut none) = (0, 0, 0);
     // image row k covers z = 25 - (k + 0.5) * 30 / 128 (the camera looks down with +z up the image)
     for k in (0..128).step_by(2) {

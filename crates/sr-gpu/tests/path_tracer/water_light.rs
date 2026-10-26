@@ -375,7 +375,8 @@ fn point_and_sphere_lights_reach_a_floor_under_water_as_brute_force_does() {
 /// With the sun straight down, the camera straight down, one bounce (direct light only) and no
 /// other light, the floor under absorbing water has a closed form: the view and the sun each cross
 /// the interface (transmittance 1 - F at normal incidence) and the water (the attenuation colour at
-/// its distance), the light also loses 1 / eta^2, and the floor reflects albedo / pi times (1 - F0).
+/// its distance), the light also loses 1 / eta^2, and the floor, which has no specular reflection
+/// (`specular="0"`), reflects albedo / pi.
 #[test]
 fn the_floor_under_absorbing_water_is_lit_as_the_closed_form_says() {
     let albedo = linear(0xBC);
@@ -393,12 +394,10 @@ fn the_floor_under_absorbing_water_is_lit_as_the_closed_form_says() {
       <lights><light id="sun" type="directional" color="#FFFFFF" pitch="-90" intensity="3" castShadow="true"/></lights></scene>"##;
     let Some(r) = render(scene) else { return };
     let transmitted = 1.0 - ((1.0 - 1.0 / 1.333f32) / (1.0 + 1.0 / 1.333)).powi(2);
-    let floor_diffuse = 1.0 - 0.04; // the floor's Fresnel reflectance at normal incidence
     let centre = r.px[8 * 16 + 8];
     for (c, value) in attenuation.iter().enumerate() {
         let down = linear(*value);
-        let want = transmitted * down * floor_diffuse * albedo / std::f32::consts::PI * 3.0 * transmitted * down
-            / (1.333 * 1.333);
+        let want = transmitted * down * albedo / std::f32::consts::PI * 3.0 * transmitted * down / (1.333 * 1.333);
         assert!((centre[c] / want - 1.0).abs() < 0.04, "channel {c}: {} against {want}", centre[c]);
     }
 }

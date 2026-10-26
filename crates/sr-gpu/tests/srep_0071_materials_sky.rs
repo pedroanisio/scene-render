@@ -218,6 +218,34 @@ fn srep_0071_subsurface_zero_neutral() {
     assert!(a.px == b.px, "weight 0 changes the picture");
 }
 
+/// With no specular reflection (`specular="0"`) the diffuse and the subsurface lobe keep all the light alike: a lobe of
+/// radius 0, which is Lambert's, in the base colour draws the sphere a material without subsurface draws, in the raster
+/// pass and through the path tracer (64 samples a pixel; its mean over the lit pixels).
+#[test]
+fn srep_0071_subsurface_without_specular_keeps_the_diffuses_light() {
+    let m = |a: &str| {
+        format!("<materials><material id=\"m\" baseColor=\"#B0B0B0FF\" roughness=\"0.5\" specular=\"0\" {a}/></materials>\n")
+    };
+    let lobe = m("subsurface=\"1\" subsurfaceColor=\"#B0B0B0FF\" subsurfaceRadius=\"0\"");
+    for renderer in ["raster", "pathtrace"] {
+        let body = format!(
+            "<camera id=\"c\" renderer=\"{renderer}\" pathSamples=\"64\" maxBounces=\"1\" denoise=\"false\"/>\
+             <object3D id=\"o\" primitive=\"sphere\" radius=\"80\" z=\"400\" material=\"m\"/>"
+        );
+        let Some(a) = render_xml(&kit("", &lobe, &body, LIT)) else { return };
+        let b = render_xml(&kit("", &m(""), &body, LIT)).unwrap();
+        let lit: Vec<usize> = (0..b.px.len()).filter(|&i| b.px[i][1] > 0.05).collect();
+        assert!(lit.len() > 2000, "{renderer}: {} lit pixels", lit.len());
+        let sum = |r: &Rendered| lit.iter().map(|&i| r.px[i][1] as f64).sum::<f64>();
+        let ratio = sum(&a) / sum(&b);
+        assert!((ratio - 1.0).abs() < 0.005, "{renderer}: the lobe draws {ratio} of the diffuse's light");
+        if renderer == "raster" {
+            let worst = lit.iter().map(|&i| (a.px[i][1] - b.px[i][1]).abs() / b.px[i][1]).fold(0.0f32, f32::max);
+            assert!(worst < 0.005, "a pixel {worst} off the diffuse's");
+        }
+    }
+}
+
 /// The pixels just past the terminator in a render without subsurface: unlit (black, as the kit's only light is
 /// directional) and within 10 px of a lit pixel of the sphere.
 fn past_terminator(lambert: &Rendered) -> Vec<(u32, u32)> {
