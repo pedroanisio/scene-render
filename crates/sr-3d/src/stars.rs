@@ -126,15 +126,13 @@ pub struct Point {
 }
 
 /// Adds each point's flux to `buf` (`size[0]` × `size[1]` pixels, rows first), spread over a disc `point_size` pixels
-/// across; the share that falls outside the frame is lost.
+/// across; the share that falls outside the frame is lost, and a point whose centre is not finite adds nothing.
 pub fn splat(buf: &mut [[f32; 3]], size: [u32; 2], points: &[Point], point_size: f64) {
     let r = point_size / 2.0;
     let [w, h] = size.map(i64::from);
     for p in points {
+        // a centre that is not finite gives an empty range: float-to-integer casts saturate, and NaN casts to 0
         let [cx, cy] = p.pixel;
-        if !(cx.is_finite() && cy.is_finite()) {
-            continue;
-        }
         let (x0, x1) = (((cx - r).floor() as i64).max(0), ((cx + r).ceil() as i64).min(w));
         let (y0, y1) = (((cy - r).floor() as i64).max(0), ((cy + r).ceil() as i64).min(h));
         for py in y0..y1 {

@@ -72,6 +72,11 @@ fn a_splat_sums_to_the_flux_and_clips_at_the_frame() {
     let mut none = vec![[0f32; 3]; (w * h) as usize];
     splat(&mut none, [w, h], &[Point { pixel: [-40.0, 1e9], rgb: [1.0; 3] }], 2.0);
     assert!(none.iter().all(|c| *c == [0.0; 3]));
+    // a centre that is not a number, or at infinity, is on no pixel
+    for pixel in [[f64::NAN, 4.0], [5.0, f64::NAN], [f64::INFINITY, 4.0], [5.0, f64::NEG_INFINITY]] {
+        splat(&mut none, [w, h], &[Point { pixel, rgb: [1.0; 3] }], 2.0);
+    }
+    assert!(none.iter().all(|c| *c == [0.0; 3]));
 }
 
 #[test]
