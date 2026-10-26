@@ -39,6 +39,7 @@ pub mod prim;
 pub mod sampling;
 pub mod sequence;
 pub mod sky;
+pub mod stars;
 /// The time-frames draft's clock, ephemerides and frames, re-exported from `sr-space`.
 pub use sr_space as space;
 pub mod subsurface;
