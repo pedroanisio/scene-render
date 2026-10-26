@@ -131,6 +131,16 @@ fn attrs<'a>(n: &'a sr_eval::FrameNode) -> Attrs<'a> {
     Attrs { e: &*n.elem, props: Some(&n.props) }
 }
 
+/// The planets draft's sun among a pass's document lights (rule 3): the physical sky's sun in the scene's axes, else
+/// the direction toward the first directional light; none without either.
+/// The physical sky is its dome's rotation and its discs' uniforms.
+fn planet_sun(lights: &[Light3], physical: Option<(Mat4, [[f32; 4]; 5])>) -> Option<Vec3> {
+    if let Some((rotation, u)) = physical {
+        return Some(rotation.transform_vector3(Vec3::new(u[3][0], u[3][1], u[3][2])).normalize());
+    }
+    lights.iter().find(|l| l.kind == LightKind::Directional).map(|l| -l.dir.normalize())
+}
+
 fn primitive_kind(n: &FrameNode) -> String {
     let a = attrs(n);
     if n.kind == "particles3D" {
@@ -1680,6 +1690,41 @@ impl Renderer {
         }
     }
 
+    /// A planet's emission (the planets draft's rule 3): the Sun's limb darkening with limbDarkening="solar", else
+    /// the night mask of its emissive map toward the pass's sun or its space's Sun, from its body when the ephemeris
+    /// places it; none without a sun, a map or nightLights, and none on the Sun (body 10) itself.
+    fn planet_emission(
+        &self,
+        ctx: &Ctx,
+        n: &FrameNode,
+        a: &Attrs,
+        maps: &Maps,
+    ) -> Result<Option<sr_3d::PlanetEmission>, String> {
+        if a.str("limbDarkening").as_deref() == Some("solar") {
+            let mut alpha = [0.0; 3];
+            for (o, nm) in alpha.iter_mut().zip(sr_3d::planet::CHANNEL_WAVELENGTHS_NM) {
+                *o = sr_3d::planet::limb_alpha(nm).map_err(|e| e.0)? as f32;
+            }
+            return Ok(Some(sr_3d::PlanetEmission { night: None, limb: Some(alpha) }));
+        }
+        let body = a.opt("body").map(|b| b as i32);
+        if !flag(a, "nightLights", true) || maps[4].is_none() || body == Some(10) {
+            return Ok(None);
+        }
+        let sun = match self.planet_sun {
+            Some(d) => Some(d.to_array()),
+            None => match ctx.p.skies.get(n.doc as usize) {
+                Some(Some(Ok(sky))) => {
+                    let from = body.filter(|_| a.str("positionFrom").as_deref() == Some("ephemeris"));
+                    sky.sun_direction(from, ctx.g.time)?.map(|d| d.map(|v| v as f32))
+                }
+                Some(Some(Err(e))) => return Err(e.clone()),
+                _ => None,
+            },
+        };
+        Ok(sun.map(|d| sr_3d::PlanetEmission { night: Some((d, a.num("twilight", 6.0) as f32)), limb: None }))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn object_draws_at(
         &mut self,
@@ -1765,6 +1810,12 @@ impl Renderer {
                             albedo: a.num("foamAlbedo", 0.9) as f32,
                             roughness: a.num("foamRoughness", 0.8) as f32,
                         });
+                    }
+                }
+                if n.kind == "object3D" && primitive_kind(n) == "planet" {
+                    match self.planet_emission(ctx, n, &a, &maps) {
+                        Ok(p) => material.planet = p,
+                        Err(e) => plan.stats.errors.push(format!("{}: {e}", n.id)),
                     }
                 }
                 draws.push(Draw3 {
@@ -3757,6 +3808,7 @@ impl Renderer {
             }
         };
         let (mut lights, mut env) = self.lights3(plan, ctx, only.as_deref());
+        self.planet_sun = planet_sun(&lights, env.as_ref().and_then(|e| Some((e.rotation, e.physical?))));
         if lights.is_empty()
             && env.is_none()
             && ctx.p.scene.lights.as_ref().map(|l| l.lights.is_empty()).unwrap_or(true)
@@ -4284,6 +4336,45 @@ fn foam_needs_the_path_tracer(id: &str, camera_asks: bool, limit: Option<&str>) 
 #[cfg(test)]
 mod scope_tests {
     use super::*;
+
+    #[test]
+    fn a_planets_sun_is_the_physical_skys_then_the_first_directional_lights() {
+        let light = |kind, dir: Vec3| Light3 {
+            kind,
+            pos: Vec3::ZERO,
+            dir,
+            right: Vec3::X,
+            color: Vec3::ONE,
+            range: 0.0,
+            falloff: 2.0,
+            cos_outer: 0.0,
+            cos_inner: 0.0,
+            cast_shadow: false,
+            softness: 0.0,
+            bias: 0.0,
+            map_size: 0,
+            size: [0.0; 3],
+            ies: None,
+            affects_diffuse: true,
+            affects_specular: true,
+            contact: 0.0,
+        };
+        let lights = [
+            light(LightKind::Ambient, Vec3::Y),
+            light(LightKind::Point, Vec3::Y),
+            light(LightKind::Directional, Vec3::new(0.0, 0.0, 2.0)),
+            light(LightKind::Directional, Vec3::X),
+        ];
+        // toward the light, against its travel, from the first directional one
+        assert_eq!(planet_sun(&lights, None), Some(Vec3::new(0.0, 0.0, -1.0)));
+        assert_eq!(planet_sun(&lights[..2], None), None);
+        // the physical sky's sun in the dome's axes, turned into the scene's
+        let mut u = [[0.0; 4]; 5];
+        u[3] = [0.0, 0.0, 2.0, 0.9999];
+        let quarter = Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let sun = planet_sun(&lights, Some((quarter, u))).unwrap();
+        assert!((sun - Vec3::X).length() < 1e-6, "{sun}");
+    }
 
     #[test]
     fn the_refusal_of_foam_without_the_path_tracer_names_the_limit_when_the_camera_asked_for_it() {

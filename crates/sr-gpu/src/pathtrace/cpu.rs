@@ -1287,6 +1287,36 @@ pub(crate) struct Shaded {
     pub ng: [f32; 3],
     /// `1 + strength * (occlusion map red - 1)`, which the shader multiplies into the throughput.
     pub occlusion: f32,
+    /// The material's planet emission (a night mask only on a material with an emissive map).
+    pub planet: [[f32; 4]; 2],
+}
+
+/// The shader's planet emission (the planets draft's rule 3) of a hit seen along `d` with the oriented normal `n`:
+/// the night lights' weight and the limb darkening's mu^alpha per channel.
+pub(crate) fn planet_emission(m: &Shaded, n: [f32; 3], d: [f32; 3]) -> [f32; 3] {
+    let flags = m.planet[1][3] as u32;
+    let mut e = xyz(&m.emissive);
+    if flags & 1 != 0 {
+        let el = dot(n, xyz(&m.planet[0])).clamp(-1.0, 1.0).asin().to_degrees();
+        let band = m.planet[0][3];
+        let w = if band <= 0.0 {
+            if el == 0.0 {
+                0.5
+            } else if el < 0.0 {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            (0.5 - el / (2.0 * band)).clamp(0.0, 1.0)
+        };
+        e = scale(e, w);
+    }
+    if flags & 2 != 0 {
+        let mu = (-dot(n, d)).clamp(0.0, 1.0);
+        e = [0, 1, 2].map(|c| e[c] * mu.powf(m.planet[1][c]));
+    }
+    e
 }
 
 /// The shader's `radiance` material assembly for a hit (`hit_material`, `hit_position`, `hit_normal`), without the
@@ -1359,6 +1389,7 @@ pub(crate) fn shade_hit(scene: &Dense, hit: &Hit) -> Shaded {
         n,
         ng,
         occlusion: 1.0 + m.texture_params[3] * (ao[0] - 1.0),
+        planet: m.planet,
     }
 }
 
@@ -1582,7 +1613,7 @@ pub(crate) fn radiance(
         if met == 1 {
             *guide = Some(([m.base[0], m.base[1], m.base[2], 1.0], [n[0], n[1], n[2], hit.t]));
         }
-        col = add(col, mul3(thr, xyz(&m.emissive)));
+        col = add(col, mul3(thr, planet_emission(&m, n, d)));
         if m.emissive[3] > 0.5 {
             break;
         }

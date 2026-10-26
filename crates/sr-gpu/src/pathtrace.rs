@@ -74,6 +74,9 @@ pub struct PtMat {
     pub sss: [f32; 4],
     /// The subsurface albedo (linear), unused.
     pub sss_color: [f32; 4],
+    /// A planet's emission (the planets draft): the direction toward the Sun and the twilight band, then the limb
+    /// darkening's exponent per channel and the flags (1 night mask, 2 limb darkening).
+    pub planet: [[f32; 4]; 2],
 }
 
 /// Beer-Lambert coefficients per scene unit: the light left after `distance` units is `color`.
@@ -464,6 +467,7 @@ fn build_inner(scene: &Scene3, cache: &mut BuildCache, take: bool) -> (PtScene, 
                 [d[0], d[1], d[2], m.subsurface.clamp(0.0, 1.0)]
             },
             sss_color: [m.subsurface_color[0], m.subsurface_color[1], m.subsurface_color[2], 0.0],
+            planet: crate::three::planet_u(m),
         });
         if reused.is_some() {
             continue;
@@ -640,6 +644,7 @@ fn build_inner(scene: &Scene3, cache: &mut BuildCache, take: bool) -> (PtScene, 
             attenuation: [0.0; 4],
             sss: [0.0; 4],
             sss_color: [0.0; 4],
+            planet: [[0.0; 4]; 2],
         });
     }
     if s.pos.is_empty() {
@@ -3047,7 +3052,7 @@ mod wgsl_layout_tests {
 
     #[test]
     fn pt_mat_matches_wgsl_mat() {
-        let fields = rust_fields!(super::PtMat; base, params, emissive, extra, maps, texture_params, borders, attenuation, sss, sss_color);
+        let fields = rust_fields!(super::PtMat; base, params, emissive, extra, maps, texture_params, borders, attenuation, sss, sss_color, planet);
         assert_agree(include_str!("pathtrace.wgsl"), "Mat", std::mem::size_of::<super::PtMat>(), &fields);
     }
 

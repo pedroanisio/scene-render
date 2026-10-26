@@ -82,6 +82,17 @@ impl Sky {
         Ok((sr_space::stars::years_since_j2000(et), sr_space::mat_mul(&sr_space::SCENE_FROM_ICRF_AXES, &frame)))
     }
 
+    /// The planets draft's sun (rule 3) at `t` seconds of scene time: the unit direction in the scene's axes from
+    /// `body`, else from the space's origin, toward the Sun (10); none from the Sun itself.
+    pub fn sun_direction(&self, body: Option<i32>, t: f64) -> Result<Option<[f64; 3]>, String> {
+        let et = self.space.time_at(t).map_err(|e| e.to_string())?;
+        let from = body.unwrap_or(self.space.origin);
+        let p = self.positions().position(10, from, et).map_err(|e| e.to_string())?;
+        let d = self.space.scene_from_icrf(p, [0.0; 3], 1.0, et).map_err(|e| e.to_string())?;
+        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        Ok((n > 0.0).then(|| d.map(|v| v / n)))
+    }
+
     /// Places an object at `t` seconds of scene time: its position, its orientation or both replace its properties.
     pub(crate) fn place(&self, o: &m::Object3D, t: f64, props: &mut Props) -> Result<(), String> {
         let by_position = o.position_from == m::PositionFrom::Ephemeris;

@@ -181,3 +181,30 @@ fn a_space_gives_a_star_field_its_epoch_and_axes() {
     assert!((years - want).abs() < 1e-6 / 365.25, "{years} {want}");
     assert_eq!(axes, sr_space::SCENE_FROM_ICRF_AXES);
 }
+
+#[test]
+fn a_space_gives_a_planet_its_sun_direction() {
+    // the June solstice of 2026 (06-21 08:24 UTC): from the Earth-Moon barycentre the Sun is at ecliptic longitude
+    // 90° of date, which is 90° less 26.47 years of precession (50.29" a year) in the J2000 ecliptic, latitude 0; in
+    // the ICRF that is (cos λ, sin λ cos ε, sin λ sin ε), and in the scene's axes (x, −z, y of the ICRF)
+    let ev = evaluator("", r#"<space epoch="2026-06-21T08:24:00Z"/>"#);
+    let Some(Some(Ok(sky))) = ev.program().skies.first() else { panic!("no space") };
+    let (e, l) = (23.4393f64.to_radians(), (90.0 - 26.47 * 50.29 / 3600.0f64).to_radians());
+    let d = sky.sun_direction(Some(3), 0.0).unwrap().expect("a direction from the barycentre");
+    assert!(close(d, [l.cos(), -l.sin() * e.sin(), l.sin() * e.cos()], 3e-4), "{d:?}");
+    assert!(((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - 1.0).abs() < 1e-12);
+    // without a body the space's origin looks toward the Sun; from the Sun there is none
+    let ev = evaluator("", r#"<space epoch="2026-06-21T08:24:00Z" origin="3"/>"#);
+    let Some(Some(Ok(sky))) = ev.program().skies.first() else { panic!("no space") };
+    let o = sky.sun_direction(None, 0.0).unwrap().expect("a direction from the origin");
+    assert!(close(o, d, 1e-9), "{o:?} {d:?}");
+    assert_eq!(sky.sun_direction(Some(10), 0.0).unwrap(), None);
+    let ev = evaluator("", r#"<space epoch="2026-06-21T08:24:00Z" origin="10"/>"#);
+    let Some(Some(Ok(sky))) = ev.program().skies.first() else { panic!("no space") };
+    assert_eq!(sky.sun_direction(None, 0.0).unwrap(), None);
+    // the frame turns it: in the ecliptic the Sun at the solstice is at longitude 90°, latitude 0
+    let ev = evaluator("", r#"<space epoch="2026-06-21T08:24:00Z" frame="eclipticJ2000"/>"#);
+    let Some(Some(Ok(sky))) = ev.program().skies.first() else { panic!("no space") };
+    let d = sky.sun_direction(Some(3), 0.0).unwrap().unwrap();
+    assert!(close(d, [l.cos(), 0.0, l.sin()], 3e-4), "{d:?}");
+}

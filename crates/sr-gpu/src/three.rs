@@ -666,6 +666,10 @@ struct MaterialU {
     sss: [f32; 4],
     /// the subsurface albedo (linear), unused
     sss_color: [f32; 4],
+    /// the planets draft: the direction toward the Sun, the twilight band (degrees)
+    planet: [f32; 4],
+    /// the limb darkening's exponent per channel, flags (1 night mask, 2 limb darkening)
+    planet_limb: [f32; 4],
 }
 
 #[repr(C)]
@@ -716,6 +720,15 @@ fn push_object(bytes: &mut Vec<u8>, object: &ObjectU, limit: u64) -> Result<u32,
     Ok(offset)
 }
 
+/// A planet's emission for the shaders (the planets draft's rule 3): the direction toward the Sun and the twilight
+/// band, then the limb darkening's exponent per channel and the flags (1 night mask, 2 limb darkening).
+pub(crate) fn planet_u(m: &MaterialParams) -> [[f32; 4]; 2] {
+    let (night, limb) = m.planet.map_or((None, None), |p| (p.night, p.limb));
+    let (d, twilight) = night.unwrap_or(([0.0; 3], 0.0));
+    let a = limb.unwrap_or([0.0; 3]);
+    [[d[0], d[1], d[2], twilight], [a[0], a[1], a[2], (night.is_some() as u32 | (limb.is_some() as u32) << 1) as f32]]
+}
+
 fn material_u(m: &MaterialParams, maps: &Maps) -> MaterialU {
     let mut bits = 0u32;
     for (k, t) in maps.iter().enumerate() {
@@ -755,6 +768,8 @@ fn material_u(m: &MaterialParams, maps: &Maps) -> MaterialU {
             [d[0], d[1], d[2], m.subsurface]
         },
         sss_color: [m.subsurface_color[0], m.subsurface_color[1], m.subsurface_color[2], 0.0],
+        planet: planet_u(m)[0],
+        planet_limb: planet_u(m)[1],
     }
 }
 
@@ -795,6 +810,7 @@ fn plain_material(draw: &Draw3) -> bool {
         && m.iridescence == 0.0
         && m.transmission == 0.0
         && m.subsurface == 0.0
+        && m.planet.is_none()
 }
 
 /// The buffers one rasterised pass binds and the material bind groups over its material buffer, kept for the
@@ -5733,7 +5749,7 @@ mod wgsl_layout_tests {
 
     #[test]
     fn material_u_matches_wgsl_material() {
-        let fields = rust_fields!(super::MaterialU; base_color, emissive, p0, p1, p2, p3, attenuation, sheen, specular_color, irid, aniso, uv, finish, sampling, borders, sss, sss_color);
+        let fields = rust_fields!(super::MaterialU; base_color, emissive, p0, p1, p2, p3, attenuation, sheen, specular_color, irid, aniso, uv, finish, sampling, borders, sss, sss_color, planet, planet_limb);
         assert_agree(include_str!("three.wgsl"), "Material", std::mem::size_of::<super::MaterialU>(), &fields);
     }
 

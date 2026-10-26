@@ -560,6 +560,9 @@ pub struct Renderer {
     /// The physical sky of the last frame that had one (the physical-sky draft): one slot, as a dated sky is a new sky
     /// every frame it moves.
     physical_sky: Option<PhysicalSkySlot>,
+    /// The direction toward the sun of the 3D pass being drawn from its lights (the planets draft's rule 3): the
+    /// physical sky's sun or the first directional light's; none leaves each planet the space's Sun.
+    planet_sun: Option<glam::Vec3>,
     /// Star fields by catalogue file, limiting magnitude and magnitudeZero (the star-fields draft).
     /// The star field a frame without a 3D pass draws, by its key (the star-fields draft).
     stars_bg: Option<(u64, Arc<Tex>)>,
@@ -1504,6 +1507,7 @@ impl Renderer {
             clay_keys: HashMap::new(),
             sky_bg: None,
             physical_sky: None,
+            planet_sun: None,
             stars_bg: None,
             star_fields: HashMap::new(),
             star_scale: 1,

@@ -18,6 +18,16 @@ pub struct FoamMix {
     pub roughness: f32,
 }
 
+/// The emission of a planet of the planets draft (rule 3).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlanetEmission {
+    /// The unit direction toward the Sun in the scene's axes and the twilight band in degrees: the emission is
+    /// weighted by the night of each point; none leaves it whole. Set only on a material with an emissive map.
+    pub night: Option<([f32; 3], f32)>,
+    /// The exponent of the cosine between the normal and the line of sight per channel (the Sun's limb darkening).
+    pub limb: Option<[f32; 3]>,
+}
+
 /// Every scalar and colour input of the shading model. Colours are linear.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialParams {
@@ -68,6 +78,8 @@ pub struct MaterialParams {
     pub subsurface_color: [f32; 3],
     pub subsurface_radius: f32,
     pub subsurface_radius_scale: [f32; 3],
+    /// A planet's night lights and limb darkening; none on other surfaces.
+    pub planet: Option<PlanetEmission>,
 }
 
 impl Default for MaterialParams {
@@ -114,6 +126,7 @@ impl Default for MaterialParams {
             subsurface_color: [0.603_827_3; 3],
             subsurface_radius: 10.0,
             subsurface_radius_scale: [1.0, 0.5, 0.25],
+            planet: None,
         }
     }
 }

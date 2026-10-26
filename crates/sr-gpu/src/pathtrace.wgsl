@@ -54,6 +54,9 @@ struct Mat {
     sss: vec4<f32>,
     // subsurface albedo (linear rgb), unused
     sss_color: vec4<f32>,
+    // the planets draft: direction toward the Sun, twilight band (degrees); limb darkening exponent per channel,
+    // flags (1 night mask, 2 limb darkening)
+    planet: array<vec4<f32>, 2>,
 };
 
 struct Node {
@@ -773,6 +776,17 @@ fn radiance(px: vec2<f32>, pix: u32, first: bool) -> vec4<f32> {
             let air = aerial_segment(p);
             col += thr * air.l;
             thr *= air.t;
+        }
+        let flags = u32(m.planet[1].w);
+        if ((flags & 1u) != 0u) {
+            // the night lights fade across the twilight band (rule 3); a band of 0 is the step at the horizon
+            let e = degrees(asin(clamp(dot(n, m.planet[0].xyz), -1.0, 1.0)));
+            var w = clamp(0.5 - e / (2.0 * m.planet[0].w), 0.0, 1.0);
+            if (m.planet[0].w <= 0.0) { w = select(select(0.0, 1.0, e < 0.0), 0.5, e == 0.0); }
+            m.emissive = vec4(m.emissive.rgb * w, m.emissive.w);
+        }
+        if ((flags & 2u) != 0u) {
+            m.emissive = vec4(m.emissive.rgb * pow(vec3(clamp(dot(n, -d), 0.0, 1.0)), m.planet[1].xyz), m.emissive.w);
         }
         col += thr * m.emissive.rgb;
         if (m.emissive.w > 0.5) { break; }

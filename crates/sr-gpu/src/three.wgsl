@@ -39,6 +39,10 @@ struct Material {
     sss: vec4<f32>,
     // subsurface albedo (linear rgb), unused
     sss_color: vec4<f32>,
+    // the planets draft: direction toward the Sun, twilight band (degrees)
+    planet: vec4<f32>,
+    // limb darkening exponent per channel, flags (1 night mask, 2 limb darkening)
+    planet_limb: vec4<f32>,
 };
 
 @group(1) @binding(0) var<uniform> mat: Material;
@@ -330,6 +334,14 @@ fn uniform_albedo(s: Surface) -> vec3<f32> {
     let w = sss_weight();
     if (w > 0.0) { return mix(s.albedo, mat.sss_color.rgb, w); }
     return s.albedo;
+}
+
+// The planets draft's night-lights weight (rule 3): 1 with the Sun the twilight band or more below the horizon, 0 as
+// far above it, linear in its elevation between; a band of 0 is the step at the horizon.
+fn night_weight(n: vec3<f32>) -> f32 {
+    let e = degrees(asin(clamp(dot(n, mat.planet.xyz), -1.0, 1.0)));
+    if (mat.planet.w <= 0.0) { return select(select(0.0, 1.0, e < 0.0), 0.5, e == 0.0); }
+    return clamp(0.5 - e / (2.0 * mat.planet.w), 0.0, 1.0);
 }
 
 fn luma(c: vec3<f32>) -> f32 {
@@ -848,7 +860,13 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
         return o;
     }
     var em = mat.emissive.rgb * mat.emissive.w;
-    if (!PLAIN_MATERIAL && (u32(mat.aniso.w) & 16u) != 0u) { em = em * material_fragment(emissive_map, i.emissive_uv, 4u).rgb; }
+    if (!PLAIN_MATERIAL && (u32(mat.aniso.w) & 16u) != 0u) {
+        em = em * material_fragment(emissive_map, i.emissive_uv, 4u).rgb;
+        if ((u32(mat.planet_limb.w) & 1u) != 0u) { em = em * night_weight(s.n); }
+    }
+    if (!PLAIN_MATERIAL && (u32(mat.planet_limb.w) & 2u) != 0u) {
+        em = em * pow(vec3(clamp(dot(s.n, s.v), 0.0, 1.0)), mat.planet_limb.xyz);
+    }
     col = aerial_apply(col + em, s.world);
     // transmissive surfaces are opaque layers over what they refract
     var a = 1.0;
