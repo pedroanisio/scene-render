@@ -248,6 +248,93 @@ fn height_fog_in_closed_form() {
     assert_eq!(round(-f.transmittance(500.0, 500.0, 1000.0).ln(), 4), 0.0067);
     assert!((Fog::new(0.002, 250.0).unwrap().transmittance(400.0, 10.0, 700.0) - 0.5060814016754804).abs() < 1e-15);
     assert_eq!(f.transmittance(0.0, 50.0, 0.0), 1.0);
+    // within a nanometre of level the level form holds, and the transmittance is e^(−depth)
+    assert_eq!(f.transmittance(5.0, 5.0 + 5e-10, 1000.0), f.transmittance(5.0, 5.0, 1000.0));
+    assert_eq!(round(f.transmittance(5.0, 5.0 + 5e-10, 1000.0), 15), round(0.38626584672164566, 15));
+    assert_eq!(f.transmittance(0.0, 50.0, 1000.0), (-f.depth(0.0, 50.0, 1000.0)).exp());
+    assert_eq!(f.depth(0.0, 50.0, -1.0), 0.0);
+    // a tenth of a millimetre is a slope, the reference's value to its cancellation
+    assert!((f.transmittance(5.0, 5.0 + 1e-4, 1000.0) - 0.3862660304128554).abs() < 1e-11);
+}
+
+#[test]
+fn fog_in_closed_form_over_a_colour() {
+    // the draft's row, then a sloping segment from the reference module
+    let f = Fog::new(0.001, 100.0).unwrap();
+    let row = f.fogged([0.5; 3], 1.0, 1.0, 1000.0, [0.1, 0.2, 0.3]);
+    assert_eq!(row.map(|x| round(x, 6)), [0.248623, 0.311467, 0.374312]);
+    let g = Fog::new(0.002, 250.0).unwrap();
+    close(
+        g.fogged([0.2, 0.4, 0.1], 400.0, 10.0, 700.0, [0.3, 0.2, 0.1]),
+        [0.24939185983245193, 0.3012162803350961, 0.1],
+        "sloping",
+    );
+    assert_eq!(f.fogged([0.5; 3], 1.0, 1.0, 0.0, [0.1, 0.2, 0.3]), [0.5; 3], "no length, no fog");
+}
+
+#[test]
+fn the_horizon_radiance_of_the_fog() {
+    let a = earth();
+    let s = Scattering::new(a);
+    let (g, sun) = (ground(&a), unit([1.0, 0.0, 0.5]).unwrap());
+    let row = s.horizon_radiance(g, unit([1.0, 0.0, 0.3]).unwrap(), sun).unwrap();
+    assert_eq!(row.map(|x| round(x, 6)), [0.152102, 0.191532, 0.254174]);
+    // a vertical ray takes azimuth +x; a downward ray its horizontal projection
+    assert_eq!(s.horizon_radiance(g, [0.0, 0.0, 1.0], sun).unwrap(), row);
+    assert_eq!(s.horizon_radiance(g, [0.0, 0.0, -1.0], sun).unwrap(), row);
+    close(
+        s.horizon_radiance(g, unit([0.0, 1.0, -0.5]).unwrap(), sun).unwrap(),
+        [0.078451012375116, 0.13491071461573553, 0.2182177610449442],
+        "downward",
+    );
+    let high = [0.0, 0.0, a.planet_radius + 500.0];
+    close(
+        s.horizon_radiance(high, unit([0.3, 0.8, -0.2]).unwrap(), sun).unwrap(),
+        [0.08879010275943461, 0.1495287922443912, 0.2345132426323066],
+        "at 500 m",
+    );
+    assert!(s.horizon_radiance([1.0, 0.0, a.planet_radius + 1.0], [1.0, 0.0, 0.0], sun).is_err(), "off the z axis");
+    assert!(s.horizon_radiance([0.0, 1.0, a.planet_radius + 1.0], [1.0, 0.0, 0.0], sun).is_err(), "off the z axis");
+}
+
+#[test]
+fn the_fog_joins_the_aerial_march() {
+    let a = earth();
+    let s = Scattering::new(a);
+    let (g, sun, colour) = (ground(&a), unit([1.0, 0.0, 0.5]).unwrap(), [0.5; 3]);
+    let d = [1.0, 0.0, 0.0];
+    let f = Fog::new(0.001, 100.0).unwrap();
+    let row = s.aerial_perspective_fogged(g, d, 1000.0, colour, sun, &f, [0.1, 0.2, 0.3]).unwrap();
+    assert_eq!(row.map(|x| round(x, 6)), [0.247111, 0.308912, 0.370049]);
+    // off the rows: from 500 m, oblique, a denser and shallower fog over 2 km
+    let (high, od, c2) = ([0.0, 0.0, a.planet_radius + 500.0], unit([0.3, 0.8, -0.2]).unwrap(), [0.2, 0.4, 0.1]);
+    let h = s.horizon_radiance(high, od, sun).unwrap();
+    let g2 = Fog::new(0.002, 250.0).unwrap();
+    close(
+        s.aerial_perspective_fogged(high, od, 2000.0, c2, sun, &g2, h).unwrap(),
+        [0.11192760076504107, 0.20081021334279253, 0.20741390962767797],
+        "from 500 m",
+    );
+    assert_eq!(s.aerial_perspective_fogged(high, od, 0.0, c2, sun, &f, h).unwrap(), c2);
+    // no fog is rule 10's march to the bit, a thicker fog sits nearer its horizon
+    let horizon = s.horizon_radiance(g, d, sun).unwrap();
+    let plain = s.aerial_perspective(g, d, 1000.0, colour, sun).unwrap();
+    let none = Fog::new(0.0, 100.0).unwrap();
+    assert_eq!(s.aerial_perspective_fogged(g, d, 1000.0, colour, sun, &none, horizon).unwrap(), plain);
+    let thin = s.aerial_perspective_fogged(g, d, 1000.0, colour, sun, &f, horizon).unwrap();
+    let thick =
+        s.aerial_perspective_fogged(g, d, 1000.0, colour, sun, &Fog::new(0.003, 100.0).unwrap(), horizon).unwrap();
+    assert!((0..3).all(|c| (thick[c] - horizon[c]).abs() < (thin[c] - horizon[c]).abs()));
+    // without air the march meets the closed form to the sphere's curvature (2e-4 at 1 km)
+    let still =
+        atmosphere(&AtmosphereOptions { rayleigh: 0.0, aerosol: 0.0, ozone: 0.0, ..AtmosphereOptions::default() })
+            .unwrap();
+    let marched =
+        Scattering::new(still).aerial_perspective_fogged(g, d, 1000.0, colour, sun, &f, [0.1, 0.2, 0.3]).unwrap();
+    let far = [g[0] + 1000.0, g[1], g[2]];
+    let h1 = (far[0] * far[0] + far[2] * far[2]).sqrt() - still.planet_radius;
+    let closed = f.fogged(colour, 1.0, h1, 1000.0, [0.1, 0.2, 0.3]);
+    assert!((0..3).all(|c| (marched[c] - closed[c]).abs() <= 2e-4 * closed[c]), "{marched:?} {closed:?}");
 }
 
 #[test]

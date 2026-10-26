@@ -529,7 +529,10 @@ impl Scattering {
         out
     }
 
-    /// The in-scattered radiance along d from p, to `length` or the atmosphere's end, and the transmittance there.
+    /// The in-scattered radiance along d from p, to `length` or the atmosphere's end, and the transmittance there;
+    /// with a fog (rule 11) its extinction joins the air's at every node and its isotropic source is its extinction
+    /// times the horizon radiance.
+    #[allow(clippy::too_many_arguments)]
     fn inscatter(
         &self,
         p: V3,
@@ -538,6 +541,7 @@ impl Scattering {
         samples: usize,
         multiple: bool,
         length: Option<f64>,
+        fog: Option<(&Fog, V3)>,
     ) -> Result<(V3, V3), SkyError> {
         check_samples(samples)?;
         let a = &self.atmosphere;
@@ -567,16 +571,19 @@ impl Scattering {
                 let t_sun = a.transmittance_with(y, sun, 8, None, true)?;
                 let mu_s = dot(mul(y, 1.0 / norm(y)), sun);
                 let psi = if multiple { self.multiple(hy, mu_s) } else { [0.0; 3] };
+                let fog_node = if s > s0 { fog_depth_along(fog, a, q, d, s0, s) } else { 0.0 };
+                let source = fog.map_or([0.0; 3], |(f, horizon)| mul(horizon, f.density * (-hy / f.height).exp()));
                 for c in 0..3 {
-                    let t_node = trans[c] * (-node_depth[c]).exp();
+                    let t_node = trans[c] * (-node_depth[c] - fog_node).exp();
                     let single = (sr[c] * pr + sm * pm) * a.sun_irradiance[c] * t_sun[c];
-                    inner[c] += w * t_node * (single + (sr[c] + sm) * psi[c]);
+                    inner[c] += w * t_node * (single + (sr[c] + sm) * psi[c] + source[c]);
                 }
             }
             let seg = a.depth(q, d, s0, s1);
+            let fog_seg = fog_depth_along(fog, a, q, d, s0, s1);
             for c in 0..3 {
                 out[c] += inner[c] * half;
-                trans[c] *= (-seg[c]).exp();
+                trans[c] *= (-seg[c] - fog_seg).exp();
             }
         }
         Ok((out, trans))
@@ -594,7 +601,7 @@ impl Scattering {
         if ground || total <= 0.0 {
             return Ok([0.0; 3]);
         }
-        Ok(self.inscatter(obs, d, sun, samples, multiple, None)?.0)
+        Ok(self.inscatter(obs, d, sun, samples, multiple, None, None)?.0)
     }
 
     /// The sky's irradiance on the ground under an observer on the +z axis, a midpoint grid of 6 × 12 cells over
@@ -621,11 +628,59 @@ impl Scattering {
     /// Rule 10: a surface of `colour` at `distance` along d from `obs`, seen through the atmosphere: the colour times
     /// the transmittance plus the in-scattering up to it (16 segments); at distance 0 the colour itself.
     pub fn aerial_perspective(&self, obs: V3, d: V3, distance: f64, colour: V3, sun: V3) -> Result<V3, SkyError> {
+        self.aerial(obs, d, distance, colour, sun, None)
+    }
+
+    /// Rules 10 and 11 in one march: [`Scattering::aerial_perspective`] with the fog's extinction and its source,
+    /// the fog's extinction times `horizon` ([`Scattering::horizon_radiance`]), under the combined transmittance.
+    #[allow(clippy::too_many_arguments)]
+    pub fn aerial_perspective_fogged(
+        &self,
+        obs: V3,
+        d: V3,
+        distance: f64,
+        colour: V3,
+        sun: V3,
+        fog: &Fog,
+        horizon: V3,
+    ) -> Result<V3, SkyError> {
+        self.aerial(obs, d, distance, colour, sun, Some((fog, horizon)))
+    }
+
+    fn aerial(
+        &self,
+        obs: V3,
+        d: V3,
+        distance: f64,
+        colour: V3,
+        sun: V3,
+        fog: Option<(&Fog, V3)>,
+    ) -> Result<V3, SkyError> {
         if distance <= 0.0 {
             return Ok(colour);
         }
-        let (inscatter, trans) = self.inscatter(obs, d, sun, 16, true, Some(distance))?;
+        let (inscatter, trans) = self.inscatter(obs, d, sun, 16, true, Some(distance), fog)?;
         Ok(std::array::from_fn(|c| colour[c] * trans[c] + inscatter[c]))
+    }
+
+    /// Rule 11's L_h: the sky's radiance at elevation 0 in d's azimuth from an observer on the z axis; a vertical d
+    /// takes azimuth +x.
+    pub fn horizon_radiance(&self, obs: V3, d: V3, sun: V3) -> Result<V3, SkyError> {
+        if obs[0] != 0.0 || obs[1] != 0.0 {
+            return err("the horizon is evaluated at an observer on the z axis");
+        }
+        let n = d[0].hypot(d[1]);
+        let level = if n < 1e-12 { [1.0, 0.0, 0.0] } else { [d[0] / n, d[1] / n, 0.0] };
+        self.sky_radiance(obs, level, sun)
+    }
+}
+
+/// Rule 11's optical depth between two distances along the ray from q: the closed form over the sphere's altitudes
+/// at the two ends.
+fn fog_depth_along(fog: Option<(&Fog, V3)>, a: &Atmosphere, q: V3, d: V3, s0: f64, s1: f64) -> f64 {
+    match fog {
+        Some((f, _)) if s1 > s0 => f.depth(a.height(march(q, d, s0)), a.height(march(q, d, s1)), s1 - s0),
+        _ => 0.0,
     }
 }
 
@@ -645,18 +700,29 @@ impl Fog {
         Ok(Fog { density, height })
     }
 
-    /// The transmittance of a straight segment of `length` metres from altitude `h0` to `h1`, in closed form.
-    pub fn transmittance(&self, h0: f64, h1: f64, length: f64) -> f64 {
+    /// The optical depth of a straight segment of `length` metres from altitude `h0` to `h1`, in closed form (the
+    /// level form within a nanometre of level).
+    pub fn depth(&self, h0: f64, h1: f64, length: f64) -> f64 {
         if length <= 0.0 {
-            return 1.0;
+            return 0.0;
         }
         let hs = self.height;
-        let depth = if h0 == h1 {
-            self.density * length * (-h0 / hs).exp()
-        } else {
-            self.density * length * hs / (h1 - h0) * ((-h0 / hs).exp() - (-h1 / hs).exp())
-        };
-        (-depth).exp()
+        if (h1 - h0).abs() < 1e-9 {
+            return self.density * length * (-h0 / hs).exp();
+        }
+        self.density * length * hs / (h1 - h0) * ((-h0 / hs).exp() - (-h1 / hs).exp())
+    }
+
+    /// The transmittance of that segment: e^(−depth).
+    pub fn transmittance(&self, h0: f64, h1: f64, length: f64) -> f64 {
+        (-self.depth(h0, h1, length)).exp()
+    }
+
+    /// Rule 11 without rule 10's march (`aerialPerspective="false"` or `atmosphere="none"`): the colour through the
+    /// segment's transmittance plus `horizon` over the rest.
+    pub fn fogged(&self, colour: V3, h0: f64, h1: f64, length: f64, horizon: V3) -> V3 {
+        let t = self.transmittance(h0, h1, length);
+        std::array::from_fn(|c| colour[c] * t + (1.0 - t) * horizon[c])
     }
 }
 
