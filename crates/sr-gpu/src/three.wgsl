@@ -865,3 +865,63 @@ fn fs_dome(i: BgOut) -> @location(0) vec4<f32> {
     }
     return vec4(textureSampleLevel(sky_tex, env_smp, env_uv(dir), 0.0).rgb * fr.params.w, 1.0);
 }
+
+// ---------------------------------------------------------------- star field (the star-fields draft)
+
+struct StarOut {
+    @builtin(position) pos: vec4<f32>,
+    // the star's centre in pixels, its flux and its disc's radius in pixels
+    @location(0) @interpolate(flat) centre: vec2<f32>,
+    @location(1) @interpolate(flat) rgb: vec4<f32>,
+};
+
+// A quad over the disc of a star at infinity in direction dir.xyz; behind the camera it is clipped away.
+@vertex
+fn vs_star(@builtin(vertex_index) vi: u32, @location(0) dir: vec4<f32>, @location(1) rgb: vec4<f32>) -> StarOut {
+    var o: StarOut;
+    o.pos = vec4(0.0, 0.0, 2.0, 1.0);
+    o.centre = vec2(0.0);
+    o.rgb = rgb;
+    let c = fr.view_proj * vec4(dir.xyz, 0.0);
+    if (c.w <= 0.0) { return o; }
+    let ndc = c.xy / c.w;
+    let centre = vec2((ndc.x * 0.5 + 0.5) * fr.screen.x, (0.5 - ndc.y * 0.5) * fr.screen.y);
+    let corner = vec2(f32(vi & 1u), f32((vi >> 1u) & 1u)) * 2.0 - 1.0;
+    let q = centre + corner * (rgb.w + 1.0);
+    // background depth (reverse Z: 0), so every surface drawn after it covers it
+    o.pos = vec4(q.x * fr.screen.z * 2.0 - 1.0, 1.0 - q.y * fr.screen.w * 2.0, 0.0, 1.0);
+    o.centre = centre;
+    return o;
+}
+
+// The primitive of the half chord, sqrt(r^2 - t^2), for t in [-r, r] (sr_3d::stars).
+fn star_chord(t: f32, r: f32) -> f32 {
+    return (t * sqrt(max(r * r - t * t, 0.0)) + r * r * asin(clamp(t / r, -1.0, 1.0))) * 0.5;
+}
+
+// The area of the disc of radius r about the origin where X <= x and Y <= y (sr_3d::stars::corner_area).
+fn star_corner(x0: f32, y: f32, r: f32) -> f32 {
+    let x = clamp(x0, -r, r);
+    if (y >= r) { return 2.0 * (star_chord(x, r) - star_chord(-r, r)); }
+    if (y <= -r) { return 0.0; }
+    let c = sqrt(r * r - y * y);
+    var crossing = 0.0;
+    if (x > -c) {
+        let m = min(x, c);
+        crossing = y * (m + c) + star_chord(m, r) - star_chord(-c, r);
+    }
+    if (y < 0.0) { return crossing; }
+    var right = 0.0;
+    if (x > c) { right = 2.0 * (star_chord(x, r) - star_chord(c, r)); }
+    return 2.0 * (star_chord(min(x, -c), r) - star_chord(-r, r)) + crossing + right;
+}
+
+// The pixel's share of the star's flux: the disc's area in the pixel over its whole area.
+@fragment
+fn fs_star(i: StarOut) -> @location(0) vec4<f32> {
+    let r = i.rgb.w;
+    let p0 = floor(i.pos.xy) - i.centre;
+    let p1 = p0 + 1.0;
+    let a = star_corner(p1.x, p1.y, r) - star_corner(p0.x, p1.y, r) - star_corner(p1.x, p0.y, r) + star_corner(p0.x, p0.y, r);
+    return vec4(i.rgb.xyz * max(a / (PI * r * r), 0.0), 0.0);
+}

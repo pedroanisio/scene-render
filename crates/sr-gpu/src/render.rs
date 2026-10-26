@@ -547,6 +547,13 @@ pub struct Renderer {
     clay_keys: HashMap<Arc<str>, String>,
     /// The visible procedural sky of the last frame without a 3D pass, by its key (SREP 71).
     sky_bg: Option<(u64, Arc<Tex>)>,
+    /// Star fields by catalogue file, limiting magnitude and magnitudeZero (the star-fields draft).
+    /// The star field a frame without a 3D pass draws, by its key (the star-fields draft).
+    stars_bg: Option<(u64, Arc<Tex>)>,
+    star_fields: HashMap<(std::path::PathBuf, u64, u64), Arc<sr_3d::stars::Field>>,
+    /// Pixels of the rendered frame per output pixel (the supersample factor): a star's disc is `pointSize` output
+    /// pixels across.
+    star_scale: u32,
     /// The surface of each voxels object between frames, by node id.
     voxel_surfaces: HashMap<(Arc<str>, Option<usize>), render_three::VoxelState>,
     glyph_tex: HashMap<u64, Option<Arc<Tex>>>,
@@ -1483,6 +1490,9 @@ impl Renderer {
             text: Default::default(),
             clay_keys: HashMap::new(),
             sky_bg: None,
+            stars_bg: None,
+            star_fields: HashMap::new(),
+            star_scale: 1,
             voxel_surfaces: HashMap::new(),
             glyph_tex: HashMap::new(),
             burn_captions: None,
@@ -4400,17 +4410,14 @@ impl Renderer {
     /// and silhouettes act on layers only. A node with an edge-space override needs the visible background first.
     fn background(&mut self, plan: &mut Plan, ctx: &Ctx, space: &Space, cmds: &mut Vec<Cmd>) {
         let g = ctx.g;
-        // the star-fields draft's field is not drawn yet
-        for l in ctx.p.scene.lights.iter().flat_map(|ls| &ls.lights) {
-            if l.children.iter().any(|c| matches!(c, m::LightChild::StarField(_))) {
-                let msg = format!("{}: starField (the star-fields draft) is not drawn", l.id);
-                if !plan.stats.unsupported.contains(&msg) {
-                    plan.stats.unsupported.push(msg);
-                }
-            }
-        }
         // a visible procedural sky that no 3D pass draws takes the background's place (SREP 71)
         let sky = self.sky_background(ctx, space);
+        // a star field that no 3D pass draws goes over the background, under everything else (the star-fields draft)
+        if let Some((stars, key)) = self.stars_background(plan, ctx, space) {
+            let hash = h(&[key, hf(g.size[0]), hf(g.size[1]), elements_hash(&g.elements)]);
+            let none = Value::Color([0.0; 4]);
+            self.fill_paint(plan, ctx, space, &none, g.size, &Affine::IDENTITY, BLEND_UNDER, hash, Some(stars), cmds);
+        }
         let hash = {
             let mut f = Fnv(0xcbf2_9ce4_8422_2325);
             f.value(&g.background);
@@ -4759,6 +4766,7 @@ impl Renderer {
         } else {
             1
         };
+        self.star_scale = ss;
         let out_size = g.size.map(|v| v * self.tier.scale);
         let dimensions = if self.view_override.is_none() {
             p.scene.scene360.as_ref().map(|s| [s.width as f64, s.height as f64])

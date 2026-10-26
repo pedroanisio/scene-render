@@ -397,6 +397,7 @@ fn tiled_frames_equal_whole_frames_in_grid_mode() {
             contact: 0.0,
         }],
         env: None,
+        stars: Vec::new(),
         splats: Vec::new(),
         volumes: vec![volume],
         encode_srgb: false,

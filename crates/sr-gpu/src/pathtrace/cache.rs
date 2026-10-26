@@ -265,6 +265,7 @@ mod tests {
             draws,
             lights: Vec::new(),
             env: None,
+            stars: Vec::new(),
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,

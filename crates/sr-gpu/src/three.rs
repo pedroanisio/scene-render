@@ -375,6 +375,16 @@ pub struct Env3 {
     pub sky: Option<sr_3d::sky::Sky>,
 }
 
+/// One star of a dome light's field (the star-fields draft): its world direction, and its flux per channel with
+/// the radius of its disc in pixels of the pass.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct StarInstance {
+    pub dir: [f32; 4],
+    /// rgb flux, w the disc's radius in pixels.
+    pub rgb: [f32; 4],
+}
+
 /// One splat cloud.
 pub struct SplatDraw {
     pub gpu: Arc<SplatGpu>,
@@ -404,6 +414,8 @@ pub struct Scene3 {
     pub draws: Vec<Draw3>,
     pub lights: Vec<Light3>,
     pub env: Option<Env3>,
+    /// The dome light's star field, drawn behind every surface.
+    pub stars: Vec<StarInstance>,
     pub splats: Vec<SplatDraw>,
     /// Participating media in the same world and depth system as surface geometry.
     pub volumes: Vec<crate::volume::VolumeDraw>,
@@ -445,6 +457,7 @@ impl Scene3 {
             draws,
             lights,
             env,
+            stars,
             splats,
             volumes,
             encode_srgb,
@@ -453,7 +466,13 @@ impl Scene3 {
             path,
             geodesic,
         } = self;
-        if env.is_some() || !splats.is_empty() || !volumes.is_empty() || path.is_some() || geodesic.is_some() {
+        if env.is_some()
+            || !stars.is_empty()
+            || !splats.is_empty()
+            || !volumes.is_empty()
+            || path.is_some()
+            || geodesic.is_some()
+        {
             return None;
         }
         let CameraView { view, proj, eye, focal_px, near, far, orthographic } = cam;
@@ -891,6 +910,7 @@ pub struct ThreeEngine {
     pipes: HashMap<PipeKey, wgpu::RenderPipeline>,
     shadow_pipe: wgpu::RenderPipeline,
     dome_pipe: wgpu::RenderPipeline,
+    star_pipe: wgpu::RenderPipeline,
     splat_pipe: wgpu::RenderPipeline,
     blit_pipe: wgpu::RenderPipeline,
     under_pipe: wgpu::RenderPipeline,
@@ -1112,6 +1132,7 @@ struct Kit {
     bgl_sort: wgpu::BindGroupLayout,
     shadow_pipe: wgpu::RenderPipeline,
     dome_pipe: wgpu::RenderPipeline,
+    star_pipe: wgpu::RenderPipeline,
     splat_pipe: wgpu::RenderPipeline,
     blit_pipe: wgpu::RenderPipeline,
     ssao_pipe: wgpu::RenderPipeline,
@@ -1308,6 +1329,46 @@ impl Kit {
                 cache: None,
             })
         };
+        // the star field: one quad per star, its flux added to what the dome drew (the star-fields draft)
+        let star_pipe = {
+            const ATTRS: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4];
+            let _creation = crate::gpu::creation_lock();
+            d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("three-stars"),
+                layout: Some(&main_layout),
+                vertex: wgpu::VertexState {
+                    module: &main_mod,
+                    entry_point: Some("vs_star"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<StarInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &ATTRS,
+                    })],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: Some(depth_state(false)),
+                multisample: ms,
+                fragment: Some(wgpu::FragmentState {
+                    module: &main_mod,
+                    entry_point: Some("fs_star"),
+                    compilation_options: Default::default(),
+                    targets: &target(Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent::OVER,
+                    })),
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
         let splat_layout = layout(&[&bgl_frame, &bgl_splat]);
         let splat_pipe = {
             let _creation = crate::gpu::creation_lock();
@@ -1492,6 +1553,7 @@ impl Kit {
             bgl_sort,
             shadow_pipe,
             dome_pipe,
+            star_pipe,
             splat_pipe,
             blit_pipe,
             ssao_pipe,
@@ -1705,6 +1767,7 @@ impl ThreeEngine {
         let bgl_sort = kit.bgl_sort.clone();
         let shadow_pipe = kit.shadow_pipe.clone();
         let dome_pipe = kit.dome_pipe.clone();
+        let star_pipe = kit.star_pipe.clone();
         let splat_pipe = kit.splat_pipe.clone();
         let blit_pipe = kit.blit_pipe.clone();
         let ssao_pipe = kit.ssao_pipe.clone();
@@ -1795,6 +1858,7 @@ impl ThreeEngine {
             pipes: HashMap::new(),
             shadow_pipe,
             dome_pipe,
+            star_pipe,
             splat_pipe,
             blit_pipe,
             under_pipe,
@@ -2665,6 +2729,13 @@ impl ThreeEngine {
         };
         // ------------------------------------------------ frame uniform
         let env = scene.env.as_ref();
+        let star_buf = (!scene.stars.is_empty()).then(|| {
+            self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("three-stars"),
+                contents: bytemuck::cast_slice(&scene.stars),
+                usage: wgpu::BufferUsages::VERTEX,
+            })
+        });
         let mut sh = [[0.0f32; 4]; 9];
         if let Some(e) = env {
             for (dst, src) in sh.iter_mut().zip(&e.env.sh) {
@@ -3332,6 +3403,14 @@ impl ThreeEngine {
                 rp.set_bind_group(2, &obj_bind, &[]);
                 rp.draw(0..3, 0..1);
             }
+            // the star field over the dome and behind every surface drawn after it
+            if let Some(stars) = &star_buf {
+                rp.set_pipeline(&self.star_pipe);
+                rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 6])], &[0]);
+                rp.set_bind_group(2, &obj_bind, &[]);
+                rp.set_vertex_buffer(0, stars.slice(..));
+                rp.draw(0..4, 0..scene.stars.len() as u32);
+            }
             draw_list(&mut rp, &opaque_runs, self);
         }
         // ------------------------------------------------ transmission: backdrop + opaque, mip chain
@@ -3984,6 +4063,7 @@ mod tests {
                 draws: vec![draw(Vec3::new(48.0, 32.0, 0.0)), draw(Vec3::new(30.0, 40.0, 30.0))],
                 lights: vec![light],
                 env: None,
+                stars: Vec::new(),
                 splats: Vec::new(),
                 volumes: Vec::new(),
                 encode_srgb: false,
@@ -4064,6 +4144,7 @@ mod tests {
             }],
             lights: vec![light(profile(0.5))],
             env: None,
+            stars: Vec::new(),
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -4142,6 +4223,7 @@ mod tests {
             ],
             lights,
             env: None,
+            stars: Vec::new(),
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -4221,6 +4303,7 @@ mod tests {
             draws: vec![draw],
             lights: vec![light, ambient],
             env: None,
+            stars: Vec::new(),
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -4345,6 +4428,7 @@ mod tests {
             draws: vec![draw],
             lights: vec![light, ambient],
             env: None,
+            stars: Vec::new(),
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -4546,6 +4630,7 @@ mod tests {
             draws: vec![draw(&floor, Vec3::new(80.0, 48.0, 10.0)), draw(&ball, Vec3::new(30.0, 20.0, 0.0))],
             lights: Vec::new(),
             env: None,
+            stars: Vec::new(),
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -4644,6 +4729,7 @@ mod tests {
             ],
             lights: Vec::new(),
             env: None,
+            stars: Vec::new(),
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -4757,6 +4843,7 @@ mod tests {
                 light(LightKind::Point, Vec3::new(70.0, 10.0, -60.0)),
             ],
             env: None,
+            stars: Vec::new(),
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -4900,6 +4987,7 @@ mod tests {
             ],
             lights: vec![light(LightKind::Ambient), light(LightKind::Directional)],
             env: None,
+            stars: Vec::new(),
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -5050,6 +5138,7 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
             draws,
             lights: Vec::new(),
             env: None,
+            stars: Vec::new(),
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -5209,6 +5298,7 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
             draws: vec![draw],
             lights: Vec::new(),
             env: None,
+            stars: Vec::new(),
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -5304,6 +5394,7 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
             }],
             lights: Vec::new(),
             env: None,
+            stars: Vec::new(),
             splats: vec![SplatDraw { gpu: e.upload_splats(&points), model: Mat4::IDENTITY, opacity: 1.0 }],
             volumes: Vec::new(),
             encode_srgb: false,

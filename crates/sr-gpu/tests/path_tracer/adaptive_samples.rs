@@ -49,6 +49,7 @@ fn scene(eng: &ThreeEngine, size: [u32; 2]) -> Scene3 {
             contact: 0.0,
         }],
         env: None,
+        stars: Vec::new(),
         splats: Vec::new(),
         volumes: Vec::new(),
         encode_srgb: false,

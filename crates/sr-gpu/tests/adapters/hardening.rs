@@ -270,6 +270,7 @@ fn more_shadow_views_than_layers_render_without_a_validation_error() {
         }],
         lights,
         env: None,
+        stars: Vec::new(),
         splats: Vec::new(),
         volumes: Vec::new(),
         encode_srgb: false,

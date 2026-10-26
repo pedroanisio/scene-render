@@ -6,7 +6,7 @@
 
 use super::render_fx::element_props;
 use super::*;
-use crate::three::{Dof, Draw3, Env3, Light3, LightKind, Maps, MeshSrc, Scene3, SplatDraw, ThreeEngine};
+use crate::three::{Dof, Draw3, Env3, Light3, LightKind, Maps, MeshSrc, Scene3, SplatDraw, StarInstance, ThreeEngine};
 use crate::vector::Attrs;
 use glam::{DMat3, DMat4, DVec3, DVec4, Mat4, Vec3};
 use sr_3d::camera::{self, CameraParams, CameraView};
@@ -2556,15 +2556,7 @@ impl Renderer {
             return None;
         }
         let sky = self.dome_sky(&a);
-        let mut color = self.working_color(a.paint("color"), self.literal_linear([1.0; 4]));
-        if let Some(k) = a.opt("colorTemperature") {
-            let w = self.lin_srgb(sr_3d::light::kelvin_to_rgb(k));
-            for c in 0..3 {
-                color[c] *= w[c];
-            }
-        }
-        let scale = a.num("intensity", 1.0) as f32 * 2f32.powf(a.num("exposure", 0.0) as f32);
-        let intensity = scale * color[1].max(color[0]).max(color[2]);
+        let intensity = self.dome_gain(&a);
         let world = Self::pose_world(g, &ls.lights, l, &a, 0);
         let to_env = Mat4::from_quat(world.to_scale_rotation_translation().1).transpose();
         let (cam, ex, cam_size) = self.camera3(g, ctx.p, [g.size[0] as f32, g.size[1] as f32]);
@@ -2605,6 +2597,176 @@ impl Renderer {
         let decoded = resources::Decoded::single(w, hgt, px);
         let t = Arc::new(resources::upload(&self.gpu.device, &self.gpu.queue, &self.bgl1, &decoded, "sky"));
         self.sky_bg = Some((key, t.clone()));
+        Some((t, key))
+    }
+
+    /// The gain a dome light gives its sky and its star field: `intensity` · 2^`exposure` times the brightest channel
+    /// of its colour (SREP 71; the star-fields draft, rule 3).
+    fn dome_gain(&self, a: &Attrs) -> f32 {
+        let mut color = self.working_color(a.paint("color"), self.literal_linear([1.0; 4]));
+        if let Some(k) = a.opt("colorTemperature") {
+            let w = self.lin_srgb(sr_3d::light::kelvin_to_rgb(k));
+            for c in 0..3 {
+                color[c] *= w[c];
+            }
+        }
+        let scale = a.num("intensity", 1.0) as f32 * 2f32.powf(a.num("exposure", 0.0) as f32);
+        scale * color[1].max(color[0]).max(color[2])
+    }
+
+    /// The star field of the dome light a pass draws (the star-fields draft, rules 2 to 4 and 6): each star's world
+    /// direction, its flux in the working primaries times the dome's gain and `exposure`, and its disc's radius in
+    /// rendered pixels (`pointSize` output pixels across, its flux kept per output pixel under supersampling). The
+    /// epoch is the space's at this frame, else the field's `epoch`. Empty without a field or when it cannot be read,
+    /// which is reported.
+    pub(super) fn star_field3(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        only: Option<&[String]>,
+        exposure: f32,
+    ) -> Vec<StarInstance> {
+        let Some(ls) = ctx.p.scene.lights.as_ref() else { return Vec::new() };
+        let Some((l, f)) = ls.lights.iter().filter(|l| !only.is_some_and(|ids| !ids.contains(&l.id))).find_map(|l| {
+            l.children.iter().find_map(|c| match c {
+                m::LightChild::StarField(f) => Some((l, f)),
+                _ => None,
+            })
+        }) else {
+            return Vec::new();
+        };
+        let fail = |plan: &mut Plan, e: String| {
+            let e = format!("{}: starField: {e}", l.id);
+            if !plan.stats.errors.contains(&e) {
+                plan.stats.errors.push(e);
+            }
+            Vec::new()
+        };
+        let Some(asset) = ctx.p.scene.assets.iter().flat_map(|a| &a.children).find_map(|c| match c {
+            m::AssetsChild::Catalogue(c) if c.id == f.catalogue => Some(c),
+            _ => None,
+        }) else {
+            return fail(plan, format!("{:?} names no catalogue asset (SF2)", f.catalogue));
+        };
+        let path = match sr_model::assets::resolve(&asset.src, &Self::base_dir(ctx.p)) {
+            sr_model::assets::Resolved::Local(p) => p,
+            sr_model::assets::Resolved::Remote(scheme) => {
+                return fail(plan, format!("{} is remote ({scheme}) and is read from a local file", asset.src))
+            }
+        };
+        let (limit, zero) = (f.limit_magnitude, f.magnitude_zero.get());
+        let key = (path.clone(), limit.to_bits(), zero.to_bits());
+        let field = match self.star_fields.get(&key) {
+            Some(field) => field.clone(),
+            None => {
+                let read = sr_3d::space::stars::load_catalogue(&path, Some(&asset.digest))
+                    .and_then(|cat| sr_3d::stars::Field::new(&cat, limit, zero));
+                match read {
+                    Ok(field) => {
+                        let field = Arc::new(field);
+                        self.star_fields.insert(key, field.clone());
+                        field
+                    }
+                    Err(e) => return fail(plan, e.to_string()),
+                }
+            }
+        };
+        let (years, axes) = match ctx.p.skies.first() {
+            Some(Some(Ok(sky))) => match sky.star_frame(ctx.g.time) {
+                Ok(frame) => frame,
+                Err(e) => return fail(plan, e),
+            },
+            Some(Some(Err(e))) => return fail(plan, e.clone()),
+            _ => (f.epoch - 2000.0, sr_3d::stars::SCENE_FROM_ICRF_AXES),
+        };
+        let stars = match field.at(years, f.proper_motion, &axes) {
+            Ok(stars) => stars,
+            Err(e) => return fail(plan, e.to_string()),
+        };
+        if f.constellations != m::Constellations::None {
+            let note = format!("{}: starField constellations are not drawn", l.id);
+            if !plan.stats.unsupported.contains(&note) {
+                plan.stats.unsupported.push(note);
+            }
+        }
+        let a = Attrs { e: l as &dyn Element, props: element_props(ctx.g, &l.id) };
+        let ss = self.star_scale as f32;
+        let gain = self.dome_gain(&a) * exposure * ss * ss;
+        let world = Self::pose_world(ctx.g, &ls.lights, l, &a, 0);
+        let rotation = Mat4::from_quat(world.to_scale_rotation_translation().1);
+        let radius = f.point_size.get() as f32 / 2.0 * ss;
+        stars
+            .iter()
+            .map(|s| {
+                let d = s.direction.map(|v| v as f32);
+                let dir = rotation.transform_vector3(Vec3::from(d));
+                let c = self.lin_srgb(s.colour.map(|v| v as f32)).map(|v| v * s.flux as f32 * gain);
+                StarInstance { dir: [dir.x, dir.y, dir.z, 0.0], rgb: [c[0], c[1], c[2], radius] }
+            })
+            .collect()
+    }
+
+    /// The star field of a frame that has no 3D pass to draw it (the star-fields draft, rule 6): the stars through
+    /// the frame camera, splatted into a texture of the space with no coverage (they add to whatever is under them)
+    /// in the working representation, with its cache key.
+    pub(super) fn stars_background(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        space: &Space,
+    ) -> Option<(Arc<resources::Tex>, u64)> {
+        let g = ctx.g;
+        if (0..g.nodes.len()).any(|j| sr_eval::draws_in_3d(g.nodes[j].kind) && visible3(g, j)) {
+            return None;
+        }
+        let (cam, ex, cam_size) = self.camera3(g, ctx.p, [g.size[0] as f32, g.size[1] as f32]);
+        let stars = self.star_field3(plan, ctx, None, ex.exposure);
+        if stars.is_empty() {
+            return None;
+        }
+        if cam.orthographic {
+            let m = "a star field is not drawn through an orthographic camera".to_string();
+            if !plan.stats.unsupported.contains(&m) {
+                plan.stats.unsupported.push(m);
+            }
+            return None;
+        }
+        let vp = Self::clip_fix(&space.xform, space.size, cam_size) * cam.view_proj();
+        let [w, hgt] = space.size;
+        let key = h(&[
+            h(&stars.iter().flat_map(|s| s.dir.iter().chain(&s.rgb)).map(|v| v.to_bits() as u64).collect::<Vec<_>>()),
+            h(&vp.to_cols_array().map(|v| v.to_bits() as u64)),
+            ((w as u64) << 32) | hgt as u64,
+            self.working.linear as u64,
+            0x57a5,
+        ]);
+        if let Some((k, t)) = &self.stars_bg {
+            if *k == key {
+                return Some((t.clone(), key));
+            }
+        }
+        let points: Vec<sr_3d::stars::Point> = stars
+            .iter()
+            .filter_map(|s| {
+                let c = vp * glam::Vec4::new(s.dir[0], s.dir[1], s.dir[2], 0.0);
+                (c.w > 0.0).then(|| sr_3d::stars::Point {
+                    pixel: [(c.x / c.w + 1.0) as f64 * 0.5 * w as f64, (1.0 - c.y / c.w) as f64 * 0.5 * hgt as f64],
+                    rgb: [s.rgb[0], s.rgb[1], s.rgb[2]],
+                })
+            })
+            .collect();
+        let mut buf = vec![[0f32; 3]; (w * hgt) as usize];
+        sr_3d::stars::splat(&mut buf, space.size, &points, 2.0 * stars[0].rgb[3] as f64);
+        let px = buf
+            .iter()
+            .map(|c| {
+                let st = self.working.store([c[0] as f64, c[1] as f64, c[2] as f64, 0.0]);
+                [st[0] as f32, st[1] as f32, st[2] as f32, 0.0]
+            })
+            .collect();
+        let decoded = resources::Decoded::single(w, hgt, px);
+        let t = Arc::new(resources::upload(&self.gpu.device, &self.gpu.queue, &self.bgl1, &decoded, "stars"));
+        self.stars_bg = Some((key, t.clone()));
         Some((t, key))
     }
 
@@ -3436,10 +3598,27 @@ impl Renderer {
                 note_view_and_environment(plan, &g.nodes[j], &draws[first..], &cam, env.is_some());
             }
         }
+        // the post pass applies the camera's exposure to the stars as to the rest of the pass
+        let stars = self.star_field3(plan, ctx, only.as_deref(), 1.0);
+        if !stars.is_empty() {
+            let mut note = |m: &str| {
+                let m = format!("{}: {m}", n.id);
+                if !plan.stats.unsupported.contains(&m) {
+                    plan.stats.unsupported.push(m);
+                }
+            };
+            if cam.orthographic {
+                note("a star field is not drawn through an orthographic camera");
+            }
+            if ex.path.is_some() || geodesic.is_some() {
+                note("a star field is drawn by the raster renderer only");
+            }
+        }
         if draws.is_empty()
             && splats.is_empty()
             && volumes.is_empty()
             && geodesic.is_none()
+            && stars.is_empty()
             && !env.as_ref().map(|e| e.visible).unwrap_or(false)
         {
             return;
@@ -3458,6 +3637,7 @@ impl Renderer {
             draws,
             lights,
             env,
+            stars,
             splats,
             volumes,
             encode_srgb: !self.working.linear,

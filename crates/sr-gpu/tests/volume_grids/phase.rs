@@ -207,6 +207,7 @@ fn single_scattering_is_weighted_by_the_media_phase() {
             contact: 0.0,
         }],
         env: None,
+        stars: Vec::new(),
         splats: Vec::new(),
         volumes: Vec::new(),
         encode_srgb: false,

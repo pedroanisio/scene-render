@@ -102,6 +102,7 @@ fn scene(eng: &ThreeEngine, samples: u32) -> Scene3 {
             contact: 0.0,
         }],
         env: None,
+        stars: Vec::new(),
         splats: vec![SplatDraw { gpu: eng.upload_splats(&cloud), model: Mat4::IDENTITY, opacity: 1.0 }],
         volumes: Vec::new(),
         encode_srgb: false,
