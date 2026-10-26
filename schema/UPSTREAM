@@ -54,6 +54,9 @@ limitMagnitude's finiteness, magnitudeZero and pointSize being positiveDecimal; 
 SF4's second clause (no epoch beside a space) is the native warning W17: the epoch is ignored with a warning, as
 the draft states since c91308a, which also withdraws SF5 (every catalogue is read as J2000) and bounds SF1's proper
 motions to 100 arcseconds a year.
+Rule 5 is drawn as the draft rules since 5e6f46a: labels 14 output pixels high in the default sans-serif face, centred
+on the mean direction of every catalogue star of the constellation whatever limitMagnitude keeps, boundaries one output
+pixel wide and precessed from 1875 to J2000 only, both grey at 0.18 times the dome's gain behind every surface.
 V17 is SREP 12's one shared 1.8 gate: one pattern, p-v17 (after p-srep75), whose one assert is the conjunction of
 the drafts' clauses.
 The branch merges when those SREPs are accepted; this file then names the schema-1.8.0 tag.

@@ -398,6 +398,7 @@ fn tiled_frames_equal_whole_frames_in_grid_mode() {
         }],
         env: None,
         stars: Vec::new(),
+        star_overlay: None,
         splats: Vec::new(),
         volumes: vec![volume],
         encode_srgb: false,

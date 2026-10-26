@@ -25,6 +25,7 @@ pub mod safe_audit;
 pub mod serial;
 
 pub mod shader;
+pub mod star_overlay;
 pub mod text;
 pub mod text_audit;
 pub mod three;

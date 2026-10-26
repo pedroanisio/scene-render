@@ -91,6 +91,7 @@ fn scene(eng: &mut ThreeEngine, floor: f32) -> Scene3 {
         }],
         env: None,
         stars: Vec::new(),
+        star_overlay: None,
         splats: Vec::new(),
         volumes: Vec::new(),
         encode_srgb: false,

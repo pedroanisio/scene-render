@@ -385,6 +385,14 @@ pub struct StarInstance {
     pub rgb: [f32; 4],
 }
 
+/// Rule 5 of the star-fields draft over a pass: the coverage of the constellation labels or boundaries, one byte a
+/// pixel of the pass, rows first, and their grey.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StarOverlay {
+    pub coverage: Vec<u8>,
+    pub grey: [f32; 3],
+}
+
 /// One splat cloud.
 pub struct SplatDraw {
     pub gpu: Arc<SplatGpu>,
@@ -416,6 +424,8 @@ pub struct Scene3 {
     pub env: Option<Env3>,
     /// The dome light's star field, drawn behind every surface.
     pub stars: Vec<StarInstance>,
+    /// Its constellation labels or boundaries, drawn with it.
+    pub star_overlay: Option<StarOverlay>,
     pub splats: Vec<SplatDraw>,
     /// Participating media in the same world and depth system as surface geometry.
     pub volumes: Vec<crate::volume::VolumeDraw>,
@@ -458,6 +468,7 @@ impl Scene3 {
             lights,
             env,
             stars,
+            star_overlay,
             splats,
             volumes,
             encode_srgb,
@@ -468,6 +479,7 @@ impl Scene3 {
         } = self;
         if env.is_some()
             || !stars.is_empty()
+            || star_overlay.is_some()
             || !splats.is_empty()
             || !volumes.is_empty()
             || path.is_some()
@@ -911,6 +923,8 @@ pub struct ThreeEngine {
     shadow_pipe: wgpu::RenderPipeline,
     dome_pipe: wgpu::RenderPipeline,
     star_pipe: wgpu::RenderPipeline,
+    star_overlay_pipe: wgpu::RenderPipeline,
+    bgl_star_overlay: wgpu::BindGroupLayout,
     splat_pipe: wgpu::RenderPipeline,
     blit_pipe: wgpu::RenderPipeline,
     under_pipe: wgpu::RenderPipeline,
@@ -1133,6 +1147,8 @@ struct Kit {
     shadow_pipe: wgpu::RenderPipeline,
     dome_pipe: wgpu::RenderPipeline,
     star_pipe: wgpu::RenderPipeline,
+    star_overlay_pipe: wgpu::RenderPipeline,
+    bgl_star_overlay: wgpu::BindGroupLayout,
     splat_pipe: wgpu::RenderPipeline,
     blit_pipe: wgpu::RenderPipeline,
     ssao_pipe: wgpu::RenderPipeline,
@@ -1369,6 +1385,46 @@ impl Kit {
                 cache: None,
             })
         };
+        // rule 5's labels and boundaries: a mask over the frame added in one grey (three_star_overlay.wgsl)
+        let bgl_star_overlay = bgl(
+            &[
+                tex_entry(0, wgpu::ShaderStages::FRAGMENT, F, D2, false),
+                buf_entry(1, wgpu::ShaderStages::FRAGMENT, uni, false),
+            ],
+            "three-star-overlay",
+        );
+        let star_overlay_pipe = {
+            let overlay_mod = module(include_str!("three_star_overlay.wgsl").to_string(), "three-star-overlay");
+            let _creation = crate::gpu::creation_lock();
+            d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("three-star-overlay"),
+                layout: Some(&layout(&[&bgl_star_overlay])),
+                vertex: wgpu::VertexState {
+                    module: &overlay_mod,
+                    entry_point: Some("vs_overlay"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(depth_state(false)),
+                multisample: ms,
+                fragment: Some(wgpu::FragmentState {
+                    module: &overlay_mod,
+                    entry_point: Some("fs_overlay"),
+                    compilation_options: Default::default(),
+                    targets: &target(Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent::OVER,
+                    })),
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
         let splat_layout = layout(&[&bgl_frame, &bgl_splat]);
         let splat_pipe = {
             let _creation = crate::gpu::creation_lock();
@@ -1554,6 +1610,8 @@ impl Kit {
             shadow_pipe,
             dome_pipe,
             star_pipe,
+            star_overlay_pipe,
+            bgl_star_overlay,
             splat_pipe,
             blit_pipe,
             ssao_pipe,
@@ -1768,6 +1826,8 @@ impl ThreeEngine {
         let shadow_pipe = kit.shadow_pipe.clone();
         let dome_pipe = kit.dome_pipe.clone();
         let star_pipe = kit.star_pipe.clone();
+        let star_overlay_pipe = kit.star_overlay_pipe.clone();
+        let bgl_star_overlay = kit.bgl_star_overlay.clone();
         let splat_pipe = kit.splat_pipe.clone();
         let blit_pipe = kit.blit_pipe.clone();
         let ssao_pipe = kit.ssao_pipe.clone();
@@ -1859,6 +1919,8 @@ impl ThreeEngine {
             shadow_pipe,
             dome_pipe,
             star_pipe,
+            star_overlay_pipe,
+            bgl_star_overlay,
             splat_pipe,
             blit_pipe,
             under_pipe,
@@ -2736,6 +2798,27 @@ impl ThreeEngine {
                 usage: wgpu::BufferUsages::VERTEX,
             })
         });
+        let star_overlay = scene.star_overlay.as_ref().map(|o| {
+            debug_assert_eq!(o.coverage.len(), (size[0] * size[1]) as usize);
+            let t = texture(&self.device, size, wgpu::TextureFormat::R8Unorm, 1, 1, 1, "three-star-overlay");
+            self.write_tex(&t, 0, size, &o.coverage, 1);
+            let grey = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("three-star-overlay"),
+                contents: bytemuck::cast_slice(&[o.grey[0], o.grey[1], o.grey[2], 0.0]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("three-star-overlay"),
+                layout: &self.bgl_star_overlay,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&t.create_view(&Default::default())),
+                    },
+                    wgpu::BindGroupEntry { binding: 1, resource: grey.as_entire_binding() },
+                ],
+            })
+        });
         let mut sh = [[0.0f32; 4]; 9];
         if let Some(e) = env {
             for (dst, src) in sh.iter_mut().zip(&e.env.sh) {
@@ -3403,7 +3486,15 @@ impl ThreeEngine {
                 rp.set_bind_group(2, &obj_bind, &[]);
                 rp.draw(0..3, 0..1);
             }
-            // the star field over the dome and behind every surface drawn after it
+            // the constellation overlay and the star field over the dome and behind every surface drawn after them
+            if let Some(overlay) = &star_overlay {
+                rp.set_pipeline(&self.star_overlay_pipe);
+                rp.set_bind_group(0, overlay, &[]);
+                rp.draw(0..3, 0..1);
+                rp.set_bind_group(0, &fb_plain, &[]);
+                rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 6])], &[0]);
+                rp.set_bind_group(2, &obj_bind, &[]);
+            }
             if let Some(stars) = &star_buf {
                 rp.set_pipeline(&self.star_pipe);
                 rp.set_bind_group(1, &mat_binds[&preps.first().map(|p| p.key).unwrap_or([0; 6])], &[0]);
@@ -4064,6 +4155,7 @@ mod tests {
                 lights: vec![light],
                 env: None,
                 stars: Vec::new(),
+                star_overlay: None,
                 splats: Vec::new(),
                 volumes: Vec::new(),
                 encode_srgb: false,
@@ -4145,6 +4237,7 @@ mod tests {
             lights: vec![light(profile(0.5))],
             env: None,
             stars: Vec::new(),
+            star_overlay: None,
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -4224,6 +4317,7 @@ mod tests {
             lights,
             env: None,
             stars: Vec::new(),
+            star_overlay: None,
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -4304,6 +4398,7 @@ mod tests {
             lights: vec![light, ambient],
             env: None,
             stars: Vec::new(),
+            star_overlay: None,
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -4429,6 +4524,7 @@ mod tests {
             lights: vec![light, ambient],
             env: None,
             stars: Vec::new(),
+            star_overlay: None,
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -4631,6 +4727,7 @@ mod tests {
             lights: Vec::new(),
             env: None,
             stars: Vec::new(),
+            star_overlay: None,
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -4730,6 +4827,7 @@ mod tests {
             lights: Vec::new(),
             env: None,
             stars: Vec::new(),
+            star_overlay: None,
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -4844,6 +4942,7 @@ mod tests {
             ],
             env: None,
             stars: Vec::new(),
+            star_overlay: None,
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -4988,6 +5087,7 @@ mod tests {
             lights: vec![light(LightKind::Ambient), light(LightKind::Directional)],
             env: None,
             stars: Vec::new(),
+            star_overlay: None,
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -5139,6 +5239,7 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
             lights: Vec::new(),
             env: None,
             stars: Vec::new(),
+            star_overlay: None,
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -5299,6 +5400,7 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
             lights: Vec::new(),
             env: None,
             stars: Vec::new(),
+            star_overlay: None,
             splats: Vec::new(),
             volumes: Vec::new(),
             encode_srgb: false,
@@ -5395,6 +5497,7 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
             lights: Vec::new(),
             env: None,
             stars: Vec::new(),
+            star_overlay: None,
             splats: vec![SplatDraw { gpu: e.upload_splats(&points), model: Mat4::IDENTITY, opacity: 1.0 }],
             volumes: Vec::new(),
             encode_srgb: false,

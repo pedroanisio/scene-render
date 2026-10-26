@@ -50,6 +50,7 @@ fn scene(eng: &ThreeEngine, size: [u32; 2]) -> Scene3 {
         }],
         env: None,
         stars: Vec::new(),
+        star_overlay: None,
         splats: Vec::new(),
         volumes: Vec::new(),
         encode_srgb: false,

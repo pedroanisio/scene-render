@@ -637,6 +637,7 @@ fn tiled_frames_equal_whole_frames_with_light_through_glass() {
         }],
         env: None,
         stars: Vec::new(),
+        star_overlay: None,
         splats: Vec::new(),
         volumes: Vec::new(),
         encode_srgb: false,

@@ -42,6 +42,7 @@ fn repeated_prototypes_fit_without_triangle_expansion_and_match_expanded_pixels(
         lights: Vec::new(),
         env: None,
         stars: Vec::new(),
+        star_overlay: None,
         splats: Vec::new(),
         volumes: Vec::new(),
         encode_srgb: false,

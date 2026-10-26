@@ -19,6 +19,7 @@ fn scene(draws: Vec<Draw3>) -> Scene3 {
         lights: Vec::new(),
         env: None,
         stars: Vec::new(),
+        star_overlay: None,
         splats: Vec::new(),
         volumes: Vec::new(),
         encode_srgb: false,

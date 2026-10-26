@@ -2614,33 +2614,35 @@ impl Renderer {
         scale * color[1].max(color[0]).max(color[2])
     }
 
-    /// The star field of the dome light a pass draws (the star-fields draft, rules 2 to 4 and 6): each star's world
+    /// The star field of the dome light a pass draws (the star-fields draft, rules 2 to 6): each star's world
     /// direction, its flux in the working primaries times the dome's gain and `exposure`, and its disc's radius in
-    /// rendered pixels (`pointSize` output pixels across, its flux kept per output pixel under supersampling). The
-    /// epoch is the space's at this frame, else the field's `epoch`. Empty without a field or when it cannot be read,
-    /// which is reported.
+    /// rendered pixels (`pointSize` output pixels across, its flux kept per output pixel under supersampling); and,
+    /// with `constellations` and a `view` (the clip transform and the rendered size), rule 5's labels or boundaries as
+    /// a coverage mask with their grey. The epoch is the space's at this frame, else the field's `epoch`. Empty
+    /// without a field or when it cannot be read, which is reported.
     pub(super) fn star_field3(
         &mut self,
         plan: &mut Plan,
         ctx: &Ctx,
         only: Option<&[String]>,
         exposure: f32,
-    ) -> Vec<StarInstance> {
-        let Some(ls) = ctx.p.scene.lights.as_ref() else { return Vec::new() };
+        view: Option<(Mat4, [u32; 2])>,
+    ) -> StarDraw {
+        let Some(ls) = ctx.p.scene.lights.as_ref() else { return StarDraw::default() };
         let Some((l, f)) = ls.lights.iter().filter(|l| !only.is_some_and(|ids| !ids.contains(&l.id))).find_map(|l| {
             l.children.iter().find_map(|c| match c {
                 m::LightChild::StarField(f) => Some((l, f)),
                 _ => None,
             })
         }) else {
-            return Vec::new();
+            return StarDraw::default();
         };
         let fail = |plan: &mut Plan, e: String| {
             let e = format!("{}: starField: {e}", l.id);
             if !plan.stats.errors.contains(&e) {
                 plan.stats.errors.push(e);
             }
-            Vec::new()
+            StarDraw::default()
         };
         let Some(asset) = ctx.p.scene.assets.iter().flat_map(|a| &a.children).find_map(|c| match c {
             m::AssetsChild::Catalogue(c) if c.id == f.catalogue => Some(c),
@@ -2683,27 +2685,45 @@ impl Renderer {
             Ok(stars) => stars,
             Err(e) => return fail(plan, e.to_string()),
         };
-        if f.constellations != m::Constellations::None {
-            let note = format!("{}: starField constellations are not drawn", l.id);
-            if !plan.stats.unsupported.contains(&note) {
-                plan.stats.unsupported.push(note);
-            }
-        }
         let a = Attrs { e: l as &dyn Element, props: element_props(ctx.g, &l.id) };
         let ss = self.star_scale as f32;
-        let gain = self.dome_gain(&a) * exposure * ss * ss;
+        let dome = self.dome_gain(&a) * exposure;
+        let gain = dome * ss * ss;
         let world = Self::pose_world(ctx.g, &ls.lights, l, &a, 0);
         let rotation = Mat4::from_quat(world.to_scale_rotation_translation().1);
+        let turn = |d: [f64; 3]| rotation.transform_vector3(Vec3::from(d.map(|v| v as f32)));
         let radius = f.point_size.get() as f32 / 2.0 * ss;
-        stars
+        let stars = stars
             .iter()
             .map(|s| {
-                let d = s.direction.map(|v| v as f32);
-                let dir = rotation.transform_vector3(Vec3::from(d));
+                let dir = turn(s.direction);
                 let c = self.lin_srgb(s.colour.map(|v| v as f32)).map(|v| v * s.flux as f32 * gain);
                 StarInstance { dir: [dir.x, dir.y, dir.z, 0.0], rgb: [c[0], c[1], c[2], radius] }
             })
-            .collect()
+            .collect();
+        let overlay = match (f.constellations, view) {
+            (m::Constellations::None, _) | (_, None) => None,
+            (kind, Some((vp, size))) => {
+                let labels = match kind {
+                    m::Constellations::Labels => match field.labels(years, f.proper_motion, &axes) {
+                        Ok(labels) => labels.into_iter().map(|(a, d)| (a, turn(d))).collect(),
+                        Err(e) => return fail(plan, e.to_string()),
+                    },
+                    _ => Vec::new(),
+                };
+                let lines: Vec<Vec<Vec3>> = match kind {
+                    m::Constellations::Boundaries => sr_3d::stars::boundaries()
+                        .iter()
+                        .map(|l| l.iter().map(|d| turn(sr_3d::space::mat_apply(&axes, *d))).collect())
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let marks = crate::star_overlay::Marks { labels: &labels, lines: &lines };
+                let mask = crate::star_overlay::coverage(self.text.lib(), &marks, &vp, size, ss as f64);
+                Some((mask, self.lin_srgb([crate::star_overlay::GREY * dome; 3])))
+            }
+        };
+        StarDraw { stars, overlay }
     }
 
     /// The star field of a frame that has no 3D pass to draw it (the star-fields draft, rule 6): the stars through
@@ -2720,8 +2740,10 @@ impl Renderer {
             return None;
         }
         let (cam, ex, cam_size) = self.camera3(g, ctx.p, [g.size[0] as f32, g.size[1] as f32]);
-        let stars = self.star_field3(plan, ctx, None, ex.exposure);
-        if stars.is_empty() {
+        let vp = Self::clip_fix(&space.xform, space.size, cam_size) * cam.view_proj();
+        let view = (!cam.orthographic).then_some((vp, space.size));
+        let StarDraw { stars, overlay } = self.star_field3(plan, ctx, None, ex.exposure, view);
+        if stars.is_empty() && overlay.is_none() {
             return None;
         }
         if cam.orthographic {
@@ -2731,10 +2753,16 @@ impl Renderer {
             }
             return None;
         }
-        let vp = Self::clip_fix(&space.xform, space.size, cam_size) * cam.view_proj();
         let [w, hgt] = space.size;
         let key = h(&[
             h(&stars.iter().flat_map(|s| s.dir.iter().chain(&s.rgb)).map(|v| v.to_bits() as u64).collect::<Vec<_>>()),
+            overlay.as_ref().map_or(0, |(mask, grey)| {
+                let words: Vec<u64> = mask
+                    .chunks(8)
+                    .map(|c| c.iter().enumerate().fold(0u64, |w, (i, &b)| w | (b as u64) << (8 * i)))
+                    .collect();
+                h(&[h(&words), h(&grey.map(|v| v.to_bits() as u64))])
+            }),
             h(&vp.to_cols_array().map(|v| v.to_bits() as u64)),
             ((w as u64) << 32) | hgt as u64,
             self.working.linear as u64,
@@ -2756,7 +2784,18 @@ impl Renderer {
             })
             .collect();
         let mut buf = vec![[0f32; 3]; (w * hgt) as usize];
-        sr_3d::stars::splat(&mut buf, space.size, &points, 2.0 * stars[0].rgb[3] as f64);
+        if let Some(s) = stars.first() {
+            sr_3d::stars::splat(&mut buf, space.size, &points, 2.0 * s.rgb[3] as f64);
+        }
+        // rule 5's labels or boundaries add their grey where they cover
+        if let Some((mask, grey)) = &overlay {
+            for (c, &m) in buf.iter_mut().zip(mask) {
+                let k = m as f32 / 255.0;
+                for (c, g) in c.iter_mut().zip(grey) {
+                    *c += g * k;
+                }
+            }
+        }
         let px = buf
             .iter()
             .map(|c| {
@@ -3599,7 +3638,10 @@ impl Renderer {
             }
         }
         // the post pass applies the camera's exposure to the stars as to the rest of the pass
-        let stars = self.star_field3(plan, ctx, only.as_deref(), 1.0);
+        let clip_fix = Self::clip_fix(&to_target, space.size, cam_size);
+        let view = (!cam.orthographic).then(|| (clip_fix * cam.view_proj(), space.size));
+        let StarDraw { stars, overlay: star_overlay } = self.star_field3(plan, ctx, only.as_deref(), 1.0, view);
+        let star_overlay = star_overlay.map(|(coverage, grey)| crate::three::StarOverlay { coverage, grey });
         if !stars.is_empty() {
             let mut note = |m: &str| {
                 let m = format!("{}: {m}", n.id);
@@ -3619,6 +3661,7 @@ impl Renderer {
             && volumes.is_empty()
             && geodesic.is_none()
             && stars.is_empty()
+            && star_overlay.is_none()
             && !env.as_ref().map(|e| e.visible).unwrap_or(false)
         {
             return;
@@ -3626,7 +3669,6 @@ impl Renderer {
         plan.stats.objects3d += draws.len();
         plan.stats.triangles += draws.iter().map(|d| d.mesh_triangles()).sum::<u64>();
         plan.stats.splats += splats.iter().map(|s| s.gpu.n as u64).sum::<u64>();
-        let clip_fix = Self::clip_fix(&to_target, space.size, cam_size);
         let scene = Scene3 {
             cam,
             clip_fix,
@@ -3638,6 +3680,7 @@ impl Renderer {
             lights,
             env,
             stars,
+            star_overlay,
             splats,
             volumes,
             encode_srgb: !self.working.linear,
@@ -3713,6 +3756,14 @@ impl Renderer {
             c.pre = Some(Box::new(AdjPre { snapshot, passes: Vec::new(), three: Some(Box::new((scene, out))) }));
         }
     }
+}
+
+/// A dome's star field ready to draw: its stars and, with constellations, rule 5's overlay (a coverage mask over the
+/// rendered frame, one byte a pixel, and its grey in the working primaries).
+#[derive(Default)]
+pub(super) struct StarDraw {
+    pub stars: Vec<StarInstance>,
+    pub overlay: Option<(Vec<u8>, [f32; 3])>,
 }
 
 impl Renderer {

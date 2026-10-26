@@ -84,7 +84,7 @@ pub struct TextCache {
 }
 
 impl TextCache {
-    fn lib(&mut self) -> &mut FontLib {
+    pub(crate) fn lib(&mut self) -> &mut FontLib {
         self.lib.get_or_insert_with(|| FontLib::new(true))
     }
 
