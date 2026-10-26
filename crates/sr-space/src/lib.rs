@@ -17,6 +17,7 @@
 pub mod elements;
 pub mod frames;
 pub mod spk;
+pub mod stars;
 pub mod time;
 
 pub use elements::{
@@ -51,4 +52,7 @@ pub enum SpaceError {
     /// A frame or mapping out of rule 6.
     #[error("frame: {0}")]
     Frame(String),
+    /// A star catalogue or field out of the star-fields draft.
+    #[error("stars: {0}")]
+    Stars(String),
 }

@@ -3349,6 +3349,7 @@ dependencies = [
 name = "sr-space"
 version = "0.8.0"
 dependencies = [
+ "flate2",
  "serde_json",
  "sha2",
  "thiserror",

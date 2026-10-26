@@ -1027,7 +1027,9 @@ crates/sr-sim/src/          physics (Rapier world, joints, checkpoints), physics
                             fluid, slime, erosion, rng; cratering (impact craters), granular (deposit beds), hydrostatics, exchange (coupled solvers), gr and
                             sedov (analytic references), stress, surface, ocean, particles3d, pyro
 crates/sr-space/src/         the time-frames draft: time (UTC, TT and TDB, the frame clock), spk (JPL SPK ephemerides),
-                            elements (approximate Keplerian elements), frames (ICRF, ecliptic, IAU body-fixed frames)
+                            elements (approximate Keplerian elements), frames (ICRF, ecliptic, IAU body-fixed frames);
+                            the star-fields draft: stars (Bright Star Catalogue, flux, blackbody colour, proper motion,
+                            constellations)
 crates/sr-volume/src/        sparse volumetric grids and bounded deterministic caches: openvdb (OpenVDB ingestion), sequence
                             (cache timing), bake (content-addressed bakes, SRVSEQ), advection (motion-aware interpolation),
                             medium (participating media), thermal (blackbody emission)
