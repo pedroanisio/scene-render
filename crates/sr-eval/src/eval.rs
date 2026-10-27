@@ -1968,6 +1968,8 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
         }
     }
 
+    // the orbits draft: orbits and N-body members stand where their centres and the system put them
+    crate::orbits::resolve(p, &mut out.nodes, t, &mut out.failures);
     crate::rig::post_pass(p, &mut out.nodes, &out.inst, t);
     // shapes on pdf regions follow their layer, and connectors read their ends as drawn, once every pose is final
     crate::region::resolve(p, &mut out.nodes);

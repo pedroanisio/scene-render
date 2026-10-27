@@ -19,6 +19,8 @@ pub struct Sky {
     space: Space,
     file: Option<Spk>,
     pixels_per_meter: f64,
+    /// The orbits draft's orbits and N-body system.
+    motion: crate::orbits::Motion,
 }
 
 impl Sky {
@@ -67,7 +69,13 @@ impl Sky {
             }
         };
         let pixels_per_meter = scene.physics.as_ref().map_or(100.0, |ph| ph.pixels_per_meter.get());
-        Ok(Sky { space, file, pixels_per_meter })
+        let positions = file.as_ref().map_or(Positions::Approximate, Positions::File);
+        let motion = crate::orbits::Motion::read(scene, s, &space, positions, pixels_per_meter)?;
+        Ok(Sky { space, file, pixels_per_meter, motion })
+    }
+
+    pub(crate) fn motion(&self) -> &crate::orbits::Motion {
+        &self.motion
     }
 
     fn positions(&self) -> Positions<'_> {

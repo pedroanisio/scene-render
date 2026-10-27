@@ -1271,6 +1271,10 @@ fn template(
             }
         }
     });
+    // the orbits draft: a cluster's bodies are spheres named by its prefix
+    if let Err(e) = crate::orbits::add_clusters(&mut scene) {
+        diags.push(err("E10", e, Loc::default(), "/scene/space/nbody"));
+    }
     Templated { scene, params, size, reframe }
 }
 

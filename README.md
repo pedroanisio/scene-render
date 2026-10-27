@@ -982,7 +982,7 @@ crates/sr-eval/src/         program (templating, instantiation, compilation), ev
                             (pinned fonts), stroke_font (Hershey fonts), fractal (SREP 75), parametric (SREP 70), plots and axes (the plots draft), fields and field_node (the fields draft), fold (reactive values), joints (model sockets),
                             local_ids (SREP 87), mesh_sequence (mesh caches), physcache (baked physics), inert (rule I8), pending (accepted
                             SREPs not implemented); the cratering and fracture family: crater, debris, splash, fracture, group (coupled
-                            solvers), ocean, particles3d, pyro, terrain, time_frames (bodies placed by a space), solid, voxel, voxels, voxel_asset, voxel_cache, voxel_crater,
+                            solvers), ocean, orbits (orbits and N-body members placed by a space), particles3d, pyro, terrain, time_frames (bodies placed by a space), solid, voxel, voxels, voxel_asset, voxel_cache, voxel_crater,
                             voxel_cut
 crates/sr-3d/src/           import (glTF, OBJ, PLY, splats, FBX, USD), usdc (USD crate reader), prim (primitives,
                             extrusion), clay (SDF blobs, surface nets), anim, material,
