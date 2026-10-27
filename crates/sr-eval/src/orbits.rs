@@ -33,6 +33,8 @@ pub struct TrailFrame {
     /// Linear RGBA, or none for the object's base colour.
     pub color: Option<[f32; 4]>,
     pub mesh: crate::parametric::ParamMesh,
+    /// Where the ribbon's vertices are about, in scene units: the newest place.
+    pub anchor: [f64; 3],
 }
 
 /// The seconds either side of the epoch over which a member's velocity is differenced from the approximate
@@ -351,8 +353,12 @@ fn trail_of(
         return Ok(None);
     }
     let width = tr.width.get();
+    // the ribbon about its newest place in binary64, so that its binary32 vertices resolve its width far from the
+    // scene's origin (the scale draft's rule 4)
+    let anchor = points[points.len() - 1];
+    let about: Vec<[f64; 3]> = points.iter().map(|q| std::array::from_fn(|c| q[c] - anchor[c])).collect();
     let mut mesh =
-        crate::axes::tube_mesh(&points, width / 2.0, TRAIL_SEGMENTS, false).map_err(|e| format!("{id}: trail: {e}"))?;
+        crate::axes::tube_mesh(&about, width / 2.0, TRAIL_SEGMENTS, false).map_err(|e| format!("{id}: trail: {e}"))?;
     let last = (points.len() - 1) as f32;
     let mut words: Vec<u64> = Vec::with_capacity(mesh.vertices.len() * 7);
     for v in &mut mesh.vertices {
@@ -362,7 +368,7 @@ fn trail_of(
     }
     let color = tr.color.as_ref().map(|c| crate::axes::linear(&sr_model::values::Paint::Color(c.clone())));
     let mesh = crate::parametric::ParamMesh { key: crate::rng::hash(&words), mesh };
-    Ok(Some(TrailFrame { points, alphas, width, color, mesh }))
+    Ok(Some(TrailFrame { points, alphas, width, color, mesh, anchor }))
 }
 
 /// A body's position and velocity about `origin` at ephemeris time `et`, km and km/s in ICRF axes: the file's

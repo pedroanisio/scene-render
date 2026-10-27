@@ -204,7 +204,7 @@ impl Renderer {
                     bodies.push(Body { id: None, grid: &v.grid, revision: v.revision, steps: Some(&v.steps), world });
                 }
                 for piece in v.pieces.iter().filter(|p| p.enabled) {
-                    let pose = Mat4::from_cols_array(&piece.pose3.map(|c| c as f32));
+                    let pose = self.rebased(glam::DMat4::from_cols_array(&piece.pose3));
                     bodies.push(Body {
                         id: Some(piece.body),
                         grid: &piece.grid,

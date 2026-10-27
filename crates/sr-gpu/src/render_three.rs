@@ -103,6 +103,8 @@ pub(super) struct CamExtras {
     pub ssr: bool,
     /// Path tracing (camera renderer="pathtrace").
     pub path: Option<crate::pathtrace::PathOpts>,
+    /// The point the camera's view is rebased about ([`origin_about`]): the view takes world positions less it.
+    pub origin: DVec3,
 }
 
 impl CamExtras {
@@ -123,6 +125,7 @@ impl CamExtras {
             }),
             self.ao.map_or(0, |a| h(&[1, a[0].to_bits() as u64, a[1].to_bits() as u64])),
             self.path.map_or(0, |p| h(&[1, p.samples as u64, p.bounces as u64, p.denoise as u64])),
+            h(&self.origin.to_array().map(f64::to_bits)),
         ])
     }
 }
@@ -222,8 +225,33 @@ fn flag(a: &Attrs, name: &str, d: bool) -> bool {
 
 /// 2D affine embedded in 3D (acts on x and y, keeps z).
 fn embed(a: &Affine) -> Mat4 {
-    let [aa, b, c, d, e, f] = a.0.map(|v| v as f32);
-    Mat4::from_cols_array(&[aa, b, 0.0, 0.0, c, d, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, e, f, 0.0, 1.0])
+    embed_d(a).as_mat4()
+}
+
+/// [`embed`] in binary64.
+fn embed_d(a: &Affine) -> DMat4 {
+    let [aa, b, c, d, e, f] = a.0;
+    DMat4::from_cols_array(&[aa, b, 0.0, 0.0, c, d, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, e, f, 0.0, 1.0])
+}
+
+/// The scale draft's rule 4, the floating origin: the point a 3D scene seen from `eye` is rebased about before any
+/// binary32 arithmetic, the eye rounded to 1024 pixels on each axis. A camera moving within one cell keeps the
+/// scene's binary32 positions (and what is cached of them), and a position by the eye keeps a binary32 error of at
+/// most 2^-15 pixel (half the spacing at 512). A coordinate that is not finite keeps the document's origin.
+pub(super) fn origin_about(eye: DVec3) -> DVec3 {
+    const CELL: f64 = 1024.0;
+    let axis = |e: f64| if e.is_finite() { (e / CELL).round() * CELL } else { 0.0 };
+    DVec3::new(axis(eye.x), axis(eye.y), axis(eye.z))
+}
+
+/// A binary64 world matrix less the origin `o`.
+fn rebase_d(m: DMat4, o: DVec3) -> DMat4 {
+    DMat4::from_cols(m.x_axis, m.y_axis, m.z_axis, m.w_axis - o.extend(0.0) * m.w_axis.w)
+}
+
+/// A binary64 world matrix less the origin `o`, in binary32: what the GPU draws.
+fn rebase(m: DMat4, o: DVec3) -> Mat4 {
+    rebase_d(m, o).as_mat4()
 }
 
 /// A picture placed in 2.5D, being drawn into: `k` takes a point of its sheet's space (pixels of `to_sheet`, the space
@@ -307,32 +335,28 @@ fn aerial_options(a: &Attrs, o: &PhysicalSkyOptions) -> Result<(bool, Option<Fog
 }
 
 /// A node's own 3D transform: T(x, y, z) · Rz · Ry · Rx · S.
-fn local3(a: &Attrs) -> Mat4 {
-    let deg = |n: &str| (a.num(n, 0.0) as f32).to_radians();
-    Mat4::from_translation(Vec3::new(a.num("x", 0.0) as f32, a.num("y", 0.0) as f32, a.num("z", 0.0) as f32))
-        * Mat4::from_rotation_z(deg("rotation"))
-        * Mat4::from_rotation_y(deg("rotationY"))
-        * Mat4::from_rotation_x(deg("rotationX"))
-        * Mat4::from_scale(Vec3::new(
-            a.num("scaleX", 1.0) as f32,
-            a.num("scaleY", 1.0) as f32,
-            a.num("scaleZ", 1.0) as f32,
-        ))
+fn local3(a: &Attrs) -> DMat4 {
+    let deg = |n: &str| a.num(n, 0.0).to_radians();
+    DMat4::from_translation(DVec3::new(a.num("x", 0.0), a.num("y", 0.0), a.num("z", 0.0)))
+        * DMat4::from_rotation_z(deg("rotation"))
+        * DMat4::from_rotation_y(deg("rotationY"))
+        * DMat4::from_rotation_x(deg("rotationX"))
+        * DMat4::from_scale(DVec3::new(a.num("scaleX", 1.0), a.num("scaleY", 1.0), a.num("scaleZ", 1.0)))
 }
 
 /// Pose of a camera or light: T(x, y, z) · R_yaw · R_pitch · R_roll.
-fn pose3(a: &Attrs) -> Mat4 {
-    let deg = |n: &str| (a.num(n, 0.0) as f32).to_radians();
-    Mat4::from_translation(Vec3::new(a.num("x", 0.0) as f32, a.num("y", 0.0) as f32, a.num("z", 0.0) as f32))
-        * Mat4::from_rotation_y(deg("yaw"))
-        * Mat4::from_rotation_x(deg("pitch"))
-        * Mat4::from_rotation_z(deg("roll"))
+fn pose3(a: &Attrs) -> DMat4 {
+    let deg = |n: &str| a.num(n, 0.0).to_radians();
+    DMat4::from_translation(DVec3::new(a.num("x", 0.0), a.num("y", 0.0), a.num("z", 0.0)))
+        * DMat4::from_rotation_y(deg("yaw"))
+        * DMat4::from_rotation_x(deg("pitch"))
+        * DMat4::from_rotation_z(deg("roll"))
 }
 
 /// The 3D parent of an element, its influence and the joint of the parent's model the element is attached to:
 /// `@parent`, else the target of a `transformConstraint type="parent"`; `@parentJoint` (or the constraint's `@targetJoint`)
 /// names the joint.
-fn parent3(e: &dyn Element) -> Option<(String, f32, Option<String>)> {
+fn parent3(e: &dyn Element) -> Option<(String, f64, Option<String>)> {
     let joint = |ea: &Attrs| ea.str("parentJoint").filter(|j| !j.is_empty());
     if let Some(AttrValue::Str(pid)) = e.get_attr("parent") {
         return Some((pid.to_string(), 1.0, joint(&Attrs { e, props: None })));
@@ -343,7 +367,7 @@ fn parent3(e: &dyn Element) -> Option<(String, f32, Option<String>)> {
             .then(|| {
                 let own = joint(&Attrs { e, props: None });
                 let at = ca.str("targetJoint").filter(|j| !j.is_empty()).or(own);
-                ca.str("target").map(|t| (t, ca.num("influence", 1.0).clamp(0.0, 1.0) as f32, at))
+                ca.str("target").map(|t| (t, ca.num("influence", 1.0).clamp(0.0, 1.0), at))
             })
             .flatten()
     })
@@ -362,19 +386,51 @@ fn ref_id(g: &FrameGraph, scope: &str, id: &str) -> Option<String> {
 }
 
 /// The frame of the joint `name` of the model drawn by object `id`, in the object's own frame (see `FrameNode::joints`).
-fn joint_frame(g: &FrameGraph, id: &str, name: &str) -> Option<Mat4> {
+fn joint_frame(g: &FrameGraph, id: &str, name: &str) -> Option<DMat4> {
     let n = g.nodes.iter().find(|n| &*n.id == id)?;
     let (_, m) = n.joints.as_ref()?.iter().find(|(j, _)| j == name)?;
-    Some(Mat4::from_cols_array(&m.map(|v| v as f32)))
+    Some(DMat4::from_cols_array(m))
 }
 
 /// `m` blended with the identity by `w` (constraint influence).
-fn toward(m: Mat4, w: f32) -> Mat4 {
+fn toward(m: DMat4, w: f64) -> DMat4 {
     if w >= 1.0 {
         return m;
     }
     let (s, r, t) = m.to_scale_rotation_translation();
-    Mat4::from_scale_rotation_translation(Vec3::ONE.lerp(s, w), glam::Quat::IDENTITY.slerp(r, w), t * w)
+    DMat4::from_scale_rotation_translation(DVec3::ONE.lerp(s, w), glam::DQuat::IDENTITY.slerp(r, w), t * w)
+}
+
+/// A camera node's pose in binary64 world coordinates: its parameters (but the pose), its parent's frame, its position
+/// in that frame and its look-at target.
+struct CamPose {
+    cp: CameraParams,
+    frame: Option<DMat4>,
+    position: DVec3,
+    target: Option<DVec3>,
+}
+
+impl CamPose {
+    /// The eye in world coordinates, with the shake's offset.
+    fn eye(&self) -> DVec3 {
+        let local = self.position + self.cp.offset.as_dvec3();
+        self.frame.map_or(local, |f| f.transform_point3(local))
+    }
+
+    /// The camera's parameters about the origin `o`: its frame (with its position) or its position, and its target,
+    /// less `o` in binary64 and then in binary32.
+    fn about(&self, o: DVec3) -> CameraParams {
+        let mut cp = self.cp.clone();
+        match self.frame {
+            Some(f) => {
+                cp.frame = Some(rebase(f * DMat4::from_translation(self.position), o));
+                cp.position = Some(Vec3::ZERO);
+            }
+            None => cp.position = Some((self.position - o).as_vec3()),
+        }
+        cp.target = self.target.map(|t| (t - o).as_vec3());
+        cp
+    }
 }
 
 /// The document's lights.
@@ -383,6 +439,16 @@ pub(super) fn doc_lights(p: &Program) -> &[m::Light] {
 }
 
 impl Renderer {
+    /// A world matrix of the 3D pass being drawn, about its origin.
+    fn rebased(&self, m: DMat4) -> Mat4 {
+        rebase(m, self.origin3)
+    }
+
+    /// A world position of the 3D pass being drawn, about its origin.
+    fn rebased_point(&self, p: DVec3) -> Vec3 {
+        (p - self.origin3).as_vec3()
+    }
+
     /// A light's resolved transform dependencies, including targets outside the cached subtree.
     /// Resolve them with the drawing path so chained parents, cameras and simulated 3D poses
     /// contribute their actual world transforms rather than only their authored attributes.
@@ -391,7 +457,7 @@ impl Renderer {
         let light = lights.iter().find(|l| l.id == id)?;
         let a = Attrs { e: light, props: element_props(ctx.g, id) };
         let world = Self::pose_world(ctx.g, lights, light, &a, 0);
-        let mut words: Vec<u64> = world.to_cols_array().iter().map(|v| v.to_bits() as u64).collect();
+        let mut words: Vec<u64> = world.to_cols_array().iter().map(|v| v.to_bits()).collect();
         for c in sr_model::element::children(light) {
             if c.element_name() != "transformConstraint" {
                 continue;
@@ -401,7 +467,7 @@ impl Renderer {
             if let Some(target) =
                 ca.str("target").and_then(|t| Self::target_joint_point(ctx.g, lights, &t, joint.as_deref()))
             {
-                words.extend(target.to_array().map(|v| v.to_bits() as u64));
+                words.extend(target.to_array().map(f64::to_bits));
             }
         }
         Some(h(&words))
@@ -440,11 +506,11 @@ impl Renderer {
 
     /// World matrix of a 3D object: its parent's full 3D world (an object, camera or light;
     /// a 2D parent contributes its 2D world), else the enclosing 2D world.
-    fn world3(g: &FrameGraph, lights: &[m::Light], i: usize, depth: u32) -> Mat4 {
+    fn world3(g: &FrameGraph, lights: &[m::Light], i: usize, depth: u32) -> DMat4 {
         let n = &g.nodes[i];
         // a rigid body's simulated pose replaces its own transform and parent
         if let Some(m) = &n.pose3 {
-            return Mat4::from_cols_array(&m.map(|v| v as f32));
+            return DMat4::from_cols_array(m);
         }
         let own = local3(&attrs(n));
         if let Some(pw) = Self::parent_world(g, lights, &*n.elem, &n.scope, depth) {
@@ -456,9 +522,9 @@ impl Renderer {
             // Fitting inserts a transform between the instance and its child's local transform.
             Some(p) if g.nodes[p as usize].kind == "instance" && g.nodes[p as usize].content.is_some() => {
                 let base = n.local.inverse().map(|inv| n.world.then(&inv)).unwrap_or(g.nodes[p as usize].world);
-                embed(&base) * own
+                embed_d(&base) * own
             }
-            Some(p) => embed(&g.nodes[p as usize].world) * own,
+            Some(p) => embed_d(&g.nodes[p as usize].world) * own,
             None => own,
         }
     }
@@ -472,7 +538,7 @@ impl Renderer {
 
     /// World matrix of the frame a parented element's own transform is in,
     /// weighted by the parent constraint's influence. The parent is named in `scope`, the element's.
-    fn parent_world(g: &FrameGraph, lights: &[m::Light], e: &dyn Element, scope: &str, depth: u32) -> Option<Mat4> {
+    fn parent_world(g: &FrameGraph, lights: &[m::Light], e: &dyn Element, scope: &str, depth: u32) -> Option<DMat4> {
         if depth >= 32 {
             return None;
         }
@@ -487,7 +553,7 @@ impl Renderer {
     }
 
     /// World matrix of the node or light `id`: objects, cameras and lights in 3D, other nodes as their 2D world.
-    fn world_of(g: &FrameGraph, lights: &[m::Light], id: &str, depth: u32) -> Option<Mat4> {
+    fn world_of(g: &FrameGraph, lights: &[m::Light], id: &str, depth: u32) -> Option<DMat4> {
         if let Some(j) = g.nodes.iter().position(|m| &*m.id == id) {
             let n = &g.nodes[j];
             return Some(match n.kind {
@@ -495,10 +561,12 @@ impl Renderer {
                 // the camera as it looks: its pose, look-at target and shake
                 "camera" => {
                     let [w, h] = Self::frame_of(g, j);
-                    let cp = Self::cam_params(g, lights, j, depth, [w, h]);
-                    camera::resolve(&cp, w, h).view.inverse()
+                    let pose = Self::cam_pose(g, lights, j, depth, [w, h]);
+                    let eye = pose.eye();
+                    let m = camera::resolve(&pose.about(eye), w, h).view.inverse().as_dmat4();
+                    DMat4::from_cols(m.x_axis, m.y_axis, m.z_axis, eye.extend(1.0))
                 }
-                _ => embed(&n.world),
+                _ => embed_d(&n.world),
             });
         }
         let l = lights.iter().find(|l| l.id == id)?;
@@ -507,33 +575,33 @@ impl Renderer {
     }
 
     /// World matrix of a camera or light: its pose in its parent's frame.
-    fn pose_world(g: &FrameGraph, lights: &[m::Light], e: &dyn Element, a: &Attrs, depth: u32) -> Mat4 {
+    fn pose_world(g: &FrameGraph, lights: &[m::Light], e: &dyn Element, a: &Attrs, depth: u32) -> DMat4 {
         let own = pose3(a);
         // lights are the document's own, at the top level
         Self::parent_world(g, lights, e, "", depth).map(|p| p * own).unwrap_or(own)
     }
 
     /// World position of a node for look-at and focus targets.
-    fn target_point(g: &FrameGraph, lights: &[m::Light], id: &str) -> Option<Vec3> {
+    fn target_point(g: &FrameGraph, lights: &[m::Light], id: &str) -> Option<DVec3> {
         Self::world_point(g, lights, id, 0)
     }
 
     /// The position of `id`, or of its joint `joint` when one is named and found.
-    fn target_joint_point(g: &FrameGraph, lights: &[m::Light], id: &str, joint: Option<&str>) -> Option<Vec3> {
+    fn target_joint_point(g: &FrameGraph, lights: &[m::Light], id: &str, joint: Option<&str>) -> Option<DVec3> {
         match joint.and_then(|j| joint_frame(g, id, j)) {
-            Some(frame) => Some((Self::world_of(g, lights, id, 0)? * frame).transform_point3(Vec3::ZERO)),
+            Some(frame) => Some((Self::world_of(g, lights, id, 0)? * frame).transform_point3(DVec3::ZERO)),
             None => Self::target_point(g, lights, id),
         }
     }
 
-    fn world_point(g: &FrameGraph, lights: &[m::Light], id: &str, depth: u32) -> Option<Vec3> {
+    fn world_point(g: &FrameGraph, lights: &[m::Light], id: &str, depth: u32) -> Option<DVec3> {
         if let Some(n) =
             g.nodes.iter().find(|m| &*m.id == id).filter(|n| !(sr_eval::draws_in_3d(n.kind) || n.kind == "camera"))
         {
             let p = n.world.apply(n.anchor);
-            return Some(Vec3::new(p[0] as f32, p[1] as f32, n.three_d.map(|t| t[0]).unwrap_or(0.0) as f32));
+            return Some(DVec3::new(p[0], p[1], n.three_d.map(|t| t[0]).unwrap_or(0.0)));
         }
-        Some(Self::world_of(g, lights, id, depth)?.transform_point3(Vec3::ZERO))
+        Some(Self::world_of(g, lights, id, depth)?.transform_point3(DVec3::ZERO))
     }
 
     /// Horizontal field of view of a camera node for a `frame`-sized picture: `fov`, or `focalLength` on the sensor
@@ -553,7 +621,7 @@ impl Renderer {
 
     /// Camera inputs of camera node `ci`: projection, pose (in its parent's frame when parented),
     /// look-at target and shake.
-    fn cam_params(g: &FrameGraph, lights: &[m::Light], ci: usize, depth: u32, frame: [f32; 2]) -> CameraParams {
+    fn cam_pose(g: &FrameGraph, lights: &[m::Light], ci: usize, depth: u32, frame: [f32; 2]) -> CamPose {
         let n = &g.nodes[ci];
         let a = attrs(n);
         let mut cp = CameraParams {
@@ -567,18 +635,19 @@ impl Renderer {
             } else {
                 camera::DepthMode::Reversed
             },
-            // absolute scene position; the defaults put the eye at the frame's top-left corner on z = 0
-            position: Some(Vec3::new(a.num("x", 0.0) as f32, a.num("y", 0.0) as f32, a.num("z", 0.0) as f32)),
             yaw: a.num("yaw", 0.0) as f32,
             pitch: a.num("pitch", 0.0) as f32,
             roll: a.num("roll", 0.0) as f32,
-            // a parented camera's position and angles are in its parent's frame
-            frame: Self::parent_world(g, lights, &*n.elem, &n.scope, depth),
             ..Default::default()
         };
-        if let Some(t) = a.str("target").filter(|_| depth < 32) {
-            cp.target = ref_id(g, &n.scope, &t).and_then(|t| Self::world_point(g, lights, &t, depth + 1));
-        }
+        // absolute scene position; the defaults put the eye at the frame's top-left corner on z = 0
+        let position = DVec3::new(a.num("x", 0.0), a.num("y", 0.0), a.num("z", 0.0));
+        // a parented camera's position and angles are in its parent's frame
+        let parent = Self::parent_world(g, lights, &*n.elem, &n.scope, depth);
+        let target = a
+            .str("target")
+            .filter(|_| depth < 32)
+            .and_then(|t| ref_id(g, &n.scope, &t).and_then(|t| Self::world_point(g, lights, &t, depth + 1)));
         // shake children
         for c in sr_model::element::children(&*n.elem) {
             if c.element_name() != "shake" {
@@ -603,7 +672,7 @@ impl Renderer {
             cp.roll += droll;
             cp.fov = (cp.fov / dz.max(0.05)).clamp(0.1, 179.0);
         }
-        cp
+        CamPose { cp, frame: parent, position, target }
     }
 
     /// The frame camera (the active camera node, else the default 2.5D camera).
@@ -623,7 +692,8 @@ impl Renderer {
     ) -> (CameraView, CamExtras, [f32; 2]) {
         let lights = doc_lights(p);
         let mut cp = CameraParams::default();
-        let mut ex = CamExtras { exposure: 1.0, dof: None, lens_k1: 0.0, ao: None, ssr: false, path: None };
+        let mut ex =
+            CamExtras { exposure: 1.0, dof: None, lens_k1: 0.0, ao: None, ssr: false, path: None, origin: DVec3::ZERO };
         let mut focal_mm = camera::lens_of_fov(cp.fov, 36.0);
         let (mut sensor, mut fstop, mut focus, mut blades, mut dof_on, mut focus_target) =
             (36.0f32, 2.8f32, 1000.0f32, 0u32, false, None);
@@ -653,7 +723,9 @@ impl Renderer {
                 Some(f) if vertical => f as f32,
                 _ => camera::lens_of_fov(Self::cam_fov(&a, base), sensor),
             };
-            cp = Self::cam_params(g, lights, ci, 0, base);
+            let pose = Self::cam_pose(g, lights, ci, 0, base);
+            ex.origin = origin_about(pose.eye());
+            cp = pose.about(ex.origin);
             ex.exposure = 2f32.powf(a.num("exposure", 0.0) as f32);
             ex.lens_k1 = a.num("lensDistortion", 0.0) as f32;
             dof_on = flag(&a, "depthOfField", false);
@@ -690,7 +762,7 @@ impl Renderer {
         }
         if dof_on && !view.orthographic {
             if let Some(t) = focus_target.and_then(|t| Self::target_point(g, lights, &t)) {
-                focus = view.depth_of(t).max(1.0);
+                focus = view.depth_of((t - ex.origin).as_vec3()).max(1.0);
             }
             ex.dof = Some(Dof {
                 // the circle of confusion is measured on the sensor gate the lens is fitted to
@@ -1508,8 +1580,8 @@ impl Renderer {
             }
         }
         optical.density_scale *= f64::from(opacity);
-        let world = Self::world3(ctx.g, doc_lights(ctx.p), j, 0);
-        let transform = sr_volume::Transform::new(world.as_dmat4().to_cols_array()).map_err(|e| e.to_string())?;
+        let world = rebase_d(Self::world3(ctx.g, doc_lights(ctx.p), j, 0), self.origin3);
+        let transform = sr_volume::Transform::new(world.to_cols_array()).map_err(|e| e.to_string())?;
         let mut medium = Medium::new(density, bounds, transform, optical).map_err(|e| e.to_string())?;
         let mut next_temperature = None;
         if let Some((grid, next, scale, emission_scale)) = temperature {
@@ -1555,7 +1627,7 @@ impl Renderer {
             self.fracture_draws3(plan, ctx, j, fracture, opacity, draws);
             return;
         }
-        let world = Self::world3(g, doc_lights(ctx.p), j, 0);
+        let world = self.rebased(Self::world3(g, doc_lights(ctx.p), j, 0));
         let draw_start = draws.len();
         let splat_start = splats.len();
         self.object_draws_at(plan, ctx, j, n, world, opacity, draws, splats);
@@ -1733,7 +1805,7 @@ impl Renderer {
         for aim in aims {
             match ref_id(ctx.g, &n.scope, &aim.target).and_then(|t| Self::target_point(ctx.g, lights, &t)) {
                 Some(t) => {
-                    let target = to_scene.inverse().transform_point3(t);
+                    let target = to_scene.inverse().transform_point3(self.rebased_point(t));
                     sr_3d::anim::look_at(model, locals, aim.node, target, aim.axis, aim.influence, aim.max_angle);
                 }
                 None => report(plan, format!("{}: joint look-at target {} not found", n.id, aim.target)),
@@ -2149,7 +2221,9 @@ impl Renderer {
         // trail's colour or the object's base colour, faded by its vertices' alpha
         if let Some(tr) = &n.trail {
             let base = doc_mat.as_ref().map_or([0.8, 0.8, 0.8, 1.0], |(m, _)| m.base_color);
-            self.trail_draw(n, tr, world * local3(&a).inverse(), base, opacity, draws);
+            let frame = Self::world3(ctx.g, doc_lights(ctx.p), j, 0) * local3(&a).inverse();
+            let frame = self.rebased(frame * DMat4::from_translation(DVec3::from_array(tr.anchor)));
+            self.trail_draw(n, tr, frame, base, opacity, draws);
         }
         let default_mat = || {
             let material = if n.kind == "ocean" {
@@ -2621,10 +2695,10 @@ impl Renderer {
                 continue;
             }
             let pose = fracture.poses[index];
-            let model = Mat4::from_rotation_translation(
-                glam::Quat::from_array(pose.rot.map(|v| v as f32)),
-                glam::Vec3::from_array(pose.pos.map(|v| v as f32)),
-            );
+            let model = self.rebased(DMat4::from_rotation_translation(
+                glam::DQuat::from_array(pose.rot),
+                DVec3::from_array(pose.pos),
+            ));
             if !model.is_finite() {
                 plan.stats.errors.push(format!("{}: fracture pose exceeds render precision", n.id));
                 return;
@@ -2856,13 +2930,13 @@ impl Renderer {
                 continue;
             }
             let matrix = match particle.transform(particles.frame.time) {
-                Ok(m) => Mat4::from_cols_array(&m.columns().map(|v| v as f32)),
+                Ok(m) => self.rebased(DMat4::from_cols_array(&m.columns())),
                 Err(e) => {
                     plan.stats.errors.push(format!("{}: {e}", n.id));
                     return;
                 }
             };
-            let position = Vec3::from_array(particle.position.map(|v| v as f32));
+            let position = self.rebased_point(DVec3::from_array(particle.position));
             let lengths = Vec3::new(
                 matrix.x_axis.truncate().length(),
                 matrix.y_axis.truncate().length(),
@@ -2946,7 +3020,7 @@ impl Renderer {
             }
             let scale = a.num("intensity", 1.0) as f32 * 2f32.powf(a.num("exposure", 0.0) as f32);
             // pose in the parent's frame when parented
-            let world = Self::pose_world(ctx.g, &ls.lights, l, &a, 0);
+            let world = self.rebased(Self::pose_world(ctx.g, &ls.lights, l, &a, 0));
             let dir = world.transform_vector3(Vec3::Z).normalize();
             let right = world.transform_vector3(Vec3::X).normalize();
             if kind == "dome" && a.str("sky").as_deref() == Some("gradient") {
@@ -3078,7 +3152,7 @@ impl Renderer {
             };
             let mut lt = self.light(k, &a, Vec3::from_slice(&color[..3]) * scale, dir, right, ies);
             lt.pos = world.transform_point3(Vec3::ZERO);
-            Self::constrain_light(plan, ctx.g, &ls.lights, l as &dyn Element, &l.id, &mut lt);
+            Self::constrain_light(plan, ctx.g, &ls.lights, l as &dyn Element, &l.id, self.origin3, &mut lt);
             out.push(lt);
         }
         (out, env)
@@ -3147,13 +3221,15 @@ impl Renderer {
             return Ok(None);
         };
         let vp = clip_fix * cam.view_proj();
-        let key = format!("{vp:?} {to_world:?}");
+        let key = format!("{vp:?} {to_world:?} {:?}", self.origin3);
         if let Some((k, g)) = self.physical_sky.as_ref().and_then(|s| s.camera.as_ref()) {
             if *k == key {
                 return Ok(Some(g.clone()));
             }
         }
         let (inv, to_env) = (vp.inverse(), to_world.transpose());
+        // the camera's view is rebased (the scale draft's rule 4): the air's altitudes are the world's
+        let shift = to_env.as_dmat4().transform_vector3(self.origin3);
         // reverse-Z: the near plane at depth 1, the far plane at 0
         let at = |u: f64, v: f64, z: f32| inv.project_point3(Vec3::new(2.0 * u as f32 - 1.0, 2.0 * v as f32 - 1.0, z));
         // a ray leaves the eye, or the near plane through an orthographic camera, whose rays share no point
@@ -3161,7 +3237,7 @@ impl Renderer {
         let ray = |u: f64, v: f64| {
             let o = origin(u, v);
             let d = to_env.transform_vector3((at(u, v, 0.5) - o).normalize());
-            (to_env.transform_point3(o).to_array().map(f64::from), d.to_array().map(f64::from))
+            ((to_env.transform_point3(o).as_dvec3() + shift).to_array(), d.to_array().map(f64::from))
         };
         let corners = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)];
         let depth = corners.iter().map(|&(u, v)| at(u, v, 0.0).distance(origin(u, v)) as f64).fold(0.0, f64::max);
@@ -3169,6 +3245,7 @@ impl Renderer {
         let nodes = sky.horizon().nodes();
         let k = sky.uniforms(1.0)[0][1] as f64;
         let mut uniforms = sky.uniforms(depth / k);
+        uniforms[0][2] = (f64::from(uniforms[0][2]) - shift.y / k) as f32;
         uniforms[1][3] = f32::from(u8::from(cam.orthographic));
         let g = self.three_engine().upload_aerial(uniforms, volume.as_ref(), nodes);
         if let Some(slot) = self.physical_sky.as_mut() {
@@ -3256,7 +3333,7 @@ impl Renderer {
             DomeSky::Gradient(self.dome_sky(&a))
         };
         let intensity = self.dome_gain(&a);
-        let world = Self::pose_world(g, &ls.lights, l, &a, 0);
+        let world = Self::pose_world(g, &ls.lights, l, &a, 0).as_mat4();
         let to_env = Mat4::from_quat(world.to_scale_rotation_translation().1).transpose();
         let (cam, ex, cam_size) = self.camera3(g, ctx.p, [g.size[0] as f32, g.size[1] as f32]);
         let vp = Self::clip_fix(&space.xform, space.size, cam_size) * cam.view_proj();
@@ -3400,7 +3477,7 @@ impl Renderer {
         let ss = self.star_scale as f32;
         let dome = self.dome_gain(&a) * exposure;
         let gain = dome * ss * ss;
-        let world = Self::pose_world(ctx.g, &ls.lights, l, &a, 0);
+        let world = Self::pose_world(ctx.g, &ls.lights, l, &a, 0).as_mat4();
         let rotation = Mat4::from_quat(world.to_scale_rotation_translation().1);
         let turn = |d: [f64; 3]| rotation.transform_vector3(Vec3::from(d.map(|v| v as f32)));
         let radius = f.point_size.get() as f32 / 2.0 * ss;
@@ -3534,6 +3611,7 @@ impl Renderer {
         lights: &[m::Light],
         e: &dyn Element,
         id: &str,
+        origin: DVec3,
         lt: &mut Light3,
     ) {
         for c in sr_model::element::children(e) {
@@ -3544,7 +3622,10 @@ impl Renderer {
             let kind = ca.str("type").unwrap_or_default();
             let w = ca.num("influence", 1.0).clamp(0.0, 1.0) as f32;
             let joint = ca.str("targetJoint");
-            let target = ca.str("target").and_then(|t| Self::target_joint_point(g, lights, &t, joint.as_deref()));
+            let target = ca
+                .str("target")
+                .and_then(|t| Self::target_joint_point(g, lights, &t, joint.as_deref()))
+                .map(|t| (t - origin).as_vec3());
             let off = Vec3::new(ca.num("offsetX", 0.0) as f32, ca.num("offsetY", 0.0) as f32, 0.0);
             match (kind.as_str(), target) {
                 ("look-at", Some(t)) => {
@@ -3568,7 +3649,7 @@ impl Renderer {
                 ("follow-path", _) => match ca.str("path").map(|d| sr_eval::path::MotionPath::parse(&d)) {
                     Some(Ok(mp)) => {
                         let (q, _) = mp.sample(ca.num("progress", 0.0).clamp(0.0, 1.0), true);
-                        let at = Vec3::new(q[0] as f32, q[1] as f32, lt.pos.z) + off;
+                        let at = Vec3::new((q[0] - origin.x) as f32, (q[1] - origin.y) as f32, lt.pos.z) + off;
                         lt.pos = lt.pos.lerp(at, w);
                     }
                     _ => plan.stats.errors.push(format!("{id}: follow-path constraint needs a valid @path")),
@@ -3980,9 +4061,9 @@ impl Renderer {
         if let Some(m) = self.planes.last().and_then(|pl| pl.within(space)) {
             return m;
         }
-        let (cam, _, cam_size) = self.camera3(g, p, [g.size[0] as f32, g.size[1] as f32]);
-        let back = space.xform.inverse().map(|a| embed(&a)).unwrap_or(Mat4::IDENTITY);
-        Self::clip_fix(&space.xform, space.size, cam_size) * cam.view_proj() * back
+        let (cam, ex, cam_size) = self.camera3(g, p, [g.size[0] as f32, g.size[1] as f32]);
+        let back = space.xform.inverse().map(|a| embed_d(&a)).unwrap_or(DMat4::IDENTITY);
+        Self::clip_fix(&space.xform, space.size, cam_size) * cam.view_proj() * rebase(back, ex.origin)
     }
 
     /// How node `i` (a container with `threeD`) places its picture in `space`: see [`Plane`].
@@ -4127,7 +4208,7 @@ impl Renderer {
         if !(mass > 0.0 && mass.is_finite()) {
             return Err(format!("{}: mass must be positive", h.id));
         }
-        let centre = Self::world3(g, lights, hole, 0).transform_point3(Vec3::ZERO);
+        let centre = (Self::world3(g, lights, hole, 0).transform_point3(DVec3::ZERO) - ex.origin).as_vec3();
         let distance = (cam.eye - centre).length();
         if distance <= 3.0 * mass {
             return Err(format!(
@@ -4153,7 +4234,7 @@ impl Renderer {
                 let a = attrs(d);
                 time_scale = a.num("timeScale", 1.0) as f32;
                 seed = a.num("seed", 0.0) as u32;
-                let axis = Self::world3(g, lights, j, 0).transform_vector3(Vec3::NEG_Y);
+                let axis = Self::world3(g, lights, j, 0).transform_vector3(DVec3::NEG_Y).as_vec3();
                 Disk {
                     inner: a.num("innerRadius", 6.0 * mass as f64) as f32,
                     outer: a.num("outerRadius", 0.0) as f32,
@@ -4248,6 +4329,8 @@ impl Renderer {
             ),
         };
         let (cam, ex, cam_size) = self.camera3_of(g, ctx.p, frame, camera, view_override);
+        // every position this pass draws is rebased about the origin its camera's view is
+        self.origin3 = ex.origin;
         let geodesic = match Self::geodesic_scene(
             g,
             ctx.p,
@@ -4860,7 +4943,7 @@ mod scope_tests {
         let d = sr_model::load_str(xml, &sr_model::LoadOptions::without_assets()).unwrap();
         let g = sr_eval::Evaluator::new(&d, &Default::default()).unwrap().evaluate(0.0);
         let i = g.nodes.iter().position(|n| &*n.id == "i/o").unwrap();
-        let world = Renderer::world3(&g, &[], i, 0);
+        let world = Renderer::world3(&g, &[], i, 0).as_mat4();
         assert_eq!(world.transform_point3(Vec3::ZERO), Vec3::new(20.0, 60.0, 0.0));
         assert_eq!(world.transform_vector3(Vec3::X), Vec3::new(2.0, 0.0, 0.0));
     }
@@ -4888,9 +4971,17 @@ mod scope_tests {
             let g = ev.evaluate(t);
             let ci = g.nodes.iter().position(|n| &*n.id == "c").unwrap();
             let bi = g.nodes.iter().position(|n| &*n.id == "b").unwrap();
-            let cp = Renderer::cam_params(&g, &[], ci, 0, [64.0; 2]);
+            let cp = Renderer::cam_pose(&g, &[], ci, 0, [64.0; 2]).about(DVec3::ZERO);
             let cam = camera::resolve(&cp, 64.0, 64.0);
-            let ex = CamExtras { exposure: 1.0, dof: None, lens_k1: 0.0, ao: None, ssr: false, path: None };
+            let ex = CamExtras {
+                exposure: 1.0,
+                dof: None,
+                lens_k1: 0.0,
+                ao: None,
+                ssr: false,
+                path: None,
+                origin: DVec3::ZERO,
+            };
             let mut warnings = Vec::new();
             let scene = Renderer::geodesic_scene(
                 &g,
@@ -4922,7 +5013,7 @@ mod scope_tests {
             let doc = sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap();
             let g = sr_eval::Evaluator::new(&doc, &Default::default()).unwrap().evaluate(0.0);
             let ci = g.nodes.iter().position(|n| &*n.id == "cam").unwrap();
-            Renderer::cam_params(&g, &[], ci, 0, frame).fov
+            Renderer::cam_pose(&g, &[], ci, 0, frame).cp.fov
         };
         let wide = fov_in("24", [1920.0, 1080.0]);
         assert_eq!(wide, camera::fov_of_lens(50.0, 36.0));
@@ -4952,10 +5043,10 @@ mod scope_tests {
         ] {
             let g = ev.evaluate(t);
             let at = |id: &str| g.nodes.iter().position(|n| &*n.id == id).unwrap();
-            let eye = Renderer::cam_params(&g, &[], at("cam"), 0, [32.0, 32.0]).position.unwrap();
+            let eye = Renderer::cam_pose(&g, &[], at("cam"), 0, [32.0, 32.0]).about(DVec3::ZERO).position.unwrap();
             assert!((eye - Vec3::new(cam[0], cam[1], -500.0)).length() < 1e-3, "camera at {t} s: {eye:?}");
             for (id, want, z) in [("box", abs, 10.0), ("offset", add, 0.0)] {
-                let p = Renderer::world3(&g, &[], at(id), 0).transform_point3(Vec3::ZERO);
+                let p = Renderer::world3(&g, &[], at(id), 0).as_mat4().transform_point3(Vec3::ZERO);
                 assert!((p - Vec3::new(want[0], want[1], z)).length() < 1e-3, "{id} at {t} s: {p:?}");
             }
         }
@@ -4966,7 +5057,7 @@ mod scope_tests {
         let doc = sr_model::load_str(xml, &sr_model::LoadOptions::without_assets()).unwrap();
         let g = sr_eval::Evaluator::new(&doc, &Default::default()).unwrap().evaluate(1.0);
         let i = g.nodes.iter().position(|n| &*n.id == "box").unwrap();
-        let axis = Renderer::world3(&g, &[], i, 0).transform_vector3(Vec3::X);
+        let axis = Renderer::world3(&g, &[], i, 0).as_mat4().transform_vector3(Vec3::X);
         assert!((axis - Vec3::Y).length() < 1e-4, "{axis:?}");
     }
 
@@ -4990,10 +5081,10 @@ mod scope_tests {
             let graph = sr_eval::Evaluator::new(&doc, &Default::default()).unwrap().evaluate(0.0);
             for (id, offset) in [("a/child", 0.0), ("b/child", 100.0)] {
                 let i = graph.nodes.iter().position(|n| &*n.id == id).unwrap();
-                let actual = Renderer::world3(&graph, &[], i, 0).transform_point3(Vec3::ZERO);
-                let parent = Mat4::from_translation(Vec3::new(5.0 + offset, 0.0, 0.0))
-                    * Mat4::from_rotation_y(std::f32::consts::FRAC_PI_2);
-                let expected = toward(parent, weight).transform_point3(Vec3::new(1.0, 2.0, 3.0));
+                let actual = Renderer::world3(&graph, &[], i, 0).as_mat4().transform_point3(Vec3::ZERO);
+                let parent = DMat4::from_translation(DVec3::new(5.0 + offset, 0.0, 0.0))
+                    * DMat4::from_rotation_y(std::f64::consts::FRAC_PI_2);
+                let expected = toward(parent, f64::from(weight)).transform_point3(DVec3::new(1.0, 2.0, 3.0)).as_vec3();
                 assert!((actual - expected).length() < 1e-4, "{id}, weight={weight}: {actual:?} != {expected:?}");
             }
         }
@@ -5220,5 +5311,49 @@ mod shared_asset_tests {
         assert!(!Arc::ptr_eq(&a, &b));
         drop((a, b));
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+
+    #[test]
+    fn the_origin_is_the_eye_rounded_to_1024_pixels_on_each_axis() {
+        assert_eq!(origin_about(DVec3::ZERO), DVec3::ZERO);
+        assert_eq!(origin_about(DVec3::new(511.0, -511.0, 0.4)), DVec3::ZERO);
+        assert_eq!(origin_about(DVec3::new(513.0, -513.0, 1536.0)), DVec3::new(1024.0, -1024.0, 2048.0));
+        assert_eq!(origin_about(DVec3::new(3e9 + 100.0, 0.0, -7e12)), DVec3::new(3_000_000_512.0, 0.0, -7e12));
+    }
+
+    #[test]
+    fn an_axis_that_is_not_finite_keeps_the_document_s_origin() {
+        let o = origin_about(DVec3::new(f64::NAN, f64::INFINITY, 5000.0));
+        assert_eq!(o, DVec3::new(0.0, 0.0, 5120.0));
+        assert_eq!(origin_about(DVec3::splat(f64::NEG_INFINITY)), DVec3::ZERO);
+    }
+
+    #[test]
+    fn rebasing_moves_a_matrix_s_translation_and_keeps_its_turn_and_scale() {
+        let m = DMat4::from_scale_rotation_translation(
+            DVec3::new(2.0, 3.0, 4.0),
+            glam::DQuat::from_rotation_y(0.7),
+            DVec3::new(3e9 + 0.25, -1.5, 7.0),
+        );
+        let o = origin_about(DVec3::new(3e9, 0.0, 0.0));
+        let r = rebase_d(m, o);
+        assert_eq!((r.x_axis, r.y_axis, r.z_axis), (m.x_axis, m.y_axis, m.z_axis));
+        assert_eq!(r.w_axis, (m.w_axis.truncate() - o).extend(1.0));
+        // in binary32 the quarter pixel survives, which it does not about the document's origin
+        assert_eq!(rebase(m, o).w_axis.x, (3e9 + 0.25 - o.x) as f32);
+        assert_ne!(f64::from(m.as_mat4().w_axis.x) - 3e9, 0.25);
+    }
+
+    #[test]
+    fn rebasing_a_projective_matrix_scales_the_origin_by_its_w() {
+        let mut m = DMat4::IDENTITY;
+        m.w_axis = glam::DVec4::new(10.0, 20.0, 30.0, 2.0);
+        let r = rebase_d(m, DVec3::new(1.0, 2.0, 3.0));
+        assert_eq!(r.w_axis, glam::DVec4::new(8.0, 16.0, 24.0, 2.0));
     }
 }

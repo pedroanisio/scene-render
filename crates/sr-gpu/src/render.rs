@@ -564,6 +564,9 @@ pub struct Renderer {
     /// physical sky's sun or the first directional light's, and whether it is the physical sky's; none leaves each
     /// planet the space's Sun.
     planet_sun: Option<(glam::Vec3, bool)>,
+    /// The origin the 3D pass being drawn is rebased about (the scale draft's rule 4, `origin_about`): its camera's
+    /// view and every position it draws are less it.
+    origin3: glam::DVec3,
     /// The colour × intensity of the 3D pass's first directional light: rule 3's sun's irradiance (rule 6).
     planet_sun_light: Option<glam::Vec3>,
     /// The planets of the 3D pass being drawn that carry an atmosphere shell (rule 6), in drawing order.
@@ -1518,6 +1521,7 @@ impl Renderer {
             sky_bg: None,
             physical_sky: None,
             planet_sun: None,
+            origin3: glam::DVec3::ZERO,
             planet_sun_light: None,
             planet_airs: Vec::new(),
             planet_shadow_notes: Default::default(),

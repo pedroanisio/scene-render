@@ -331,6 +331,16 @@ fn an_orbit_s_trail_is_its_positions_at_the_trail_times() {
     assert_eq!(tr.width, 3.0);
     assert_eq!(tr.color, None);
     // the ribbon: a tube about the points, its vertices' alpha the samples' from the oldest to the newest
+    ribbon_rings_the_points(tr);
+    let alpha = |v: &sr_3d::Vertex| v.color[3];
+    let mesh = &tr.mesh.mesh;
+    assert!(mesh.vertices.iter().any(|v| alpha(v) == 0.0) && mesh.vertices.iter().any(|v| alpha(v) == 1.0));
+}
+
+/// The ribbon's vertices, about its anchor (the newest place), ring the trail's points at half its width, each with
+/// the alpha of the place it rings.
+fn ribbon_rings_the_points(tr: &sr_eval::TrailFrame) {
+    assert_eq!(tr.anchor, *tr.points.last().unwrap());
     let mesh = &tr.mesh.mesh;
     assert!(!mesh.indices.is_empty());
     let alpha = |v: &sr_3d::Vertex| v.color[3];
@@ -340,13 +350,30 @@ fn an_orbit_s_trail_is_its_positions_at_the_trail_times() {
             .points
             .iter()
             .enumerate()
-            .map(|(k, q)| ((0..3).map(|c| (f64::from(v.pos[c]) - q[c]).powi(2)).sum::<f64>().sqrt(), k))
+            .map(|(k, q)| {
+                ((0..3).map(|c| (f64::from(v.pos[c]) - (q[c] - tr.anchor[c])).powi(2)).sum::<f64>().sqrt(), k)
+            })
             .fold((f64::INFINITY, 0), |a, b| if b.0 < a.0 { b } else { a });
-        assert!((nearest - 1.5).abs() < 1e-3, "{nearest}");
+        assert!((nearest - tr.width / 2.0).abs() < 1e-3, "{nearest}");
         // each vertex has the alpha of the place it rings
         assert_eq!(alpha(v), tr.alphas[k], "{k}");
     }
-    assert!(mesh.vertices.iter().any(|v| alpha(v) == 0.0) && mesh.vertices.iter().any(|v| alpha(v) == 1.0));
+}
+
+#[test]
+fn a_trail_3e9_pixels_from_the_origin_keeps_its_width() {
+    // the scale draft's rule 4: the ribbon is built about its newest place in binary64, so its binary32 vertices
+    // resolve its width where the places' binary32 coordinates are 256 pixels apart
+    let p = period(GM_SUN, AU_M).unwrap();
+    let earth = format!(
+        r#"<object3D id="earth" primitive="sphere" radius="2"><orbit around="sun" a="149597870700" e="0.3"/><trail length="{}" samples="16" width="3"/></object3D>"#,
+        p / 4.0
+    );
+    let sun = SUN.replace(r#"x="10""#, r#"x="3e9""#);
+    assert_ne!(sun, SUN);
+    let ev = evaluator(&format!("{sun}{earth}"), &format!(r#"<space epoch="2451545.0" timeScale="tdb" rate="{p}"/>"#));
+    let g = frame(&ev, 0.5);
+    ribbon_rings_the_points(trail(node(&g, "earth")));
 }
 
 #[test]
