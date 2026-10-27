@@ -104,7 +104,7 @@ unit, a colour, an expression) is left to the build, as the reactive-values draf
 engine applies the rule to the magnitudes and reports E04 unless they are two finite numbers or lengths of one unit,
 non-zero and of one sign. The curves that ease a progress from 0 to 1 (motionPath/@interpolation,
 flyTo/@easing, transition/@curve and the particle sizeCurve and colorCurve) start at zero, so SC2 refuses geometric on
-them. SC3 holds at most one scaleBar per camera, a maxWidth at most the project's width and units auto or si; SC4 a
+them. SC1 holds a positive near, a far beyond it and a ratio far / near of at most 1e20. SC3 holds at most one scaleBar per camera, a maxWidth at most the project's width and units auto or si; SC4 a
 distance between the camera's near and far (defaults 0.1 and 10000).
 V17 is SREP 12's one shared 1.8 gate: one pattern, p-v17 (after p-srep75), whose one assert is the conjunction of
 the drafts' clauses.
@@ -115,7 +115,7 @@ Canonical upstream files (SHA-256; the files of that tag with the thirteen draft
 5ef91e6ca9a6d860047f2a5347c59fa17423cb99ef7535b7ceaca16619f8ce2c and the .sch, as in sr-core's schema/SHA256SUMS,
 868863e9ea4caf04e7f0bd9873c23ce5f723205714178349a4f385c4778fd368):
   scene-render.xsd: b3103f8c1d549774874192207f054ad66c96ed637db646c51d634d7c0eb9362f
-  scene-render.sch: 43c0b152b4d4d97fe478fc6a8f2b2c56ac0416222941f6df3130e2a3aa2f80cf
+  scene-render.sch: 2827b338cdeb3289d337e4e245325cbdf2108ad96740eff725598ac625f68a5b
   capabilities-1.schema.json: 6cb35c8ec6d37df32c9a0ad12eb33332d2abe4f11ac6000a9311d9891ec2e8b3
 
 scene-render-1.1.xsd, scene-render-1.1.sch and capabilities-1.schema.json are byte-identical to these files. Local

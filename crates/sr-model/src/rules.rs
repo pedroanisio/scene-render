@@ -881,8 +881,8 @@ impl<'a> Eval<'a> {
     fn scale(&mut self, n: Node, local: &str) {
         if local == "camera" {
             let (near, far) = (num_or(n, "near", 0.1), num_or(n, "far", 10000.0));
-            self.check(near > 0.0 && far / near <= 1e20, n, "SC1", || {
-                "a camera's far divided by its near is at most 1e20, and near is positive.".into()
+            self.check(near > 0.0 && far > near && far / near <= 1e20, n, "SC1", || {
+                "a camera's near is positive, its far exceeds its near, and far divided by near is at most 1e20.".into()
             });
             let root = n.document().root_element();
             let width = kids(root, "project").next().map_or(f64::NAN, |p| num(p, "width"));

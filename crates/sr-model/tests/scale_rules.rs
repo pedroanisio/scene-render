@@ -68,8 +68,11 @@ fn depth_scale_bars_and_geometric_keys_are_valid_at_1_8() {
 }
 
 #[test]
-fn sc1_far_over_near_is_at_most_1e20() {
+fn sc1_near_is_positive_far_exceeds_it_and_their_ratio_is_at_most_1e20() {
     refused(r#"near="0.1" far="2e19""#, "", "SC1");
+    // far exceeds near
+    refused(r#"near="10" far="10""#, "", "SC1");
+    refused(r#"near="10" far="5""#, "", "SC1");
     // the defaults: near 0.1 and far 10000
     refused(r#"far="1.1e19""#, "", "SC1");
     refused(r#"near="1e-17""#, "", "SC1");

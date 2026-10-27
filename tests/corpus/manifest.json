@@ -1489,6 +1489,10 @@
     "sc1-depth-ratio.scene.xml": [
       "SC1"
     ],
+    "sc1-far-not-beyond-near.scene.xml": [
+      "SC1",
+      "SC4"
+    ],
     "sc2-default.scene.xml": [
       "SC2"
     ],

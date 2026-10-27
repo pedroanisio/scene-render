@@ -1109,6 +1109,7 @@ CASES += [
     ("v17-scale-bar", ["V17"], lambda _: SCALE.replace('version="1.8"', 'version="1.7"').replace(' depth="logarithmic"', '').replace(' interpolation="geometric"', '')),
     ("v17-geometric", ["V17"], lambda _: SCALE.replace('version="1.8"', 'version="1.7"').replace(' depth="logarithmic"', '').replace('<scaleBar maxWidth="200" distance="1000"/>', '')),
     ("sc1-depth-ratio", ["SC1"], lambda _: SCALE.replace('far="1e21"', 'far="2e21"')),
+    ("sc1-far-not-beyond-near", ["SC1", "SC4"], lambda _: SCALE.replace('far="1e21"', 'far="10"')),
     ("sc2-sign", ["SC2"], lambda _: SCALE.replace('value="-1e20"', 'value="1e20"')),
     ("sc2-zero", ["SC2"], lambda _: SCALE.replace('value="-10"', 'value="0"')),
     ("sc2-default", ["SC2"], lambda _: SCALE.replace('<animate property="z">', '<animate property="z" defaultInterpolation="geometric">').replace(' interpolation="geometric"', '').replace('value="-1e20"', 'value="1e20"')),
