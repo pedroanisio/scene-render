@@ -82,7 +82,7 @@ fn rule_1_depth_resolution() {
     assert!(resolves(n, f, R, FLOAT).unwrap());
     assert!(!resolves(n, f, R, FIXED).unwrap());
     assert!(resolves(n, f, L, FIXED).unwrap());
-    // a fixed buffer under the reversed mapping resolves while 2^-24 far / near is at most 1e-5 (far below 168 near)
+    // a fixed buffer under the reversed mapping resolves while 2^-24 far / near is at most 1e-5 (to far = 168 near)
     assert!(resolves(1.0, 100.0, R, FIXED).unwrap());
     assert!(!resolves(1.0, 1000.0, R, FIXED).unwrap());
     assert_eq!(depth_ulp(0.25, FIXED), 2.0f64.powi(-24));
@@ -233,7 +233,7 @@ fn rule_3_the_scale_bar() {
     assert_eq!(bar_at(1e20, Units::Si).label, "100000000 Gm");
     let (t0, t1, d0, d1) = POWERS;
     let frame = |f| scale_bar_frame(f, 24.0, t0, t1, d0, d1, focal(), 100.0, 200, Units::Auto).unwrap().label;
-    // (the reference's labels; the draft's kit row names 1 m, 10 m and 5 au for the first three)
+    // the scale-bar kit case's frames: distances of 10, 100, 1e10 and 1e20 px
     assert_eq!([frame(0), frame(96), frame(480), frame(960)], ["10 mm", "100 mm", "10 Mm", "2 pc"].map(String::from));
     // the bar is between 40 % and 100 % of maxWidth at every depth
     let mut depth = 0.5;
