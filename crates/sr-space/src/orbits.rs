@@ -442,3 +442,26 @@ pub fn orbit(
 pub fn orbit_state(orbit: &Orbit, t: f64) -> Result<(Vec3, Vec3), SpaceError> {
     propagate(orbit.mu, orbit.r0, orbit.v0, t - orbit.epoch)
 }
+
+/// Rule 5: the `count` sample times of a trail ending at `t`, oldest first, evenly spaced over the last `length`
+/// seconds of the space clock and clamped at its epoch (time 0).
+pub fn trail_times(t: f64, length: f64, count: usize) -> Result<Vec<f64>, SpaceError> {
+    if count < 2 || length.is_nan() || length <= 0.0 {
+        return err("a trail has two samples or more over a positive length");
+    }
+    let last = (count - 1) as f64;
+    Ok((0..count).map(|k| (t - length * (last - k as f64) / last).max(0.0)).collect())
+}
+
+/// Rule 5: the opacity of a trail sample `age` seconds old, 1 − age / length when fading (within 0 and 1), else 1.
+pub fn trail_alpha(age: f64, length: f64, fade: bool) -> f64 {
+    if !fade {
+        return 1.0;
+    }
+    (1.0 - age / length).clamp(0.0, 1.0)
+}
+
+/// Rule 5: an orbit's trail, its positions relative to its central object at the trail times ending at `t`.
+pub fn orbit_trail(orbit: &Orbit, t: f64, length: f64, count: usize) -> Result<Vec<Vec3>, SpaceError> {
+    trail_times(t, length, count)?.into_iter().map(|tk| orbit_state(orbit, tk).map(|(r, _)| r)).collect()
+}

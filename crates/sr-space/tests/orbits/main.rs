@@ -6,6 +6,7 @@ use sr_space::orbits::{
     closure, elements_from_state, kepler_elliptic, kepler_hyperbolic, norm, orbit, orbit_mu, orbit_state, period,
     propagate, specific_energy, state_from_elements, stumpff_c2, stumpff_c3, sub, Vec3, AU_M, DAY_S, GM, GM_SUN,
 };
+use sr_space::orbits::{orbit_trail, trail_alpha, trail_times};
 use sr_space::SpaceError;
 
 /// Six significant digits, the table's rounding.
@@ -249,4 +250,32 @@ fn or2_conics_are_refused_at_the_parabola_and_with_the_wrong_sign() {
     assert!(orbit_err(elements_from_state(GM_SUN, [AU_M, 0.0, 0.0], [1.0, 0.0, 0.0])).contains("radial"));
     let vesc = (2.0 * GM_SUN / AU_M).sqrt();
     assert!(orbit_err(elements_from_state(GM_SUN, [AU_M, 0.0, 0.0], [0.0, vesc, 0.0])).contains("parabolic"));
+}
+
+#[test]
+fn rule_5_trail_times_and_alpha() {
+    // the table's rows: trail times, 4 samples over 30 s at t 100, and the alpha halfway
+    assert_eq!(trail_times(100.0, 30.0, 4).unwrap(), vec![70.0, 80.0, 90.0, 100.0]);
+    assert_eq!(trail_alpha(15.0, 30.0, true), 0.5);
+    // clamped at the epoch, unfaded, and bounded to 0..1
+    assert_eq!(trail_times(10.0, 30.0, 4).unwrap(), vec![0.0, 0.0, 0.0, 10.0]);
+    assert_eq!(trail_alpha(15.0, 30.0, false), 1.0);
+    assert_eq!((trail_alpha(40.0, 30.0, true), trail_alpha(-1.0, 30.0, true)), (0.0, 1.0));
+    assert_eq!((trail_alpha(0.0, 30.0, true), trail_alpha(30.0, 30.0, true)), (1.0, 0.0));
+    // two samples or more over a positive length
+    for (length, count) in [(30.0, 1), (0.0, 4), (-1.0, 4), (f64::NAN, 4)] {
+        assert!(matches!(trail_times(100.0, length, count), Err(SpaceError::Orbit(_))), "{length} {count}");
+    }
+}
+
+#[test]
+fn rule_5_an_orbit_s_trail_is_its_positions_at_the_trail_times() {
+    let o = orbit(GM_SUN, AU_M, 0.3, 7.0, 10.0, 20.0, 30.0, 0.0).unwrap();
+    let quarter = period(GM_SUN, AU_M).unwrap() / 4.0;
+    let trail = orbit_trail(&o, 2.0 * quarter, quarter, 16).unwrap();
+    let times = trail_times(2.0 * quarter, quarter, 16).unwrap();
+    assert_eq!(trail.len(), 16);
+    for (p, t) in trail.iter().zip(times) {
+        assert_eq!(*p, orbit_state(&o, t).unwrap().0);
+    }
 }
