@@ -997,7 +997,9 @@ crates/sr-3d/src/           import (glTF, OBJ, PLY, splats, FBX, USD), usdc (USD
                             limb darkening, clouds, rings and spin), planet_shell (a planet's atmosphere shell seen
                             from one observer), subsurface (SREP 71 lobe), stars (a dome's star field: scene directions,
                             pixel discs, constellation labels and boundaries), scale (depth resolution, geometric keys,
-                            the scale bar and the floating origin); `space` re-exports sr-space
+                            the scale bar and the floating origin), relativity (boosts, light cones, worldlines, the
+                            Penrose and Kruskal maps, Flamm's paraboloid, gravitational-wave strain and its chirp);
+                            `space` re-exports sr-space
 crates/sr-gpu/src/          gpu (device), color, drape (drawings rasterised on the CPU), render_map3d (3D maps and
                             globes), resources (textures, images, pool), paint, render (planning,
                             caching, execution), video (decode conversion, frame blending, optical flow),
