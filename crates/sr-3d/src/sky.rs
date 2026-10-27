@@ -6,7 +6,7 @@
 
 use glam::Vec3;
 
-use crate::env::{dir_of, Equirect};
+use crate::env::{dir_of, Disc, Equirect};
 
 /// A gradient sky in linear working values.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -79,10 +79,8 @@ impl Sky {
         2.0 * std::f32::consts::PI * (1.0 - self.sun_cos)
     }
 
-    /// The sky as an equirectangular image `width` × `width / 2` for image-based lighting.
-    ///
-    /// The gradient is sampled at texel centres and the sun added by [`add_disc`].
-    pub fn equirect(&self, width: u32) -> Equirect {
+    /// The gradient alone as an equirectangular image `width` × `width / 2`, sampled at texel centres.
+    pub fn gradient_image(&self, width: u32) -> Equirect {
         let (w, h) = (width.max(4), (width / 2).max(2));
         let mut rgb = Vec::with_capacity((w * h) as usize);
         for y in 0..h {
@@ -91,9 +89,21 @@ impl Sky {
                 rgb.push(self.gradient(d).to_array());
             }
         }
-        let mut eq = Equirect { width: w, height: h, rgb };
-        if self.has_sun() {
-            add_disc(&mut eq, Vec3::from(self.sun_dir), self.sun_cos, Vec3::from(self.sun));
+        Equirect { width: w, height: h, rgb }
+    }
+
+    /// The sun's disc, none without a sun.
+    pub fn discs(&self) -> Vec<Disc> {
+        let sun = Disc { dir: Vec3::from(self.sun_dir), cos: self.sun_cos, radiance: Vec3::from(self.sun) };
+        self.has_sun().then_some(sun).into_iter().collect()
+    }
+
+    /// The sky as an equirectangular image `width` × `width / 2` for image-based lighting: the gradient
+    /// ([`Sky::gradient_image`]) and the sun added by [`add_disc`].
+    pub fn equirect(&self, width: u32) -> Equirect {
+        let mut eq = self.gradient_image(width);
+        for d in self.discs() {
+            add_disc(&mut eq, d.dir, d.cos, d.radiance);
         }
         eq
     }

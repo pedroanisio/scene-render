@@ -2383,16 +2383,21 @@ impl ThreeEngine {
 
     /// Prefilters and uploads an environment.
     pub fn upload_env(&self, eq: &sr_3d::env::Equirect) -> Arc<EnvGpu> {
-        self.upload_env_seen(eq, eq)
+        self.upload_sky(eq, eq, &[])
     }
 
-    /// Prefilters and uploads an environment that lights with `eq` and is seen as `seen`: a physical sky lights
-    /// with its sun's power and draws the disc itself.
-    pub fn upload_env_seen(&self, eq: &sr_3d::env::Equirect, seen: &sr_3d::env::Equirect) -> Arc<EnvGpu> {
+    /// Prefilters and uploads an environment that lights with `eq` and its `discs` (`sr_3d::env::prefilter_discs`)
+    /// and is seen as `seen`: a physical sky lights with its sun's power and draws the disc itself.
+    pub fn upload_sky(
+        &self,
+        eq: &sr_3d::env::Equirect,
+        seen: &sr_3d::env::Equirect,
+        discs: &[sr_3d::env::Disc],
+    ) -> Arc<EnvGpu> {
         // lighting uses a 512-wide prefiltered chain; the visible sky keeps the source's resolution
         let base = eq.width.clamp(64, 512).next_power_of_two().min(512);
         let levels = (base.trailing_zeros() as usize).saturating_sub(2).clamp(2, 7);
-        let pf = sr_3d::env::prefilter(eq, base, levels);
+        let pf = sr_3d::env::prefilter_discs(eq, base, levels, discs);
         let t = texture(&self.device, [pf.mips[0].0, pf.mips[0].1], FORMAT, levels as u32, 1, 1, "environment");
         for (k, (w, h, px)) in pf.mips.iter().enumerate() {
             let data: Vec<u16> = px.iter().flat_map(|p| half4(*p)).collect();

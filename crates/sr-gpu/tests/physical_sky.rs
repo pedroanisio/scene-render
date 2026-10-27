@@ -736,3 +736,50 @@ fn the_sun_disc_is_brighter_than_one_in_linear_values() {
     let peak = r.px.iter().map(|p| p[0].max(p[1]).max(p[2])).fold(0.0f32, f32::max);
     assert!(peak > 10.0, "the disc's peak linear value {peak}");
 }
+
+#[test]
+fn the_suns_diffuse_light_comes_from_its_own_direction() {
+    // a white Lambert ball at 40° N at noon on the March equinox, the sun 50° up toward the eye: the sun's share of
+    // its light (the frame less the frame of the same sky without a disc) is the bake's point of the disc's power,
+    // power × the lobe of n · s (sr_3d::env::sh_point), from the sun's own direction rather than from a texel of the
+    // small copy the sky is projected from
+    use glam::Vec3;
+    const SIDE: u32 = 256;
+    const DATE: &str = "2024-03-20T12:00:00Z";
+    let frame = |size: &str| {
+        render_xml(&format!(
+            r##"<scene version="1.8"><project width="{SIDE}" height="{SIDE}" fps="24" duration="1" background="#000000FF"/><materials><material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/></materials><composition><camera id="eye" x="0" y="0" z="0" fov="60"/><object3D id="o" primitive="sphere" material="m" radius="100" z="400" segments="256"/></composition><lights><light id="sky" type="dome" sky="physical" sunIntensity="1" date="{DATE}" latitude="40" longitude="0" moon="false" aerialPerspective="false" sunSize="{size}"/></lights></scene>"##
+        ))
+    };
+    let (Some(lit), Some(sky)) = (frame("0.53"), frame("0")) else { return };
+    let sun = Vec3::from(sun_from_document(DATE, &observer(40.0, 0.0)).unwrap().1.map(|v| v as f32));
+    let f = SIDE as f32 / 2.0 / 30f32.to_radians().tan();
+    let mut ratios = Vec::new();
+    for y in (0..SIDE).step_by(3) {
+        for x in (0..SIDE).step_by(3) {
+            let c = SIDE as f32 / 2.0;
+            let d = Vec3::new((x as f32 + 0.5 - c) / f, (y as f32 + 0.5 - c) / f, 1.0).normalize();
+            let b = -400.0 * d.z;
+            let disc = b * b - (400.0f32 * 400.0 - 100.0 * 100.0);
+            if disc < 0.0 {
+                continue;
+            }
+            let n = (d * (-b - disc.sqrt()) - Vec3::new(0.0, 0.0, 400.0)) / 100.0;
+            if n.z > -0.3 || n.dot(sun) < 0.2 {
+                continue;
+            }
+            let lobe = sr_3d::env::sh_point(Vec3::ONE, sun, n);
+            for k in 0..3 {
+                ratios.push((lit.at(x, y)[k] - sky.at(x, y)[k]) / lobe[k]);
+            }
+        }
+    }
+    // one power per channel: each channel's ratios are one constant
+    for k in 0..3 {
+        let mut v: Vec<f32> = ratios.iter().skip(k).step_by(3).copied().collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let (lo, mid, hi) = (v[v.len() / 100], v[v.len() / 2], v[v.len() - 1 - v.len() / 100]);
+        assert!(v.len() > 500 && mid > 0.0, "channel {k}: {} ratios, median {mid}", v.len());
+        assert!(hi / lo - 1.0 < 0.01, "channel {k}: the sun's share over its lobe runs {lo} to {hi}");
+    }
+}

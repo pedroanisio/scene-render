@@ -399,3 +399,46 @@ fn through_an_orthographic_camera_the_sky_is_its_axis_s_radiance_over_the_frame(
         }
     }
 }
+
+#[test]
+fn a_suns_diffuse_light_comes_from_its_own_direction() {
+    // a white Lambert ball lit by the sun of a black sky alone: its irradiance is the bake's point of the disc's
+    // power (sr_3d::env::sh_point), from the sun's direction, not from the texel of the small copy the sky is
+    // projected from, which sits up to half its 11 degrees away
+    use glam::Vec3;
+    const SIDE: u32 = 256;
+    let (azimuth, elevation, intensity) = (217.0f32, 23.0f32, 20000.0f32);
+    let xml = format!(
+        r##"<scene version="1.6"><project width="{SIDE}" height="{SIDE}" fps="24" duration="1" background="#000000FF"/><materials><material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/></materials><composition><camera id="eye" x="0" y="0" z="0" fov="60"/><object3D id="o" primitive="sphere" material="m" radius="100" z="400" segments="256"/></composition><lights><light id="sky" type="dome" sky="gradient" skyZenith="#000000" skyHorizon="#000000" skyGround="#000000" sunAzimuth="{azimuth}" sunElevation="{elevation}" sunSize="0.53" sunColor="#FFFFFF" sunIntensity="{intensity}"/></lights></scene>"##
+    );
+    let Some(r) = render_xml(&xml) else { return };
+    let (a, e) = (azimuth.to_radians(), elevation.to_radians());
+    // the dome's axes are the scene's: up −y, azimuth 0 along +z and 90 along +x
+    let sun = Vec3::new(e.cos() * a.sin(), -e.sin(), e.cos() * a.cos());
+    let power = Vec3::splat(intensity * 2.0 * std::f32::consts::PI * (1.0 - 0.265f32.to_radians().cos()));
+    let peak = sr_3d::env::sh_point(power, sun, sun).x;
+    let f = SIDE as f32 / 2.0 / 30f32.to_radians().tan();
+    let (mut checked, mut worst) = (0, 0.0f32);
+    for y in (0..SIDE).step_by(3) {
+        for x in (0..SIDE).step_by(3) {
+            let c = SIDE as f32 / 2.0;
+            let d = Vec3::new((x as f32 + 0.5 - c) / f, (y as f32 + 0.5 - c) / f, 1.0).normalize();
+            // the first point of the ball (centre 400 along z, radius 100) and its normal
+            let b = -400.0 * d.z;
+            let disc = b * b - (400.0f32 * 400.0 - 100.0 * 100.0);
+            if disc < 0.0 {
+                continue;
+            }
+            let n = (d * (-b - disc.sqrt()) - Vec3::new(0.0, 0.0, 400.0)) / 100.0;
+            // clear of the limb, where a pixel straddles the ball and the background
+            if n.z > -0.3 {
+                continue;
+            }
+            // the projection dips below zero past the terminator, where the shader keeps none
+            let want = sr_3d::env::sh_point(power, sun, n).x.max(0.0);
+            worst = worst.max((r.at(x, y)[0] - want).abs() / peak);
+            checked += 1;
+        }
+    }
+    assert!(checked > 1000 && worst < 0.01, "{checked} pixels checked, worst {worst} of the peak");
+}

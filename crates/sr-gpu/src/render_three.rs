@@ -2889,7 +2889,8 @@ impl Renderer {
                     Some(e) => e.clone(),
                     None => {
                         // one gradient sky is kept: a keyed sun is a new sky each frame
-                        let e = self.three_engine().upload_env(&sky.equirect(SKY_BAKE_WIDTH));
+                        let lit = sky.equirect(SKY_BAKE_WIDTH);
+                        let e = self.three_engine().upload_sky(&sky.gradient_image(SKY_BAKE_WIDTH), &lit, &sky.discs());
                         let envs = &mut self.three_engine().envs;
                         envs.retain(|k, _| !k.starts_with("sky:"));
                         envs.insert(key, e.clone());
@@ -3056,7 +3057,11 @@ impl Renderer {
             .map_err(|e| e.to_string())?
             .map(Arc::new);
         let sky = Arc::new(sky);
-        let e = self.three_engine().upload_env_seen(&sky.equirect(SKY_BAKE_WIDTH), &sky.visible(PHYSICAL_SEEN_WIDTH));
+        let e = self.three_engine().upload_sky(
+            &sky.visible(SKY_BAKE_WIDTH),
+            &sky.visible(PHYSICAL_SEEN_WIDTH),
+            &sky.discs(),
+        );
         self.physical_sky = Some(PhysicalSkySlot { key, sky: sky.clone(), env: e.clone(), aerial, camera: None });
         Ok((sky, e))
     }

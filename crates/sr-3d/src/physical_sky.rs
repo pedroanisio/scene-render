@@ -13,7 +13,7 @@ use glam::Vec3;
 use rayon::prelude::*;
 
 use crate::atmosphere::{atmosphere, Atmosphere, AtmosphereOptions, Scattering, SkyError};
-use crate::env::{dir_of, Equirect};
+use crate::env::{dir_of, Disc, Equirect};
 use crate::sky::add_disc;
 use crate::space::moon::moon_from_document;
 use crate::space::sun::{sun_from_document, Observer};
@@ -329,13 +329,17 @@ impl PhysicalSky {
     /// [`add_disc`].
     pub fn equirect(&self, width: u32) -> Equirect {
         let mut eq = self.visible(width);
-        if self.has_sun() {
-            add_disc(&mut eq, Vec3::from(self.sun_dir), self.sun_cos, self.sun());
-        }
-        if self.has_moon() {
-            add_disc(&mut eq, Vec3::from(self.moon_dir), self.moon_cos, Vec3::from(self.moon));
+        for d in self.discs() {
+            add_disc(&mut eq, d.dir, d.cos, d.radiance);
         }
         eq
+    }
+
+    /// The sun's disc and the moon's, each where it is drawn.
+    pub fn discs(&self) -> Vec<Disc> {
+        let sun = Disc { dir: Vec3::from(self.sun_dir), cos: self.sun_cos, radiance: self.sun() };
+        let moon = Disc { dir: Vec3::from(self.moon_dir), cos: self.moon_cos, radiance: Vec3::from(self.moon) };
+        [self.has_sun().then_some(sun), self.has_moon().then_some(moon)].into_iter().flatten().collect()
     }
 
     /// The discs as five vec4 for a shader (`sky_discs` of sr-gpu's `sampling.wgsl`): the moon's direction (xyz,

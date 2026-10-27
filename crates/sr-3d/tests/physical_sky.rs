@@ -464,3 +464,54 @@ mod document {
         assert!(PhysicalSky::from_document(&PhysicalSkyOptions { sun_size: 181.0, ..options(FULL) }).is_err());
     }
 }
+
+/// A sky's discs light from their own directions: the bake's irradiance holds each as a point of its power, which
+/// the planets draft's cloud and ring shadows under a physical sky's sun take back out, while its mips hold each
+/// spread over the texels it covers. The rest of the sky is projected from the bake's small copy, whose texel would
+/// carry a disc up to half its width away.
+#[test]
+fn a_disc_lights_the_bake_as_a_point_of_its_power() {
+    use glam::Vec3;
+    use sr_3d::env::{dir_of, prefilter, prefilter_discs, sh_eval, sh_point, Disc, Equirect};
+    let (radiance, cos) = (Vec3::new(3.0e4, 2.5e4, 2.0e4), 0.265f32.to_radians().cos());
+    let power = radiance * (2.0 * std::f32::consts::PI * (1.0 - cos));
+    let sky = Equirect {
+        width: 512,
+        height: 256,
+        rgb: (0..512 * 256).map(|k| [0.1 + (k % 512) as f32 / 5120.0, 0.2, 0.3 + (k / 512) as f32 / 2560.0]).collect(),
+    };
+    let alone = prefilter(&sky, 512, 7);
+    let texel_sa = |y: u32| {
+        (2.0 * std::f32::consts::PI / 512.0)
+            * (std::f32::consts::PI / 256.0)
+            * ((y as f32 + 0.5) / 256.0 * std::f32::consts::PI).sin()
+    };
+    for dir in [Vec3::new(0.3, -0.8, 0.52), Vec3::new(-0.9, -0.1, 0.42), Vec3::new(0.0, -1.0, 0.0)] {
+        let dir = dir.normalize();
+        let disc = Disc { dir, cos, radiance };
+        assert!((disc.power() - power).abs().max_element() < 1e-3 * power.x, "{}", disc.power());
+        // the engine's bake: 512 wide, prefiltered at 512 over 7 levels
+        let pf = prefilter_discs(&sky, 512, 7, &[disc]);
+        let scale = power.x / std::f32::consts::PI;
+        for k in 0..400 {
+            let n = dir_of((k % 20) as f32 / 20.0 + 0.025, (k / 20) as f32 / 20.0 + 0.025);
+            let (got, want) = (sh_eval(&pf.sh, n), sh_eval(&alone.sh, n) + sh_point(power, dir, n));
+            assert!((got - want).abs().max_element() < 1e-4 * scale, "{dir} at {n}: {got}, want {want}");
+        }
+        // the sharpest mip holds the disc's power about its direction
+        let (w, h, px) = &pf.mips[0];
+        let (mut held, mut off) = (Vec3::ZERO, 0.0f32);
+        for (i, (p, q)) in px.iter().zip(&alone.mips[0].2).enumerate() {
+            let (x, y) = (i as u32 % w, i as u32 / w);
+            let add = (Vec3::new(p[0], p[1], p[2]) - Vec3::new(q[0], q[1], q[2])) * texel_sa(y);
+            if add.x > 1e-3 * power.x {
+                held += add;
+                off = off.max(dir_of((x as f32 + 0.5) / *w as f32, (y as f32 + 0.5) / *h as f32).angle_between(dir));
+            }
+        }
+        assert!((held.x / power.x - 1.0).abs() < 0.02 && off < 0.03, "{dir}: {held} of {power}, {off} rad off");
+        // the projection, not Lambert's cosine: a sixteenth of P / π stays opposite the disc
+        let back = sh_point(power, dir, -dir).x / scale;
+        assert!((back - 0.0625).abs() < 1e-4, "{back}");
+    }
+}

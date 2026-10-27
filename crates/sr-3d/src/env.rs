@@ -127,14 +127,68 @@ pub fn sh_eval(sh: &[[f32; 3]; 9], d: Vec3) -> Vec3 {
     (0..9).fold(Vec3::ZERO, |acc, k| acc + Vec3::from(sh[k]) * b[k])
 }
 
-/// Prefilters `env` into `levels` mips starting at `base_w`×`base_w/2`.
-pub fn prefilter(env: &Equirect, base_w: u32, levels: usize) -> Prefiltered {
-    // source pyramid for filtered importance sampling
+/// The irradiance SH of a point of `power` (radiance × solid angle) toward the unit `dir`, as [`prefilter`] projects
+/// it, evaluated at `n` (E/π, as [`sh_eval`]): by the addition theorem each band is its factor × (2l + 1)/(4π) ×
+/// P_l(n · dir).
+pub fn sh_point(power: Vec3, dir: Vec3, n: Vec3) -> Vec3 {
+    let mu = n.normalize_or_zero().dot(dir);
+    power * ((1.0 + 2.0 * mu + 0.625 * (3.0 * mu * mu - 1.0)) / (4.0 * PI))
+}
+
+/// A disc of a sky, a sun or a moon: the unit direction toward its centre, the cosine of half its size (d is inside
+/// when d · dir ≥ cos) and the radiance it adds inside.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Disc {
+    pub dir: Vec3,
+    pub cos: f32,
+    pub radiance: Vec3,
+}
+
+impl Disc {
+    /// Radiance × solid angle.
+    pub fn power(&self) -> Vec3 {
+        self.radiance * (2.0 * PI * (1.0 - self.cos.clamp(-1.0, 1.0)))
+    }
+}
+
+/// The pyramid `prefilter` samples and projects from: `env` at `base_w`×`base_w/2`, halved down to 8 wide.
+fn pyramid(env: &Equirect, base_w: u32) -> Vec<Equirect> {
     let mut src = vec![env.resized(base_w, base_w / 2)];
     while src.last().map(|e| e.width > 8).unwrap_or(false) {
         let l = src.last().unwrap();
         src.push(l.resized(l.width / 2, l.height / 2));
     }
+    src
+}
+
+/// Prefilters a sky drawn as `env` without its `discs`: the mips hold each disc spread over the texels it covers
+/// ([`crate::sky::add_disc`]), the irradiance each as a point of its power ([`sh_point`]), so that it lights from its
+/// own direction rather than from the texel of the small copy the rest of the sky is projected from.
+pub fn prefilter_discs(env: &Equirect, base_w: u32, levels: usize, discs: &[Disc]) -> Prefiltered {
+    if discs.is_empty() {
+        return prefilter(env, base_w, levels);
+    }
+    let mut lit = env.clone();
+    for d in discs {
+        crate::sky::add_disc(&mut lit, d.dir, d.cos, d.radiance);
+    }
+    let mut pf = prefilter(&lit, base_w, levels);
+    pf.sh = project_sh(&pyramid(env, base_w));
+    for d in discs {
+        let (b, p) = (sh_basis(d.dir.normalize_or_zero()), d.power());
+        for (k, f) in BAND.iter().enumerate() {
+            for c in 0..3 {
+                pf.sh[k][c] += p[c] * b[k] * f;
+            }
+        }
+    }
+    pf
+}
+
+/// Prefilters `env` into `levels` mips starting at `base_w`×`base_w/2`.
+pub fn prefilter(env: &Equirect, base_w: u32, levels: usize) -> Prefiltered {
+    // source pyramid for filtered importance sampling
+    let src = pyramid(env, base_w);
     let texel_sa = |e: &Equirect| 4.0 * PI / (e.width * e.height) as f32;
     let mut mips = Vec::new();
     let samples = 48u32;
@@ -175,7 +229,14 @@ pub fn prefilter(env: &Equirect, base_w: u32, levels: usize) -> Prefiltered {
         }
         mips.push((w, h, px));
     }
-    // SH9 projection from a small copy
+    Prefiltered { mips, sh: project_sh(&src) }
+}
+
+/// The cosine-lobe convolution of each SH band (π, 2π/3, π/4), over π for radiance.
+const BAND: [f32; 9] = [1.0, 2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0, 0.25, 0.25, 0.25, 0.25, 0.25];
+
+/// The irradiance SH9 of a pyramid, projected from a small copy.
+fn project_sh(src: &[Equirect]) -> [[f32; 3]; 9] {
     let small = &src[src.len().saturating_sub(3).min(src.len() - 1)];
     let mut sh = [[0.0f32; 3]; 9];
     for y in 0..small.height {
@@ -192,12 +253,10 @@ pub fn prefilter(env: &Equirect, base_w: u32, levels: usize) -> Prefiltered {
             }
         }
     }
-    // cosine-lobe convolution (band factors π, 2π/3, π/4), then /π for radiance
-    let band = [1.0, 2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0, 0.25, 0.25, 0.25, 0.25, 0.25];
-    for (coef, f) in sh.iter_mut().zip(band) {
+    for (coef, f) in sh.iter_mut().zip(BAND) {
         coef.iter_mut().for_each(|v| *v *= f);
     }
-    Prefiltered { mips, sh }
+    sh
 }
 
 /// Split-sum environment BRDF (scale, bias) over (N·V, roughness), `n`×`n`.
