@@ -1074,6 +1074,46 @@ fn the_path_tracer_casts_the_rings_shadows_of_a_physical_skys_sun() {
 }
 
 #[test]
+fn a_spinning_planets_frame_rendered_alone_is_the_frame_played() {
+    // the draft's rule 7 (SREP 14): the Earth turned with its rotation elements (orientation="bodyFixed", 75° by
+    // frame 120 at 3600 scene seconds per second) under clouds drifting 0.01° per scene second (180° by then), its
+    // body and layer marked by bands; frame 120 rendered alone is the frame reached by playing from 0
+    // stripes 20° wide every 60° of longitude: red on a white ground, and blue, offset by 30°, in a clear layer
+    let stripes = |name: &str, on: [u8; 4], off: [u8; 4], offset: u32| {
+        let img =
+            image::RgbaImage::from_fn(360, 180, |x, _| image::Rgba(if (x + offset) % 60 < 20 { on } else { off }));
+        write_fixture_png(name, &img)
+    };
+    let ground = stripes("planet-seek-ground.png", [255, 0, 0, 255], [255; 4], 0);
+    let clouds = stripes("planet-seek-clouds.png", [0, 0, 255, 255], [0; 4], 30);
+    let xml = format!(
+        r##"<scene version="1.8"><project width="{SIZE}" height="{SIZE}" fps="24" duration="6" background="#000000FF"/><materials><material id="m" baseColor="#FFFFFFFF" baseColorMap="{}" specular="0" roughness="1"/></materials><composition><camera id="eye" x="0" y="0" z="0" fov="60"/><object3D id="p" primitive="planet" material="m" body="399" orientation="bodyFixed" z="400" segments="128" cloudMap="{}" cloudRotation="0.01"/></composition><lights><light id="sun" type="directional" yaw="-60" intensity="3"/></lights><physics pixelsPerMeter="1.5679e-5"/><space epoch="2451545.0" timeScale="tdb" origin="10" rate="3600"/></scene>"##,
+        ground.display(),
+        clouds.display()
+    );
+    let opts = sr_model::LoadOptions { verify_assets: true, base_dir: Some(fixtures()) };
+    let doc = sr_model::load_str(&xml, &opts).unwrap_or_else(|e| panic!("{e:?}\n{xml}"));
+    let frames: Vec<f64> = (0..=120).map(|f| f as f64 / 24.0).collect();
+    let (Some(alone), Some(played), Some(first)) =
+        (render_times(&doc, &frames[120..]), render_times(&doc, &frames), render_times(&doc, &frames[..1]))
+    else {
+        return;
+    };
+    for r in [&alone, &played] {
+        assert!(
+            r.stats.errors.is_empty() && r.stats.unsupported.is_empty(),
+            "{:?} {:?}",
+            r.stats.errors,
+            r.stats.unsupported
+        );
+    }
+    let moved = first.px.iter().zip(&alone.px).filter(|(p, q)| (0..3).any(|c| (p[c] - q[c]).abs() > 0.05)).count();
+    assert!(moved > 1000, "{moved} pixels differ from frame 0");
+    let off = alone.px.iter().zip(&played.px).filter(|(p, q)| p != q).count();
+    assert_eq!(off, 0, "{off} pixels of frame 120 alone differ from frame 120 played");
+}
+
+#[test]
 fn an_oblate_bodys_cloud_shell_is_its_spheroid_scaled() {
     // white clouds everywhere over a black ground of flattening 0.3, the light from the eye: over the pole the shell
     // ends at c (1 + h), well inside a sphere of a (1 + h)
