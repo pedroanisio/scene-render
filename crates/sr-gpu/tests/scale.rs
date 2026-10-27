@@ -275,3 +275,32 @@ fn a_volume_and_a_black_hole_are_the_same_either_side_of_a_floating_origin_cell_
         }
     }
 }
+
+#[test]
+fn a_layer_placed_in_2_5d_moves_with_its_camera() {
+    // a camera and two rectangles placed in 2.5D, moved 65,536 pixels (where a binary32 is a 128th of a pixel apart)
+    // along x and y: the projection takes the layer's points back to the world and rebases them as the camera's view is
+    let scene = |d: f64| {
+        let xml = format!(
+            r##"<scene version="1.2"><project width="{SIZE}" height="{SIZE}" fps="10" duration="1" background="#000000FF"/><composition><camera id="cam" fov="40" x="{}" y="{}" z="-120"/><shape id="near" shape="rect" x="{}" y="{}" width="16" height="24" fill="#FFFFFF" threeD="true" zDepth="-40"/><shape id="far" shape="rect" x="{}" y="{}" width="20" height="12" fill="#FF0000" threeD="true" zDepth="60" rotationY="30"/></composition></scene>"##,
+            d + 32.0,
+            d + 32.0,
+            d + 14.0,
+            d + 20.0,
+            d + 34.0,
+            d + 30.0
+        );
+        sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap_or_else(|e| panic!("{e:?}\n{xml}"))
+    };
+    let Some(here) = rendered(&scene(0.0)) else { return };
+    let there = rendered(&scene(65536.0)).unwrap();
+    assert!(here.px.iter().filter(|c| c[1] > 0.5).count() > 100, "the near layer is drawn");
+    assert!(here.px.iter().filter(|c| c[0] > 0.5 && c[1] < 0.1).count() > 30, "the far layer is drawn");
+    let worst = here
+        .px
+        .iter()
+        .zip(&there.px)
+        .map(|(a, b)| (0..4).map(|i| (a[i] - b[i]).abs()).fold(0f32, f32::max))
+        .fold(0f32, f32::max);
+    assert!(worst <= 3.0 / 255.0, "the images differ by {} / 255", worst * 255.0);
+}

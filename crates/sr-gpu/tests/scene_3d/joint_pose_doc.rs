@@ -45,8 +45,12 @@ fn model() -> String {
 }
 
 fn scene(joints: &str, target: &str) -> sr_model::Document {
+    load(&scene_xml(joints, target))
+}
+
+fn scene_xml(joints: &str, target: &str) -> String {
     write_fixture("joint-pose.gltf", model());
-    let xml = format!(
+    format!(
         r##"<scene version="1.2"><project width="256" height="256" fps="10" duration="2" background="#00000000"/>
         <assets><mesh id="m" src="joint-pose.gltf"/></assets>
         <composition>
@@ -55,9 +59,12 @@ fn scene(joints: &str, target: &str) -> sr_model::Document {
           {target}
         </composition>
         <lights><light id="fill" type="ambient" intensity="1"/></lights></scene>"##
-    );
+    )
+}
+
+fn load(xml: &str) -> sr_model::Document {
     let opts = sr_model::LoadOptions { verify_assets: true, base_dir: Some(fixtures()) };
-    sr_model::load_str(&xml, &opts).unwrap_or_else(|e| panic!("{e:?}\n{xml}"))
+    sr_model::load_str(xml, &opts).unwrap_or_else(|e| panic!("{e:?}\n{xml}"))
 }
 
 /// Centre (x, y) of the pixels that are covered and not the red triangle: the ball.
@@ -181,4 +188,36 @@ fn joint_needs_version_1_2() {
         Err(sr_model::LoadError::Invalid(r)) => assert!(r.diagnostics.iter().any(|d| d.code == "V5"), "{r}"),
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn a_look_at_target_moves_with_the_scene() {
+    // the joint, its target and a camera moved 3e9 pixels along x and along the view axis (the scale draft's rule 4):
+    // the target is rebased as the camera's view is, so the joint aims where it aims at the origin
+    let at = |d: f64| {
+        let x = |v: f64| format!("{:e}", v + d);
+        let joints = r#"<joint name="head" lookAt="t" lookAxis="x"/>"#;
+        let target = format!(
+            r#"<object3D id="t" primitive="sphere" radius="1" visible="false" x="{}" y="100" z="{}"/>"#,
+            x(130.0),
+            x(0.0)
+        );
+        let camera = format!(r#"<camera id="c" x="{}" y="160" z="{}" fov="60"/>"#, x(150.0), x(-300.0));
+        let xml = scene_xml(joints, &format!("{camera}{target}"));
+        load(&xml.replace(r#"x="130" y="200""#, &format!(r#"x="{}" y="200" z="{}""#, x(130.0), x(0.0))))
+    };
+    let Some(here) = render_times(&at(0.0), &[0.0]) else { return };
+    let there = render_times(&at(3e9), &[0.0]).unwrap();
+    for r in [&here, &there] {
+        let problems: Vec<_> = r.stats.unsupported.iter().chain(&r.stats.errors).collect();
+        assert!(problems.is_empty(), "{problems:?}");
+    }
+    assert!(here.px.iter().filter(|p| p[3] > 0.5 && p[0] > p[1] + 0.2).count() > 100, "the triangle is drawn");
+    let worst = here
+        .px
+        .iter()
+        .zip(&there.px)
+        .map(|(a, b)| (0..4).map(|i| (a[i] - b[i]).abs()).fold(0f32, f32::max))
+        .fold(0f32, f32::max);
+    assert!(worst <= 2.0 / 255.0, "the images differ by {} / 255", worst * 255.0);
 }

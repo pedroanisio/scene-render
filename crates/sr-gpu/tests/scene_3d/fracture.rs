@@ -165,3 +165,40 @@ fn fractured_globe_preserves_map_drape() {
         );
     }
 }
+
+#[test]
+fn fracture_pieces_move_with_the_scene() {
+    // the rock, its camera and its pieces moved 3e9 pixels along x and along the view axis (the scale draft's rule 4):
+    // the pieces' poses are rebased as the camera's view is, so a frame after release draws what it draws at the origin;
+    // 0.7 s after release, before the binary64 simulation's own drift there (2e-4 pixels a second in) moves an edge pixel
+    let scene = |d: f64| {
+        let x = |v: f64| format!("{:e}", v + d);
+        let xml = format!(
+            r##"<scene version="1.3"><project width="96" height="96" fps="10" duration="3" background="#00000000"/>
+        <materials><material id="outside" baseColor="#00ff00" unlit="true"/><material id="inside" baseColor="#ff0000" unlit="true"/></materials>
+        <composition><camera id="camera" fov="40" x="{}" y="48" z="{}" target="rock"/>
+        <object3D id="rock" primitive="box" width="24" height="24" depth="24" x="{}" y="48" z="{}" rotationY="20" rotationX="15" material="outside">
+        <rigidBody mass="4" collidesWith="none" linearDamping="0" angularDamping="0"/>
+        <fracture at="1" pieces="8" seed="42" interiorMaterial="inside" radialImpulse="80"/>
+        </object3D></composition><physics gravityY="0" pixelsPerMeter="1" fixedStep="0.01"/></scene>"##,
+            x(48.0),
+            x(-200.0),
+            x(48.0),
+            x(0.0)
+        );
+        sr_model::load_str(&xml, &sr_model::LoadOptions::without_assets()).unwrap_or_else(|e| panic!("{e:?}\n{xml}"))
+    };
+    let Some(here) = render_times(&scene(0.0), &[1.7]) else { return };
+    let there = render_times(&scene(3e9), &[1.7]).unwrap();
+    for r in [&here, &there] {
+        assert!(r.stats.errors.is_empty() && r.stats.unsupported.is_empty(), "{:?}", r.stats);
+    }
+    assert!(here.px.iter().filter(|p| p[0] > 0.5 && p[1] < 0.1 && p[3] > 0.5).count() > 20, "the interior is drawn");
+    let worst = here
+        .px
+        .iter()
+        .zip(&there.px)
+        .map(|(a, b)| (0..4).map(|i| (a[i] - b[i]).abs()).fold(0f32, f32::max))
+        .fold(0f32, f32::max);
+    assert!(worst <= 2.0 / 255.0, "the images differ by {} / 255", worst * 255.0);
+}

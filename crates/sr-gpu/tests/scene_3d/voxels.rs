@@ -618,3 +618,57 @@ fn a_piece_that_stops_fitting_the_budget_is_refused_without_making_its_meshes_ag
     );
     assert_eq!(again.stats.voxel_groups_uploaded, 0, "a refused surface is not made to be refused");
 }
+
+#[test]
+fn a_piece_that_came_away_from_a_voxels_object_moves_with_the_scene() {
+    // the object, its camera and a piece a simulation has cut from it, moved 3e9 pixels along x and along the view axis
+    // (the scale draft's rule 4): the piece's pose is rebased as the camera's view is, in both renderers
+    let Some(gpu) = gpu() else { return };
+    let file = vox_file("piece.vox", &block(4, 1), &[RED]);
+    for camera in ["", r#"renderer="pathtrace" pathSamples="2" maxBounces="1" denoise="false""#] {
+        let shot = |d: f64| {
+            let xml = document(&file, "", camera, "")
+                .replace(
+                    r#"<camera id="cam" x="4" y="-3" z="-24""#,
+                    &format!(r#"<camera id="cam" x="{:e}" y="-3" z="{:e}""#, d + 4.0, d - 24.0),
+                )
+                .replace(r#"x="-4" y="-4" z="-4""#, &format!(r#"x="{:e}" y="-4" z="{:e}""#, d - 4.0, d - 4.0));
+            let doc = sr_model::load_str(&xml, &sr_model::LoadOptions::default()).unwrap_or_else(|e| panic!("{e:?}"));
+            let ev = sr_eval::Evaluator::new(&doc, &Default::default()).unwrap();
+            let mut frame = ev.evaluate(0.5);
+            // the object keeps a checker of 4 cells a side and a piece with one of its own came away from it, turned
+            let pose = glam::DMat4::from_rotation_translation(
+                glam::DQuat::from_euler(glam::EulerRot::YXZ, 0.4, 0.3, 0.0),
+                glam::DVec3::new(d + 1.0, -9.0, d - 2.0),
+            );
+            let node = frame.nodes.iter_mut().find(|n| &*n.id == "obj").unwrap();
+            node.voxels = Some(std::sync::Arc::new(sr_eval::voxel_cut::SimVoxels {
+                enabled: true,
+                revision: 1,
+                grid: checker(4, [0, 0, 0]),
+                changed_bricks: Vec::new(),
+                steps: Vec::new(),
+                thrown: None,
+                pieces: vec![sr_eval::voxel_cut::SimVoxelPiece {
+                    body: 5,
+                    enabled: true,
+                    revision: 1,
+                    grid: checker(4, [0, 0, 0]),
+                    pose3: pose.to_cols_array(),
+                }],
+            }));
+            let mut renderer = sr_gpu::Renderer::new(gpu.clone(), ev.program());
+            let out = renderer.render(&frame, ev.program());
+            assert!(out.stats.errors.is_empty() && out.stats.unsupported.is_empty(), "{camera}: {:?}", out.stats);
+            assert_eq!(out.stats.voxel_surfaces.len(), 2, "{camera}: the object and its piece are drawn");
+            renderer.read(&out.texture)
+        };
+        let (here, there) = (shot(0.0), shot(3e9));
+        let worst = here
+            .iter()
+            .zip(&there)
+            .map(|(a, b)| (0..4).map(|i| (a[i] - b[i]).abs()).fold(0f32, f32::max))
+            .fold(0f32, f32::max);
+        assert!(worst <= 2.0 / 255.0, "{camera}: the images differ by {} / 255", worst * 255.0);
+    }
+}
