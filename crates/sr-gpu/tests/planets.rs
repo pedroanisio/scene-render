@@ -1257,7 +1257,19 @@ fn air_frame_with(camera: &str, lights: &str, scale: f64, background: &str, more
 fn air_doc(camera: &str, lights: &str, scale: f64, background: &str, more: &str, after: &str) -> Option<Rendered> {
     let (nadir, _) = air_geometry();
     let k = (EARTH_A + AIR_ALTITUDE) * AIR_PPM;
-    let centre = nadir.map(|v| v * k);
+    air_doc_at(nadir.map(|v| v * k), camera, lights, scale, background, more, after)
+}
+
+/// [`air_doc`] with the planet's centre at `centre` (scene units).
+fn air_doc_at(
+    centre: [f64; 3],
+    camera: &str,
+    lights: &str,
+    scale: f64,
+    background: &str,
+    more: &str,
+    after: &str,
+) -> Option<Rendered> {
     let ppm = AIR_PPM / scale;
     let xml = format!(
         r##"<scene version="1.8"><project width="{AIR_W}" height="{AIR_H}" fps="24" duration="1" background="{background}"/><materials><material id="m" baseColor="#000000FF" unlit="true"/></materials><composition><camera id="eye" x="0" y="0" z="0" fov="10" far="1000" {camera}/><object3D id="p" primitive="planet" body="399" material="m" x="{}" y="{}" z="{}" scaleX="{scale}" scaleY="{scale}" scaleZ="{scale}" segments="512" atmosphere="earth" atmosphereHeight="{AIR_HEIGHT}"/>{more}</composition><lights>{lights}</lights><physics pixelsPerMeter="{ppm}"/>{after}</scene>"##,
@@ -1491,8 +1503,10 @@ fn the_raster_pass_names_the_shells_it_does_not_draw() {
     let physical = r#"<light id="sky" type="dome" sky="physical" sunIntensity="1" date="2024-06-21T12:00:00Z" latitude="0" moon="false"/>"#;
     let Some(u) = notes("", physical) else { return };
     assert!(u.iter().any(|m| m == r#"p: the atmosphere shell under a dome with sky="physical" is not drawn"#), "{u:?}");
+    // 400 km up the eye's orthographic rays start in the plane across the axis through it, 2150 km from the centre
     let Some(u) = notes(r#"projection="orthographic" orthoHeight="10""#, &air_sun()) else { return };
-    assert!(u.iter().any(|m| m == "p: the atmosphere shell is not drawn through an orthographic camera"), "{u:?}");
+    let air = "p: the atmosphere shell is not drawn through an orthographic camera whose rays start in its air";
+    assert!(u.iter().any(|m| m == air), "{u:?}");
     for camera in ["", TRACED] {
         let Some(u) = notes(camera, &air_sun()) else { return };
         assert!(!u.iter().any(|m| m.contains("atmosphere shell")), "{camera}: {u:?}");
@@ -1549,4 +1563,106 @@ fn air_over_backdrop(r: &Rendered) {
         }
     }
     assert!(seen > 40, "{seen} columns in the band");
+}
+
+/// An orthographic frame 4 units high whose axis passes `AIR_ORTHO_IMPACT` metres from the planet's centre, 100 units
+/// ahead, the limb crossing the frame upright: rays left of the limb meet the ground, rays right of it the band.
+const AIR_ORTHO_IMPACT: f64 = EARTH_A + 50_000.0;
+const AIR_ORTHO_HEIGHT: f64 = 4.0;
+
+fn air_ortho_centre() -> [f64; 3] {
+    [-AIR_ORTHO_IMPACT * AIR_PPM, 0.0, 100.0]
+}
+
+/// The sun of [`air_ortho`]: toward the eye's side of the limb, 40° off the axis.
+fn air_ortho_sun() -> ([f64; 3], String) {
+    let (c, s) = (40f64.to_radians().cos(), 40f64.to_radians().sin());
+    let sun = [0.8 * s, -0.6 * s, -c];
+    let (yaw, pitch) = ((-sun[0]).atan2(-sun[2]).to_degrees(), sun[1].asin().to_degrees());
+    (sun, format!(r#"<light id="sun" type="directional" intensity="{AIR_IRRADIANCE}" yaw="{yaw}" pitch="{pitch}"/>"#))
+}
+
+fn air_ortho(camera: &str, background: &str) -> Option<Rendered> {
+    let camera = format!(r#"projection="orthographic" orthoHeight="{AIR_ORTHO_HEIGHT}" {camera}"#);
+    air_doc_at(air_ortho_centre(), &camera, &air_ortho_sun().1, 1.0, background, "", "")
+}
+
+/// The reference at pixel (x, y) of [`air_ortho`]: the ray's impact on the shell in metres, its radiance (the sky's
+/// where it misses the planet, the black ground's aerial perspective where it meets it) and transmittance.
+fn air_ortho_reference(x: f64, y: f64) -> (f64, [f64; 3], [f64; 3]) {
+    let px = AIR_ORTHO_HEIGHT / AIR_H as f64;
+    let p = [(x - AIR_W as f64 / 2.0) * px, (y - AIR_H as f64 / 2.0) * px, 0.0];
+    let c = air_ortho_centre();
+    let o: [f64; 3] = std::array::from_fn(|i| (p[i] - c[i]) / AIR_PPM);
+    let d = [0.0, 0.0, 1.0];
+    let s = sr_3d::atmosphere::Scattering::new(
+        sr_3d::atmosphere::atmosphere(&sr_3d::atmosphere::AtmosphereOptions {
+            planet_radius: EARTH_A,
+            top_radius: EARTH_A + AIR_HEIGHT,
+            sun_irradiance: [AIR_IRRADIANCE; 3],
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    let sun = air_ortho_sun().0;
+    let rho = (o[0] * o[0] + o[1] * o[1]).sqrt();
+    if rho < EARTH_A {
+        let ground = -o[2] - (EARTH_A * EARTH_A - rho * rho).sqrt();
+        (rho, s.aerial_perspective(o, d, ground, [0.0; 3], sun).unwrap(), [0.0; 3])
+    } else {
+        (rho, s.sky_radiance(o, d, sun).unwrap(), s.atmosphere.transmittance(o, d).unwrap())
+    }
+}
+
+/// [`air_ortho`]'s frame against the reference on three rows: the band within `tol`, nothing past the top, the ground
+/// more than 50 km inside the limb within `ground_tol`. The march's 65 columns span the frame, 11 km of impact apart
+/// (the kernel's own volume is within 1.6 % of the reference there), and the 512-segment mesh's ground lies up to
+/// 120 m inside the spheroid, which lengthens the grazing rays' air.
+fn air_ortho_matches(r: &Rendered, tol: f64, ground_tol: f64) {
+    let (mut band, mut ground, mut clear) = (0, 0, 0);
+    let mut peak = 0.0f64;
+    for y in [12, AIR_H / 2, AIR_H - 12] {
+        for x in 0..AIR_W {
+            let (rho, l, _) = air_ortho_reference(x as f64 + 0.5, y as f64 + 0.5);
+            let got = r.at(x, y);
+            peak = peak.max(l[2]);
+            if rho > EARTH_A + AIR_HEIGHT + 3_000.0 {
+                assert!(got[..3].iter().all(|v| *v == 0.0), "({x}, {y}) past the top: {got:?}");
+                clear += 1;
+            } else if rho > EARTH_A + 3_000.0 && rho < EARTH_A + AIR_HEIGHT - 3_000.0 && l[2] > 1e-4 {
+                for c in 0..3 {
+                    assert!(
+                        (got[c] as f64 - l[c]).abs() <= tol * l[c] + 1e-4,
+                        "({x}, {y}) {:.1} km up: {got:?}, the reference's {l:?}",
+                        (rho - EARTH_A) / 1e3
+                    );
+                }
+                band += 1;
+            } else if rho < EARTH_A - 50_000.0 {
+                for c in 0..3 {
+                    assert!(
+                        (got[c] as f64 - l[c]).abs() <= ground_tol * l[c] + 1e-4,
+                        "the ground at ({x}, {y}), {:.1} km in: {got:?}, the reference's {l:?}",
+                        (EARTH_A - rho) / 1e3
+                    );
+                }
+                ground += 1;
+            }
+        }
+    }
+    assert!(peak > 0.01, "the band is lit: {peak}");
+    assert!(band > 60 && ground > 60 && clear > 60, "{band} band, {ground} ground and {clear} clear pixels");
+}
+
+#[test]
+fn an_orthographic_camera_sees_the_shell_by_each_rays_impact() {
+    let Some(r) = air_ortho("", "#000000FF") else { return };
+    assert!(!r.stats.unsupported.iter().any(|m| m.contains("atmosphere shell")), "{:?}", r.stats.unsupported);
+    air_ortho_matches(&r, 0.01, 0.04);
+}
+
+#[test]
+fn the_path_tracer_sees_the_shell_through_an_orthographic_camera() {
+    let Some(r) = air_ortho(AIR_TRACED, "#000000FF") else { return };
+    air_ortho_matches(&r, 0.02, 0.04);
 }

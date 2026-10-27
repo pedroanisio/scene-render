@@ -1805,8 +1805,6 @@ impl Renderer {
         for air in &airs {
             if air.under_physical {
                 note(&air.id, "the atmosphere shell under a dome with sky=\"physical\" is not drawn");
-            } else if cam.orthographic {
-                note(&air.id, "the atmosphere shell is not drawn through an orthographic camera");
             } else if drawn.is_some() {
                 note(&air.id, "the atmosphere shell is drawn for the first planet that has one alone");
             } else {
@@ -1815,8 +1813,24 @@ impl Renderer {
         }
         let air = drawn?;
         let vp = clip_fix * cam.view_proj();
+        let inv = vp.inverse();
+        // reverse-Z: the near plane at depth 1, the far plane at 0
+        let at = |u: f64, v: f64, z: f32| inv.project_point3(Vec3::new(2.0 * u as f32 - 1.0, 2.0 * v as f32 - 1.0, z));
         let k = air.metre;
-        let observer = ((cam.eye - air.centre).as_dvec3() / k).to_array();
+        let (r, top) = (air.radius, air.radius + air.height);
+        // an orthographic camera's rays leave its near plane along its axis: the frame's centre on that plane
+        let view = (at(0.5, 0.5, 0.0) - at(0.5, 0.5, 1.0)).normalize().as_dvec3();
+        let near = ((at(0.5, 0.5, 1.0) - air.centre).as_dvec3() / k).to_array();
+        // metres along the axis from the near plane to the plane where the air begins
+        let start = -glam::DVec3::from(near).dot(view) - top;
+        if cam.orthographic && start <= 0.0 {
+            note(
+                &air.id,
+                "the atmosphere shell is not drawn through an orthographic camera whose rays start in its air",
+            );
+            return None;
+        }
+        let observer = if cam.orthographic { near } else { ((cam.eye - air.centre).as_dvec3() / k).to_array() };
         let key =
             format!("{vp:?} {:?} {k} {} {} {:?} {:?}", air.centre, air.radius, air.height, air.sun, air.irradiance);
         if let Some((_, g)) = self.planet_shell.as_ref().filter(|(k, _)| *k == key) {
@@ -1824,25 +1838,48 @@ impl Renderer {
         }
         let result = (|| {
             let sun = air.sun.map(|s| s.as_dvec3().normalize().to_array());
-            let shell = sr_3d::planet_shell::PlanetShell::new(air.radius, air.height, observer, sun, air.irradiance)
-                .map_err(|e| e.to_string())?;
-            let inv = vp.inverse();
-            // reverse-Z: the near plane at depth 1, the far plane at 0
-            let at =
-                |u: f64, v: f64, z: f32| inv.project_point3(Vec3::new(2.0 * u as f32 - 1.0, 2.0 * v as f32 - 1.0, z));
-            let ray = |u: f64, v: f64| {
-                let d = (at(u, v, 0.5) - cam.eye).normalize();
-                (observer, d.as_dvec3().to_array())
-            };
-            // the march reaches the far plane or the farthest point of the air, whichever is nearer: no ray stays in
-            // the air longer than the ground's tangent and the chord the top cuts along it
             let corners = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)];
-            let far = corners.iter().map(|&(u, v)| f64::from(at(u, v, 0.0).distance(cam.eye))).fold(0.0, f64::max) / k;
-            let (d, r, top) = (glam::DVec3::from(observer).length(), air.radius, air.radius + air.height);
-            let across = (d * d - r * r).max(0.0).sqrt() + (top * top - r * r).sqrt();
-            let depth = far.min(across);
+            let (shell, start, depth) = if cam.orthographic {
+                let shell = sr_3d::planet_shell::PlanetShell::parallel(
+                    r,
+                    air.height,
+                    observer,
+                    view.to_array(),
+                    sun,
+                    air.irradiance,
+                )
+                .map_err(|e| e.to_string())?;
+                // each ray marches from where it enters the air to the far plane or the air's far side: no ray stays in
+                // the air longer than the chord the top cuts along the ground's tangent, twice
+                let far =
+                    corners.iter().map(|&(u, v)| f64::from(at(u, v, 0.0).distance(at(u, v, 1.0)))).fold(0.0, f64::max)
+                        / k;
+                (shell, start, (far - start).min(2.0 * (top * top - r * r).sqrt()))
+            } else {
+                let shell = sr_3d::planet_shell::PlanetShell::new(r, air.height, observer, sun, air.irradiance)
+                    .map_err(|e| e.to_string())?;
+                // the march reaches the far plane or the farthest point of the air, whichever is nearer: no ray stays
+                // in the air longer than the ground's tangent and the chord the top cuts along it
+                let far =
+                    corners.iter().map(|&(u, v)| f64::from(at(u, v, 0.0).distance(cam.eye))).fold(0.0, f64::max) / k;
+                let d = glam::DVec3::from(observer).length();
+                let across = (d * d - r * r).max(0.0).sqrt() + (top * top - r * r).sqrt();
+                (shell, 0.0, far.min(across))
+            };
+            let ray = |u: f64, v: f64| {
+                if cam.orthographic {
+                    // as the shaders' shell_entry: past the plane tangent to the top, to the top's sphere
+                    let o = (at(u, v, 1.0) - air.centre).as_dvec3() / k;
+                    let rho = (o - view * o.dot(view)).length();
+                    let entry = start + top - ((top - rho) * (top + rho)).max(0.0).sqrt();
+                    ((o + view * entry).to_array(), view.to_array())
+                } else {
+                    (observer, (at(u, v, 0.5) - cam.eye).normalize().as_dvec3().to_array())
+                }
+            };
             let volume = shell.volume(&ray, depth, SHELL_AERIAL_SIZE).map_err(|e| e.to_string())?;
-            let uniforms = [[1.0, k as f32, 0.0, depth as f32], [0.0, 100.0, 0.0, 0.0]];
+            let ortho = f32::from(u8::from(cam.orthographic));
+            let uniforms = [[1.0, k as f32, start as f32, depth as f32], [0.0, 100.0, 0.0, ortho]];
             Ok::<_, String>(self.three_engine().upload_planet_shell(&shell.table(), uniforms, &volume))
         })();
         match result {

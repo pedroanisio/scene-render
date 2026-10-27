@@ -77,33 +77,56 @@ fn sss_lobe3(c: f32, curvature: f32, d: vec3<f32>) -> vec3<f32> {
 
 // ---------------------------------------------------------------- a planet's atmosphere shell (the planets draft), shared by both 3D passes
 
-// sr_3d::planet_shell::PlanetShell's table: rows x, y and up of the eye's frame (w: the horizon's elevation, the top's
-// grazing elevation and the sun's azimuth), then [rows, columns], the radiance nodes row by row from the horizon and
-// the transmittance of every row. Rows are spaced by the square of their index.
-const SHELL_HEADER: u32 = 4u;
+// sr_3d::planet_shell::PlanetShell's table: rows x, y and up of the eye's frame (w: the rows' first and last
+// coordinates and the sun's azimuth), [rows, columns, 1 for a parallel view], the eye in its frame (metres from the
+// centre), then the radiance nodes row by row from the limb and the transmittance of every row. Rows are spaced by
+// the square of their index over the elevation from the eye, or over the impact radius of a parallel view's rays.
+const SHELL_HEADER: u32 = 5u;
 // Each pass that includes this reads row i of the table it binds as shell_at(i).
 
-// The fractional row of the world direction d's elevation, or −1 outside the rows; its local direction in `l`.
-fn shell_row(d: vec3<f32>, l: ptr<function, vec3<f32>>) -> f32 {
-    *l = vec3(dot(shell_at(0).xyz, d), dot(shell_at(1).xyz, d), dot(shell_at(2).xyz, d));
-    let e = asin(clamp((*l).z, -1.0, 1.0));
+// The row coordinate of the ray along the world direction d whose origin lies `o` metres from the eye (world axes):
+// its elevation, or its impact radius in a parallel view; its direction or point in the eye's frame in `l`.
+fn shell_coordinate(o: vec3<f32>, d: vec3<f32>, l: ptr<function, vec3<f32>>) -> f32 {
+    let x = shell_at(0).xyz;
+    let y = shell_at(1).xyz;
+    let up = shell_at(2).xyz;
+    if (shell_at(3).z > 0.5) {
+        *l = vec3(dot(x, o), dot(y, o), dot(up, o)) + shell_at(4).xyz;
+        return length((*l).xy);
+    }
+    *l = vec3(dot(x, d), dot(y, d), dot(up, d));
+    return asin(clamp((*l).z, -1.0, 1.0));
+}
+
+// Metres from a parallel view's ray origin `o` metres off the eye to where it enters the shell's top, past `start`
+// metres to the plane tangent to the top; 0 in a view from the eye.
+fn shell_entry(o: vec3<f32>, start: f32) -> f32 {
+    if (shell_at(3).z < 0.5) { return 0.0; }
+    var l: vec3<f32>;
+    let rho = shell_coordinate(o, vec3(0.0), &l);
+    let top = shell_at(1).w;
+    return start + top - sqrt(max((top - rho) * (top + rho), 0.0));
+}
+
+// The fractional row of coordinate e, or −1 outside the rows.
+fn shell_row(e: f32) -> f32 {
     let h = shell_at(0).w;
     let top = shell_at(1).w;
     if (e < h || e > top) { return -1.0; }
     return sqrt(clamp((e - h) / (top - h), 0.0, 1.0)) * (shell_at(3).x - 1.0);
 }
 
-// Rule 9's radiance along the world direction d of a ray that meets no surface: zero toward the planet and past the
-// shell's top, bilinear between the nodes.
-fn shell_radiance(d: vec3<f32>) -> vec3<f32> {
+// Rule 9's radiance along the world direction d of a ray from `o` metres off the eye that meets no surface: zero
+// toward the planet and past the shell's top, bilinear between the nodes.
+fn shell_radiance(o: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
     var l: vec3<f32>;
-    let fi = shell_row(d, &l);
+    let fi = shell_row(shell_coordinate(o, d, &l));
     if (fi < 0.0) { return vec3(0.0); }
     let rows = u32(shell_at(3).x);
     let cols = u32(shell_at(3).y);
     var a = 0.0;
     if (l.x != 0.0 || l.y != 0.0) { a = atan2(l.y, l.x) - shell_at(2).w; }
-    // the angle from the sun's vertical, 0 to π
+    // the angle from the sun's side, 0 to π
     a = a - 2.0 * PI * floor(a / (2.0 * PI));
     if (a > PI) { a = 2.0 * PI - a; }
     let fj = a / PI * f32(cols - 1u);
@@ -117,11 +140,12 @@ fn shell_radiance(d: vec3<f32>) -> vec3<f32> {
     return mix(lo, hi, ti);
 }
 
-// The transmittance to space along the world direction d: zero toward the planet, one past the shell's top.
-fn shell_transmittance(d: vec3<f32>) -> vec3<f32> {
+// The transmittance to space along that ray: zero toward the planet, one past the shell's top.
+fn shell_transmittance(o: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
     var l: vec3<f32>;
-    let fi = shell_row(d, &l);
-    if (fi < 0.0) { return select(vec3(0.0), vec3(1.0), asin(clamp(l.z, -1.0, 1.0)) > shell_at(1).w); }
+    let e = shell_coordinate(o, d, &l);
+    let fi = shell_row(e);
+    if (fi < 0.0) { return select(vec3(0.0), vec3(1.0), e > shell_at(1).w); }
     let rows = u32(shell_at(3).x);
     let cols = u32(shell_at(3).y);
     let i = min(u32(floor(fi)), rows - 2u);

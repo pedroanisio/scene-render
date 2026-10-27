@@ -198,3 +198,88 @@ fn from_inside_the_air_the_shell_reaches_the_zenith() {
         within(shell.transmittance(from(&b, local)), t, 0.03, &format!("the transmittance {nadir}° from the nadir"));
     }
 }
+
+/// An orthographic view 7000 km out along `-view` from the centre, off every axis, the sun 60° from the view axis.
+fn parallel_view() -> (V3, V3, V3, [V3; 3]) {
+    let view = unit([-0.3, 0.8, -0.52]).unwrap();
+    let b = basis(view.map(|c| -c));
+    let observer = from(&b, [1_000.0, -2_000.0, 7_000_000.0]);
+    let sun = from(&b, [60f64.to_radians().sin() * 0.8, 60f64.to_radians().sin() * 0.6, 60f64.to_radians().cos()]);
+    (view, observer, sun, b)
+}
+
+/// The point of the ray of impact `rho` metres at `azimuth` degrees about the view axis, past the shell's top on the
+/// observer's side (local frame of `parallel_view`'s basis, up toward the observer).
+fn impact(rho: f64, azimuth: f64) -> V3 {
+    let a = azimuth.to_radians();
+    [rho * a.cos(), rho * a.sin(), R + HEIGHT + 1_000.0]
+}
+
+#[test]
+fn a_parallel_view_reads_each_ray_by_its_impact_on_the_shell() {
+    let (view, observer, sun, b) = parallel_view();
+    let s = earth([1.0; 3]);
+    let shell = PlanetShell::parallel(R, HEIGHT, observer, view, Some(sun), [1.0; 3]).unwrap();
+    let mut lit = 0;
+    for rho in [R + 300.0, R + 5_000.0, R + 20_000.0, R + 60_000.0] {
+        for azimuth in [0.0, 37.0, 90.0, 180.0, 251.0] {
+            let local = impact(rho, azimuth);
+            let want = s.sky_radiance(local, [0.0, 0.0, -1.0], into(&b, sun)).unwrap();
+            // any point of the ray, here the observer's plane, reads the same
+            let origin = from(&b, [local[0], local[1], 6_900_000.0]);
+            within(shell.radiance_on(origin), want, 0.05, &format!("{rho} m at azimuth {azimuth}"));
+            let t = s.atmosphere.transmittance(local, [0.0, 0.0, -1.0]).unwrap();
+            within(shell.transmittance_on(origin), t, 0.03, &format!("the transmittance at {rho} m"));
+            lit += usize::from(want[2] > 0.0);
+        }
+    }
+    // the rays over the limb's night side carry no light
+    assert!(lit >= 12, "the band is lit: {lit} of 20");
+}
+
+#[test]
+fn a_parallel_view_is_dark_inside_the_limb_and_clear_past_the_top() {
+    let (view, observer, sun, b) = parallel_view();
+    let shell = PlanetShell::parallel(R, HEIGHT, observer, view, Some(sun), [1.0; 3]).unwrap();
+    for rho in [0.0, 0.5 * R, R - 10.0] {
+        let o = from(&b, impact(rho, 20.0));
+        assert_eq!(shell.radiance_on(o), [0.0; 3], "inside the limb at {rho} m");
+        assert_eq!(shell.transmittance_on(o), [0.0; 3], "through the planet at {rho} m");
+    }
+    for rho in [R + HEIGHT + 10.0, 2.0 * R] {
+        let o = from(&b, impact(rho, 20.0));
+        assert_eq!(shell.radiance_on(o), [0.0; 3], "past the top at {rho} m");
+        assert_eq!(shell.transmittance_on(o), [1.0; 3], "past the top at {rho} m");
+    }
+}
+
+#[test]
+fn a_parallel_view_refuses_what_it_cannot_draw() {
+    let (view, observer, sun, _) = parallel_view();
+    assert!(PlanetShell::parallel(R, HEIGHT, observer, view, Some(sun), [1.0; 3]).is_ok());
+    // the rays start in a plane across the view: it lies past the shell's top, on the observer's side
+    let inside = observer.map(|c| c * (R + HEIGHT - 1.0) / 7_000_000.3);
+    assert!(PlanetShell::parallel(R, HEIGHT, inside, view, Some(sun), [1.0; 3]).is_err());
+    let beyond = view.map(|c| c * 7_000_000.0);
+    assert!(PlanetShell::parallel(R, HEIGHT, beyond, view, Some(sun), [1.0; 3]).is_err());
+    assert!(PlanetShell::parallel(R, HEIGHT, observer, view.map(|c| c * 2.0), Some(sun), [1.0; 3]).is_err());
+    assert!(PlanetShell::parallel(R, HEIGHT, observer, view, Some(sun), [-1.0, 1.0, 1.0]).is_err());
+    assert!(PlanetShell::parallel(R, 0.0, observer, view, Some(sun), [1.0; 3]).is_err());
+}
+
+#[test]
+fn a_parallel_shells_table_carries_the_observers_offset_across_the_view() {
+    let (view, observer, sun, b) = parallel_view();
+    let shell = PlanetShell::parallel(R, HEIGHT, observer, view, Some(sun), [1.0; 3]).unwrap();
+    let t = shell.table();
+    let (rows, cols) = (t[3][0] as usize, t[3][1] as usize);
+    assert_eq!(t.len(), SHELL_HEADER + rows * cols + rows);
+    assert_eq!(t[3][2], 1.0, "a parallel view");
+    assert_eq!(PlanetShell::new(R, HEIGHT, observer, Some(sun), [1.0; 3]).unwrap().table()[3][2], 0.0);
+    assert!((t[0][3] as f64 - R).abs() < 1.0 && (t[1][3] as f64 - R - HEIGHT).abs() < 1.0, "the limb and the top");
+    let local = into(&b, observer);
+    for c in 0..3 {
+        assert!((t[4][c] as f64 - local[c]).abs() < 1.0, "the observer in the view's frame: {:?}", t[4]);
+        assert!((t[2][c] as f64 + view[c]).abs() < 1e-6, "up is toward the observer");
+    }
+}

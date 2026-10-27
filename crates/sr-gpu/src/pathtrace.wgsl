@@ -366,7 +366,11 @@ fn aerial_segment(world: vec3<f32>) -> Aerial {
         let n = pp.inv_view_proj * vec4(ndc, 1.0, 1.0);
         origin = n.xyz / n.w;
     }
-    let s = length(world - origin) / k;
+    // a planet's shell marches an orthographic ray from where it enters the air
+    var s = length(world - origin) / k;
+    if (pp.shell.x > 0.5) {
+        s -= shell_entry((origin - (pp.cam_to_world * vec4(0.0, 0.0, 0.0, 1.0)).xyz) / k, pp.aerial[0].z);
+    }
     if (mode == 1u) {
         let dims = vec3<f32>(textureDimensions(aerial_tex));
         let slices = dims.z * 0.5;
@@ -785,8 +789,10 @@ fn radiance(px: vec2<f32>, pix: u32, first: bool) -> vec4<f32> {
                 if (pp.shell.x > 0.5) {
                     // a planet's atmosphere shell over the dome (rule 6), as the rasteriser's fs_dome: what lies beyond
                     // it seen through it, and its light, which adds to what the pass is composited over
+                    // every point of the ray reads alike: here the one the path is at, metres off the eye
+                    let off = (o - (pp.cam_to_world * vec4(0.0, 0.0, 0.0, 1.0)).xyz) / pp.aerial[0].y;
                     let u = normalize(d);
-                    beyond = beyond * shell_transmittance(u) + shell_radiance(u);
+                    beyond = beyond * shell_transmittance(off, u) + shell_radiance(off, u);
                 }
                 col += thr * beyond;
                 break;

@@ -748,7 +748,9 @@ fn aerial_apply(col: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
         let n = fr.inv_view_proj * vec4(ndc, 1.0, 1.0);
         origin = n.xyz / n.w;
     }
-    let s = length(world - origin) / k;
+    // a planet's shell marches an orthographic ray from where it enters the air
+    var s = length(world - origin) / k;
+    if (fr.shell.x > 0.5) { s -= shell_entry((origin - fr.eye.xyz) / k, fr.aerial[0].z); }
     if (mode == 1u) {
         let dims = vec3<f32>(textureDimensions(aerial_tex));
         let slices = dims.z * 0.5;
@@ -1042,10 +1044,13 @@ fn fs_dome(i: BgOut) -> @location(0) vec4<f32> {
     if (fr.shell.x > 0.5) {
         // a planet's atmosphere shell over the dome (rule 6): what lies beyond it seen through it, and its light;
         // without a visible dome nothing lies beyond, and the shell adds to what the pass is composited over
+        // the pixel's ray leaves the near plane (reverse-Z: depth 1), from the eye but for an orthographic camera
+        let near = fr.inv_view_proj * vec4(i.ndc, 1.0, 1.0);
+        let o = (near.xyz / near.w - fr.eye.xyz) / fr.aerial[0].y;
         let d = normalize(dir);
-        let light = shell_radiance(d);
+        let light = shell_radiance(o, d);
         if (fr.params2.y < 0.5) { return vec4(light, 0.0); }
-        return vec4(dome_colour(dir) * shell_transmittance(d) + light, 1.0);
+        return vec4(dome_colour(dir) * shell_transmittance(o, d) + light, 1.0);
     }
     return vec4(dome_colour(dir), 1.0);
 }
@@ -1083,7 +1088,8 @@ fn vs_star(@builtin(vertex_index) vi: u32, @location(0) dir: vec4<f32>, @locatio
     o.rgb = rgb;
     if (fr.shell.x > 0.5) {
         // seen through a planet's atmosphere shell (rule 6)
-        o.rgb = vec4(rgb.xyz * shell_transmittance(normalize(dir.xyz)), rgb.w);
+        // the stars are drawn through a camera with an eye alone
+        o.rgb = vec4(rgb.xyz * shell_transmittance(vec3(0.0), normalize(dir.xyz)), rgb.w);
     }
     let c = fr.view_proj * vec4(dir.xyz, 0.0);
     if (c.w <= 0.0) { return o; }
