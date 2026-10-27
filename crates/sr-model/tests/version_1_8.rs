@@ -114,7 +114,13 @@ fn the_corpus_validates_alike_at_1_7_and_1_8() {
                 || ["<orbit ", "<trail ", "<nbody"].iter().any(|k| xml.contains(k))
                 // and the scale draft's camera depth, scale bar and geometric curve
                 || xml.split("<camera").skip(1).any(|tag| tag[..tag.find('>').unwrap_or(tag.len())].contains(" depth=\""))
-                || ["<scaleBar", "=\"geometric\""].iter().any(|k| xml.contains(k));
+                || ["<scaleBar", "=\"geometric\""].iter().any(|k| xml.contains(k))
+                // and the relativity draft's diagram, embedding sheet and strain modifier
+                || ["<spacetime", "<embedding ", r#"primitive="embedding""#, r#"type="strain""#].iter().any(|k| xml.contains(k))
+                || xml.split("<modifier").skip(1).any(|tag| {
+                    let tag = &tag[..tag.find('>').unwrap_or(tag.len())];
+                    ["hPlus", "hCross", "chirpMass", "merger"].iter().any(|k| tag.contains(&format!(" {k}=")))
+                });
             let plot_gated = at_1_7.iter().any(|c| c == "V17");
             at_1_7.retain(|c| c != "V17");
             assert_eq!(plot_gated, plotted && !codes(&b).iter().any(|c| c == "S01"), "{}", f.display());
