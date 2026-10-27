@@ -86,7 +86,7 @@ children orbit (around, mu, a, e, i, raan, argp, anomaly, epoch) and trail (leng
 spaceType's child nbody (integrator leapfrog|wisdomHolman|ias15, step, tolerance, softening, G) with its children member
 (ref, mass, body, x, y, z, vx, vy, vz) and cluster (count, mass, scale, seed, x, y, z, vx, vy, vz, prefix, radius),
 OR1 to OR5 (pattern p-srep-orbits, last) and V17's clause. The readings: an nbody holds at least one member or cluster,
-in any order; a cluster's prefix is required and its radius (the truncation in scale lengths) defaults to 2; cluster
+in any order; a cluster's prefix is required and its radius (the scene-unit radius of the spheres its bodies are drawn as) defaults to 2, a default the draft leaves open; cluster
 seed is an xs:long, which the native checker gained as a builtin. OR1 requires around to name another object3D whose
 GM comes from mu, its body's GM (10, 199, 299, 399, 499, 599, 699, 799, 899, 301) or an nbody member's mass or body; OR2
 refuses e = 1, the sign of a against e, a true anomaly at or beyond a hyperbola's asymptotes (1 + e cos ν <= 0, read
