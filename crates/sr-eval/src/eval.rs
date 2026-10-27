@@ -298,6 +298,9 @@ pub struct FrameNode {
     /// points, in local pixels. Its outline is the `path` property.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub param_box: Option<[f64; 4]>,
+    /// The orbits draft's trail of an orbiting object or an nbody member at this time (rule 5).
+    #[serde(skip)]
+    pub trail: Option<Arc<crate::orbits::TrailFrame>>,
     /// The node's element after templating (static attributes).
     #[serde(skip)]
     pub elem: Arc<Node>,
@@ -1831,6 +1834,7 @@ fn evaluate_inner(p: &Program, t: f64, clocks: &[(u32, f64)], include_inactive: 
                 })
                 .collect(),
             clay_mesh: None,
+            trail: None,
             raster: None,
             param_box: None,
             elem: node.elem.clone(),

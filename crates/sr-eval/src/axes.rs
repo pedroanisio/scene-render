@@ -413,7 +413,12 @@ const LINE_SEGMENTS: usize = 8;
 
 /// The grid mesh of rule 11 from the points of a curve: the rings of [`plots::tube`] around its finite points, a
 /// non-finite point's ring left non-finite so the grid drops it with its two cells.
-fn tube_mesh(points: &[[f64; 3]], radius: f64, segments: usize, closed: bool) -> Result<sr_3d::Primitive, PlotError> {
+pub(crate) fn tube_mesh(
+    points: &[[f64; 3]],
+    radius: f64,
+    segments: usize,
+    closed: bool,
+) -> Result<sr_3d::Primitive, PlotError> {
     let finite: Vec<[f64; 3]> = points.iter().copied().filter(|p| p.iter().all(|c| c.is_finite())).collect();
     let mut rings = plots::tube(&finite, radius, segments)?.into_iter();
     let gap = vec![[f64::NAN; 3]; segments];

@@ -302,3 +302,121 @@ fn a_cluster_body_named_like_another_node_is_an_error() {
     let e = Evaluator::new(&doc, &Default::default()).expect_err("a1 is taken");
     assert!(e.to_string().contains("a1"), "{e}");
 }
+
+fn trail(n: &FrameNode) -> &sr_eval::TrailFrame {
+    n.trail.as_deref().unwrap_or_else(|| panic!("{}: no trail", n.id))
+}
+
+#[test]
+fn an_orbit_s_trail_is_its_positions_at_the_trail_times() {
+    let p = period(GM_SUN, AU_M).unwrap();
+    let quarter = p / 4.0;
+    let earth = format!(
+        r#"<object3D id="earth" primitive="sphere" radius="2"><orbit around="sun" a="149597870700" e="0.3"/><trail length="{quarter}" samples="16" width="3"/></object3D>"#
+    );
+    let ev = evaluator(&format!("{SUN}{earth}"), &format!(r#"<space epoch="2451545.0" timeScale="tdb" rate="{p}"/>"#));
+    let o = orbit(GM_SUN, AU_M, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0).unwrap();
+    // half a period in: the trail spans the second quarter
+    let g = frame(&ev, 0.5);
+    let tr = trail(node(&g, "earth"));
+    let want = sr_space::orbits::orbit_trail(&o, 0.5 * p, quarter, 16).unwrap();
+    assert_eq!(tr.points.len(), 16);
+    for (got, r) in tr.points.iter().zip(&want) {
+        close(*got, plus([10.0, 20.0, 30.0], scene(*r)), 1e-9);
+    }
+    // the newest sample is the object's place
+    close(*tr.points.last().unwrap(), position(node(&g, "earth")), 1e-9);
+    assert_eq!((tr.alphas[0], tr.alphas[15]), (0.0, 1.0));
+    assert!((tr.alphas[5] - 1.0 / 3.0).abs() < 1e-6, "{:?}", tr.alphas);
+    assert_eq!(tr.width, 3.0);
+    assert_eq!(tr.color, None);
+    // the ribbon: a tube about the points, its vertices' alpha the samples' from the oldest to the newest
+    let mesh = &tr.mesh.mesh;
+    assert!(!mesh.indices.is_empty());
+    let alpha = |v: &sr_3d::Vertex| v.color[3];
+    assert!(mesh.vertices.iter().all(|v| (0.0..=1.0).contains(&alpha(v))));
+    for v in &mesh.vertices {
+        let (nearest, k) = tr
+            .points
+            .iter()
+            .enumerate()
+            .map(|(k, q)| ((0..3).map(|c| (f64::from(v.pos[c]) - q[c]).powi(2)).sum::<f64>().sqrt(), k))
+            .fold((f64::INFINITY, 0), |a, b| if b.0 < a.0 { b } else { a });
+        assert!((nearest - 1.5).abs() < 1e-3, "{nearest}");
+        // each vertex has the alpha of the place it rings
+        assert_eq!(alpha(v), tr.alphas[k], "{k}");
+    }
+    assert!(mesh.vertices.iter().any(|v| alpha(v) == 0.0) && mesh.vertices.iter().any(|v| alpha(v) == 1.0));
+}
+
+#[test]
+fn a_trail_at_the_epoch_has_one_place_and_no_ribbon() {
+    let earth = r#"<object3D id="earth" primitive="sphere"><orbit around="sun" a="149597870700"/><trail length="86400"/></object3D>"#;
+    let ev = evaluator(&format!("{SUN}{earth}"), r#"<space epoch="2451545.0" timeScale="tdb" rate="3600"/>"#);
+    assert!(node(&frame(&ev, 0.0), "earth").trail.is_none());
+    // clamped samples are one place: after an hour of a day-long trail, the epoch's and the hour's
+    let tr = frame(&ev, 1.0).nodes.iter().find(|n| &*n.id == "earth").and_then(|n| n.trail.clone()).unwrap();
+    assert!(tr.points.windows(2).all(|w| w[0] != w[1]), "{:?}", tr.points);
+    assert!(tr.points.len() >= 2 && tr.points.len() < 64);
+}
+
+#[test]
+fn an_unfaded_coloured_trail() {
+    let earth = r##"<object3D id="earth" primitive="sphere"><orbit around="sun" a="149597870700"/><trail length="3600" samples="4" fade="false" color="#FF000080"/></object3D>"##;
+    let ev = evaluator(&format!("{SUN}{earth}"), r#"<space epoch="2451545.0" timeScale="tdb" rate="86400"/>"#);
+    let g = frame(&ev, 1.0);
+    let tr = trail(node(&g, "earth"));
+    assert_eq!(tr.alphas, vec![1.0; 4]);
+    let c = tr.color.unwrap();
+    assert!((c[0] - 1.0).abs() < 1e-6 && c[1] == 0.0 && c[2] == 0.0 && (c[3] - 128.0 / 255.0).abs() < 1e-3, "{c:?}");
+}
+
+#[test]
+fn a_member_s_trail_is_the_system_at_the_trail_times() {
+    let (members, s) = pair();
+    let space =
+        format!(r#"<space epoch="2451545.0" timeScale="tdb" rate="86400"><nbody step="150">{members}</nbody></space>"#);
+    // on the step grid: 21 samples 150 s apart; off it: 8 samples 3000 / 7 s apart
+    for (samples, on_grid) in [(21usize, true), (8, false)] {
+        let objects = format!(
+            r#"<object3D id="a" primitive="sphere"/><object3D id="b" primitive="sphere"><trail length="3000" samples="{samples}"/></object3D>"#
+        );
+        let ev = evaluator(&objects, &space);
+        let g = frame(&ev, 1.0);
+        let tr = trail(node(&g, "b"));
+        let times = sr_space::orbits::trail_times(86400.0, 3000.0, samples).unwrap();
+        assert_eq!(tr.points.len(), samples);
+        let off = times.iter().filter(|t| *t / 150.0 - (*t / 150.0 + 1e-9).floor() > 1e-6).count();
+        assert_eq!(on_grid, off == 0, "{times:?}");
+        for (got, t) in tr.points.iter().zip(times) {
+            let whole = (t / 150.0 + 1e-9).floor();
+            let mut want = integrate(&s, Integrator::Leapfrog, 150.0, whole * 150.0).unwrap();
+            let rest = t - whole * 150.0;
+            if rest > 1e-6 {
+                want = integrate(&want, Integrator::Leapfrog, rest, rest).unwrap();
+            }
+            close(*got, scene(want.positions[1]), 1e-9);
+        }
+        close(*tr.points.last().unwrap(), position(node(&g, "b")), 1e-9);
+    }
+}
+
+#[test]
+fn a_trail_follows_its_centre_at_the_sample_times() {
+    let rate = 86400.0;
+    let objects = format!(
+        r#"{SUN}<object3D id="earth" primitive="sphere"><orbit around="sun" a="149597870700"/></object3D><object3D id="moon" primitive="sphere"><orbit around="earth" mu="4.9e12" a="3.844e8"/><trail length="86400" samples="5"/></object3D>"#
+    );
+    let ev = evaluator(&objects, &format!(r#"<space epoch="2451545.0" timeScale="tdb" rate="{rate}"/>"#));
+    let earth = orbit(GM_SUN, AU_M, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0).unwrap();
+    let moon = orbit(4.9e12, 3.844e8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0).unwrap();
+    let tr = frame(&ev, 1.5).nodes.iter().find(|n| &*n.id == "moon").unwrap().trail.clone();
+    let tau = 1.5 * rate;
+    let times = sr_space::orbits::trail_times(tau, 86400.0, 5).unwrap();
+    let tr = tr.unwrap();
+    assert_eq!(tr.points.len(), 5);
+    for (got, t) in tr.points.iter().zip(times) {
+        let e = plus([10.0, 20.0, 30.0], scene(orbit_state(&earth, t).unwrap().0));
+        close(*got, plus(e, scene(orbit_state(&moon, t).unwrap().0)), 1e-9);
+    }
+}

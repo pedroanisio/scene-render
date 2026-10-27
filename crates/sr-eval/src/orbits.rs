@@ -6,16 +6,34 @@
 //! metres in the space frame until they map to the scene as (x, −z, y) × pixelsPerMeter about the space's origin.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use sr_model::element::{walk, Element};
 use sr_model::model as m;
 use sr_sim::nbody::{integrate, integrate_adaptive, plummer, system, Integrator, System, MAX_STEPS};
-use sr_space::orbits::{body_gm, orbit, orbit_state, Orbit, Vec3};
+use sr_space::orbits::{body_gm, orbit, orbit_state, trail_alpha, trail_times, Orbit, Vec3};
 use sr_space::{Positions, Space};
 
 use crate::eval::FrameNode;
 use crate::program::Program;
+
+/// Segments around a trail's tube.
+const TRAIL_SEGMENTS: usize = 8;
+
+/// A trail at a frame (rule 5): the object's places at the trail times, oldest first and without repeats (the times
+/// clamped at the epoch are one place), in the scene units of its parent's frame, as its x, y and z are; each place's
+/// opacity; and the ribbon, a tube `width` across about the places whose vertex colours are white with the alpha of
+/// the place nearest along it. A ribbon facing the camera has the outline of that tube from any side.
+#[derive(Debug)]
+pub struct TrailFrame {
+    pub points: Vec<[f64; 3]>,
+    pub alphas: Vec<f32>,
+    /// Scene units.
+    pub width: f64,
+    /// Linear RGBA, or none for the object's base colour.
+    pub color: Option<[f32; 4]>,
+    pub mesh: crate::parametric::ParamMesh,
+}
 
 /// The seconds either side of the epoch over which a member's velocity is differenced from the approximate
 /// elements, which give positions only.
@@ -227,6 +245,126 @@ impl Bodies {
     }
 }
 
+impl Bodies {
+    /// The system at each of `times` (ascending): whole steps along the step grid from the epoch, then one step of the
+    /// remainder to a time between two grid times; the adaptive step integrates from the epoch to each time.
+    fn walk(&self, times: &[f64]) -> Result<Vec<System>, String> {
+        let fail = |e: sr_space::SpaceError| format!("nbody: {e}");
+        if let Some(tolerance) = self.tolerance {
+            return times
+                .iter()
+                .map(|&t| {
+                    integrate_adaptive(&self.start, t, self.step, tolerance, MAX_STEPS).map(|(s, _)| s).map_err(fail)
+                })
+                .collect();
+        }
+        let (mut grid, mut steps) = (self.start.clone(), 0.0);
+        let mut out = Vec::with_capacity(times.len());
+        for &t in times {
+            let whole = (t / self.step + 1e-9).floor().max(steps);
+            grid = integrate(&grid, self.integrator, self.step, (whole - steps) * self.step).map_err(fail)?;
+            steps = whole;
+            let rest = t - whole * self.step;
+            out.push(if rest > 1e-9 * self.step {
+                integrate(&grid, self.integrator, rest, rest).map_err(fail)?
+            } else {
+                grid.clone()
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// Where objects stood at past times of the space clock: an orbit at its centre's place then, a member at the system's
+/// state then, any other object at its place at the frame.
+struct Past<'a> {
+    motion: &'a Motion,
+    /// Each member's body index.
+    members: HashMap<&'a str, usize>,
+    /// The system at the times walked to, by the time's bits.
+    states: HashMap<u64, System>,
+}
+
+impl<'a> Past<'a> {
+    fn new(motion: &'a Motion) -> Past<'a> {
+        let members =
+            motion.nbody.iter().flat_map(|b| b.ids.iter().enumerate().map(|(k, id)| (id.as_str(), k))).collect();
+        Past { motion, members, states: HashMap::new() }
+    }
+
+    /// Walks the system to those of `times` it has not reached.
+    fn reach(&mut self, times: &[f64]) -> Result<(), String> {
+        let Some(b) = &self.motion.nbody else { return Ok(()) };
+        let missing: Vec<f64> = times.iter().copied().filter(|t| !self.states.contains_key(&t.to_bits())).collect();
+        for (t, s) in missing.iter().zip(b.walk(&missing)?) {
+            self.states.insert(t.to_bits(), s);
+        }
+        Ok(())
+    }
+
+    /// The place of `id` at time `t` (reached), or none where a chain of centres has no end (a cycle the frame's
+    /// placement reports).
+    fn place(
+        &self,
+        id: &str,
+        t: f64,
+        now: &dyn Fn(&str) -> Option<[f64; 3]>,
+        depth: usize,
+    ) -> Result<Option<[f64; 3]>, String> {
+        let ppm = self.motion.pixels_per_meter;
+        if let Some((around, o)) = self.motion.orbits.get(id) {
+            if depth > self.motion.orbits.len() {
+                return Ok(None);
+            }
+            let Some(c) = self.place(around, t, now, depth + 1)? else { return Ok(None) };
+            let s = scene(orbit_state(o, t).map_err(|e| format!("{id}: orbit: {e}"))?.0, ppm);
+            return Ok(Some([c[0] + s[0], c[1] + s[1], c[2] + s[2]]));
+        }
+        if let (Some(&k), Some(s)) = (self.members.get(id), self.states.get(&t.to_bits())) {
+            return Ok(Some(scene(s.positions[k], ppm)));
+        }
+        Ok(now(id))
+    }
+}
+
+/// Rule 5: the trail `tr` of object `id` at time `t` of the space clock, or none while its places are one.
+fn trail_of(
+    past: &mut Past,
+    id: &str,
+    tr: &m::Trail,
+    t: f64,
+    now: &dyn Fn(&str) -> Option<[f64; 3]>,
+) -> Result<Option<TrailFrame>, String> {
+    let count = usize::try_from(tr.samples).map_err(|e| e.to_string())?;
+    let length = tr.length.get();
+    let times = trail_times(t, length, count).map_err(|e| format!("{id}: trail: {e}"))?;
+    past.reach(&times)?;
+    let (mut points, mut alphas): (Vec<[f64; 3]>, Vec<f32>) = (Vec::new(), Vec::new());
+    for tk in times {
+        let Some(q) = past.place(id, tk, now, 0)? else { return Ok(None) };
+        if points.last() != Some(&q) {
+            points.push(q);
+            alphas.push(trail_alpha(t - tk, length, tr.fade) as f32);
+        }
+    }
+    if points.len() < 2 {
+        return Ok(None);
+    }
+    let width = tr.width.get();
+    let mut mesh =
+        crate::axes::tube_mesh(&points, width / 2.0, TRAIL_SEGMENTS, false).map_err(|e| format!("{id}: trail: {e}"))?;
+    let last = (points.len() - 1) as f32;
+    let mut words: Vec<u64> = Vec::with_capacity(mesh.vertices.len() * 7);
+    for v in &mut mesh.vertices {
+        let a = alphas[((v.uv[0] * last).round() as usize).min(points.len() - 1)];
+        v.color = [1.0, 1.0, 1.0, a];
+        words.extend(v.pos.iter().chain(&v.color).map(|x| u64::from(x.to_bits())));
+    }
+    let color = tr.color.as_ref().map(|c| crate::axes::linear(&sr_model::values::Paint::Color(c.clone())));
+    let mesh = crate::parametric::ParamMesh { key: crate::rng::hash(&words), mesh };
+    Ok(Some(TrailFrame { points, alphas, width, color, mesh }))
+}
+
 /// A body's position and velocity about `origin` at ephemeris time `et`, km and km/s in ICRF axes: the file's
 /// state, or the approximate elements' position with its velocity differenced over ±[`VELOCITY_SPAN`] seconds.
 fn ephemeris_state(positions: Positions<'_>, body: i32, origin: i32, et: f64) -> Result<([f64; 3], [f64; 3]), String> {
@@ -323,6 +461,30 @@ pub(crate) fn resolve(p: &Program, nodes: &mut [FrameNode], t: f64, failures: &m
                     }
                     Err(e) => failures.push(format!("{object}: orbit: {e}")),
                 }
+            }
+        }
+        // rule 5: the trails, from each object's places at the trail times
+        let trails: Vec<(usize, String, m::Trail)> = nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.doc == doc)
+            .filter_map(|(i, n)| match &*n.elem {
+                m::Node::Object3D(o) => o.children.iter().find_map(|c| match c {
+                    m::Object3DChild::Trail(tr) => Some((i, o.id.clone(), tr.clone())),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .collect();
+        if trails.is_empty() {
+            continue;
+        }
+        let mut past = Past::new(motion);
+        for (i, id, tr) in trails {
+            let now = |other: &str| find(other).map(|c| place_of(&nodes[c]));
+            match trail_of(&mut past, &id, &tr, tau, &now) {
+                Ok(t) => nodes[i].trail = t.map(Arc::new),
+                Err(e) => failures.push(e),
             }
         }
     }

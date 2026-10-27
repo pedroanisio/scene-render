@@ -110,6 +110,7 @@ pub use eval::{
     FrameTransition, JointFrames, MapSpec, Props, SharedProgram, SimSeconds, SkinWeights,
 };
 pub use local_ids::LocalIds;
+pub use orbits::TrailFrame;
 pub use physcache::PhysicsTrace;
 pub use program::{draws_in_3d, Analysis, EvalOptions, Program, THREE_D_DRAWN};
 pub use safe_area::SafeEnforce;
