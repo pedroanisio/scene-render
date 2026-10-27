@@ -7,6 +7,8 @@
 //! * [`elements`]: the approximate Keplerian elements of Standish and Williams, the fallback without a file.
 //! * [`sun`] and [`moon`]: the solar position algorithm and the low-precision moon of the physical-sky draft
 //!   (`srep/srep-0000-physical-sky.md`).
+//! * [`orbits`]: Kepler's problem by universal variables and the `orbit` element of the orbits draft
+//!   (`srep/srep-0000-orbits.md`, SP4 of SREP 12).
 //! * [`frames`]: the ICRF, the ecliptic of J2000 and the IAU 2009 body-fixed frames, the mapping into scene
 //!   pixels and bodies placed at a frame's time.
 //!
@@ -19,6 +21,7 @@
 pub mod elements;
 pub mod frames;
 pub mod moon;
+pub mod orbits;
 pub mod spk;
 pub mod stars;
 pub mod sun;
@@ -62,4 +65,7 @@ pub enum SpaceError {
     /// A date or observer of a physical sky out of the physical-sky draft (SKY2, SKY3).
     #[error("sky: {0}")]
     Sky(String),
+    /// An orbit, an N-body system or a step out of the orbits draft (OR1 to OR3).
+    #[error("orbit: {0}")]
+    Orbit(String),
 }
