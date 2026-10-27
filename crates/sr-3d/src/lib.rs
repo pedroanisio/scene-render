@@ -42,6 +42,7 @@ pub mod planet_shell;
 
 pub mod prim;
 pub mod sampling;
+pub mod scale;
 pub mod sequence;
 pub mod sky;
 pub mod stars;
