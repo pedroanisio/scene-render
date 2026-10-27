@@ -1094,6 +1094,31 @@ CASES += [
     ("nbody-integrator-enum", ["S06"], lambda _: NBODY.replace('step="150"', 'step="150" integrator="rk4"')),
     ("nbody-cluster-count", ["S06"], lambda _: NBODY.replace('</nbody>', '<cluster count="1" mass="1" scale="1" prefix="c"/></nbody>')),
 ]
+# the scale draft: a camera's depth and scaleBar, the geometric curve, SC1 to SC4 and V17
+SCALE = ('<scene version="1.8"><project width="640" height="360" fps="24" duration="40"/>'
+    '<composition><camera id="eye" near="10" far="1e21" depth="logarithmic"><animate property="z">'
+    '<key time="2" value="-10" interpolation="geometric"/><key time="40" value="-1e20"/></animate>'
+    '<scaleBar maxWidth="200" distance="1000"/></camera><object3D id="ball" primitive="sphere" radius="10"/></composition></scene>\n')
+VALID["scale"] = SCALE
+VALID["scale-bar-si"] = SCALE.replace('<scaleBar maxWidth="200" distance="1000"/>', '<scaleBar maxWidth="+640" units="si" x="10" y="12.5" color="#FFCC00" thickness="3" label="false"/>')
+# SC2 reads only plain numbers: a pair with a unit or beyond binary64 is left to the build
+VALID["scale-geometric-unread"] = SCALE.replace('value="-10"', 'value="-10vw"').replace('value="-1e20"', 'value="1e400"')
+VALID["scale-default-geometric"] = SCALE.replace('<animate property="z">', '<animate property="z" defaultInterpolation="geometric">').replace(' interpolation="geometric"', '')
+CASES += [
+    ("v17-scale-depth", ["V17"], lambda _: SCALE.replace('version="1.8"', 'version="1.7"').replace(' interpolation="geometric"', '').replace('<scaleBar maxWidth="200" distance="1000"/>', '')),
+    ("v17-scale-bar", ["V17"], lambda _: SCALE.replace('version="1.8"', 'version="1.7"').replace(' depth="logarithmic"', '').replace(' interpolation="geometric"', '')),
+    ("v17-geometric", ["V17"], lambda _: SCALE.replace('version="1.8"', 'version="1.7"').replace(' depth="logarithmic"', '').replace('<scaleBar maxWidth="200" distance="1000"/>', '')),
+    ("sc1-depth-ratio", ["SC1"], lambda _: SCALE.replace('far="1e21"', 'far="2e21"')),
+    ("sc2-sign", ["SC2"], lambda _: SCALE.replace('value="-1e20"', 'value="1e20"')),
+    ("sc2-zero", ["SC2"], lambda _: SCALE.replace('value="-10"', 'value="0"')),
+    ("sc2-default", ["SC2"], lambda _: SCALE.replace('<animate property="z">', '<animate property="z" defaultInterpolation="geometric">').replace(' interpolation="geometric"', '').replace('value="-1e20"', 'value="1e20"')),
+    ("sc2-motion-path", ["SC2"], lambda _: SCALE.replace('<object3D id="ball" primitive="sphere" radius="10"/>', '<shape id="s" shape="rect" width="10" height="10"><motionPath path="M0 0 L10 0" interpolation="geometric"/></shape>')),
+    ("sc3-max-width", ["SC3"], lambda _: SCALE.replace('maxWidth="200"', 'maxWidth="641"')),
+    ("sc3-two-bars", ["SC3"], lambda _: SCALE.replace('<scaleBar maxWidth="200" distance="1000"/>', '<scaleBar/><scaleBar/>')),
+    ("sc4-distance", ["SC4"], lambda _: SCALE.replace('distance="1000"', 'distance="5"')),
+    ("camera-depth-enum", ["S06"], lambda _: SCALE.replace('depth="logarithmic"', 'depth="linear"')),
+    ("scale-bar-units-enum", ["S06", "SC3"], lambda _: SCALE.replace('distance="1000"', 'distance="1000" units="imperial"')),
+]
 CASES += [
     ("v16-fractal", ["V16"], lambda _: FRACTAL.replace('version="1.6"', 'version="1.5"')),
     ("frc1-julia-without-c", ["FRC1"], lambda _: FRACTAL.replace(' juliaX="-0.8" juliaY="0.156"', ' juliaX="-0.8"')),

@@ -876,6 +876,52 @@ impl<'a> Eval<'a> {
         }
     }
 
+    /// The scale draft's pattern p-srep-scale: SC1, SC3 and SC4 on a camera, SC2 on a key whose segment is geometric
+    /// (its own `interpolation`, else its animation's `defaultInterpolation`) and on the curves that ease a progress.
+    fn scale(&mut self, n: Node, local: &str) {
+        if local == "camera" {
+            let (near, far) = (num_or(n, "near", 0.1), num_or(n, "far", 10000.0));
+            self.check(near > 0.0 && far / near <= 1e20, n, "SC1", || {
+                "a camera's far divided by its near is at most 1e20, and near is positive.".into()
+            });
+            let root = n.document().root_element();
+            let width = kids(root, "project").next().map_or(f64::NAN, |p| num(p, "width"));
+            let bars: Vec<Node> = kids(n, "scaleBar").collect();
+            let ok = bars.len() <= 1
+                && !bars.iter().any(|b| num_or(*b, "maxWidth", 200.0) > width)
+                && !bars.iter().any(|b| b.attribute("units").is_some_and(|u| u != "auto" && u != "si"));
+            self.check(ok, n, "SC3", || {
+                "a camera has at most one scaleBar, whose maxWidth is at most the scene width and whose units are auto or si."
+                    .into()
+            });
+            let ok = !bars
+                .iter()
+                .any(|b| b.has_attribute("distance") && !(num(*b, "distance") >= near && num(*b, "distance") <= far));
+            self.check(ok, n, "SC4", || "a scaleBar's distance lies between its camera's near and far.".into());
+        }
+        if local == "key" {
+            let next = n.next_siblings().skip(1).find(|k| is(*k, "key"));
+            let geometric = match n.attribute("interpolation") {
+                Some(c) => c == "geometric",
+                None => n.parent_element().and_then(|p| p.attribute("defaultInterpolation")) == Some("geometric"),
+            };
+            if let (Some(next), true) = (next, geometric) {
+                let (v0, v1) = (num(n, "value"), num(next, "value"));
+                // values that are not finite numbers are left to the build, which sees their magnitudes
+                let ok = !(v0.is_finite() && v1.is_finite()) || (v0 > 0.0 && v1 > 0.0) || (v0 < 0.0 && v1 < 0.0);
+                self.check(ok, n, "SC2", || {
+                    "a geometric key and the key after it, when both values are numbers, are non-zero and of one sign; the curves that ease a progress from 0 to 1 (motionPath, flyTo, transition and the particle curves) are not geometric.".into()
+                });
+            }
+        }
+        if matches!(local, "motionPath" | "flyTo" | "transition" | "particleEmitter" | "particles3D") {
+            let eases = ["interpolation", "easing", "curve", "sizeCurve", "colorCurve"];
+            self.check(!eases.iter().any(|k| n.attribute(*k) == Some("geometric")), n, "SC2", || {
+                "a geometric key and the key after it, when both values are numbers, are non-zero and of one sign; the curves that ease a progress from 0 to 1 (motionPath, flyTo, transition and the particle curves) are not geometric.".into()
+            });
+        }
+    }
+
     /// W02: a pyro source or impulse whose place is in the document and which is closer than
     /// [`OPEN_FACE_CELLS`] cells to an open face of a volume that has room to put it further in.
     /// The face is a zero-pressure outlet and an inlet for the surrounding air, so a source this near
@@ -1408,6 +1454,17 @@ impl<'a> Eval<'a> {
                     (is(d, "orbit") || is(d, "trail")) && d.parent_element().is_some_and(|p| is(p, "object3D"))
                 })
                 || kids(n, "space").any(|s| has_kid(s, "nbody"))
+                // the scale draft's camera depth, scale bar and geometric curve
+                || n.descendants().any(|d| {
+                    let geometric = |k: &str| d.attribute(k) == Some("geometric");
+                    (is(d, "camera") && (d.has_attribute("depth") || has_kid(d, "scaleBar")))
+                        || ((is(d, "key") || is(d, "motionPath")) && geometric("interpolation"))
+                        || ((is(d, "animate") || is(d, "timeRemap")) && geometric("defaultInterpolation"))
+                        || (is(d, "flyTo") && geometric("easing"))
+                        || (is(d, "transition") && geometric("curve"))
+                        || ((is(d, "particleEmitter") || is(d, "particles3D"))
+                            && (geometric("sizeCurve") || geometric("colorCurve")))
+                })
                 // the planets draft's primitive and attributes
                 || n.descendants().any(|d| {
                     is(d, "object3D")
@@ -1415,7 +1472,7 @@ impl<'a> Eval<'a> {
                             || PLANET_ATTRIBUTES.iter().any(|k| d.has_attribute(*k)))
                 });
             self.check(!uses, n, "V17", || {
-                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets, starField, sky=\"physical\", primitive=\"planet\" and its attributes, orbit, nbody and trail need version=\"1.8\".".into()
+                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets, starField, sky=\"physical\", primitive=\"planet\" and its attributes, orbit, nbody and trail, camera/@depth, scaleBar and the geometric curve need version=\"1.8\".".into()
             });
         }
         // the time-frames draft (p-srep-time-frames)
@@ -1583,6 +1640,8 @@ impl<'a> Eval<'a> {
         }
         // the orbits draft (p-srep-orbits)
         self.orbits(n, local);
+        // the scale draft (p-srep-scale)
+        self.scale(n, local);
         // the fields draft (p-srep-fields)
         if local == "field" {
             let sources = ["u", "function", "w", "grid", "forceField"].iter().filter(|k| has(k)).count()

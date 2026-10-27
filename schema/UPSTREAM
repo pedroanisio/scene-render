@@ -94,16 +94,28 @@ with EXSLT math:cos) and a non-finite a, e, angle or epoch; OR3 requires each me
 mass or a body with a GM, a step that divides rate / fps to 1e-9, tolerance only under ias15 and no softening under
 wisdomHolman; OR4 is one source of position (at most one orbit, not with an nbody member nor positionFrom="ephemeris");
 OR5 is at most one trail, on an object with an orbit or an nbody member, of at least 2 samples.
++ the diff of sr-core srep/srep-0000-scale.md (draft, Schema-Version 1.8, as of sr-core b723593): cameraType's depth
+attribute (reversed|logarithmic, default reversed) and child scaleBar (maxWidth, units auto|si, distance, x, y, color,
+thickness, label), curveType's value geometric, SC1 to SC4 (pattern p-srep-scale, last) and V17's clause. The readings:
+a key's curve governs the segment it leaves, so SC2 checks a geometric key, or a key under a geometric
+defaultInterpolation that names no curve of its own, and the key after it (a last key governs no segment): when both
+values are plain finite numbers they are non-zero and of one sign. A pair the Schematron cannot read (a length with a
+unit, a colour, an expression) is left to the build, as the reactive-values draft leaves expression constraints: the
+engine applies the rule to the magnitudes and reports E04 unless they are two finite numbers or lengths of one unit,
+non-zero and of one sign. The curves that ease a progress from 0 to 1 (motionPath/@interpolation,
+flyTo/@easing, transition/@curve and the particle sizeCurve and colorCurve) start at zero, so SC2 refuses geometric on
+them. SC3 holds at most one scaleBar per camera, a maxWidth at most the project's width and units auto or si; SC4 a
+distance between the camera's near and far (defaults 0.1 and 10000).
 V17 is SREP 12's one shared 1.8 gate: one pattern, p-v17 (after p-srep75), whose one assert is the conjunction of
 the drafts' clauses.
 The branch merges when those SREPs are accepted; this file then names the schema-1.8.0 tag.
 Source: https://github.com/pedroanisio/sr-core
 
-Canonical upstream files (SHA-256; the files of that tag with the twelve drafts' diffs; at the tag the .xsd is
+Canonical upstream files (SHA-256; the files of that tag with the thirteen drafts' diffs; at the tag the .xsd is
 5ef91e6ca9a6d860047f2a5347c59fa17423cb99ef7535b7ceaca16619f8ce2c and the .sch, as in sr-core's schema/SHA256SUMS,
 868863e9ea4caf04e7f0bd9873c23ce5f723205714178349a4f385c4778fd368):
-  scene-render.xsd: e14a72f24395736441bce9e253c65ae5625dbb0073edf2216136814e16f9c30b
-  scene-render.sch: 50f0174dbf4c7ae232a956a82d238ee9620d7c1d4722416880e579624139494c
+  scene-render.xsd: b3103f8c1d549774874192207f054ad66c96ed637db646c51d634d7c0eb9362f
+  scene-render.sch: 43c0b152b4d4d97fe478fc6a8f2b2c56ac0416222941f6df3130e2a3aa2f80cf
   capabilities-1.schema.json: 6cb35c8ec6d37df32c9a0ad12eb33332d2abe4f11ac6000a9311d9891ec2e8b3
 
 scene-render-1.1.xsd, scene-render-1.1.sch and capabilities-1.schema.json are byte-identical to these files. Local
@@ -116,11 +128,11 @@ native OCN7 refuses an animated tracking on an ocean collider, as P3D6 and PYRO8
 document (corpus case ocn7-text-tracking, a native-only rule case). It is an erratum of sr-core's OCN7 for an SREP to
 settle. The warnings W05, W11 and W12 (SREP 76) and the program diagnostics are native only, as the SREPs define them.
 
-Document version 1.8 (sr_model::SCHEMA_VERSION is "1.8") is the random-streams, media, plots, space-transforms, semantic-tex, reactive-values, fields, time-frames, star-fields, physical-sky, planets and orbits drafts', a local addition
+Document version 1.8 (sr_model::SCHEMA_VERSION is "1.8") is the random-streams, media, plots, space-transforms, semantic-tex, reactive-values, fields, time-frames, star-fields, physical-sky, planets, orbits and scale drafts', a local addition
 on this branch: a 1.8 document is a 1.7 document whose simulations draw from the D24 streams of the random-streams
-draft's section 5, whose media may name a phase function and which may hold axes, plots, the space transforms, tagged formula parts and morphs, value assets, fields, a space, ephemerides, star fields, a physical sky, planets, orbits, trails and an N-body system (MED4 refuses the media
-attributes and V17 the plots elements, space transforms, semantic-tex syntax, value assets, fields, the time-frames, the star-fields, the physical-sky, the planets and the orbits syntax before 1.8; crates/sr-model/tests/version_1_8.rs,
-plots_rules.rs, space_rules.rs, semantic_tex_rules.rs, reactive_values_rules.rs, fields_rules.rs, time_frames_rules.rs, star_fields_rules.rs, physical_sky_rules.rs, planets_rules.rs and orbits_rules.rs). Document version 1.7 is schema 1.7.0's. It adds no syntax and has no version
+draft's section 5, whose media may name a phase function and which may hold axes, plots, the space transforms, tagged formula parts and morphs, value assets, fields, a space, ephemerides, star fields, a physical sky, planets, orbits, trails, an N-body system, a camera's depth mapping and scale bar and geometric keys (MED4 refuses the media
+attributes and V17 the plots elements, space transforms, semantic-tex syntax, value assets, fields, the time-frames, the star-fields, the physical-sky, the planets, the orbits and the scale syntax before 1.8; crates/sr-model/tests/version_1_8.rs,
+plots_rules.rs, space_rules.rs, semantic_tex_rules.rs, reactive_values_rules.rs, fields_rules.rs, time_frames_rules.rs, star_fields_rules.rs, physical_sky_rules.rs, planets_rules.rs, orbits_rules.rs and scale_rules.rs). Document version 1.7 is schema 1.7.0's. It adds no syntax and has no version
 gate: SREP 87's scoping applies to documents of every version, and a 1.7 document validates and renders as the same
 document at 1.6 (crates/sr-model/tests/version_1_7.rs). Document version 1.6 is schema 1.6.0's. A 1.6 document holding
 1.5 content

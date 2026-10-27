@@ -1,10 +1,11 @@
-//! The 41 interpolation curves of `curveType`.
+//! The 42 interpolation curves of `curveType`.
 //!
 //! A curve maps segment progress `u ∈ [0, 1]` to eased progress. Most curves
 //! are pure easing functions (`step`, `steps`, `linear`, the CSS keywords,
-//! `cubic-bezier` and the 30 Penner curves). Three need more context and are
+//! `cubic-bezier` and the 30 Penner curves). Four need more context and are
 //! evaluated by the channel: `catmull-rom` and `tcb` interpolate in value
-//! space from neighbouring keys, and `spring` runs in seconds.
+//! space from neighbouring keys, `geometric` in value space from its own two
+//! keys (the scale draft's v0 (v1 / v0)^u), and `spring` runs in seconds.
 //!
 //! All transcendental functions come from `libm`, so results are bit-exact
 //! across platforms.
@@ -49,6 +50,8 @@ pub enum Ease {
     CatmullRom,
     /// `tcb`: Kochanek–Bartels spline; parameters live on the keys.
     Tcb,
+    /// `geometric`: v0 (v1 / v0)^u between two non-zero values of one sign (SC2), equal ratios in equal times.
+    Geometric,
     /// `spring`: damped harmonic motion, in seconds.
     Spring {
         /// Stiffness k.
@@ -150,8 +153,8 @@ pub fn names() -> impl Iterator<Item = String> {
 }
 
 /// The progress of the curve at position `index` of all curves at `u`, with the parameters a key without any has; a spring
-/// is the progress over a segment of one second (the other curves need no duration; the splines have no neighbours here and
-/// are linear).
+/// is the progress over a segment of one second (the other curves need no duration; the splines and geometric have no values
+/// here and are linear).
 pub fn progress_by_index(index: usize, u: f64) -> f64 {
     match resolve(Curve::ALL.get(index).copied().unwrap_or(Curve::Linear), &KeyParams::default()) {
         Ease::Spring { stiffness, damping, mass } => spring_segment(u, 1.0, stiffness, damping, mass),
@@ -182,6 +185,7 @@ pub fn resolve(c: Curve, k: &KeyParams) -> Ease {
         }
         Curve::CatmullRom => Ease::CatmullRom,
         Curve::Tcb => Ease::Tcb,
+        Curve::Geometric => Ease::Geometric,
         Curve::Spring => Ease::Spring { stiffness: k.spring[0], damping: k.spring[1], mass: k.spring[2] },
         Curve::SineIn => p(SineIn),
         Curve::SineOut => p(SineOut),
@@ -229,7 +233,7 @@ pub fn parse_bezier(s: &str) -> Option<[f64; 4]> {
 
 impl Ease {
     /// Eased progress for easing curves. Value-space curves (Catmull-Rom,
-    /// TCB) return `u`; springs need seconds and use [`spring_segment`].
+    /// TCB, geometric) return `u`; springs need seconds and use [`spring_segment`].
     pub fn apply(self, u: f64) -> f64 {
         let u = u.clamp(0.0, 1.0);
         match self {
@@ -245,7 +249,7 @@ impl Ease {
                 let k = if start { libm::floor(u * n) + 1.0 } else { libm::floor(u * n) };
                 (k / n).min(1.0)
             }
-            Ease::Linear | Ease::CatmullRom | Ease::Tcb | Ease::Spring { .. } => u,
+            Ease::Linear | Ease::CatmullRom | Ease::Tcb | Ease::Geometric | Ease::Spring { .. } => u,
             Ease::Bezier(x1, y1, x2, y2) => cubic_bezier(x1, y1, x2, y2, u),
             Ease::Penner(p) => penner(p, u),
             Ease::Back { kind, c1 } => back(kind, u, c1),
@@ -551,7 +555,7 @@ mod tests {
                 assert!(e.apply(i as f64 / 100.0).is_finite(), "{c}");
             }
         }
-        assert_eq!(Curve::ALL.len(), 41);
+        assert_eq!(Curve::ALL.len(), 42);
     }
 
     #[test]

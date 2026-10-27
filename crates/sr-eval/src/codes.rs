@@ -5,7 +5,7 @@ pub const CODES: &[(&str, &str)] = &[
     ("E01", "An expression or condition does not compile: syntax error, unknown name or function, wrong argument count."),
     ("E02", "An animate, expression or link names a property its element does not have."),
     ("E03", "Expressions and links reference each other in a cycle through prop() or a node source."),
-    ("E04", "Keyframes cannot compile: a value does not parse as the property's type, units are mixed, a bezier is invalid, or times decrease."),
+    ("E04", "Keyframes cannot compile: a value does not parse as the property's type, units are mixed, a bezier is invalid, times decrease, or a geometric segment's values are not two non-zero numbers or lengths of one unit and one sign."),
     ("E05", "An override or bind targets an id that does not exist in its scope."),
     ("E06", "An override or bind sets an attribute the target does not declare, or a value its type rejects."),
     ("E07", "A parameter value violates its type, range, length, pattern or options, or names no parameter."),

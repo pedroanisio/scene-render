@@ -234,7 +234,8 @@
       1.0 curves plus hold (alias of step), steps (uses key/@steps), catmull-rom,
       tcb (key/@tension, @continuity, @bias), spring (key/@stiffness, @damping,
       @mass) and the Penner family. cubic-bezier uses key/@bezier "x1,y1,x2,y2"
-      or key/@easeOut + next key/@easeIn handles.
+      or key/@easeOut + next key/@easeIn handles. geometric moves a key segment's value in the log domain,
+      v0 (v1 / v0)^u, between two non-zero values of one sign (the scale draft, version 1.8; SC2).
     </xs:documentation></xs:annotation>
     <xs:restriction base="xs:string">
       <xs:enumeration value="step"/><xs:enumeration value="hold"/>
@@ -253,6 +254,7 @@
       <xs:enumeration value="back-in"/><xs:enumeration value="back-out"/><xs:enumeration value="back-in-out"/>
       <xs:enumeration value="elastic-in"/><xs:enumeration value="elastic-out"/><xs:enumeration value="elastic-in-out"/>
       <xs:enumeration value="bounce-in"/><xs:enumeration value="bounce-out"/><xs:enumeration value="bounce-in-out"/>
+      <xs:enumeration value="geometric"/>
     </xs:restriction>
   </xs:simpleType>
   <xs:simpleType name="extrapolationType">
@@ -2999,6 +3001,27 @@
     <xs:attribute name="start" type="xs:double" default="0"/>
     <xs:attribute name="end" type="xs:double"/>
   </xs:complexType>
+  <xs:complexType name="scaleBarType">
+    <xs:annotation><xs:documentation>
+      A bar of the largest 1, 2 or 5 × 10^k metres, au, light years or parsecs (units="auto"; metres only with
+      units="si") that fits maxWidth pixels at the measured depth, drawn every frame from (x, y) pixels from the
+      frame's bottom left, labelled with SI prefixes on metres and parsecs. The depth is distance (scene pixels),
+      else the distance to the camera's target, else to the nearest surface under the frame's centre, else far; an
+      orthographic camera measures orthoHeight. At most one per camera (SC3). The scale draft, version 1.8.
+    </xs:documentation></xs:annotation>
+    <xs:attribute name="maxWidth" type="xs:positiveInteger" default="200"/>
+    <xs:attribute name="units" default="auto">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="auto"/><xs:enumeration value="si"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="distance" type="positiveDecimal"/>
+    <xs:attribute name="x" type="xs:double" default="24"/>
+    <xs:attribute name="y" type="xs:double" default="24"/>
+    <xs:attribute name="color" type="colorType" default="#FFFFFFFF"/>
+    <xs:attribute name="thickness" type="positiveDecimal" default="2"/>
+    <xs:attribute name="label" type="xs:boolean" default="true"/>
+  </xs:complexType>
   <xs:complexType name="cameraType">
     <xs:annotation><xs:documentation>
       Physical camera: when focalLength is set, fov derives from focalLength and
@@ -3010,6 +3033,7 @@
       <xs:group ref="animationElements"/>
       <xs:element name="shake" type="shakeType"/>
       <xs:element name="transformConstraint" type="transformConstraintType"/>
+      <xs:element name="scaleBar" type="scaleBarType"/>
     </xs:choice>
     <xs:attribute name="id" type="xs:ID" use="required"/>
     <xs:attribute name="name" type="xs:string"/>
@@ -3029,6 +3053,14 @@
     </xs:attribute>
     <xs:attribute name="near" type="positiveDecimal" default="0.1"/>
     <xs:attribute name="far" type="positiveDecimal" default="10000"/>
+    <xs:attribute name="depth" default="reversed">
+      <xs:annotation><xs:documentation>The depth mapping: reversed is d = near (far − z) / ((far − near) z), which a
+      binary32 depth buffer resolves to one part in 1e5 at every distance for any far / near up to 1e20 (SC1);
+      logarithmic is d = ln(z / near) / ln(far / near). The scale draft, version 1.8.</xs:documentation></xs:annotation>
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="reversed"/><xs:enumeration value="logarithmic"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
     <xs:attribute name="yaw" type="xs:double" default="0"/>
     <xs:attribute name="pitch" type="xs:double" default="0"/>
     <xs:attribute name="roll" type="xs:double" default="0"/>

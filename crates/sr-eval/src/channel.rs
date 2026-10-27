@@ -7,7 +7,7 @@
 //! Evaluation is then a binary search and one curve evaluation.
 
 use sr_model::model::{Curve, Extrapolation, Key, StepPosition, TimeBase};
-use sr_model::values::LengthUnit;
+use sr_model::values::{Length, LengthUnit};
 
 use crate::curve::{self, Ease, KeyParams};
 use crate::expr::vm::LoopKind;
@@ -119,6 +119,15 @@ impl Channel {
                 }
             }
         }
+        for (i, w) in keys.windows(2).enumerate() {
+            if w[0].ease == Ease::Geometric && geometric_magnitudes(&w[0].v, &w[1].v).is_none() {
+                return Err(format!(
+                    "keys {} and {}: a geometric segment needs two non-zero numbers or lengths of one unit and one sign",
+                    i + 1,
+                    i + 2
+                ));
+            }
+        }
         retime_roving(&mut keys, spec.keys);
         tangents(&mut keys, spec.keys);
         spatial(&mut keys, spec.keys);
@@ -225,6 +234,15 @@ impl Channel {
         if let (Ease::Spring { stiffness, damping, mass }, true, true, false) = (a.ease, a.carry, i > 0, morph) {
             if a.spatial.is_none() {
                 return self.carried_spring(i, t, stiffness, damping, mass);
+            }
+        }
+        if let (Ease::Geometric, Some((x, y))) = (a.ease, geometric_magnitudes(&a.v, &b.v)) {
+            // compile admitted only pairs whose magnitudes interpolate geometrically
+            if let Ok(v) = sr_3d::scale::geometric(x, y, u) {
+                return match &a.v {
+                    Value::Len(l) => Value::Len(Length { value: v, unit: l.unit }),
+                    _ => Value::Num(v),
+                };
             }
         }
         let e = match a.ease {
@@ -482,10 +500,42 @@ fn spatial(keys: &mut [K], src: &[Key]) {
     }
 }
 
+/// The magnitudes of a geometric segment's two values: two numbers or two lengths of one unit, non-zero and of one
+/// sign (the scale draft's SC2, applied by the build to the values the Schematron cannot read).
+fn geometric_magnitudes(a: &Value, b: &Value) -> Option<(f64, f64)> {
+    let (x, y) = match (a, b) {
+        (Value::Num(x), Value::Num(y)) => (*x, *y),
+        (Value::Len(x), Value::Len(y)) if x.unit == y.unit => (x.value, y.value),
+        _ => return None,
+    };
+    if !(x.is_finite() && y.is_finite()) {
+        return None;
+    }
+    sr_3d::scale::validate_keys(x, y, sr_3d::scale::Interpolation::Geometric).ok().map(|_| (x, y))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use sr_model::LoadOptions;
+
+    #[test]
+    fn geometric_magnitudes_are_finite_non_zero_and_of_one_sign() {
+        let px = |v: f64| Value::Len(Length { value: v, unit: LengthUnit::Px });
+        assert_eq!(geometric_magnitudes(&Value::Num(-1.0), &Value::Num(-8.0)), Some((-1.0, -8.0)));
+        assert_eq!(geometric_magnitudes(&px(2.0), &px(4.0)), Some((2.0, 4.0)));
+        for (a, b) in [
+            (Value::Num(1.0), Value::Num(f64::INFINITY)),
+            (Value::Num(f64::NAN), Value::Num(1.0)),
+            (Value::Num(1.0), Value::Num(0.0)),
+            (Value::Num(1.0), Value::Num(-1.0)),
+            (px(1.0), Value::Num(2.0)),
+            (px(1.0), Value::Len(Length { value: 2.0, unit: LengthUnit::Vw })),
+            (Value::Color([1.0; 4]), Value::Color([0.5; 4])),
+        ] {
+            assert_eq!(geometric_magnitudes(&a, &b), None, "{a:?} {b:?}");
+        }
+    }
 
     struct NoLookup;
     impl Lookup for NoLookup {

@@ -360,6 +360,9 @@
     "c9.scene.xml": [
       "C9"
     ],
+    "camera-depth-enum.scene.xml": [
+      "S06"
+    ],
     "catalogue-digest-pattern.scene.xml": [
       "S06"
     ],
@@ -1483,6 +1486,34 @@
       "S10",
       "R54"
     ],
+    "sc1-depth-ratio.scene.xml": [
+      "SC1"
+    ],
+    "sc2-default.scene.xml": [
+      "SC2"
+    ],
+    "sc2-motion-path.scene.xml": [
+      "SC2"
+    ],
+    "sc2-sign.scene.xml": [
+      "SC2"
+    ],
+    "sc2-zero.scene.xml": [
+      "SC2"
+    ],
+    "sc3-max-width.scene.xml": [
+      "SC3"
+    ],
+    "sc3-two-bars.scene.xml": [
+      "SC3"
+    ],
+    "sc4-distance.scene.xml": [
+      "SC4"
+    ],
+    "scale-bar-units-enum.scene.xml": [
+      "S06",
+      "SC3"
+    ],
     "sf1-digest.scene.xml": [
       "SF1"
     ],
@@ -1660,6 +1691,9 @@
     "v17-fields.scene.xml": [
       "V17"
     ],
+    "v17-geometric.scene.xml": [
+      "V17"
+    ],
     "v17-orbit.scene.xml": [
       "V17"
     ],
@@ -1673,6 +1707,12 @@
       "V17"
     ],
     "v17-reactive-values.scene.xml": [
+      "V17"
+    ],
+    "v17-scale-bar.scene.xml": [
+      "V17"
+    ],
+    "v17-scale-depth.scene.xml": [
       "V17"
     ],
     "v17-semantic-tex.scene.xml": [
@@ -2020,6 +2060,10 @@
     "reactive-values.scene.xml": [],
     "repeat-points-neutral-steps.scene.xml": [],
     "repeat-points.scene.xml": [],
+    "scale-bar-si.scene.xml": [],
+    "scale-default-geometric.scene.xml": [],
+    "scale-geometric-unread.scene.xml": [],
+    "scale.scene.xml": [],
     "semantic-tex.scene.xml": [],
     "solid-colliders.scene.xml": [],
     "space-transforms.scene.xml": [],
