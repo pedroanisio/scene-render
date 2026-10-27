@@ -519,7 +519,7 @@ impl Scene3 {
         {
             return None;
         }
-        let CameraView { view, proj, eye, focal_px, near, far, orthographic } = cam;
+        let CameraView { view, proj, eye, focal_px, near, far, orthographic, depth } = cam;
         let mut hash = Sha256::new();
         hash.update(b"contrast-raster-v1");
         hash.update(bytemuck::cast_slice(size));
@@ -528,6 +528,7 @@ impl Scene3 {
         }
         hash.update(bytemuck::cast_slice(&[eye.x, eye.y, eye.z, *focal_px, *near, *far, *exposure, *lens_k1]));
         hash.update([*orthographic as u8, *encode_srgb as u8, *ssr as u8, dof.is_some() as u8, ao.is_some() as u8]);
+        hash.update([*depth as u8]);
         if let Some(Dof { coc_scale, focus, max_coc, blades }) = dof {
             hash.update(bytemuck::cast_slice(&[*coc_scale, *focus, *max_coc]));
             hash.update(blades.to_le_bytes());

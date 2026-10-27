@@ -670,26 +670,17 @@ impl Renderer {
             let side = frame[0].max(1.0);
             let zoom = camera::zoom(side, o.fov);
             let (n, f) = (view.near, view.far);
-            let fx = 2.0 * zoom / side;
-            let proj = Mat4::from_cols_array(&[
-                fx,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                -fx,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                -n / (f - n),
-                1.0,
-                0.0,
-                0.0,
-                n * f / (f - n),
-                0.0,
-            ]);
-            view = CameraView { view: face_view, proj, eye, focal_px: zoom, near: n, far: f, orthographic: false };
+            let proj = camera::perspective(zoom, side, side, n, f);
+            view = CameraView {
+                view: face_view,
+                proj,
+                eye,
+                focal_px: zoom,
+                near: n,
+                far: f,
+                orthographic: false,
+                depth: view.depth,
+            };
             size = [side, side];
         }
         if dof_on && !view.orthographic {

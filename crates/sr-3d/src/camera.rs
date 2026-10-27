@@ -8,8 +8,14 @@
 //! along +z with y down, so the z = 0 plane maps 1:1 onto the frame (2.2).
 //! A `<camera>`'s x, y and z are absolute scene positions (2.3), or positions in
 //! its parent's frame when it is parented (5.4).
+//!
+//! The depth buffer follows rule 1 of the scale draft (`crate::scale`): within SC1 the projection keeps the
+//! document's `near` and `far`, its entries are computed in binary64, and a camera's `depth` mode names the buffer
+//! value of a distance ([`CameraView::depth_value`]).
 
 use glam::{Mat4, Vec3};
+
+pub use crate::scale::DepthMode;
 
 /// Camera inputs, already resolved from the document.
 #[derive(Clone, Debug, PartialEq)]
@@ -33,6 +39,8 @@ pub struct CameraParams {
     pub target: Option<Vec3>,
     /// World matrix of the parent frame that `position`, `yaw`, `pitch` and `roll` are in.
     pub frame: Option<Mat4>,
+    /// `camera/@depth`: the depth buffer's mapping.
+    pub depth: DepthMode,
 }
 
 impl Default for CameraParams {
@@ -50,6 +58,7 @@ impl Default for CameraParams {
             roll: 0.0,
             target: None,
             frame: None,
+            depth: DepthMode::Reversed,
         }
     }
 }
@@ -67,6 +76,9 @@ pub struct CameraView {
     pub near: f32,
     pub far: f32,
     pub orthographic: bool,
+    /// The depth buffer's mapping: `proj` is always reversed; a logarithmic camera's renderer writes
+    /// [`CameraView::depth_value`] itself.
+    pub depth: DepthMode,
 }
 
 impl CameraView {
@@ -77,6 +89,78 @@ impl CameraView {
     pub fn depth_of(&self, p: Vec3) -> f32 {
         self.view.transform_point3(p).z
     }
+
+    /// The depth buffer value of camera-space depth `z` (rule 1): reversed n (f − z) / ((f − n) z), or for an
+    /// orthographic camera (f − z) / (f − n), 1 at near and 0 at far; logarithmic ln(z / n) / ln(f / n), 0 at near
+    /// and 1 at far. Computed in binary64.
+    pub fn depth_value(&self, z: f32) -> f32 {
+        let (z, n, f) = (z as f64, self.near as f64, self.far as f64);
+        let d = match (self.depth, self.orthographic) {
+            (DepthMode::Logarithmic, _) => (z / n).ln() / (f / n).ln(),
+            (DepthMode::Reversed, true) => (f - z) / (f - n),
+            (DepthMode::Reversed, false) => n * (f - z) / ((f - n) * z),
+        };
+        d as f32
+    }
+}
+
+/// The near and far planes of a camera: the document's own when SC1 holds (near positive, far beyond it, at most
+/// [`crate::scale::MAX_DEPTH_RATIO`] times near), else near at least 1e-4 and far at least near + 1e-3.
+pub fn planes(near: f32, far: f32) -> (f32, f32) {
+    if crate::scale::depth_ratio_valid(near as f64, far as f64) {
+        return (near, far);
+    }
+    // max ignores a NaN near
+    let n = near.max(1e-4);
+    (n, if far.is_finite() { far.max(n + 1e-3) } else { n + 1e-3 })
+}
+
+/// The reversed perspective projection of a camera `zoom` pixels from a `w`×`h` frame: clip = (fx x, −fy y,
+/// n f / (f − n) − n z / (f − n), z), the entries computed in binary64.
+pub fn perspective(zoom: f32, w: f32, h: f32, n: f32, f: f32) -> Mat4 {
+    let (z, w, h, n, f) = (zoom as f64, w as f64, h as f64, n as f64, f as f64);
+    let (a, b) = (-n / (f - n), n / (1.0 - n / f));
+    Mat4::from_cols_array(&[
+        (2.0 * z / w) as f32,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        (-2.0 * z / h) as f32,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        a as f32,
+        1.0,
+        0.0,
+        0.0,
+        b as f32,
+        0.0,
+    ])
+}
+
+/// The reversed orthographic projection of an `ow`×`oh` view: depth (f − z) / (f − n), in binary64.
+pub fn orthographic(ow: f32, oh: f32, n: f32, f: f32) -> Mat4 {
+    let (n, f) = (n as f64, f as f64);
+    Mat4::from_cols_array(&[
+        2.0 / ow,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -2.0 / oh,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        (-1.0 / (f - n)) as f32,
+        0.0,
+        0.0,
+        0.0,
+        (f / (f - n)) as f32,
+        1.0,
+    ])
 }
 
 /// Distance of the default camera from the z = 0 plane.
@@ -116,52 +200,14 @@ pub fn resolve(p: &CameraParams, w: f32, h: f32) -> CameraView {
     };
     let cam_to_world = Mat4::from_translation(eye) * rot;
     let view = cam_to_world.inverse();
-    let (n, f) = (p.near.max(1e-4), p.far.max(p.near + 1e-3));
+    let (n, f) = planes(p.near, p.far);
     let proj = if p.orthographic {
         let oh = p.ortho_height.unwrap_or(h).max(1e-3);
-        let ow = oh * w / h;
-        Mat4::from_cols_array(&[
-            2.0 / ow,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            -2.0 / oh,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            -1.0 / (f - n),
-            0.0,
-            0.0,
-            0.0,
-            f / (f - n),
-            1.0,
-        ])
+        orthographic(oh * w / h, oh, n, f)
     } else {
-        let fx = 2.0 * z / w;
-        let fy = 2.0 * z / h;
-        // clip = (fx x, −fy y, near·far/(far−near) − near/(far−near)·z, z)
-        Mat4::from_cols_array(&[
-            fx,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            -fy,
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            -n / (f - n),
-            1.0,
-            0.0,
-            0.0,
-            n * f / (f - n),
-            0.0,
-        ])
+        perspective(z, w, h, n, f)
     };
-    CameraView { view, proj, eye, focal_px: z, near: n, far: f, orthographic: p.orthographic }
+    CameraView { view, proj, eye, focal_px: z, near: n, far: f, orthographic: p.orthographic, depth: p.depth }
 }
 
 /// Horizontal field of view (degrees) of a lens of `focal_mm` on a sensor `sensor_mm` wide.
