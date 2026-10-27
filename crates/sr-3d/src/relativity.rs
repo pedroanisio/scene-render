@@ -508,11 +508,8 @@ pub fn embedding_point(sheet: Embedding, r: f64, phi: f64) -> Result<[f64; 3]> {
     Ok([r * phi.cos(), -z, r * phi.sin()])
 }
 
-/// `rings` rings from r_min to r_max and `spokes` spokes from r_min to r_max, `samples` points each.
-///
-/// The reference's `embedding_grid` evaluates the sheet with r_min as its scale (r_s, or k); this one keeps the
-/// sheet's own r_s and k, which is the same where r_min = r_s (the draft's default) and what rule 3 states where
-/// it is not.
+/// `rings` rings from r_min to r_max and `spokes` spokes from r_min to r_max, `samples` points each, on the sheet
+/// of its own r_s or k (rule 3; the reference's `embedding_grid` takes the same scale as its own parameter).
 pub fn embedding_grid(
     sheet: Embedding,
     r_min: f64,
