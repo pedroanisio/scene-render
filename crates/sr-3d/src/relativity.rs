@@ -299,6 +299,12 @@ pub fn boosted_grid(b: f64, n: u32, extent: f64) -> Result<Grid> {
     Ok(Grid { x, t })
 }
 
+/// The box frame's lines x = k and t = k as a diagram drawn at boost β shows them: from the drawn frame the box
+/// frame moves at −β, so they are `boosted_grid(−β, n, extent)` in the drawn frame's own coordinates.
+pub fn diagram_grid(b: f64, n: u32, extent: f64) -> Result<Grid> {
+    boosted_grid(-beta(b)?, n, extent)
+}
+
 // ------------------------------------------------------------------------------------------- compactification
 
 /// The Penrose diamond: U = atan(t − x), V = atan(t + x); (X, T) = ((V − U)/2, (U + V)/2).

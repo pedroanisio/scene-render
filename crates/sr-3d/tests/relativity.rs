@@ -73,6 +73,7 @@ fn rule_1_separations_cones_and_worldlines() {
     near(accelerated_beta(2.0, 1.0).unwrap(), 0.964028);
     near2(worldline_parametric(|tau| 0.5 * tau, |tau| tau, 2.0).unwrap(), (1.0, 2.0));
     near2(grid_x_line(0.6, 2.0, 1.0).unwrap(), (2.2, 1.0));
+    near2(grid_x_line(-0.6, 2.0, 1.0).unwrap(), (1.0, 1.0));
     near2(grid_t_line(0.6, 2.0, 1.0).unwrap(), (1.0, 2.2));
     let grid = boosted_grid(0.6, 2, 3.0).unwrap();
     assert_eq!((grid.x.len(), grid.t.len()), (5, 5));
@@ -297,5 +298,22 @@ fn rule_6_validation() {
         (0.2, 0.0, None, Some(-1.0), Some(1.0)),
     ] {
         assert!(validate_strain(hp, hc, f, mc, merger).unwrap_err().0.starts_with("RD4"), "{hp} {hc} {f:?} {mc:?}");
+    }
+}
+
+#[test]
+fn the_diagram_grid_is_the_box_frame_where_the_boost_carries_it() {
+    // the box frame's line x = k, boosted, lies on the drawn frame's line of diagram_grid, and t = k likewise
+    for beta in [-0.9, -0.3, 0.0, 0.6, 0.95] {
+        let g = diagram_grid(beta, 2, 3.0).unwrap();
+        assert_eq!(g, boosted_grid(-beta, 2, 3.0).unwrap());
+        for k in [-2.0, 1.0, 2.0] {
+            for t in [-1.0, 0.25, 2.0] {
+                let (x, tb) = boost(k, t, beta).unwrap();
+                near2(grid_x_line(-beta, k, tb).unwrap(), (x, tb));
+                let (xb, tt) = boost(t, k, beta).unwrap();
+                near2(grid_t_line(-beta, k, xb).unwrap(), (xb, tt));
+            }
+        }
     }
 }
