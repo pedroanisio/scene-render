@@ -12,7 +12,7 @@ version gate V17's clause, and PLT3 (in p-srep70's object3D rule, beside PAR2);
 out SPT1's XPath as asserted here; c39eb1b to e438104 changed no other schema text): the modifier
 types matrix, map and complex with the attributes a to f, x, y, function, coefficients, unit and tolerance, deform in a
 group's child choice, the Schematron rules SPT1 and SPT2 (in p14's modifier rule, after C26) and V17's clause;
-+ the diff of sr-core srep/srep-0000-semantic-tex.md (draft, Schema-Version 1.8, as of sr-core 0d56389): \part in a
++ the diff of sr-core srep/srep-0000-semantic-tex.md (draft, Schema-Version 1.8, as of sr-core 13ce14b): \part in a
 formula's TeX, the layer child formulaAnimator (formulaAnimatorType), the formulaMorph asset (formulaMorphType),
 shape/@morph, FRM1 (in p25's layer rule, after R2), FRM2 (pattern p-srep-semantic-tex, last) and V17's clause. The
 draft states the clause as "no \part{ in a formula's tex"; the ISO skeleton copies an assert's test into an attribute
@@ -44,7 +44,7 @@ elements), TF3 and TF4 list rule 6's bodies with rotation elements, and integer 
 TF5 also refuses an ephemeris that names no ephemeris asset, and, with the approximate elements, an origin other than
 0, 10 or a planet 1 to 8 (the elements are heliocentric, so the barycentre 0 is taken as the Sun), as the draft states
 since 5083745.
-+ the diff of sr-core srep/srep-0000-star-fields.md (draft, Schema-Version 1.8, as of sr-core d53e31d): the catalogue
++ the diff of sr-core srep/srep-0000-star-fields.md (draft, Schema-Version 1.8, as of sr-core 13ce14b): the catalogue
 asset (catalogueType: id, src, digest "sha256:" and 64 lowercase hex digits, the ephemeris asset's ephemerisDigestType),
 starField in lightType's child choice (starFieldType: catalogue, limitMagnitude, magnitudeZero, pointSize, properMotion,
 epoch, constellations none|labels|boundaries), SF2 to SF4 (pattern p-srep-star-fields, last) and V17's clause. SF1 reads
@@ -57,7 +57,7 @@ motions to 100 arcseconds a year.
 Rule 5 is drawn as the draft rules since 5e6f46a: labels 14 output pixels high in the default sans-serif face, centred
 on the mean direction of every catalogue star of the constellation whatever limitMagnitude keeps, boundaries one output
 pixel wide and precessed from 1875 to J2000 only, both grey at 0.18 times the dome's gain behind every surface.
-+ the diff of sr-core srep/srep-0000-physical-sky.md (draft, Schema-Version 1.8, as of sr-core 1ba4012): the value
++ the diff of sr-core srep/srep-0000-physical-sky.md (draft, Schema-Version 1.8, as of sr-core 13ce14b): the value
 physical of lightType's sky, its attributes date, latitude, longitude, altitude, pressure, temperature, deltaT, moon,
 moonIntensity, atmosphere earth|none, aerosol, ozone, planetRadius, atmosphereHeight, groundAlbedo, sunIrradiance,
 aerialPerspective, fogDensity and fogHeight with the draft's types and defaults (date and deltaT have none: date is
@@ -81,7 +81,7 @@ context object3D, after the planet's rule) is none of the attributes on another 
 ringOuter with their defaults when either is written, so a lone ringInner of 3 is refused against the default
 ringOuter; PL5 finds the material by id anywhere in the document. The draft's "ignored, with a warning" for a
 flattening beside a body with radii is the native warning W19.
-+ the diff of sr-core srep/srep-0000-orbits.md (draft, Schema-Version 1.8, as of sr-core 994e2d3): object3DType's
++ the diff of sr-core srep/srep-0000-orbits.md (draft, Schema-Version 1.8, as of sr-core 13ce14b): object3DType's
 children orbit (around, mu, a, e, i, raan, argp, anomaly, epoch) and trail (length, samples, width, color, fade),
 spaceType's child nbody (integrator leapfrog|wisdomHolman|ias15, step, tolerance, softening, G) with its children member
 (ref, mass, body, x, y, z, vx, vy, vz) and cluster (count, mass, scale, seed, x, y, z, vx, vy, vz, prefix, radius),
@@ -94,7 +94,7 @@ with EXSLT math:cos) and a non-finite a, e, angle or epoch; OR3 requires each me
 mass or a body with a GM, a step that divides rate / fps to 1e-9, tolerance only under ias15 and no softening under
 wisdomHolman; OR4 is one source of position (at most one orbit, not with an nbody member nor positionFrom="ephemeris");
 OR5 is at most one trail, on an object with an orbit or an nbody member, of at least 2 samples.
-+ the diff of sr-core srep/srep-0000-scale.md (draft, Schema-Version 1.8, as of sr-core b723593): cameraType's depth
++ the diff of sr-core srep/srep-0000-scale.md (draft, Schema-Version 1.8, as of sr-core 13ce14b): cameraType's depth
 attribute (reversed|logarithmic, default reversed) and child scaleBar (maxWidth, units auto|si, distance, x, y, color,
 thickness, label), curveType's value geometric, SC1 to SC4 (pattern p-srep-scale, last) and V17's clause. The readings:
 a key's curve governs the segment it leaves, so SC2 checks a geometric key, or a key under a geometric
