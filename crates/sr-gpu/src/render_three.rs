@@ -248,12 +248,13 @@ fn embed_d(a: &Affine) -> DMat4 {
 }
 
 /// The scale draft's rule 4, the floating origin: the point a 3D scene seen from `eye` is rebased about before any
-/// binary32 arithmetic, the eye rounded to 1024 pixels on each axis. A camera moving within one cell keeps the
+/// binary32 arithmetic, the eye rounded to 1024 pixels on each axis (the reference's `lattice_origin(eye, 1024)`). A camera moving within one cell keeps the
 /// scene's binary32 positions (and what is cached of them), and a position by the eye keeps a binary32 error of at
 /// most 2^-15 pixel (half the spacing at 512). A coordinate that is not finite keeps the document's origin.
 pub(super) fn origin_about(eye: DVec3) -> DVec3 {
     const CELL: f64 = 1024.0;
-    let axis = |e: f64| if e.is_finite() { (e / CELL).round() * CELL } else { 0.0 };
+    // a tie goes up, as the reference's lattice_origin rounds
+    let axis = |e: f64| if e.is_finite() { (e / CELL + 0.5).floor() * CELL } else { 0.0 };
     DVec3::new(axis(eye.x), axis(eye.y), axis(eye.z))
 }
 
@@ -5475,6 +5476,15 @@ mod origin_tests {
         assert_eq!(origin_about(DVec3::new(511.0, -511.0, 0.4)), DVec3::ZERO);
         assert_eq!(origin_about(DVec3::new(513.0, -513.0, 1536.0)), DVec3::new(1024.0, -1024.0, 2048.0));
         assert_eq!(origin_about(DVec3::new(3e9 + 100.0, 0.0, -7e12)), DVec3::new(3_000_000_512.0, 0.0, -7e12));
+    }
+
+    #[test]
+    fn a_tie_goes_up_as_the_reference_s_lattice_origin_rounds() {
+        // scale_reference.lattice_origin: floor(x / cell + 0.5) * cell
+        assert_eq!(origin_about(DVec3::new(512.0, -512.0, -1536.0)), DVec3::new(1024.0, 0.0, -1024.0));
+        // the draft's table row: lattice_origin((2 ** 40 + 300, 700, -600), 1024)
+        let row = origin_about(DVec3::new(2f64.powi(40) + 300.0, 700.0, -600.0));
+        assert_eq!(row, DVec3::new(1_099_511_627_776.0, 1024.0, -1024.0));
     }
 
     #[test]
