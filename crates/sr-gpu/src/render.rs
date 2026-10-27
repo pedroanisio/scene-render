@@ -140,6 +140,8 @@ pub struct RenderStats {
     pub texel_copies: usize,
     /// Nodes whose content belongs to later batches (asset or node kind).
     pub unsupported: Vec<String>,
+    /// The scale bars drawn this frame (the scale draft, rule 3): their camera, measured depth, length and label.
+    pub scale_bars: Vec<crate::scale_bar::Drawn>,
     /// Media that could not be read (missing files, decode failures,
     /// image-sequence frames missing under `missingFrame="error"`).
     pub errors: Vec<String>,
@@ -342,6 +344,9 @@ struct Plan {
     post_into: Option<Arc<Tex>>,
     /// Contrast probes: node id, target rectangle, backdrop snapshot.
     probes: Vec<(ContrastTarget, [u32; 4], Arc<Tex>)>,
+    /// The nearest surface under the document camera's frame centre over this frame's 3D passes, scene pixels
+    /// along the view axis: the depth its `scaleBar` measures when it has no distance and no target (the scale draft).
+    bar_surface: Option<f64>,
 }
 
 /// Simple vector nodes waiting to rasterise together into their target's space.
@@ -4982,6 +4987,11 @@ impl Renderer {
         for r in Self::depth_sorted(g, &roots[next..]) {
             let rh = h(&[Self::subtree_hash(&ctx, r, &Affine::IDENTITY), hf(g.nodes[r].world_opacity), cam_hash]);
             self.emit(&mut plan, &ctx, r, &space, 1.0, &mut cmds, false, rh);
+        }
+        // the scale draft's rule 3: the document camera's bar over the frame
+        if let Some(c) = g.camera {
+            let (frame, surface) = ([g.size[0] as f32, g.size[1] as f32], plan.bar_surface);
+            self.scale_bar3(&mut plan, &ctx, &space, &mut cmds, c as usize, frame, space.xform, surface);
         }
         self.flush_vec(&mut plan, &mut cmds);
         if !background_first {

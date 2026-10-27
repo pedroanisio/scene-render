@@ -105,6 +105,19 @@ pub(super) struct CamExtras {
     pub path: Option<crate::pathtrace::PathOpts>,
     /// The point the camera's view is rebased about ([`origin_about`]): the view takes world positions less it.
     pub origin: DVec3,
+    /// What a `scaleBar` measures through the camera, in binary64 (not part of the pass's pixels, not hashed).
+    pub bar: BarView,
+}
+
+/// A camera's measures for its scale bar (the scale draft, rule 3).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct BarView {
+    /// The horizontal focal length in frame pixels: (width / 2) / tan(fov / 2).
+    pub focal_px: f64,
+    /// The distance from the eye to the camera's target, scene pixels.
+    pub target: Option<f64>,
+    /// The visible height of an orthographic camera, scene pixels.
+    pub ortho_height: f64,
 }
 
 impl CamExtras {
@@ -692,8 +705,16 @@ impl Renderer {
     ) -> (CameraView, CamExtras, [f32; 2]) {
         let lights = doc_lights(p);
         let mut cp = CameraParams::default();
-        let mut ex =
-            CamExtras { exposure: 1.0, dof: None, lens_k1: 0.0, ao: None, ssr: false, path: None, origin: DVec3::ZERO };
+        let mut ex = CamExtras {
+            exposure: 1.0,
+            dof: None,
+            lens_k1: 0.0,
+            ao: None,
+            ssr: false,
+            path: None,
+            origin: DVec3::ZERO,
+            bar: BarView::default(),
+        };
         let mut focal_mm = camera::lens_of_fov(cp.fov, 36.0);
         let (mut sensor, mut fstop, mut focus, mut blades, mut dof_on, mut focus_target) =
             (36.0f32, 2.8f32, 1000.0f32, 0u32, false, None);
@@ -724,6 +745,7 @@ impl Renderer {
                 _ => camera::lens_of_fov(Self::cam_fov(&a, base), sensor),
             };
             let pose = Self::cam_pose(g, lights, ci, 0, base);
+            ex.bar.target = pose.target.map(|t| (t - pose.eye()).length());
             ex.origin = origin_about(pose.eye());
             cp = pose.about(ex.origin);
             ex.exposure = 2f32.powf(a.num("exposure", 0.0) as f32);
@@ -735,6 +757,10 @@ impl Renderer {
             focus_target = a.str("focusTarget").and_then(|t| ref_id(g, &n.scope, &t));
         }
         let mut view = camera::resolve(&cp, base[0], base[1]);
+        // as camera::resolve frames it, in binary64
+        let fov = f64::from(cp.fov.clamp(0.1, 179.0));
+        ex.bar.focal_px = f64::from(base[0]) / 2.0 / (fov.to_radians() / 2.0).tan();
+        ex.bar.ortho_height = f64::from(cp.ortho_height.unwrap_or(base[1]).max(1e-3));
         let mut size = frame;
         if let Some(o) = view_override {
             // keep the viewport camera's eye; turn to the face and square the frustum
@@ -4143,6 +4169,114 @@ impl Renderer {
     /// composite in document order like other nodes. Motion blur accumulates a whole pass over the
     /// shutter, driven by its first member: rendering blurred objects one pass each would repaint the dome
     /// over the objects drawn before them.
+    /// Rule 3 of the scale draft: camera `ci`'s `scaleBar`, measured through the camera framing `frame` pixels
+    /// (`surface`: the nearest surface under its centre over the passes it saw), drawn over `space` through
+    /// `to_target` in the pending vector batch of `cmds`, and recorded in the stats.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn scale_bar3(
+        &mut self,
+        plan: &mut Plan,
+        ctx: &Ctx,
+        space: &Space,
+        cmds: &mut Vec<Cmd>,
+        ci: usize,
+        frame: [f32; 2],
+        to_target: Affine,
+        surface: Option<f64>,
+    ) {
+        use crate::scale_bar::{self as sb, Measured};
+        let g = ctx.g;
+        let n = &g.nodes[ci];
+        let Some(e) = sb::bar_of(&*n.elem) else { return };
+        let fail = |plan: &mut Plan, m: String| {
+            let m = format!("{}: {m}", n.id);
+            if !plan.stats.errors.contains(&m) {
+                plan.stats.errors.push(m);
+            }
+        };
+        if self.view_override.is_some() {
+            let m = format!("{}: a scale bar is not drawn in a 360 face", n.id);
+            if !plan.stats.unsupported.contains(&m) {
+                plan.stats.unsupported.push(m);
+            }
+            return;
+        }
+        let spec = match sb::spec(e) {
+            Ok(s) => s,
+            Err(err) => return fail(plan, err.to_string()),
+        };
+        let (cam, ex, _) = self.camera3_of(g, ctx.p, frame, Some(ci), None);
+        let ppm = pixels_per_meter(ctx.p);
+        let (measured, depth, bar) = if cam.orthographic {
+            let oh = ex.bar.ortho_height;
+            (Measured::OrthoHeight, oh, sb::orthographic(&spec, oh, f64::from(frame[1]), ppm))
+        } else {
+            let (m, d) = sb::measure(&spec, ex.bar.target, || surface, f64::from(cam.far));
+            (m, d, sb::perspective(&spec, d, ex.bar.focal_px, ppm))
+        };
+        let bar = match bar {
+            Ok(b) => b,
+            Err(err) => return fail(plan, err.to_string()),
+        };
+        plan.stats.scale_bars.push(sb::Drawn {
+            camera: n.id.to_string(),
+            measured,
+            depth,
+            pixels: bar.pixels,
+            label: bar.label.clone(),
+        });
+        let frame = [f64::from(frame[0]), f64::from(frame[1])];
+        let white = sr_vector::Paint::Solid { rgba: [1.0; 4], srgb: false };
+        let colour = Attrs { e, props: None }.paint("color");
+        let paint = match colour {
+            Some(v) => self.vector_paint(plan, ctx.p, g, &v, sb::rect(&spec, &bar, frame), "scaleBar"),
+            None => Some(white),
+        };
+        // a transparent bar draws nothing
+        let Some(paint) = paint else { return };
+        let hash = sr_eval::rng::hash_str(&format!("{spec:?} {bar:?} {paint:?} {frame:?} {:?}", to_target.0));
+        let scene = match sb::scene(self.text.lib(), &spec, &bar, frame, paint) {
+            Ok(s) => s.transformed(&Xf(to_target.0)),
+            Err(err) => return fail(plan, err.to_string()),
+        };
+        let key = cmds as *const Vec<Cmd> as usize;
+        match plan.vbatches.iter_mut().find(|b| b.key == key) {
+            Some(b) => {
+                b.scene.extend(scene);
+                b.hash = h(&[b.hash, hash]);
+            }
+            None => plan.vbatches.push(VBatch {
+                key,
+                space: *space,
+                scene,
+                hash: h(&[hash, space.size[0] as u64, space.size[1] as u64]),
+                first: format!("{}/scaleBar", n.id),
+            }),
+        }
+    }
+
+    /// The nearest surface of `draws` under the frame centre of camera `ci` seen through `cam`, when its
+    /// `scaleBar` measures it (no `distance`, no target, a perspective camera).
+    fn bar_surface(
+        g: &FrameGraph,
+        ci: Option<usize>,
+        cam: &CameraView,
+        ex: &CamExtras,
+        draws: &[Draw3],
+    ) -> Option<f64> {
+        let e = crate::scale_bar::bar_of(&*g.nodes[ci?].elem)?;
+        let spec = crate::scale_bar::spec(e).ok()?;
+        if spec.distance.is_some() || ex.bar.target.is_some() || cam.orthographic {
+            return None;
+        }
+        let axis = cam.view.inverse().transform_vector3(Vec3::Z).as_dvec3().normalize();
+        let meshes = draws.iter().map(|d| {
+            let (v, i) = d.mesh.cpu();
+            (d.model, v, i)
+        });
+        crate::scale_bar::centre_surface(cam.eye.as_dvec3(), axis, f64::from(cam.near), f64::from(cam.far), meshes)
+    }
+
     pub(super) fn three_members(g: &FrameGraph, i: usize) -> Vec<usize> {
         let parent = g.nodes[i].parent;
         let mut run = Vec::new();
@@ -4467,6 +4601,20 @@ impl Renderer {
                 note("a star field is drawn by the raster renderer only");
             }
         }
+        // the scale draft's rule 3: a viewport's camera has this pass alone and draws its bar over it; the document's
+        // camera draws its bar over the frame, at the nearest surface of all its passes
+        let surface = Self::bar_surface(g, camera, &cam, &ex, &draws);
+        let viewport_bar = |r: &mut Self, plan: &mut Plan, cmds: &mut Vec<Cmd>| {
+            if let (Some(_), Some(c)) = (vp, camera) {
+                r.scale_bar3(plan, ctx, space, cmds, c, frame, to_target, surface);
+            }
+        };
+        if vp.is_none() {
+            plan.bar_surface = match (plan.bar_surface, surface) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+        }
         if draws.is_empty()
             && splats.is_empty()
             && volumes.is_empty()
@@ -4475,6 +4623,7 @@ impl Renderer {
             && star_overlay.is_none()
             && !env.as_ref().map(|e| e.visible).unwrap_or(false)
         {
+            viewport_bar(self, plan, cmds);
             return;
         }
         plan.stats.objects3d += draws.len();
@@ -4572,6 +4721,7 @@ impl Renderer {
         if let Some(c) = cmds.last_mut() {
             c.pre = Some(Box::new(AdjPre { snapshot, passes: Vec::new(), three: Some(Box::new((scene, out))) }));
         }
+        viewport_bar(self, plan, cmds);
     }
 }
 
@@ -4981,6 +5131,7 @@ mod scope_tests {
                 ssr: false,
                 path: None,
                 origin: DVec3::ZERO,
+                bar: BarView::default(),
             };
             let mut warnings = Vec::new();
             let scene = Renderer::geodesic_scene(

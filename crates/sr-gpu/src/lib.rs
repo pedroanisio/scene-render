@@ -24,6 +24,7 @@ pub mod resources;
 pub mod safe_audit;
 pub mod serial;
 
+pub mod scale_bar;
 pub mod shader;
 pub mod star_overlay;
 pub mod text;
