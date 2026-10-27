@@ -112,6 +112,11 @@ fn vs_splat(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) ->
     let center = fr.view_proj * world;
     let off_px = q * radius;
     o.clip = center + vec4(off_px * vec2(2.0 * fr.screen.z, -2.0 * fr.screen.w) * center.w, 0.0, 0.0);
+    if (fr.lens.w > 0.5) {
+        // a logarithmic camera's depth at the splat's centre, stored as 1 − ln(z / n) / ln(f / n) (three.wgsl's log_depth)
+        let n = fr.post.z;
+        o.clip.z = clamp(1.0 - log(max(v.z, n) / n) / log(fr.post.w / n), 0.0, 1.0) * o.clip.w;
+    }
     o.d = off_px;
     o.conic = vec3(c, -b, a) / det;
     var rgb = sp.color.rgb;

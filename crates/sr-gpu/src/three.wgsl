@@ -796,8 +796,31 @@ fn aerial_apply(col: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     return col * tf + (1.0 - tf) * lh * fr.params.w;
 }
 
+// The scale draft's logarithmic depth (rule 1), d = ln(z / n) / ln(f / n), stored as 1 − d so that, as under reverse-Z,
+// the nearer surface has the greater value, the buffer clears to 0 at the far plane and every depth test is shared.
+fn log_depth(world: vec3<f32>) -> f32 {
+    let z = (fr.view * vec4(world, 1.0)).z;
+    let n = fr.post.z;
+    let f = fr.post.w;
+    return clamp(1.0 - log(max(z, n) / n) / log(f / n), 0.0, 1.0);
+}
+
+struct FOutLog {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+};
+
 @fragment
 fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
+    return shade_main(i, front);
+}
+
+@fragment
+fn fs_main_log(i: VOut, @builtin(front_facing) front: bool) -> FOutLog {
+    return FOutLog(shade_main(i, front).color, log_depth(i.world));
+}
+
+fn shade_main(i: VOut, front: bool) -> FOut {
     obj = objects[i.object_index];
     var o: FOut;
     let s = surface(i, front);
@@ -1014,8 +1037,13 @@ struct GOut {
     @location(1) zr: vec4<f32>,
 };
 
+// The prepass draws into its own z-buffer and hands on view depth, so it keeps reverse-Z under any camera.
 @fragment
 fn fs_prepass(i: VOut, @builtin(front_facing) front: bool) -> GOut {
+    return prepass(i, front);
+}
+
+fn prepass(i: VOut, front: bool) -> GOut {
     obj = objects[i.object_index];
     var o: GOut;
     let s = surface(i, front);

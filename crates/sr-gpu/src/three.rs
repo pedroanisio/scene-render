@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use bytemuck::Zeroable;
 use glam::{Mat4, Vec3};
-use sr_3d::camera::CameraView;
+use sr_3d::camera::{CameraView, DepthMode};
 use sr_3d::{AlphaMode, MaterialParams, Vertex};
 use wgpu::util::DeviceExt;
 
@@ -855,6 +855,8 @@ struct PipeKey {
     global_lights: bool,
     light_signature: u32,
     alpha_mask: bool,
+    /// The camera's depth is logarithmic: the fragment writes its depth (`fs_main_log`).
+    log_depth: bool,
 }
 
 /// A prepass pipeline: the opaque pass's culling and material specializations, and whether the reflectance is written.
@@ -1918,7 +1920,7 @@ impl Kit {
                     multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
                     fragment: Some(wgpu::FragmentState {
                         module: m,
-                        entry_point: Some("fs_main"),
+                        entry_point: Some(if key.log_depth { "fs_main_log" } else { "fs_main" }),
                         compilation_options: wgpu::PipelineCompilationOptions {
                             constants: &[
                                 ("PLAIN_MATERIAL", key.plain as u32 as f64),
@@ -3146,7 +3148,7 @@ impl ThreeEngine {
                 scene.clip_fix.x_axis.x * scene.cam.proj.x_axis.x * size[0] as f32 * 0.5,
                 scene.encode_srgb as u32 as f32,
                 scene.ao.is_some() as u32 as f32,
-                0.0,
+                (scene.cam.depth == DepthMode::Logarithmic) as u32 as f32,
             ],
             fx: [
                 scene.ao.map(|a| a[0]).unwrap_or(0.0),
@@ -3229,6 +3231,7 @@ impl ThreeEngine {
                         global_lights: false,
                         light_signature: u32::MAX,
                         alpha_mask: true,
+                        log_depth: false,
                     },
                     visible: false,
                     active: false,
@@ -3280,6 +3283,7 @@ impl ThreeEngine {
                 global_lights,
                 light_signature,
                 alpha_mask,
+                log_depth: scene.cam.depth == DepthMode::Logarithmic,
             };
             self.pipe(pipe);
             if prepass {
@@ -5983,6 +5987,75 @@ fn fs_conversion_probe(i: PostOut) -> @location(0) vec4<f32> {{
             assert!(!Arc::ptr_eq(&a.kit, &c.kit), "another sample count has pipelines of its own");
             assert_ne!(a.dome_pipe, c.dome_pipe);
         }
+    }
+
+    #[test]
+    fn splats_test_depth_alike_under_a_logarithmic_camera() {
+        use super::*;
+        use sr_3d::camera::{resolve, CameraParams, DepthMode};
+        let gpu =
+            sr_testkit::require_gpu!(crate::gpu::test_gpu(), "splats_test_depth_alike_under_a_logarithmic_camera");
+        let mut e = ThreeEngine::new_with(gpu.device.clone(), gpu.queue.clone(), gpu.gbuffer_depth, gpu.scalar_target);
+        // an opaque plane at 100, splats in front of it on the left and behind it on the right
+        let mesh = sr_3d::prim::plane(32.0, 32.0, 1);
+        let mut points = sr_3d::Splats { basis: Mat4::IDENTITY, ..Default::default() };
+        for (x, z) in [(10.0, 60.0), (22.0, 160.0)] {
+            points.pos.push([x, 16.0, z]);
+            points.scale.push([2.0; 3]);
+            points.rot.push([0.0, 0.0, 0.0, 1.0]);
+            points.color.push([0.2, 0.9, 0.3, 1.0]);
+        }
+        let mesh_gpu = e.upload_mesh(&mesh.vertices, &mesh.indices);
+        let splats = e.upload_splats(&points);
+        let mut render = |depth: DepthMode| {
+            let cam = CameraParams {
+                near: 1.0,
+                far: 1e6,
+                position: Some(Vec3::new(16.0, 16.0, 0.0)),
+                depth,
+                ..Default::default()
+            };
+            let scene = Scene3 {
+                cam: resolve(&cam, 32.0, 32.0),
+                clip_fix: Mat4::IDENTITY,
+                size: [32, 32],
+                exposure: 1.0,
+                dof: None,
+                lens_k1: 0.0,
+                draws: vec![Draw3 {
+                    mesh: MeshSrc::Cached(mesh_gpu.clone()),
+                    model: Mat4::from_translation(Vec3::new(16.0, 16.0, 100.0)),
+                    material: MaterialParams { unlit: true, ..Default::default() },
+                    maps: Default::default(),
+                    opacity: 1.0,
+                    cast_shadow: false,
+                    receive_shadow: false,
+                    shadow_catcher: false,
+                }],
+                lights: Vec::new(),
+                env: None,
+                stars: Vec::new(),
+                star_overlay: None,
+                splats: vec![SplatDraw { gpu: splats.clone(), model: Mat4::IDENTITY, opacity: 1.0 }],
+                volumes: Vec::new(),
+                encode_srgb: false,
+                ao: None,
+                ssr: false,
+                path: None,
+                geodesic: None,
+                planet_shell: None,
+            };
+            e.render_now(&scene, None)
+        };
+        let (rev, log) = (render(DepthMode::Reversed), render(DepthMode::Logarithmic));
+        let green = |px: &[[f32; 4]]| px.iter().filter(|c| c[1] > c[0] + 0.3).count();
+        assert!(green(&rev) > 4, "the near splat is drawn over the plane: {}", green(&rev));
+        let worst = rev
+            .iter()
+            .zip(&log)
+            .map(|(a, b)| (0..4).map(|i| (a[i] - b[i]).abs()).fold(0f32, f32::max))
+            .fold(0f32, f32::max);
+        assert!(worst <= 1.0 / 255.0, "the logarithmic image differs by {}", worst * 255.0);
     }
 
     #[test]

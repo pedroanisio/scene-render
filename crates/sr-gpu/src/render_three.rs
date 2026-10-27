@@ -562,6 +562,11 @@ impl Renderer {
             ortho_height: a.opt("orthoHeight").map(|v| v as f32),
             near: a.num("near", 0.1) as f32,
             far: a.num("far", 10000.0) as f32,
+            depth: if a.str("depth").as_deref() == Some("logarithmic") {
+                camera::DepthMode::Logarithmic
+            } else {
+                camera::DepthMode::Reversed
+            },
             // absolute scene position; the defaults put the eye at the frame's top-left corner on z = 0
             position: Some(Vec3::new(a.num("x", 0.0) as f32, a.num("y", 0.0) as f32, a.num("z", 0.0) as f32)),
             yaw: a.num("yaw", 0.0) as f32,

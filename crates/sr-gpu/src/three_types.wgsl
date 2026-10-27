@@ -1,6 +1,7 @@
 // Forward+ PBR renderer, shadows, splats and camera post.
 // Scene space: x right, y down, z away from the default camera; 100 units per metre.
-// Depth is reverse-Z (near 1, far 0) in the main passes; shadow maps use standard depth.
+// Depth is reverse-Z (near 1, far 0) in the main passes, or 1 − ln(z / n) / ln(f / n) for a logarithmic camera;
+// shadow maps use standard depth.
 
 const PI: f32 = 3.14159265;
 const TILE: u32 = 16u;
@@ -21,7 +22,7 @@ struct Frame {
     dof: vec4<f32>,
     // lens distortion k1, dof on, near, far
     post: vec4<f32>,
-    // focal length (px), encode sRGB, ambient occlusion on, unused
+    // focal length (px), encode sRGB, ambient occlusion on, 1 for a logarithmic depth buffer (the scale draft's rule 1)
     lens: vec4<f32>,
     // ambient-occlusion radius (scene units), intensity, screen-space reflections on, precomputed circle of confusion
     fx: vec4<f32>,
