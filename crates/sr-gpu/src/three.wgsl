@@ -559,13 +559,26 @@ fn env_sample(dir: vec3<f32>, level: f32) -> vec3<f32> {
     return textureSampleLevel(env_tex, env_smp, env_uv(dir), level).rgb * fr.params.w;
 }
 
-fn sh_irradiance(n: vec3<f32>) -> vec3<f32> {
+// The irradiance SH of a point of `power` toward the unit `dir`, at the unit `d` (sr_3d::env::sh_point).
+fn sh_point(power: vec3<f32>, dir: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
+    let mu = dot(d, dir);
+    return power * ((1.0 + 2.0 * mu + 0.625 * (3.0 * mu * mu - 1.0)) / (4.0 * PI));
+}
+
+// The dome's irradiance at normal `n`, with `through` of a physical sky's sun: the bake holds the sun as a point of
+// its power (sr_3d::env::prefilter_discs), the share a planet's clouds and rings take from its ground (the planets
+// draft's rules 4 and 5).
+fn sh_irradiance(n: vec3<f32>, through: f32) -> vec3<f32> {
     // basis in the environment's own orientation (env.rs)
     let d = normalize((fr.env_rot * vec4(n, 0.0)).xyz);
     var r = fr.sh[0].rgb * 0.282095;
     r += fr.sh[1].rgb * 0.488603 * d.y + fr.sh[2].rgb * 0.488603 * d.z + fr.sh[3].rgb * 0.488603 * d.x;
     r += fr.sh[4].rgb * 1.092548 * d.x * d.y + fr.sh[5].rgb * 1.092548 * d.y * d.z + fr.sh[6].rgb * 0.315392 * (3.0 * d.z * d.z - 1.0);
     r += fr.sh[7].rgb * 1.092548 * d.x * d.z + fr.sh[8].rgb * 0.546274 * (d.x * d.x - d.y * d.y);
+    if (through < 1.0 && fr.sky[1].w > 1.5) {
+        let power = fr.sky[4].rgb * (2.0 * PI * (1.0 - fr.sky[3].w));
+        r -= (1.0 - through) * sh_point(power, fr.sky[3].xyz, d);
+    }
     return max(r, vec3(0.0)) * fr.params.w;
 }
 
@@ -951,7 +964,7 @@ fn fs_main(i: VOut, @builtin(front_facing) front: bool) -> FOut {
         let pre = env_sample(r, s.rough * (fr.params2.w - 1.0));
         let spec = pre * (s.f0 * lut.x + s.f90 * lut.y) * s.specular_weight;
         let fr_avg = s.f0 + (1.0 - s.f0) * pow(1.0 - nv, 5.0);
-        let diff = sh_irradiance(s.n) * uniform_albedo(s) * (1.0 - s.metallic) * (1.0 - mat.p2.z) * (vec3(1.0) - fr_avg * s.specular_weight);
+        let diff = sh_irradiance(s.n, through) * uniform_albedo(s) * (1.0 - s.metallic) * (1.0 - mat.p2.z) * (vec3(1.0) - fr_avg * s.specular_weight);
         var ibl = (diff + spec) * s.occlusion * ao;
         if (!PLAIN_MATERIAL && mat.p2.x > 0.0) {
             let fc = (0.04 + 0.96 * pow(1.0 - nv, 5.0)) * mat.p2.x;

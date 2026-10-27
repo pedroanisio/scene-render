@@ -398,14 +398,30 @@ fn the_raster_pass_names_the_clouds_shadows_it_does_not_draw() {
     assert!(!(-52.0..-28.0).contains(&longitude(seen)), "x {} sees the band at {:.1}", c + 30, longitude(seen));
     let (got, want) = (r.at(c + 30, c)[0], bare.at(c + 30, c)[0]);
     assert!(want > 0.2 && (got - want).abs() < 0.02, "{got} with the clouds, {want} without");
-    // under a physical sky's sun the shadow, which darkens the light of directional lights, is not drawn
+    // under a physical sky's sun the shadow darkens the bake's diffuse light, and its specular light on a ground that
+    // reflects is named as not drawn
     let sky = r#"<light id="sky" type="dome" sky="physical" sunIntensity="1" date="2024-06-21T12:00:00Z" latitude="0" moon="false"/>"#;
-    let material = r##"<material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/>"##;
-    let Some(r) = planet_at(material, &attrs, sky, 0.0) else { return };
-    let note = "p: the clouds' shadow under a physical sky's sun is not drawn";
-    assert!(r.stats.unsupported.iter().any(|u| u == note), "{:?}", r.stats.unsupported);
-    let Some(r) = planet_at(material, &format!(r#"{attrs} cloudShadow="false""#), sky, 0.0) else { return };
-    assert!(!r.stats.unsupported.iter().any(|u| u == note), "{:?}", r.stats.unsupported);
+    let note = "p: the clouds' and rings' shadows of a physical sky's sun on the ground's specular light are not drawn by the raster pass";
+    // the path tracer's rays toward the sun meet the shell, which shadows the ground whatever `cloudShadow` says
+    let traced = "p: cloudShadow=\"false\" under a physical sky's sun is not drawn by the path tracer, whose rays toward the sun meet the cloud shell";
+    let lambert = r##"<material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/>"##;
+    let glossy = r##"<material id="m" baseColor="#FFFFFFFF" specular="0.5" roughness="0.4"/>"##;
+    let (raster, tracer) = ("", r#"renderer="pathtrace" pathSamples="1""#);
+    let off = r#" cloudShadow="false""#;
+    for (camera, material, more, light, named) in [
+        (raster, lambert, "", sky, None),
+        (raster, glossy, "", sky, Some(note)),
+        (raster, glossy, off, sky, None),
+        (raster, glossy, "", light, None),
+        (tracer, glossy, "", sky, None),
+        (tracer, lambert, off, sky, Some(traced)),
+        (tracer, lambert, off, light, None),
+    ] {
+        let Some(r) = planet_seen(camera, material, &format!("{attrs}{more}"), light, 0.0) else { return };
+        let u = &r.stats.unsupported;
+        let named_ones: Vec<_> = u.iter().filter(|m| m.contains("physical sky")).collect();
+        assert_eq!(named_ones, named.iter().collect::<Vec<_>>(), "{camera} {material}{more}: {u:?}");
+    }
 }
 
 #[test]
@@ -728,6 +744,333 @@ fn the_clouds_shadow_only_the_suns_light() {
         }
         assert!(checked > 1000 && apart > 20, "{camera:?}: {checked} pixels checked, {apart} in the sun's shadow");
     }
+}
+
+/// A physical sky at 40° N on the March equinox at noon: the sun 50° up in the south, the scene's −z, toward the eye.
+const NOON_40N: (&str, f64) = ("2024-03-20T12:00:00Z", 40.0);
+
+/// A physical sky at `latitude` on the meridian of Greenwich at `date`, unturned, with no air between the eye and the
+/// planet, its sun `sun_size` degrees across.
+fn physical_sky((date, latitude): (&str, f64), sun_size: &str) -> String {
+    format!(
+        r#"<light id="sky" type="dome" sky="physical" sunIntensity="1" date="{date}" latitude="{latitude}" longitude="0" moon="false" aerialPerspective="false" sunSize="{sun_size}"/>"#
+    )
+}
+
+/// That sky's sun in the scene's axes (the dome's, unturned).
+fn physical_sun((date, latitude): (&str, f64)) -> [f64; 3] {
+    let o = sr_3d::space::sun::Observer {
+        latitude,
+        longitude: 0.0,
+        altitude: 0.0,
+        pressure: 1013.25,
+        temperature: 10.0,
+        delta_t: None,
+    };
+    sr_3d::space::sun::sun_from_document(date, &o).unwrap().1
+}
+
+/// Whether `got` is `want` to a share `tol` of the sun's light `sun` and a hundredth of `want`, channel by channel.
+fn within(got: [f32; 4], want: [f32; 4], sun: [f32; 4], tol: f64) -> bool {
+    (0..3).all(|c| ((got[c] - want[c]) as f64).abs() <= tol * (sun[c] as f64).abs() + 0.01 * (want[c] as f64).abs())
+}
+
+#[test]
+fn the_clouds_shadow_takes_a_physical_skys_sun_from_the_ground() {
+    // the patch north of the point the eye sees the sun's ray leave: the ground under it keeps the sky's light alone,
+    // the frame of the same sky with no disc (sunSize 0), and the ground clear of it the whole sun's
+    let (h, (lo, hi), (south, north)) = (0.2, (-110.0, -70.0), (25.0, 70.0));
+    let map = cloud_band("planet-cloud-north.png", [0, 0, 0], (lo, hi), (south, north));
+    let material = r##"<material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/>"##;
+    let clouds = |shadow: bool| format!(r#"cloudMap="{}" cloudHeight="{h}" cloudShadow="{shadow}""#, map.display());
+    let (Some(r), Some(bare), Some(sky)) = (
+        planet_at(material, &clouds(true), &physical_sky(NOON_40N, "0.53"), 0.0),
+        planet_at(material, &clouds(false), &physical_sky(NOON_40N, "0.53"), 0.0),
+        planet_at(material, &clouds(true), &physical_sky(NOON_40N, "0"), 0.0),
+    ) else {
+        return;
+    };
+    assert!(r.stats.unsupported.iter().all(|u| !u.contains("shadow")), "{:?}", r.stats.unsupported);
+    let sun = physical_sun(NOON_40N);
+    let alpha = |q: [f64; 3]| {
+        let (lon, lat) = (longitude(q), geodetic_latitude(q, 0.0));
+        let near = |v: f64, e: f64| (v - e).abs() < 1.5;
+        (!(near(lon, lo) || near(lon, hi) || near(lat, south) || near(lat, north)))
+            .then_some(if (lo..hi).contains(&lon) && (south..north).contains(&lat) { 1.0 } else { 0.0 })
+    };
+    let (mut shaded, mut clear) = (0, 0);
+    for y in (0..SIZE).step_by(2) {
+        for x in (0..SIZE).step_by(2) {
+            let (Some(p), Some(qv)) = (crossing(x, y, 100.0), crossing(x, y, 100.0 * (1.0 + h))) else { continue };
+            // seen through the clear layer, on the day side away from the limb
+            if alpha(qv) != Some(0.0) || p[2] > -30.0 {
+                continue;
+            }
+            let through = match shadow_point(p, sun, 100.0, h, 0.0) {
+                Some(q) => match alpha(q) {
+                    Some(a) => 1.0 - a,
+                    None => continue,
+                },
+                None => 1.0,
+            };
+            let (got, full, alone) = (r.at(x, y), bare.at(x, y), sky.at(x, y));
+            let share = [full[0] - alone[0], full[1] - alone[1], full[2] - alone[2], 0.0];
+            if share[0] < 0.2 * full[0] {
+                continue;
+            }
+            let want = if through == 0.0 { alone } else { full };
+            assert!(within(got, want, share, 0.02), "({x}, {y}) through {through}: {got:?}, want {want:?}");
+            shaded += (through == 0.0) as u32;
+            clear += (through == 1.0) as u32;
+        }
+    }
+    assert!(shaded > 100 && clear > 100, "{shaded} in the shadow, {clear} clear");
+    // off, the shadow leaves the bake whole
+    let far = r.px.iter().zip(&bare.px).filter(|(p, q)| (0..3).any(|c| (p[c] - q[c]).abs() > 1e-6)).count();
+    assert!(far > 100, "{far} pixels differ from the frame without the shadow");
+}
+
+/// A physical sky over the equator in the afternoon of 23 February: the sun 23° up in the west-southwest, about 27°
+/// north of the ring frames' plane, toward the body's −x.
+const AFTERNOON: (&str, f64) = ("2024-02-23T16:40:00Z", 0.0);
+
+/// The ring frames' planet (`RING_TILT`, radius 100, the ring from 1.3 to 2.2 radii, a white ground) under a physical
+/// sky `when` with its disc and without, and without the ring under both.
+fn ringed_under(tilt: f64, when: (&str, f64)) -> Option<[Rendered; 4]> {
+    let strip = ring_strip(&RING_STRIP);
+    let material = r##"<material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/>"##;
+    let body = format!(r#"rotationX="{tilt}""#);
+    let ring = format!(r#"{body} ringMap="{}" ringInner="1.3" ringOuter="2.2""#, strip.display());
+    let (sunlit, alone) = (physical_sky(when, "0.53"), physical_sky(when, "0"));
+    let frames = [
+        planet_at(material, &ring, &sunlit, 0.0)?,
+        planet_at(material, &ring, &alone, 0.0)?,
+        planet_at(material, &body, &sunlit, 0.0)?,
+        planet_at(material, &body, &alone, 0.0)?,
+    ];
+    assert!(frames[0].stats.unsupported.iter().all(|u| !u.contains("shadow")), "{:?}", frames[0].stats.unsupported);
+    Some(frames)
+}
+
+fn share(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2], 0.0]
+}
+
+#[test]
+fn the_rings_shadows_take_a_physical_skys_sun() {
+    let (inner, outer) = (130.0, 220.0);
+    // the ring in the planet's shadow keeps the sky's light alone, the frame of the same sky with no disc: its sun's
+    // share over the strip's premultiplied colour is one factor where it is lit and none in the shadow
+    let Some([r, sky, _, _]) = ringed_under(RING_TILT, AFTERNOON) else { return };
+    let sun = to_body(physical_sun(AFTERNOON));
+    let (mut lit, mut dark) = (Vec::new(), Vec::new());
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let meets = |px: f64, py: f64| {
+                ring_ray(px, py, 0.0).and_then(|(q, hidden)| {
+                    let rho = q[0].hypot(q[2]);
+                    ((inner + 2.0..=outer - 2.0).contains(&rho) && !hidden).then(|| ring_in_shadow(q, sun, 0.0))
+                })
+            };
+            let (fx, fy) = (x as f64, y as f64);
+            let m = meets(fx + 0.5, fy + 0.5);
+            let corners = [(-0.5, -0.5), (1.5, -0.5), (-0.5, 1.5), (1.5, 1.5)];
+            if m.is_none() || corners.iter().any(|(dx, dy)| meets(fx + dx, fy + dy) != m) {
+                continue;
+            }
+            let (q, _) = ring_ray(fx + 0.5, fy + 0.5, 0.0).unwrap();
+            let s = strip_at(&RING_STRIP, q[0].hypot(q[2]), inner, outer).unwrap();
+            let premultiplied = s[0] * s[3];
+            if premultiplied < 0.05 {
+                continue;
+            }
+            let d = share(r.at(x, y), sky.at(x, y))[0] as f64 / premultiplied;
+            if m == Some(true) {
+                dark.push((x, y, d))
+            } else {
+                lit.push(d)
+            }
+        }
+    }
+    lit.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let k = lit.get(lit.len() / 2).copied().unwrap_or(0.0);
+    assert!(lit.len() > 500 && dark.len() > 100 && k > 0.05, "{} lit, {} shadowed, factor {k}", lit.len(), dark.len());
+    for (x, y, d) in &dark {
+        assert!(d.abs() < 0.02 * k, "ring ({x}, {y}) in the planet's shadow keeps {d} of the sun's {k}");
+    }
+    // the ground the eye sees bare under the ring's shadow: 1 − alpha of the sun's share, the frame without the ring
+    // less that share. The body is tilted the other way, so that the noon sun, toward the eye, casts the shadow on the
+    // ground the eye sees: the frame is the ring frames' mirrored through the world's y, its sun's y negated, row y
+    // read at SIZE − 1 − y
+    let Some([r, _, bare, bare_sky]) = ringed_under(-RING_TILT, NOON_40N) else { return };
+    let [sx, sy, sz] = physical_sun(NOON_40N);
+    let sun = to_body([sx, -sy, sz]);
+    let toward_eye = to_body([0.0, 0.0, -1.0]);
+    let (mut shaded, mut clear) = (0, 0);
+    for y in (0..SIZE).step_by(2) {
+        for x in (0..SIZE).step_by(2) {
+            let Some((p, behind)) = ground_ray(x as f64 + 0.5, y as f64 + 0.5, 0.0, inner, outer) else { continue };
+            // clear of the limb, where a pixel straddles the ground and what lies beyond
+            if behind || toward_eye.iter().zip(p).map(|(a, b)| a * b).sum::<f64>() < 30.0 {
+                continue;
+            }
+            let through = ring_light(p, sun, inner, outer);
+            let at = |f: &Rendered| f.at(x, SIZE - 1 - y);
+            let (full, alone) = (at(&bare), at(&bare_sky));
+            let sun_share = share(full, alone);
+            if sun_share[0] < 0.2 * full[0] {
+                continue;
+            }
+            let want = [0, 1, 2, 3].map(|c| alone[c] + through as f32 * sun_share[c]);
+            let got = at(&r);
+            assert!(within(got, want, sun_share, 0.02), "ground ({x}, {y}) through {through}: {got:?}, want {want:?}");
+            shaded += (through < 0.5) as u32;
+            clear += (through == 1.0) as u32;
+        }
+    }
+    assert!(shaded > 50 && clear > 100, "{shaded} in the ring's shadow, {clear} clear");
+}
+
+#[test]
+fn the_path_tracer_casts_the_clouds_shadow_of_a_physical_skys_sun() {
+    // the raster frame's patch, traced under a sun 10° wide that the tracer's rays meet in the sky's image, and stop
+    // at in the shell: the ground under the shadow keeps the sky's light alone, the frame of the same sky with no disc
+    // that traces the same rays, and the ground clear of it the sun's share of the frame without clouds
+    let cam = r#"renderer="pathtrace" pathSamples="64" maxBounces="1" denoise="false""#;
+    let (h, (lo, hi), (south, north)) = (0.2, (-110.0, -70.0), (25.0, 70.0));
+    let map = cloud_band("planet-cloud-north.png", [0, 0, 0], (lo, hi), (south, north));
+    let material = r##"<material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/>"##;
+    let clouds = format!(r#"cloudMap="{}" cloudHeight="{h}""#, map.display());
+    let traced = |attrs: &str, size: &str| planet_seen(cam, material, attrs, &physical_sky(NOON_40N, size), 0.0);
+    let (Some(r), Some(sky), Some(bare), Some(bare_sky)) =
+        (traced(&clouds, "10"), traced(&clouds, "0"), traced("", "10"), traced("", "0"))
+    else {
+        return;
+    };
+    assert!(r.stats.unsupported.iter().all(|u| !u.contains("shadow")), "{:?}", r.stats.unsupported);
+    let sun = physical_sun(NOON_40N);
+    let alpha = |q: [f64; 3]| {
+        let (lon, lat) = (longitude(q), geodetic_latitude(q, 0.0));
+        let near = |v: f64, e: f64| (v - e).abs() < 3.0;
+        (!(near(lon, lo) || near(lon, hi) || near(lat, south) || near(lat, north)))
+            .then_some(if (lo..hi).contains(&lon) && (south..north).contains(&lat) { 1.0 } else { 0.0 })
+    };
+    let (mut shaded, mut clear) = (0, 0);
+    let (mut got_share, mut want_share, mut shaded_lit) = (0.0, 0.0, 0.0);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let (Some(p), Some(qv)) = (crossing(x, y, 100.0), crossing(x, y, 100.0 * (1.0 + h))) else { continue };
+            if alpha(qv) != Some(0.0) || p[2] > -30.0 {
+                continue;
+            }
+            let through = match shadow_point(p, sun, 100.0, h, 0.0) {
+                Some(q) => match alpha(q) {
+                    Some(a) => 1.0 - a,
+                    None => continue,
+                },
+                None => 1.0,
+            };
+            let (got, alone) = (r.at(x, y), sky.at(x, y));
+            if through == 0.0 {
+                assert!((got[0] - alone[0]).abs() <= 0.01 * alone[0], "({x}, {y}): {got:?}, the sky's {alone:?}");
+                shaded += 1;
+                shaded_lit += (bare.at(x, y)[0] - bare_sky.at(x, y)[0]) as f64;
+            } else if through == 1.0 {
+                got_share += (got[0] - alone[0]) as f64;
+                want_share += (bare.at(x, y)[0] - bare_sky.at(x, y)[0]) as f64;
+                clear += 1;
+            }
+        }
+    }
+    assert!(shaded > 100 && clear > 100, "{shaded} in the shadow, {clear} clear");
+    // without the clouds the sun reaches the shaded ground as it does the clear
+    let (shaded_lit, clear_lit) = (shaded_lit / shaded as f64, want_share / clear as f64);
+    assert!(
+        shaded_lit > 0.5 * clear_lit,
+        "the shaded ground's sun {shaded_lit} without the clouds, the clear's {clear_lit}"
+    );
+    let ratio = got_share / want_share;
+    assert!(
+        want_share > 10.0 && (ratio - 1.0).abs() < 0.1,
+        "the clear ground's sun {got_share}, without clouds {want_share}"
+    );
+}
+
+#[test]
+fn the_path_tracer_casts_the_rings_shadows_of_a_physical_skys_sun() {
+    // the ring frames traced under a sun 3° wide, which the tracer's rays meet in the sky's image and stop at in the
+    // body and, by the strip's alpha, in the ring; the sun's share is each frame less the frame of the same sky with
+    // no disc. Its penumbra spreads the shadows' edges, so regions are compared, not pixels
+    let cam = r#"renderer="pathtrace" pathSamples="64" maxBounces="1" denoise="false""#;
+    let material = r##"<material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/>"##;
+    let strip = ring_strip(&RING_STRIP);
+    let (inner, outer) = (130.0, 220.0);
+    let traced = |tilt: f64, ring: bool, size: &str, when| {
+        let body = format!(r#"rotationX="{tilt}""#);
+        let attrs = if ring {
+            format!(r#"{body} ringMap="{}" ringInner="1.3" ringOuter="2.2""#, strip.display())
+        } else {
+            body
+        };
+        planet_seen(cam, material, &attrs, &physical_sky(when, size), 0.0)
+    };
+    let share = |a: &Rendered, b: &Rendered, x: u32, y: u32| (a.at(x, y)[0] - b.at(x, y)[0]) as f64;
+    // the ring in the body's shadow keeps a small part of the sun's share where it is lit
+    let (Some(r), Some(sky)) = (traced(RING_TILT, true, "3", AFTERNOON), traced(RING_TILT, true, "0", AFTERNOON))
+    else {
+        return;
+    };
+    let sun = to_body(physical_sun(AFTERNOON));
+    let (mut lit, mut dark) = ((0.0, 0), (0.0, 0));
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let Some((q, hidden)) = ring_ray(x as f64 + 0.5, y as f64 + 0.5, 0.0) else { continue };
+            if hidden || !(inner + 2.0..=outer - 2.0).contains(&q[0].hypot(q[2])) {
+                continue;
+            }
+            let side = if ring_in_shadow(q, sun, 0.0) { &mut dark } else { &mut lit };
+            *side = (side.0 + share(&r, &sky, x, y), side.1 + 1);
+        }
+    }
+    let (lit_mean, dark_mean) = (lit.0 / lit.1 as f64, dark.0 / dark.1 as f64);
+    assert!(lit.1 > 500 && dark.1 > 100 && lit_mean > 0.005, "{lit:?} lit, {dark:?} in the shadow");
+    assert!(dark_mean < 0.1 * lit_mean, "the ring in the body's shadow keeps {dark_mean} of the lit ring's {lit_mean}");
+    // the ground the eye sees bare (the mirrored noon frame of the raster pass's test): the sun's share, 1 − alpha of
+    // the strip where the ray toward it crosses the ring of the frame without the ring's
+    let frames = (
+        traced(-RING_TILT, true, "3", NOON_40N),
+        traced(-RING_TILT, true, "0", NOON_40N),
+        traced(-RING_TILT, false, "3", NOON_40N),
+        traced(-RING_TILT, false, "0", NOON_40N),
+    );
+    let (Some(r), Some(sky), Some(bare), Some(bare_sky)) = frames else { return };
+    let [sx, sy, sz] = physical_sun(NOON_40N);
+    let sun = to_body([sx, -sy, sz]);
+    let (mut got, mut want, mut whole) = ([0.0; 2], [0.0; 2], [0.0; 2]);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let Some((p, behind)) = ground_ray(x as f64 + 0.5, y as f64 + 0.5, 0.0, inner, outer) else { continue };
+            if behind {
+                continue;
+            }
+            let through = ring_light(p, sun, inner, outer);
+            let y = SIZE - 1 - y;
+            let (g, alone) = (share(&r, &sky, x, y), share(&bare, &bare_sky, x, y));
+            for k in 0..=usize::from(through < 0.5) {
+                got[k] += g;
+                want[k] += through * alone;
+                whole[k] += alone;
+            }
+        }
+    }
+    assert!((got[0] / want[0] - 1.0).abs() < 0.05, "the ground's sun {}, the strip's share {}", got[0], want[0]);
+    assert!(
+        want[1] < 0.6 * whole[1] && got[1] < 1.3 * want[1],
+        "the ground in the ring's shadow: {} of the sun, the strip's share {}, {} without the ring",
+        got[1],
+        want[1],
+        whole[1]
+    );
 }
 
 #[test]
@@ -1109,16 +1452,24 @@ fn the_rings_scale_with_the_body_and_default_to_saturns() {
 
 #[test]
 fn the_raster_pass_names_the_rings_shadows_it_does_not_draw() {
-    // under a physical sky's sun, which lights the scene through the sky's bake, neither ring shadow is drawn
+    // under a physical sky's sun both ring shadows darken the bake's diffuse light; the ground's specular light keeps
+    // the sun's whole share, which is named
     let attrs = format!(r#"rotationX="{RING_TILT}" ringMap="{}""#, ring_strip(&RING_STRIP).display());
-    let material = r##"<material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/>"##;
-    let note = "p: the rings' shadows under a physical sky's sun are not drawn";
+    let note = "p: the clouds' and rings' shadows of a physical sky's sun on the ground's specular light are not drawn by the raster pass";
     let sky = r#"<light id="sky" type="dome" sky="physical" sunIntensity="1" date="2024-06-21T12:00:00Z" latitude="0" moon="false"/>"#;
-    let Some(r) = planet_at(material, &attrs, sky, 0.0) else { return };
-    assert!(r.stats.unsupported.iter().any(|u| u == note), "{:?}", r.stats.unsupported);
     let light = r#"<light id="sun" type="directional" yaw="-90" intensity="3"/>"#;
-    let Some(r) = planet_at(material, &attrs, light, 0.0) else { return };
-    assert!(!r.stats.unsupported.iter().any(|u| u == note), "{:?}", r.stats.unsupported);
+    let lambert = r##"<material id="m" baseColor="#FFFFFFFF" specular="0" roughness="1"/>"##;
+    let glossy = r##"<material id="m" baseColor="#FFFFFFFF" specular="0.5" roughness="0.4"/>"##;
+    // the path tracer's rays meet the ring and the body, which cast both shadows
+    let tracer = r#"renderer="pathtrace" pathSamples="1""#;
+    for (camera, material, light, named) in
+        [("", lambert, sky, false), ("", glossy, sky, true), ("", glossy, light, false), (tracer, glossy, sky, false)]
+    {
+        let Some(r) = planet_seen(camera, material, &attrs, light, 0.0) else { return };
+        let u = &r.stats.unsupported;
+        assert!(u.iter().all(|m| !m.contains("physical sky")) || named, "{camera} {material}: {u:?}");
+        assert_eq!(u.iter().any(|m| m == note), named, "{camera} {material}: {u:?}");
+    }
 }
 
 /// The draft's Lambert material (`specular="0"`): with no specular reflection the diffuse keeps all the light, not the

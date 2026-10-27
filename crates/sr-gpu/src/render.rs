@@ -568,6 +568,9 @@ pub struct Renderer {
     planet_sun_light: Option<glam::Vec3>,
     /// The planets of the 3D pass being drawn that carry an atmosphere shell (rule 6), in drawing order.
     planet_airs: Vec<render_three::PlanetAir>,
+    /// What the 3D pass being drawn names as not drawn of its planets' shadows under a physical sky's sun, once it
+    /// knows whether the path tracer draws it.
+    planet_shadow_notes: render_three::PlanetShadowNotes,
     /// The last atmosphere shell uploaded, by its key: its table is rule 9's integrals over a whole hemisphere.
     planet_shell: Option<(String, Arc<crate::three::PlanetShellGpu>)>,
     /// Star fields by catalogue file, limiting magnitude and magnitudeZero (the star-fields draft).
@@ -1517,6 +1520,7 @@ impl Renderer {
             planet_sun: None,
             planet_sun_light: None,
             planet_airs: Vec::new(),
+            planet_shadow_notes: Default::default(),
             planet_shell: None,
             stars_bg: None,
             star_fields: HashMap::new(),

@@ -156,6 +156,32 @@ fn planet_sun(lights: &[Light3], physical: Option<(Mat4, [[f32; 4]; 5])>) -> Opt
     lights.iter().find(|l| l.kind == LightKind::Directional).map(|l| -l.dir.normalize())
 }
 
+/// The planets of a 3D pass whose shadows under a physical sky's sun one of its renderers does not draw, by id: the
+/// raster pass's on a ground's specular light, the path tracer's turned off by `cloudShadow="false"`.
+#[derive(Default)]
+pub(super) struct PlanetShadowNotes {
+    specular: Vec<String>,
+    unshadowed: Vec<String>,
+}
+
+impl PlanetShadowNotes {
+    /// The notes of the renderer that draws the pass, the path tracer when `traced`.
+    fn take(&mut self, traced: bool) -> Vec<String> {
+        let (specular, unshadowed) = (std::mem::take(&mut self.specular), std::mem::take(&mut self.unshadowed));
+        if traced {
+            unshadowed
+                .iter()
+                .map(|id| format!("{id}: cloudShadow=\"false\" under a physical sky's sun is not drawn by the path tracer, whose rays toward the sun meet the cloud shell"))
+                .collect()
+        } else {
+            specular
+                .iter()
+                .map(|id| format!("{id}: the clouds' and rings' shadows of a physical sky's sun on the ground's specular light are not drawn by the raster pass"))
+                .collect()
+        }
+    }
+}
+
 /// A planet of the pass that carries an atmosphere shell (the planets draft's rule 6).
 pub(super) struct PlanetAir {
     id: String,
@@ -1942,12 +1968,6 @@ impl Renderer {
                 }
             },
         };
-        if sun.is_some() && self.planet_sun.is_some_and(|(_, physical)| physical) {
-            let m = format!("{}: the rings' shadows under a physical sky's sun are not drawn", n.id);
-            if !plan.stats.unsupported.contains(&m) {
-                plan.stats.unsupported.push(m);
-            }
-        }
         let (scale, rotation, centre) = world.to_scale_rotation_translation();
         let to_body = glam::Mat3::from_quat(rotation).transpose();
         let rings = |on_ring| sr_3d::PlanetRings {
@@ -2045,12 +2065,6 @@ impl Renderer {
             receive_shadow: receive,
             shadow_catcher: false,
         };
-        if shadow && self.planet_sun.is_some_and(|(_, physical)| physical) {
-            let m = format!("{}: the clouds' shadow under a physical sky's sun is not drawn", n.id);
-            if !plan.stats.unsupported.contains(&m) {
-                plan.stats.unsupported.push(m);
-            }
-        }
         let ground = shadow.then_some(sun).flatten().map(|sun| {
             let (scale, rotation, centre) = world.to_scale_rotation_translation();
             let to_layer = (glam::Mat3::from_quat(rotation) * turn).transpose();
@@ -2191,6 +2205,17 @@ impl Renderer {
                         maps[7] = Some(texture);
                         material.rings = Some(ground);
                         ring = Some(draw);
+                    }
+                    if self.planet_sun.is_some_and(|(_, physical)| physical) {
+                        // in the raster pass a physical sky's sun lights through the bake, whose diffuse light holds
+                        // it apart and whose specular mips do not; the path tracer's rays meet the shell
+                        let shaded = material.cloud_shadow.is_some() || material.rings.is_some();
+                        if shaded && material.specular > 0.0 {
+                            self.planet_shadow_notes.specular.push(n.id.to_string());
+                        }
+                        if a.str("cloudMap").is_some() && !flag(&a, "cloudShadow", true) {
+                            self.planet_shadow_notes.unshadowed.push(n.id.to_string());
+                        }
                     }
                     if a.str("atmosphere").as_deref() == Some("earth") {
                         match self.planet_air(ctx, n, &a, world) {
@@ -4202,6 +4227,7 @@ impl Renderer {
         self.planet_sun = planet_sun(&lights, physical).map(|d| (d, physical.is_some()));
         self.planet_sun_light = lights.iter().find(|l| l.kind == LightKind::Directional).map(|l| l.color);
         self.planet_airs.clear();
+        self.planet_shadow_notes = Default::default();
         if lights.is_empty()
             && env.is_none()
             && ctx.p.scene.lights.as_ref().map(|l| l.lights.is_empty()).unwrap_or(true)
@@ -4382,6 +4408,11 @@ impl Renderer {
         }
         if scene.path.is_none() && scene.geodesic.is_none() {
             plan.stats.unsupported.extend(self.raster_warning.iter().map(|m| format!("{}: {m}", n.id)));
+        }
+        for m in self.planet_shadow_notes.take(scene.path.is_some()) {
+            if !plan.stats.unsupported.contains(&m) {
+                plan.stats.unsupported.push(m);
+            }
         }
         if scene.path.is_none() && scene.draws.iter().any(|d| d.material.foam_mix.is_some()) {
             // the foam is mixed into the water by the path tracer's shading; the raster renderer has no such mix
