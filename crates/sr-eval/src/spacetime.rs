@@ -67,7 +67,7 @@ pub struct RayInst {
     pub t: f64,
     /// +1 or −1: the ray's direction in x.
     pub direction: f64,
-    /// In drawn units; else the box's yMax − yMin.
+    /// In units of t; else the box's yMax − yMin (drawn units).
     pub length: Option<f64>,
 }
 
@@ -362,10 +362,10 @@ fn worldline(
     Ok(clipped(af, &px))
 }
 
-/// A light ray: from its event along (direction, 1) for its length.
+/// A light ray: from its event along (direction, 1) for c times its length.
 fn ray(v: &View, af: &AxesFrame, r: &RayInst) -> Result<Subpaths, String> {
     let b = box_of(af);
-    let len = r.length.unwrap_or(extent(af));
+    let len = r.length.map_or(extent(af), |l| l * v.c);
     let n = if v.compact == Compact::None { 2 } else { COMPACT_SAMPLES };
     let px = linspace(0.0, len, n)
         .into_iter()

@@ -428,3 +428,27 @@ fn a_cone_that_leaves_the_box_is_clipped_to_it() {
     assert_eq!(pts.len(), 4, "{pts:?}");
     assert_eq!(pts.iter().filter(|p| (p[0] - 400.0).abs() < 1e-9).count(), 2, "{pts:?}");
 }
+
+#[test]
+fn a_light_ray_s_length_is_in_units_of_t() {
+    // c = 2: length 0.5 of t reaches 1 drawn unit along (1, 1) from (0, c · -0.25)
+    let g = frame(&evaluator(r#"<spacetime c="2"><lightRay x="0" t="-0.25" length="0.5"/></spacetime>"#), 0.0);
+    let pts = subpaths(&path_of(node(&g, "ax/lightRay0"))).remove(0).0;
+    assert!(near(pts[0], pixel(0.0, -0.5, 0.0), 1e-9), "{pts:?}");
+    assert!(near(*pts.last().unwrap(), pixel(1.0, 0.5, 0.0), 1e-9), "{pts:?}");
+}
+
+#[test]
+fn an_expression_that_reaches_the_speed_of_light_is_a_frame_problem() {
+    let ev =
+        evaluator(r#"<spacetime><expression property="boost">0.2 * time</expression><event x="0" t="0"/></spacetime>"#);
+    assert!(ev.evaluate(1.0).problems.is_empty());
+    // at t = 5 the expression gives beta = 1: it is not clamped, nothing is drawn with it, and the frame says so
+    let g = ev.evaluate(5.0);
+    assert!(
+        g.problems.iter().any(|p| p.contains("ax/event0") && p.contains("boost must lie strictly between -1 and 1")),
+        "{:?}",
+        g.problems
+    );
+    assert!(node(&g, "ax/event0").props.get("path").is_none());
+}
