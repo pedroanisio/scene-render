@@ -139,6 +139,7 @@ impl PropKind {
                 Builtin::Double
                 | Builtin::Integer
                 | Builtin::Int
+                | Builtin::Long
                 | Builtin::NonNegativeInteger
                 | Builtin::PositiveInteger
                 | Builtin::UnsignedLong,

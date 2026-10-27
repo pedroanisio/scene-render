@@ -22,6 +22,8 @@ pub enum Builtin {
     Boolean,
     Integer,
     Int,
+    /// `xs:long`: a signed 64-bit integer.
+    Long,
     NonNegativeInteger,
     PositiveInteger,
     UnsignedLong,

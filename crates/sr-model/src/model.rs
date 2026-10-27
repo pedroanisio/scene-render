@@ -129,7 +129,7 @@ mod coverage {
                 Builtin::Double => "1.5".into(),
                 Builtin::Decimal => "-0.743643887037158704752191506114774".into(),
                 Builtin::Boolean => "true".into(),
-                Builtin::Integer | Builtin::Int => "-3".into(),
+                Builtin::Integer | Builtin::Int | Builtin::Long => "-3".into(),
                 Builtin::NonNegativeInteger | Builtin::PositiveInteger | Builtin::UnsignedLong => "3".into(),
                 Builtin::Id | Builtin::IdRef | Builtin::NcName => "x1".into(),
                 Builtin::IdRefs | Builtin::NmTokens => "a b".into(),

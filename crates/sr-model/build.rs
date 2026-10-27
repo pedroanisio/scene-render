@@ -32,6 +32,7 @@ const BUILTINS: &[(&str, &str)] = &[
     ("boolean", "Boolean"),
     ("integer", "Integer"),
     ("int", "Int"),
+    ("long", "Long"),
     ("nonNegativeInteger", "NonNegativeInteger"),
     ("positiveInteger", "PositiveInteger"),
     ("unsignedLong", "UnsignedLong"),
@@ -620,7 +621,7 @@ fn builtin_rust(b: &str) -> &'static str {
         "IdRefs" | "NmTokens" => "Vec<String>",
         "Double" => "f64",
         "Boolean" => "bool",
-        "Integer" => "i64",
+        "Integer" | "Long" => "i64",
         "Int" => "i32",
         "NonNegativeInteger" | "PositiveInteger" | "UnsignedLong" => "u64",
         other => panic!("no Rust mapping for builtin {other}"),
@@ -628,7 +629,7 @@ fn builtin_rust(b: &str) -> &'static str {
 }
 
 fn is_numeric_builtin(b: &str) -> bool {
-    matches!(b, "Double" | "Integer" | "Int" | "NonNegativeInteger" | "PositiveInteger" | "UnsignedLong")
+    matches!(b, "Double" | "Integer" | "Int" | "Long" | "NonNegativeInteger" | "PositiveInteger" | "UnsignedLong")
 }
 
 fn assign_names(s: &Schema) -> Names {

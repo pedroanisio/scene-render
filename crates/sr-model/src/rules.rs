@@ -370,6 +370,22 @@ fn julian_epoch(e: &str, approx: bool) -> bool {
     lexical && (!approx || (625332.5..2817152.5).contains(&jd))
 }
 
+/// A numeric attribute as the Schematron reads it with a default: `xs_number` of the text, or `default` when absent.
+fn num_or(n: Node, attr: &str, default: f64) -> f64 {
+    n.attribute(attr).map(xs_number).unwrap_or(default)
+}
+
+/// XPath 1.0 `round()`: the nearest integer, halves toward positive infinity.
+fn xpath_round(x: f64) -> f64 {
+    (x + 0.5).floor()
+}
+
+/// The `member`s of the root's `space/nbody` (XPath `/scene/space/nbody/member`).
+fn nbody_members<'a, 'i: 'a>(n: Node<'a, 'i>) -> impl Iterator<Item = Node<'a, 'i>> + 'a {
+    let root = n.document().root_element();
+    kids(root, "space").flat_map(|s| kids(s, "nbody")).flat_map(|b| kids(b, "member"))
+}
+
 fn is(n: Node, name: &str) -> bool {
     n.is_element() && n.tag_name().name() == name && n.tag_name().namespace().is_none()
 }
@@ -779,6 +795,85 @@ impl<'a> Eval<'a> {
     /// A warning: the document is valid and a renderer can run it.
     fn warn(&mut self, n: Node, code: &str, message: String) {
         self.out.push(Diagnostic::warning(code, message, Loc::of(n), element_path(n)));
+    }
+
+    /// The orbits draft's pattern p-srep-orbits: OR1 and OR2 on an object's orbit, OR3 on the root space's nbody,
+    /// OR4 and OR5 on every object3D. The GM table of OR1 and OR3 holds the ten bodies of [`rotating`].
+    fn orbits(&mut self, n: Node, local: &str) {
+        let has = |k: &str| n.attribute(k).is_some();
+        let parent_is = |name: &str| n.parent_element().is_some_and(|p| is(p, name));
+        let doc = n.document();
+        if local == "orbit" && parent_is("object3D") {
+            let around = n.attribute("around");
+            let own = n.parent_element().and_then(|p| p.attribute("id"));
+            let centre = || {
+                doc.descendants().filter(move |o| is(*o, "object3D") && around.is_some() && o.attribute("id") == around)
+            };
+            let gm = has("mu")
+                || nbody_members(n)
+                    .any(|m| m.attribute("ref") == around && (m.has_attribute("mass") || rotating(num(m, "body"))))
+                || centre().any(|o| rotating(num(o, "body")));
+            self.check(centre().any(|o| o.attribute("id") != own) && gm, n, "OR1", || {
+                "an orbit's around names another object3D, and the orbit has a gravitational parameter: mu, or a central object that is an nbody member with a mass or has a body with a GM (10, 199, 299, 399, 499, 599, 699, 799, 899 or 301).".into()
+            });
+            let (e, a) = (num_or(n, "e", 0.0), num(n, "a"));
+            let nu = num_or(n, "anomaly", 0.0);
+            let finite = ["i", "raan", "argp", "epoch"].iter().all(|k| !num_or(n, k, 0.0).is_nan()) && !nu.is_nan();
+            let ok = (e - 1.0 >= 1e-12 || 1.0 - e >= 1e-12)
+                && ((e < 1.0 && a > 0.0) || (e > 1.0 && a < 0.0))
+                && (e < 1.0 || 1.0 + e * (nu * std::f64::consts::PI / 180.0).cos() > 0.0)
+                && finite;
+            self.check(ok, n, "OR2", || {
+                "an orbit's e differs from 1 by at least 1e-12; a is positive when e is below 1 and negative when above, and with e above 1, 1 + e cos(anomaly) is positive; the angles and the epoch are finite.".into()
+            });
+        }
+        let root = doc.root_element();
+        if local == "nbody" && n.parent_element().is_some_and(|p| is(p, "space") && p.parent_element() == Some(root)) {
+            let members: Vec<Node> = kids(n, "member").collect();
+            let distinct = members.iter().enumerate().all(|(i, m)| {
+                let r = m.attribute("ref");
+                r.is_none() || !members[..i].iter().any(|p| p.attribute("ref") == r)
+            });
+            let named = members.iter().all(|m| {
+                let r = m.attribute("ref");
+                r.is_some() && doc.descendants().any(|o| is(o, "object3D") && o.attribute("id") == r)
+            });
+            let massive = members.iter().all(|m| m.has_attribute("mass") || rotating(num(*m, "body")));
+            let fps = kids(root, "project").next().and_then(|p| p.attribute("fps")).unwrap_or("");
+            let (top, bottom) = fps.split_once('/').unwrap_or((fps, "1"));
+            let fps = xpath_number(top) / xpath_number(bottom);
+            let rate = n.parent_element().map_or(f64::NAN, |s| num_or(s, "rate", 1.0));
+            let k = rate / fps / num_or(n, "step", 3600.0);
+            let whole = has("tolerance") || (k - xpath_round(k) <= 1e-9 && xpath_round(k) - k <= 1e-9);
+            let ok = distinct
+                && named
+                && massive
+                && whole
+                && (!has("tolerance") || n.attribute("integrator") == Some("ias15"))
+                && (n.attribute("integrator") != Some("wisdomHolman")
+                    || !has("softening")
+                    || num(n, "softening") == 0.0);
+            self.check(ok, n, "OR3", || {
+                "an nbody's members name distinct object3Ds, each with a mass or a body with a GM; without tolerance the frame interval rate / fps is a whole number of steps within 1e-9 of a step; tolerance is written only with integrator=\"ias15\"; softening is 0 with wisdomHolman.".into()
+            });
+        }
+        if local == "object3D" {
+            let id = n.attribute("id");
+            let member = || nbody_members(n).filter(move |m| id.is_some() && m.attribute("ref") == id).count();
+            let sources =
+                kids(n, "orbit").count() + member() + usize::from(n.attribute("positionFrom") == Some("ephemeris"));
+            self.check(sources <= 1, n, "OR4", || {
+                "an object has at most one of an orbit, an nbody member entry and positionFrom=\"ephemeris\".".into()
+            });
+            let trails: Vec<Node> = kids(n, "trail").collect();
+            let ok = trails.is_empty()
+                || (trails.len() == 1
+                    && (has_kid(n, "orbit") || member() > 0)
+                    && !trails.iter().any(|t| num(*t, "samples") < 2.0));
+            self.check(ok, n, "OR5", || {
+                "a trail is written once, on an object with an orbit or an nbody member entry, and has at least 2 samples.".into()
+            });
+        }
     }
 
     /// W02: a pyro source or impulse whose place is in the document and which is closer than
@@ -1308,6 +1403,11 @@ impl<'a> Eval<'a> {
                 || n.descendants().any(|d| is(d, "starField") && d.parent_element().is_some_and(|p| is(p, "light")))
                 // the physical-sky draft's sky
                 || n.descendants().any(|d| is(d, "light") && d.attribute("sky") == Some("physical"))
+                // the orbits draft's orbit, trail and nbody
+                || n.descendants().any(|d| {
+                    (is(d, "orbit") || is(d, "trail")) && d.parent_element().is_some_and(|p| is(p, "object3D"))
+                })
+                || kids(n, "space").any(|s| has_kid(s, "nbody"))
                 // the planets draft's primitive and attributes
                 || n.descendants().any(|d| {
                     is(d, "object3D")
@@ -1315,7 +1415,7 @@ impl<'a> Eval<'a> {
                             || PLANET_ATTRIBUTES.iter().any(|k| d.has_attribute(*k)))
                 });
             self.check(!uses, n, "V17", || {
-                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets, starField, sky=\"physical\", primitive=\"planet\" and its attributes need version=\"1.8\".".into()
+                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets, starField, sky=\"physical\", primitive=\"planet\" and its attributes, orbit, nbody and trail need version=\"1.8\".".into()
             });
         }
         // the time-frames draft (p-srep-time-frames)
@@ -1481,6 +1581,8 @@ impl<'a> Eval<'a> {
                 });
             }
         }
+        // the orbits draft (p-srep-orbits)
+        self.orbits(n, local);
         // the fields draft (p-srep-fields)
         if local == "field" {
             let sources = ["u", "function", "w", "grid", "forceField"].iter().filter(|k| has(k)).count()

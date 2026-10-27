@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- expect: OR1 -->
+<scene version="1.8"><project width="64" height="64" fps="24" duration="1"/><composition><camera id="eye" z="-10"/><object3D id="sun" primitive="sphere" body="10"/><object3D id="star" primitive="sphere"/><object3D id="earth" primitive="sphere"><orbit around="eye" mu="1" a="1.496e11" e="0.0167" argp="102.9"/><trail length="86400" samples="16"/></object3D></composition><space epoch="2451545.0" timeScale="tdb" rate="3600"/></scene>

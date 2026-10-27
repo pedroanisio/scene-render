@@ -4,6 +4,7 @@
 <sch:schema xmlns:sch="http://purl.oclc.org/dsdl/schematron" queryBinding="xslt">
   <sch:title>scene-render 1.1 co-occurrence and reference rules</sch:title>
   <sch:ns prefix="str" uri="http://exslt.org/strings"/>
+  <sch:ns prefix="math" uri="http://exslt.org/math"/>
 
   <!-- ============================================================ version gate -->
     <sch:pattern id="p1">
@@ -869,7 +870,7 @@
   <sch:pattern id="p-v17">
     <sch:rule context="/scene[@version='1.0' or @version='1.1' or @version='1.2' or @version='1.3' or @version='1.4' or @version='1.5' or @version='1.6' or @version='1.7']">
       <sch:let name="partTag" value="'\part{'"/>
-      <sch:assert id="V17" test="not(.//axes or .//plot or .//object3D[@primitive='axes'] or .//axes3D or .//plot3D or .//modifier[@type='matrix' or @type='map' or @type='complex'] or .//group/deform or .//formulaAnimator or assets/formulaMorph or .//shape[@morph] or assets/formula[contains(@tex, $partTag)] or assets/value or .//field or space or assets/ephemeris or .//object3D[@body or @positionFrom or @orientation] or assets/catalogue or .//light/starField or .//light[@sky='physical'] or .//object3D[@primitive='planet' or @flattening or @nightLights or @twilight or @cloudMap or @cloudHeight or @cloudRotation or @cloudShadow or @ringMap or @ringInner or @ringOuter or @limbDarkening or @atmosphere or @atmosphereHeight])">axes, plot, axes3D, plot3D, primitive="axes", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets, starField, sky="physical", primitive="planet" and its attributes need version="1.8".</sch:assert>
+      <sch:assert id="V17" test="not(.//axes or .//plot or .//object3D[@primitive='axes'] or .//axes3D or .//plot3D or .//modifier[@type='matrix' or @type='map' or @type='complex'] or .//group/deform or .//formulaAnimator or assets/formulaMorph or .//shape[@morph] or assets/formula[contains(@tex, $partTag)] or assets/value or .//field or space or assets/ephemeris or .//object3D[@body or @positionFrom or @orientation] or assets/catalogue or .//light/starField or .//light[@sky='physical'] or .//object3D/orbit or .//object3D/trail or space/nbody or .//object3D[@primitive='planet' or @flattening or @nightLights or @twilight or @cloudMap or @cloudHeight or @cloudRotation or @cloudShadow or @ringMap or @ringInner or @ringOuter or @limbDarkening or @atmosphere or @atmosphereHeight])">axes, plot, axes3D, plot3D, primitive="axes", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets, starField, sky="physical", primitive="planet" and its attributes, orbit, nbody and trail need version="1.8".</sch:assert>
     </sch:rule>
   </sch:pattern>
   <sch:pattern id="p-srep-plots">
@@ -982,6 +983,29 @@
     </sch:rule>
     <sch:rule context="object3D">
       <sch:assert id="PL2" test="not(@flattening or @nightLights or @twilight or @cloudMap or @cloudHeight or @cloudRotation or @cloudShadow or @ringMap or @ringInner or @ringOuter or @limbDarkening or @atmosphere or @atmosphereHeight)">flattening, nightLights, twilight, cloudMap, cloudHeight, cloudRotation, cloudShadow, ringMap, ringInner, ringOuter, limbDarkening, atmosphere and atmosphereHeight are written only with primitive="planet".</sch:assert>
+    </sch:rule>
+  </sch:pattern>
+  <sch:pattern id="p-srep-orbits">
+    <sch:rule context="object3D/orbit">
+      <sch:let name="e" value="number(substring(concat(normalize-space(@e),substring('0',1,99*number(not(@e)))),1+number(starts-with(concat(normalize-space(@e),substring('0',1,99*number(not(@e)))),'+'))))"/>
+      <sch:let name="a" value="number(substring(normalize-space(@a),1+number(starts-with(normalize-space(@a),'+'))))"/>
+      <sch:let name="i" value="number(substring(concat(normalize-space(@i),substring('0',1,99*number(not(@i)))),1+number(starts-with(concat(normalize-space(@i),substring('0',1,99*number(not(@i)))),'+'))))"/>
+      <sch:let name="raan" value="number(substring(concat(normalize-space(@raan),substring('0',1,99*number(not(@raan)))),1+number(starts-with(concat(normalize-space(@raan),substring('0',1,99*number(not(@raan)))),'+'))))"/>
+      <sch:let name="argp" value="number(substring(concat(normalize-space(@argp),substring('0',1,99*number(not(@argp)))),1+number(starts-with(concat(normalize-space(@argp),substring('0',1,99*number(not(@argp)))),'+'))))"/>
+      <sch:let name="nu" value="number(substring(concat(normalize-space(@anomaly),substring('0',1,99*number(not(@anomaly)))),1+number(starts-with(concat(normalize-space(@anomaly),substring('0',1,99*number(not(@anomaly)))),'+'))))"/>
+      <sch:let name="epoch" value="number(substring(concat(normalize-space(@epoch),substring('0',1,99*number(not(@epoch)))),1+number(starts-with(concat(normalize-space(@epoch),substring('0',1,99*number(not(@epoch)))),'+'))))"/>
+      <sch:assert id="OR1" test="//object3D[@id=current()/@around][@id!=current()/../@id] and (@mu or /scene/space/nbody/member[@ref=current()/@around][@mass or contains(' 10 199 299 399 499 599 699 799 899 301 ',concat(' ',number(substring(normalize-space(@body),1+number(starts-with(normalize-space(@body),'+')))),' '))] or //object3D[@id=current()/@around][contains(' 10 199 299 399 499 599 699 799 899 301 ',concat(' ',number(substring(normalize-space(@body),1+number(starts-with(normalize-space(@body),'+')))),' '))])">an orbit's around names another object3D, and the orbit has a gravitational parameter: mu, or a central object that is an nbody member with a mass or has a body with a GM (10, 199, 299, 399, 499, 599, 699, 799, 899 or 301).</sch:assert>
+      <sch:assert id="OR2" test="($e - 1 &gt;= 1e-12 or 1 - $e &gt;= 1e-12) and (($e &lt; 1 and $a &gt; 0) or ($e &gt; 1 and $a &lt; 0)) and ($e &lt; 1 or 1 + $e * math:cos($nu * 3.141592653589793 div 180) &gt; 0) and $i=$i and $raan=$raan and $argp=$argp and $nu=$nu and $epoch=$epoch">an orbit's e differs from 1 by at least 1e-12; a is positive when e is below 1 and negative when above, and with e above 1, 1 + e cos(anomaly) is positive; the angles and the epoch are finite.</sch:assert>
+    </sch:rule>
+    <sch:rule context="/scene/space/nbody">
+      <sch:let name="fps" value="number(substring-before(concat(/scene/project/@fps,'/'),'/')) div number(concat(substring-after(/scene/project/@fps,'/'),substring('1',1,number(not(contains(/scene/project/@fps,'/'))))))"/>
+      <sch:let name="rate" value="number(substring(concat(normalize-space(../@rate),substring('1',1,99*number(not(../@rate)))),1+number(starts-with(concat(normalize-space(../@rate),substring('1',1,99*number(not(../@rate)))),'+'))))"/>
+      <sch:let name="k" value="$rate div $fps div number(substring(concat(normalize-space(@step),substring('3600',1,99*number(not(@step)))),1+number(starts-with(concat(normalize-space(@step),substring('3600',1,99*number(not(@step)))),'+'))))"/>
+      <sch:assert id="OR3" test="not(member[@ref=preceding-sibling::member/@ref]) and count(member)=count(member[@ref=//object3D/@id]) and not(member[not(@mass) and not(contains(' 10 199 299 399 499 599 699 799 899 301 ',concat(' ',number(substring(normalize-space(@body),1+number(starts-with(normalize-space(@body),'+')))),' ')))]) and (@tolerance or ($k - round($k) &lt;= 1e-9 and round($k) - $k &lt;= 1e-9)) and (not(@tolerance) or @integrator='ias15') and (not(@integrator='wisdomHolman') or not(@softening) or number(substring(normalize-space(@softening),1+number(starts-with(normalize-space(@softening),'+'))))=0)">an nbody's members name distinct object3Ds, each with a mass or a body with a GM; without tolerance the frame interval rate / fps is a whole number of steps within 1e-9 of a step; tolerance is written only with integrator="ias15"; softening is 0 with wisdomHolman.</sch:assert>
+    </sch:rule>
+    <sch:rule context="object3D">
+      <sch:assert id="OR4" test="count(orbit) + count(/scene/space/nbody/member[@ref=current()/@id]) + number(@positionFrom='ephemeris') &lt;= 1">an object has at most one of an orbit, an nbody member entry and positionFrom="ephemeris".</sch:assert>
+      <sch:assert id="OR5" test="not(trail) or (count(trail)=1 and (orbit or /scene/space/nbody/member[@ref=current()/@id]) and not(trail[number(substring(normalize-space(@samples),1+number(starts-with(normalize-space(@samples),'+')))) &lt; 2]))">a trail is written once, on an object with an orbit or an nbody member entry, and has at least 2 samples.</sch:assert>
     </sch:rule>
   </sch:pattern>
 </sch:schema>

@@ -109,7 +109,9 @@ fn the_corpus_validates_alike_at_1_7_and_1_8() {
                         ]
                         .iter()
                         .any(|k| tag.contains(&format!(" {k}=")))
-                });
+                })
+                // and the orbits draft's orbit, trail and nbody
+                || ["<orbit ", "<trail ", "<nbody"].iter().any(|k| xml.contains(k));
             let plot_gated = at_1_7.iter().any(|c| c == "V17");
             at_1_7.retain(|c| c != "V17");
             assert_eq!(plot_gated, plotted && !codes(&b).iter().any(|c| c == "S01"), "{}", f.display());

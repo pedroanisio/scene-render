@@ -1049,6 +1049,51 @@ WARN_CASES += [
     # the planets draft: a body's radii override the flattening
     ("w19-planet-flattening", ["W19"], lambda _: PLANET.replace('body="399"', 'body="399" flattening="0.5"')),
 ]
+# the orbits draft: orbit and trail on object3D, nbody on space, OR1 to OR5 and V17
+ORBIT = ('<scene version="1.8"><project width="64" height="64" fps="24" duration="1"/>'
+    '<composition><camera id="eye" z="-10"/><object3D id="sun" primitive="sphere" body="10"/><object3D id="star" primitive="sphere"/>'
+    '<object3D id="earth" primitive="sphere"><orbit around="sun" a="1.496e11" e="0.0167" argp="102.9"/><trail length="86400" samples="16"/></object3D></composition>'
+    '<space epoch="2451545.0" timeScale="tdb" rate="3600"/></scene>\n')
+NBODY = ORBIT.replace('<orbit around="sun" a="1.496e11" e="0.0167" argp="102.9"/>', '').replace(
+    '<space epoch="2451545.0" timeScale="tdb" rate="3600"/>',
+    '<space epoch="2451545.0" timeScale="tdb" rate="3600"><nbody step="150"><member ref="sun" body="10"/><member ref="earth" mass="5.97e24" x="1.496e11" vy="29780"/></nbody></space>')
+VALID["orbit"] = ORBIT
+VALID["orbit-hyperbola"] = ORBIT.replace('a="1.496e11" e="0.0167" argp="102.9"', 'a="-0.5E11" e="1.5" i="30" raan="+60" argp="90" anomaly="120" epoch="-86400"')
+VALID["orbit-mu"] = ORBIT.replace('around="sun" a="1.496e11"', 'around="star" mu="3.986e14" a="7e6"').replace('<trail length="86400" samples="16"/>', '')
+VALID["nbody"] = NBODY
+VALID["nbody-ias15"] = NBODY.replace('<nbody step="150">', '<nbody integrator="ias15" step="7" tolerance="1e-9" G="6.674e-11">').replace(
+    '<trail length="86400" samples="16"/>', '<trail length="86400" samples="2" width="3" color="#FFCC00" fade="false"/>')
+VALID["nbody-cluster"] = NBODY.replace('<nbody step="150">', '<nbody step="75" softening="1e9">').replace(
+    '</nbody>', '<cluster count="400" mass="2e30" scale="1e12" seed="-42" prefix="c" radius="0.5" vx="1"/></nbody>')
+VALID["nbody-wisdom-holman"] = NBODY.replace('<nbody step="150">', '<nbody integrator="wisdomHolman" step="1.5" softening="0">')
+CASES += [
+    ("v17-orbit", ["V17"], lambda _: ORBIT.replace('version="1.8"', 'version="1.7"').replace('<space epoch="2451545.0" timeScale="tdb" rate="3600"/>', '').replace('around="sun" a', 'around="sun" mu="1" a')),
+    ("or1-no-gm", ["OR1"], lambda _: ORBIT.replace('around="sun"', 'around="star"')),
+    ("or1-around-self", ["OR1"], lambda _: ORBIT.replace('around="sun"', 'around="earth" mu="1"')),
+    ("or1-around-camera", ["OR1"], lambda _: ORBIT.replace('around="sun"', 'around="eye" mu="1"')),
+    ("or2-parabola", ["OR2"], lambda _: ORBIT.replace('e="0.0167"', 'e="1.0000000000001"')),
+    ("or2-ellipse-sign", ["OR2"], lambda _: ORBIT.replace('a="1.496e11"', 'a="-1.496e11"')),
+    ("or2-hyperbola-sign", ["OR2"], lambda _: ORBIT.replace('e="0.0167"', 'e="1.5"')),
+    ("or2-asymptote", ["OR2"], lambda _: ORBIT.replace('a="1.496e11" e="0.0167"', 'a="-1e11" e="2" anomaly="-121"')),
+    ("or2-near-parabola", ["OR2"], lambda _: ORBIT.replace('a="1.496e11" e="0.0167"', 'a="-1.496e11" e="1.0000000000005"')),
+    ("or3-default-rate", ["OR3"], lambda _: NBODY.replace(' rate="3600"', '')),
+    ("or2-epoch", ["OR2", "W01"], lambda _: ORBIT.replace('argp="102.9"', 'argp="102.9" epoch="INF"')),
+    ("or3-repeated", ["OR3", "OR4"], lambda _: NBODY.replace('<member ref="sun" body="10"/>', '<member ref="earth" mass="1"/>')),
+    ("or3-camera", ["OR3"], lambda _: NBODY.replace('<member ref="sun" body="10"/>', '<member ref="eye" mass="1"/>')),
+    ("or3-no-mass", ["OR3"], lambda _: NBODY.replace('<member ref="sun" body="10"/>', '<member ref="sun" body="401"/>')),
+    ("or3-step", ["OR3"], lambda _: NBODY.replace('step="150"', 'step="7"')),
+    ("or3-default-step", ["OR3"], lambda _: NBODY.replace(' step="150"', '')),
+    ("or3-tolerance", ["OR3"], lambda _: NBODY.replace('step="150"', 'step="150" tolerance="1e-9"')),
+    ("or3-softening", ["OR3"], lambda _: NBODY.replace('step="150"', 'step="150" integrator="wisdomHolman" softening="1"')),
+    ("or4-two-orbits", ["OR4"], lambda _: ORBIT.replace('<trail', '<orbit around="sun" a="2e11"/><trail')),
+    ("or4-orbit-member", ["OR4"], lambda _: NBODY.replace('<trail', '<orbit around="sun" a="2e11"/><trail')),
+    ("or5-no-motion", ["OR5"], lambda _: ORBIT.replace('<orbit around="sun" a="1.496e11" e="0.0167" argp="102.9"/>', '')),
+    ("or5-two-trails", ["OR5"], lambda _: ORBIT.replace('<trail length="86400" samples="16"/>', '<trail length="1"/><trail length="2"/>')),
+    ("or5-one-sample", ["OR5"], lambda _: ORBIT.replace('samples="16"', 'samples="1"')),
+    ("orbit-e-negative", ["S06"], lambda _: ORBIT.replace('e="0.0167"', 'e="-0.1"')),
+    ("nbody-integrator-enum", ["S06"], lambda _: NBODY.replace('step="150"', 'step="150" integrator="rk4"')),
+    ("nbody-cluster-count", ["S06"], lambda _: NBODY.replace('</nbody>', '<cluster count="1" mass="1" scale="1" prefix="c"/></nbody>')),
+]
 CASES += [
     ("v16-fractal", ["V16"], lambda _: FRACTAL.replace('version="1.6"', 'version="1.5"')),
     ("frc1-julia-without-c", ["FRC1"], lambda _: FRACTAL.replace(' juliaX="-0.8" juliaY="0.156"', ' juliaX="-0.8"')),

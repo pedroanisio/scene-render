@@ -80,6 +80,7 @@ fn check_normalized(ty: usize, v: &str) -> Result<(), String> {
                     Builtin::Double
                         | Builtin::Integer
                         | Builtin::Int
+                        | Builtin::Long
                         | Builtin::NonNegativeInteger
                         | Builtin::PositiveInteger
                         | Builtin::UnsignedLong
@@ -228,6 +229,13 @@ fn check_builtin(b: Builtin, v: &str) -> Result<(), String> {
             let i = parse_xsd_integer(v).ok_or_else(|| format!("{v:?} is not an integer"))?;
             if i < i32::MIN as i128 || i > i32::MAX as i128 {
                 return Err(format!("{v} is outside the xs:int range"));
+            }
+            Ok(())
+        }
+        Builtin::Long => {
+            let i = parse_xsd_integer(v).ok_or_else(|| format!("{v:?} is not an integer"))?;
+            if i < i64::MIN as i128 || i > i64::MAX as i128 {
+                return Err(format!("{v} is outside the xs:long range"));
             }
             Ok(())
         }
@@ -420,6 +428,17 @@ mod tests {
         }
         for bad in ["", "e3", "1e", "inf", "+INF", "1,5", "0x10", "."] {
             assert!(check(d, bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn longs() {
+        let l = ty("xs:long");
+        for ok in ["0", "-42", "+7", " 9223372036854775807 ", "-9223372036854775808"] {
+            assert!(check(l, ok).is_ok(), "{ok}");
+        }
+        for bad in ["9223372036854775808", "-9223372036854775809", "1.5", "1e3", ""] {
+            assert!(check(l, bad).is_err(), "{bad}");
         }
     }
 

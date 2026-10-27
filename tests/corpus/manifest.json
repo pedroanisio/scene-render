@@ -708,6 +708,12 @@
     "mtx1-occlusionmap.scene.xml": [
       "MTX1-occlusionMap"
     ],
+    "nbody-cluster-count.scene.xml": [
+      "S06"
+    ],
+    "nbody-integrator-enum.scene.xml": [
+      "S06"
+    ],
     "object3d-position-from-enum.scene.xml": [
       "S06"
     ],
@@ -772,6 +778,77 @@
       "OCN9"
     ],
     "openvdb-format.scene.xml": [
+      "S06"
+    ],
+    "or1-around-camera.scene.xml": [
+      "OR1"
+    ],
+    "or1-around-self.scene.xml": [
+      "OR1"
+    ],
+    "or1-no-gm.scene.xml": [
+      "OR1"
+    ],
+    "or2-asymptote.scene.xml": [
+      "OR2"
+    ],
+    "or2-ellipse-sign.scene.xml": [
+      "OR2"
+    ],
+    "or2-epoch.scene.xml": [
+      "OR2",
+      "W01"
+    ],
+    "or2-hyperbola-sign.scene.xml": [
+      "OR2"
+    ],
+    "or2-near-parabola.scene.xml": [
+      "OR2"
+    ],
+    "or2-parabola.scene.xml": [
+      "OR2"
+    ],
+    "or3-camera.scene.xml": [
+      "OR3"
+    ],
+    "or3-default-rate.scene.xml": [
+      "OR3"
+    ],
+    "or3-default-step.scene.xml": [
+      "OR3"
+    ],
+    "or3-no-mass.scene.xml": [
+      "OR3"
+    ],
+    "or3-repeated.scene.xml": [
+      "OR3",
+      "OR4"
+    ],
+    "or3-softening.scene.xml": [
+      "OR3"
+    ],
+    "or3-step.scene.xml": [
+      "OR3"
+    ],
+    "or3-tolerance.scene.xml": [
+      "OR3"
+    ],
+    "or4-orbit-member.scene.xml": [
+      "OR4"
+    ],
+    "or4-two-orbits.scene.xml": [
+      "OR4"
+    ],
+    "or5-no-motion.scene.xml": [
+      "OR5"
+    ],
+    "or5-one-sample.scene.xml": [
+      "OR5"
+    ],
+    "or5-two-trails.scene.xml": [
+      "OR5"
+    ],
+    "orbit-e-negative.scene.xml": [
       "S06"
     ],
     "out1-odd-h264-frame.scene.xml": [
@@ -1583,6 +1660,9 @@
     "v17-fields.scene.xml": [
       "V17"
     ],
+    "v17-orbit.scene.xml": [
+      "V17"
+    ],
     "v17-part.scene.xml": [
       "V17"
     ],
@@ -1871,6 +1951,10 @@
     "minimal.scene.xml": [],
     "model-select.scene.xml": [],
     "morph.scene.xml": [],
+    "nbody-cluster.scene.xml": [],
+    "nbody-ias15.scene.xml": [],
+    "nbody-wisdom-holman.scene.xml": [],
+    "nbody.scene.xml": [],
     "object3d-off-camera.scene.xml": [],
     "ocean-buoyancy.scene.xml": [],
     "ocean-colliders.scene.xml": [],
@@ -1888,6 +1972,9 @@
     "ocn3-cell-size-plus-0.5.scene.xml": [],
     "openvdb-sequence.scene.xml": [],
     "openvdb.scene.xml": [],
+    "orbit-hyperbola.scene.xml": [],
+    "orbit-mu.scene.xml": [],
+    "orbit.scene.xml": [],
     "p3d10-angle-plus-1.scene.xml": [],
     "p3d3-lifetime-plus-1.scene.xml": [],
     "parametric.scene.xml": [],

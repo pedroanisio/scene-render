@@ -1274,8 +1274,12 @@
       physics/@pixelsPerMeter in the frame's axes. With timeScale="utc" the epoch is YYYY-MM-DDThh:mm:ss[.s] with Z
       or a ±hh:mm offset, from 1972-01-01 on; with tt or tdb a Julian day (TF2). ephemeris names an ephemeris
       asset or is approximate, the Keplerian elements of Standish and Williams (planets 1 to 8 about the Sun,
-      years −3000 to 3000). Time-frames draft, version 1.8.
+      years −3000 to 3000). Time-frames draft, version 1.8. Its optional nbody child moves objects under their mutual
+      gravitation (the orbits draft, version 1.8).
     </xs:documentation></xs:annotation>
+    <xs:sequence>
+      <xs:element name="nbody" type="nbodyType" minOccurs="0"/>
+    </xs:sequence>
     <xs:attribute name="epoch" type="xs:string" use="required"/>
     <xs:attribute name="timeScale" default="utc">
       <xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="utc"/><xs:enumeration value="tt"/><xs:enumeration value="tdb"/></xs:restriction></xs:simpleType>
@@ -1287,6 +1291,64 @@
     </xs:attribute>
     <xs:attribute name="frameBody" type="xs:int"/>
     <xs:attribute name="ephemeris" type="xs:string" default="approximate"/>
+  </xs:complexType>
+  <xs:complexType name="nbodyType">
+    <xs:annotation><xs:documentation>
+      Bodies moving under their mutual attraction from the space's epoch, in metres and seconds of the space frame:
+      a_i = Σ_j G m_j (r_j − r_i) / (|r_j − r_i|² + softening²)^(3/2), integrated by leapfrog (kick-drift-kick),
+      wisdomHolman (Jacobi coordinates with exact Kepler drifts; the first member is the central mass, no
+      softening) or ias15 (Gauss–Radau, 15th order). Without tolerance the step is fixed and divides the frame
+      interval rate / fps (OR3), so a frame's state is a pure function of the frame index; with tolerance the
+      IAS15 step adapts from step and lands on every frame's time. The orbits draft, version 1.8.
+    </xs:documentation></xs:annotation>
+    <xs:choice maxOccurs="unbounded">
+      <xs:element name="member" type="nbodyMemberType"/>
+      <xs:element name="cluster" type="nbodyClusterType"/>
+    </xs:choice>
+    <xs:attribute name="integrator" default="leapfrog">
+      <xs:simpleType><xs:restriction base="xs:string"><xs:enumeration value="leapfrog"/><xs:enumeration value="wisdomHolman"/><xs:enumeration value="ias15"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="step" type="positiveDecimal" default="3600"/>
+    <xs:attribute name="tolerance" type="positiveDecimal"/>
+    <xs:attribute name="softening" type="nonNegativeDecimal" default="0"/>
+    <xs:attribute name="G" type="positiveDecimal" default="6.67430e-11"/>
+  </xs:complexType>
+  <xs:complexType name="nbodyMemberType">
+    <xs:annotation><xs:documentation>
+      An object3D moved by the nbody: its mass (kg) and its state at the space's epoch (metres and metres per second
+      in the space frame), or a NAIF body whose GM / G is the mass and whose ephemeris state at the epoch is the
+      state. The orbits draft, version 1.8.
+    </xs:documentation></xs:annotation>
+    <xs:attribute name="ref" type="xs:IDREF" use="required"/>
+    <xs:attribute name="mass" type="positiveDecimal"/>
+    <xs:attribute name="body" type="xs:int"/>
+    <xs:attribute name="x" type="xs:double" default="0"/>
+    <xs:attribute name="y" type="xs:double" default="0"/>
+    <xs:attribute name="z" type="xs:double" default="0"/>
+    <xs:attribute name="vx" type="xs:double" default="0"/>
+    <xs:attribute name="vy" type="xs:double" default="0"/>
+    <xs:attribute name="vz" type="xs:double" default="0"/>
+  </xs:complexType>
+  <xs:complexType name="nbodyClusterType">
+    <xs:annotation><xs:documentation>
+      A Plummer sphere of count equal masses (mass is the total, scale the Plummer radius in metres) drawn from the
+      random streams with seed, recentred at rest and then placed at x, y, z with the drift vx, vy, vz; its bodies
+      are drawn as spheres of radius scene units named prefix + index. The orbits draft, version 1.8.
+    </xs:documentation></xs:annotation>
+    <xs:attribute name="count" use="required">
+      <xs:simpleType><xs:restriction base="xs:positiveInteger"><xs:minInclusive value="2"/><xs:maxInclusive value="4096"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="mass" type="positiveDecimal" use="required"/>
+    <xs:attribute name="scale" type="positiveDecimal" use="required"/>
+    <xs:attribute name="seed" type="xs:long" default="0"/>
+    <xs:attribute name="x" type="xs:double" default="0"/>
+    <xs:attribute name="y" type="xs:double" default="0"/>
+    <xs:attribute name="z" type="xs:double" default="0"/>
+    <xs:attribute name="vx" type="xs:double" default="0"/>
+    <xs:attribute name="vy" type="xs:double" default="0"/>
+    <xs:attribute name="vz" type="xs:double" default="0"/>
+    <xs:attribute name="prefix" type="xs:string" use="required"/>
+    <xs:attribute name="radius" type="positiveDecimal" default="2"/>
   </xs:complexType>
   <xs:complexType name="valueAssetType">
     <xs:annotation><xs:documentation>
@@ -2653,6 +2715,38 @@
     <xs:attribute name="maxAngle" type="nonNegativeDecimal" default="180"/>
   </xs:complexType>
 
+  <xs:complexType name="orbitType">
+    <xs:annotation><xs:documentation>
+      The object on a Keplerian orbit about the object3D around, from its classical elements at epoch (seconds of the
+      space clock past its epoch): a in metres (positive for an ellipse, negative for a hyperbola), e, and the
+      angles i, raan, argp and the true anomaly in degrees in the space frame; mu (m³/s²) is the central
+      gravitational parameter, else G × the central member's mass or the GM of its body (OR1). The state at any
+      time is propagated by universal variables; the orbit's position replaces x, y, z and positionFrom (OR4).
+      At most one per object (OR4). The orbits draft, version 1.8.
+    </xs:documentation></xs:annotation>
+    <xs:attribute name="around" type="xs:IDREF" use="required"/>
+    <xs:attribute name="mu" type="positiveDecimal"/>
+    <xs:attribute name="a" type="xs:double" use="required"/>
+    <xs:attribute name="e" type="nonNegativeDecimal" default="0"/>
+    <xs:attribute name="i" type="xs:double" default="0"/>
+    <xs:attribute name="raan" type="xs:double" default="0"/>
+    <xs:attribute name="argp" type="xs:double" default="0"/>
+    <xs:attribute name="anomaly" type="xs:double" default="0"/>
+    <xs:attribute name="epoch" type="xs:double" default="0"/>
+  </xs:complexType>
+  <xs:complexType name="trailType">
+    <xs:annotation><xs:documentation>
+      A fading ribbon of the object's past positions: samples times evenly spaced over the last length seconds of
+      the space clock (clamped at its epoch), joined width pixels wide facing the camera, with opacity
+      1 − age / length when fade. Needs an orbit or an nbody member on its object; at most one per object (OR5).
+      The orbits draft, version 1.8.
+    </xs:documentation></xs:annotation>
+    <xs:attribute name="length" type="positiveDecimal" use="required"/>
+    <xs:attribute name="samples" type="xs:positiveInteger" default="64"/>
+    <xs:attribute name="width" type="positiveDecimal" default="2"/>
+    <xs:attribute name="color" type="colorType"/>
+    <xs:attribute name="fade" type="xs:boolean" default="true"/>
+  </xs:complexType>
   <xs:complexType name="object3DType">
     <xs:choice minOccurs="0" maxOccurs="unbounded">
       <xs:group ref="animationElements"/>
@@ -2669,6 +2763,8 @@
       <xs:element name="heightfield" type="heightfieldType"/>
       <xs:element name="axes3D" type="axes3DType"/>
       <xs:element name="plot3D" type="plot3DType"/>
+      <xs:element name="orbit" type="orbitType"/>
+      <xs:element name="trail" type="trailType"/>
     </xs:choice>
     <xs:attribute name="id" type="xs:ID" use="required"/>
     <xs:attribute name="name" type="xs:string"/>
