@@ -11,6 +11,7 @@ description = "Deterministic simulation for scene-render: Rapier 2D physics, sof
 [dependencies]
 sr-volume.workspace = true
 sr-vector.workspace = true
+sr-space.workspace = true
 rayon.workspace = true
 thiserror.workspace = true
 rapier2d-f64 = { version = "0.36", features = ["enhanced-determinism"] }

@@ -1031,7 +1031,8 @@ crates/sr-resolve/src/      the resolve step: protocol (requests, keys), doc (in
 crates/sr-audio/src/        layout, dsp, effects, loudness, mix, analysis, wav
 crates/sr-sim/src/          physics (Rapier world, joints, checkpoints), physics3d (Rapier 3D), soft, particles, fields, timeline, flock,
                             fluid, slime, erosion, rng; cratering (impact craters), granular (deposit beds), hydrostatics, exchange (coupled solvers), gr and
-                            sedov (analytic references), stress, surface, ocean, particles3d, pyro
+                            sedov (analytic references), stress, surface, ocean, particles3d, pyro, nbody (the orbits
+                            draft's N-body integrators and Plummer cluster)
 crates/sr-space/src/         the time-frames draft: time (UTC, TT and TDB, the frame clock), spk (JPL SPK ephemerides),
                             elements (approximate Keplerian elements), frames (ICRF, ecliptic, IAU body-fixed frames);
                             the star-fields draft: stars (Bright Star Catalogue, flux, blackbody colour, proper motion,

@@ -7,6 +7,8 @@
 //! * [`particles`]: emitters with a structure-of-arrays particle store,
 //!   checkpointed the same way.
 //! * [`fields`]: force fields shared by bodies and particles.
+//! * [`nbody`]: mutual gravitation of the orbits draft: leapfrog, Wisdom–Holman and IAS15 with a fixed or an
+//!   adaptive step, the Plummer cluster, and the frame state as a pure function of the frame index.
 //! * [`flock`], [`fluid`], [`slime`] and [`erosion`]: boids, stable fluids, Physarum networks
 //!   and hydraulic erosion, stepped on a [`timeline`] with checkpoints.
 //!
@@ -27,6 +29,7 @@ pub mod fluid;
 pub mod gr;
 pub mod granular;
 pub mod hydrostatics;
+pub mod nbody;
 pub mod ocean;
 pub mod particles;
 pub mod particles3d;
