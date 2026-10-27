@@ -2081,6 +2081,47 @@ impl Renderer {
         Some((shell, ground))
     }
 
+    /// The draw of an object's trail: its ribbon in `frame`, unlit and blended, in the trail's colour or `base`.
+    fn trail_draw(
+        &mut self,
+        n: &FrameNode,
+        tr: &sr_eval::TrailFrame,
+        frame: Mat4,
+        base: [f32; 4],
+        opacity: f32,
+        draws: &mut Vec<Draw3>,
+    ) {
+        if tr.mesh.mesh.indices.is_empty() {
+            return;
+        }
+        let key: Arc<str> = format!("{}#trail", n.id).into();
+        let mesh = match self.three_engine().param_meshes.get(&key) {
+            Some((k, m)) if *k == tr.mesh.key => m.clone(),
+            _ => {
+                let m = self.three_engine().upload_mesh(&tr.mesh.mesh.vertices, &tr.mesh.mesh.indices);
+                self.three_engine().param_meshes.insert(key, (tr.mesh.key, m.clone()));
+                m
+            }
+        };
+        let material = MaterialParams {
+            base_color: tr.color.unwrap_or(base),
+            unlit: true,
+            alpha_mode: sr_3d::AlphaMode::Blend,
+            double_sided: true,
+            ..Default::default()
+        };
+        draws.push(Draw3 {
+            mesh: MeshSrc::Cached(mesh),
+            model: frame,
+            material,
+            maps: Maps::default(),
+            opacity,
+            cast_shadow: false,
+            receive_shadow: false,
+            shadow_catcher: false,
+        });
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn object_draws_at(
         &mut self,
@@ -2108,6 +2149,12 @@ impl Renderer {
             }
             None => None,
         };
+        // the orbits draft's trail (rule 5): its ribbon in the frame the object's own transform is in, unlit in the
+        // trail's colour or the object's base colour, faded by its vertices' alpha
+        if let Some(tr) = &n.trail {
+            let base = doc_mat.as_ref().map_or([0.8, 0.8, 0.8, 1.0], |(m, _)| m.base_color);
+            self.trail_draw(n, tr, world * local3(&a).inverse(), base, opacity, draws);
+        }
         let default_mat = || {
             let material = if n.kind == "ocean" {
                 MaterialParams {
