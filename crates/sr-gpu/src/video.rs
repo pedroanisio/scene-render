@@ -229,14 +229,19 @@ impl VideoEngine {
             });
             {
                 let _creation = crate::gpu::creation_lock();
-                d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                let prof_t0 = std::time::Instant::now();
+                let p = d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some(ep),
                     layout: Some(&layout),
                     module: &module,
                     entry_point: Some(ep),
                     compilation_options: Default::default(),
                     cache: None,
-                })
+                });
+                if std::env::var_os("SR_PROF_PIPE").is_some() {
+                    eprintln!("PIPE video {ep} {:.1} ms", prof_t0.elapsed().as_secs_f64() * 1e3);
+                }
+                p
             }
         };
         let reduce = compute(&[Some(&bgl0), Some(&bgl1)], "cs_reduce");

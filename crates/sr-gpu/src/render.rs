@@ -399,6 +399,8 @@ pub struct Renderer {
     /// Computed fractal pictures (SREP 75), by the hash of everything they show.
     fractals: HashMap<u64, Arc<Tex>>,
     subtree: HashMap<String, (u64, Arc<Tex>)>,
+    /// PROTOTYPE: per-tile input hashes of the last raster of each `subtree` vector target, by texture address.
+    raster_tiles: HashMap<String, (usize, Vec<u64>)>,
     used: std::collections::HashSet<String>,
     /// The frame each cache key was last used in (frames counted by `cache_frame`).
     last_used: HashMap<String, u64>,
@@ -867,7 +869,8 @@ fn compositor_pipeline(
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x2, 2 => Float32x2],
     })];
-    {
+    let prof_t0 = std::time::Instant::now();
+    let prof_out = {
         let _creation = crate::gpu::creation_lock();
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(fragment),
@@ -897,7 +900,11 @@ fn compositor_pipeline(
             multiview_mask: None,
             cache: None,
         })
+    };
+    if std::env::var_os("SR_PROF_PIPE").is_some() {
+        eprintln!("PIPE compositor {fragment} ellipse {ellipse} blend {} {:.1} ms", blend.is_some(), prof_t0.elapsed().as_secs_f64() * 1e3);
     }
+    prof_out
 }
 
 /// `project/@precision="f32"` asked of a device that cannot blend into or filter 32-bit float textures: SREP 72's
@@ -1039,9 +1046,18 @@ impl Renderer {
         });
         let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("compositor"),
-            source: wgpu::ShaderSource::Wgsl(
-                concat!(include_str!("common.wgsl"), include_str!("d24.wgsl"), include_str!("shaders.wgsl")).into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl({
+                let src = concat!(include_str!("common.wgsl"), include_str!("d24.wgsl"), include_str!("shaders.wgsl"));
+                match std::env::var("SR_PROF_SHADER2").as_deref() {
+                    Ok("nopaint") => src
+                        .replace(
+                            "let p = eval_paint(d.paint, v.local, pixel);",
+                            "let p = stops[paints[d.paint].stop_off].color;",
+                        )
+                        .into(),
+                    _ => src.into(),
+                }
+            }),
         });
         let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("composite"),
@@ -1165,6 +1181,7 @@ impl Renderer {
             generators: HashMap::new(),
             fractals: HashMap::new(),
             subtree: HashMap::new(),
+            raster_tiles: HashMap::new(),
             used: Default::default(),
             last_used: HashMap::new(),
             cache_frame: 0,
@@ -1213,7 +1230,14 @@ impl Renderer {
             contrast_batch_split: false,
             grid: None,
             pending_blur: Vec::new(),
-            video: crate::video::VideoEngine::new(gpu_device, gpu_queue),
+            video: {
+                let prof_t0 = std::time::Instant::now();
+                let v = crate::video::VideoEngine::new(gpu_device, gpu_queue);
+                if std::env::var_os("SR_PROF_PIPE").is_some() {
+                    eprintln!("PIPE VideoEngine::new {:.1} ms", prof_t0.elapsed().as_secs_f64() * 1e3);
+                }
+                v
+            },
             decoders: HashMap::new(),
             video_frames: HashMap::new(),
             video_previous: HashMap::new(),
@@ -3763,7 +3787,13 @@ impl Renderer {
             if !kept {
                 self.vector_cached_bytes += bytes;
             }
-            plan.rasters.push(RasterJob::new(enc, target.clone(), &mut plan.paints, &self.working));
+            let addr = Arc::as_ptr(&target) as usize;
+            let prev = self.raster_tiles.get(&key).filter(|(a, _)| *a == addr).map(|(_, h)| h.as_slice());
+            let job = RasterJob::new_prev(enc, target.clone(), &mut plan.paints, &self.working, prev);
+            if std::env::var_os("SR_PROTO_DIRTY").is_some() {
+                self.raster_tiles.insert(key.clone(), (addr, job.tile_hashes.clone()));
+            }
+            plan.rasters.push(job);
             self.subtree.insert(key, (hash, target.clone()));
             (target, None)
         } else {
@@ -4827,6 +4857,15 @@ impl Renderer {
 
     fn execute(&mut self, mut plan: Plan, restore: usize, snapshot_at: Option<usize>, hashes: &[u64]) -> RenderStats {
         let d = self.gpu.device.clone();
+        if std::env::var_os("SR_PROF_DRAWS").is_some() {
+            for (i, dr) in plan.draws.iter().enumerate() {
+                eprintln!(
+                    "DRAW {i} src_kind {} blend {} flags {} opacity {} mask_count {} paint {} color {:?} uv {:?} box {:?} target {:?}; jobs {} cmds {:?}",
+                    dr.src_kind, dr.blend, dr.flags, dr.opacity, dr.mask_count, dr.paint, dr.color, dr.uv_rect, dr.box_rect, dr.target_size,
+                    plan.jobs.len(), plan.jobs.iter().map(|j| j.cmds.len()).collect::<Vec<_>>()
+                );
+            }
+        }
         // Each draw binds one aligned record, making all its parameters uniform
         // across fragments without changing the draw's geometry or arithmetic.
         let (draw_bytes, draw_stride) = pack_draw_uniforms(&plan.draws, d.limits().min_uniform_buffer_offset_alignment);
@@ -4966,6 +5005,13 @@ impl Renderer {
         for rj in &plan.rasters {
             self.raster.record(&d, &mut enc, rj, &paints, &stops, &self.globals);
             plan.stats.targets += 1;
+        }
+        if std::env::var_os("SR_PROF_SPLIT").is_some() {
+            let t0 = std::time::Instant::now();
+            let old = std::mem::replace(&mut enc, d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") }));
+            self.gpu.queue.submit([old.finish()]);
+            let _ = d.poll(wgpu::PollType::wait_indefinitely());
+            eprintln!("PROF raster_ms {:.3} rasters {}", t0.elapsed().as_secs_f64() * 1e3, plan.rasters.len());
         }
         for gj in &plan.gens {
             let mut pass = clear_pass(&mut enc, &gj.target, true);
@@ -5273,7 +5319,12 @@ impl Renderer {
             t.resolve(&mut enc);
             self.last_timer = Some(t);
         }
+        let prof_t0 = std::time::Instant::now();
         self.last_submit = Some(self.gpu.queue.submit([enc.finish()]));
+        if std::env::var_os("SR_PROF_SPLIT").is_some() {
+            let _ = d.poll(wgpu::PollType::wait_indefinitely());
+            eprintln!("PROF draw_ms {:.3}", prof_t0.elapsed().as_secs_f64() * 1e3);
+        }
         for (_, t) in scratch {
             self.pool.put(t);
         }

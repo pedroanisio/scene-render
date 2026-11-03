@@ -50,6 +50,40 @@ pub struct RasterJob {
     /// No layer stack or gradient evaluation is needed by any command.
     solid_fills: bool,
     active_tiles: Option<Vec<u32>>,
+    /// PROTOTYPE: `active_tiles` are the tiles changed since the frame the target holds: no clear.
+    partial: bool,
+    /// PROTOTYPE: per-tile hashes of this job's inputs.
+    pub tile_hashes: Vec<u64>,
+}
+
+/// PROTOTYPE: a hash per tile of everything its pixels depend on.
+fn tile_hashes(e: &Encoded, map: &[u32], t: &PaintTable) -> Vec<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut hashes = Vec::with_capacity(e.ranges.len());
+    for r in &e.ranges {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for c in &e.cmds[r[0] as usize..(r[0] + r[1]) as usize] {
+            (c.kind, c.piece_count, c.backdrop_val.to_bits(), c.flags, c.param.to_bits(), c.backdrop == u32::MAX)
+                .hash(&mut h);
+            for p in &e.pieces[c.piece_off as usize..(c.piece_off + c.piece_count) as usize] {
+                p.map(f32::to_bits).hash(&mut h);
+            }
+            if c.backdrop != u32::MAX {
+                for b in &e.backdrops[c.backdrop as usize..c.backdrop as usize + 16] {
+                    b.to_bits().hash(&mut h);
+                }
+            }
+            if c.kind == sr_vector::tile::kind::FILL {
+                let pd = t.paints[map[c.paint as usize] as usize];
+                bytemuck::bytes_of(&pd).hash(&mut h);
+                for s in &t.stops[pd.stop_off as usize..(pd.stop_off + pd.stop_count) as usize] {
+                    bytemuck::bytes_of(s).hash(&mut h);
+                }
+            }
+        }
+        hashes.push(h.finish());
+    }
+    hashes
 }
 
 /// An sRGB-encoded straight colour into the stored working representation.
@@ -138,7 +172,21 @@ impl RasterJob {
 
     /// Resolves an encoded scene's paints and prepares its buffers.
     pub fn new(e: Encoded, target: Arc<Tex>, t: &mut PaintTable, w: &Working) -> RasterJob {
+        Self::new_prev(e, target, t, w, None)
+    }
+
+    /// PROTOTYPE: like `new`; with `prev` (the tile hashes of the frame whose pixels `target` still holds) only the
+    /// tiles whose hash changed are rasterised.
+    pub fn new_prev(e: Encoded, target: Arc<Tex>, t: &mut PaintTable, w: &Working, prev: Option<&[u64]>) -> RasterJob {
         let map: Vec<u32> = e.paints.iter().map(|p| resolve_paint(t, w, p)).collect();
+        let proto = std::env::var_os("SR_PROTO_DIRTY").is_some();
+        let tile_hashes = if proto { tile_hashes(&e, &map, t) } else { Vec::new() };
+        let partial_tiles: Option<Vec<u32>> = match (proto, prev) {
+            (true, Some(p)) if p.len() == tile_hashes.len() => Some(
+                tile_hashes.iter().zip(p).enumerate().filter_map(|(i, (a, b))| (a != b).then_some(i as u32)).collect(),
+            ),
+            _ => None,
+        };
         let solid_fills = e.cmds.iter().all(|c| c.kind == sr_vector::tile::kind::FILL)
             && map.iter().all(|&i| t.paints[i as usize].kind == 0);
         let cmds = e
@@ -162,6 +210,19 @@ impl RasterJob {
         let nonempty = e.ranges.iter().filter(|r| r[1] != 0).count();
         let active_tiles = (nonempty * 2 < e.ranges.len())
             .then(|| e.ranges.iter().enumerate().filter_map(|(i, r)| (r[1] != 0).then_some(i as u32)).collect());
+        let partial = partial_tiles.is_some();
+        let active_tiles = partial_tiles.or(active_tiles);
+        if std::env::var_os("SR_PROF_RASTER").is_some() {
+            let fills = e.cmds.iter().filter(|c| c.kind == 0).count();
+            let nonsolid = map.iter().filter(|&&i| t.paints[i as usize].kind != 0).count();
+            let maxr = e.ranges.iter().map(|r| r[1]).max().unwrap_or(0);
+            let maxp = e.cmds.iter().map(|c| c.piece_count).max().unwrap_or(0);
+            eprintln!(
+                "RASTER size {:?} tiles {:?} nonempty {} active {} cmds {} fills {} pieces {} ranges_total {} maxr {} maxp {} solid {} nonsolid_paints {} paints {}",
+                e.size, e.tiles, nonempty, active_tiles.as_ref().map_or(-1, |a: &Vec<u32>| a.len() as i64),
+                e.cmds.len(), fills, e.pieces.len(), e.ranges.iter().map(|r| r[1] as u64).sum::<u64>(), maxr, maxp, solid_fills, nonsolid, map.len()
+            );
+        }
         RasterJob {
             target,
             size: e.size,
@@ -172,6 +233,8 @@ impl RasterJob {
             backdrops: e.backdrops,
             solid_fills,
             active_tiles,
+            partial,
+            tile_hashes,
         }
     }
 }
@@ -253,6 +316,15 @@ impl Raster {
             label: Some("raster"),
             source: wgpu::ShaderSource::Wgsl({
                 let src = concat!(include_str!("common.wgsl"), include_str!("raster.wgsl"));
+                let src: String = match std::env::var("SR_PROF_SHADER").as_deref() {
+                    Ok("floor") => src.replace("if (r.y == 0u) {", "if (true) {"),
+                    Ok("nopaint") => src.replace(
+                        "let s = eval_paint(c.paint, vec2<f32>(f32(x) + 0.5, f32(y) + 0.5), vec2<u32>(x, y));",
+                        "let s = stops[paints[c.paint].stop_off].color;",
+                    ),
+                    Ok("general_only") => src.replace("if (SOLID_FILLS) {", "if (false) {"),
+                    _ => src.to_string(),
+                };
                 if format == crate::resources::FORMAT_F32 {
                     src.replace("texture_storage_2d<rgba16float, write>", "texture_storage_2d<rgba32float, write>")
                         .into()
@@ -268,7 +340,8 @@ impl Raster {
         });
         let pipelines = std::array::from_fn(|i| {
             let _creation = crate::gpu::creation_lock();
-            d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            let prof_t0 = std::time::Instant::now();
+            let prof_p = d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("raster"),
                 layout: Some(&layout),
                 module: &module,
@@ -278,7 +351,11 @@ impl Raster {
                     ..Default::default()
                 },
                 cache: None,
-            })
+            });
+            if std::env::var_os("SR_PROF_PIPE").is_some() {
+                eprintln!("PIPE raster variant {i} {:.1} ms", prof_t0.elapsed().as_secs_f64() * 1e3);
+            }
+            prof_p
         });
         Raster { pipelines, bgl }
     }
@@ -297,6 +374,11 @@ impl Raster {
         let view =
             job.target.tex.create_view(&wgpu::TextureViewDescriptor { mip_level_count: Some(1), ..Default::default() });
         if let Some(active) = &job.active_tiles {
+            if job.partial {
+                if active.is_empty() {
+                    return;
+                }
+            } else {
             // A clear covers empty tiles more cheaply than launching a pixel
             // invocation for each of them. Every populated tile is overwritten.
             drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -317,6 +399,7 @@ impl Raster {
             }));
             if active.is_empty() {
                 return;
+            }
             }
         }
         let params = RParams {
@@ -397,6 +480,8 @@ mod tests {
             backdrops: (0..16).map(|y| y as f32 / 32.0).collect(),
             solid_fills: false,
             active_tiles: None,
+            partial: false,
+            tile_hashes: Vec::new(),
         };
         let paints = storage(d, &[PaintDesc::default(), PaintDesc { stop_off: 1, ..Default::default() }], "paints");
         let stops = storage(
