@@ -78,40 +78,126 @@ impl TileState {
     }
 }
 
-/// A hash per tile of everything its pixels depend on: its commands, their pieces and backdrops, and the resolved
-/// descriptor and stops of each fill's paint (never the paint's index, which depends on the frame's paint table).
-fn tile_hashes(e: &Encoded, map: &[u32], t: &PaintTable) -> Vec<u64> {
-    use std::hash::{Hash, Hasher};
-    e.ranges
-        .iter()
-        .map(|r| {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            let cmds = &e.cmds[r[0] as usize..(r[0] + r[1]) as usize];
-            cmds.len().hash(&mut h);
-            for c in cmds {
-                (c.kind, c.piece_count, c.backdrop_val.to_bits(), c.flags, c.param.to_bits(), c.backdrop == u32::MAX)
-                    .hash(&mut h);
-                for p in &e.pieces[c.piece_off as usize..(c.piece_off + c.piece_count) as usize] {
-                    p.map(f32::to_bits).hash(&mut h);
-                }
-                if c.backdrop != u32::MAX {
-                    for b in &e.backdrops[c.backdrop as usize..c.backdrop as usize + 16] {
-                        b.to_bits().hash(&mut h);
-                    }
-                }
-                if c.kind == sr_vector::tile::kind::FILL {
-                    let pd = t.paints[map.get(c.paint as usize).copied().unwrap_or(0) as usize];
-                    // the stops' position in this frame's table is not an input of the pixels, their values are
-                    bytemuck::bytes_of(&PaintDesc { stop_off: 0, ..pd }).hash(&mut h);
-                    let stops = pd.stop_off as usize..(pd.stop_off + pd.stop_count) as usize;
-                    for s in &t.stops[stops] {
-                        bytemuck::bytes_of(s).hash(&mut h);
-                    }
-                }
+/// A fast 64-bit hash of a stream of words for tile inputs: each word is folded in with a 64x64 -> 128-bit
+/// multiply, so every input bit reaches the whole state, at a fraction of SipHash's cost per word. Only equality
+/// of two runs matters here; nothing hashed is adversarial.
+#[derive(Clone, Copy)]
+struct TileHasher {
+    state: u64,
+    words: u64,
+}
+
+impl Default for TileHasher {
+    fn default() -> Self {
+        TileHasher { state: 0x243F_6A88_85A3_08D3, words: 0 }
+    }
+}
+
+impl TileHasher {
+    const K: u64 = 0x9E37_79B9_7F4A_7C15;
+
+    #[inline]
+    fn word(&mut self, w: u64) {
+        let m = u128::from(self.state ^ w) * u128::from(Self::K);
+        self.state = (m as u64) ^ ((m >> 64) as u64);
+        self.words += 1;
+    }
+
+    /// Two 32-bit values as one word.
+    #[inline]
+    fn pair(&mut self, lo: u32, hi: u32) {
+        self.word(u64::from(lo) | u64::from(hi) << 32);
+    }
+
+    /// Four floats' bits.
+    #[inline]
+    fn quad(&mut self, v: [f32; 4]) {
+        self.pair(v[0].to_bits(), v[1].to_bits());
+        self.pair(v[2].to_bits(), v[3].to_bits());
+    }
+
+    /// Bytes, eight at a time, the last chunk zero-padded (the byte count is hashed first).
+    fn bytes(&mut self, b: &[u8]) {
+        self.word(b.len() as u64);
+        for c in b.chunks(8) {
+            let mut w = [0u8; 8];
+            w[..c.len()].copy_from_slice(c);
+            self.word(u64::from_le_bytes(w));
+        }
+    }
+
+    fn finish(self) -> u64 {
+        let mut h = self;
+        h.word(self.words);
+        h.state
+    }
+}
+
+/// A hash per paint of the encoded scene of what its pixels depend on: the resolved descriptor and stops, never their
+/// position in this frame's tables.
+fn paint_hashes(e: &Encoded, map: &[u32], t: &PaintTable) -> Vec<u64> {
+    (0..e.paints.len())
+        .map(|i| {
+            let pd = t.paints[map.get(i).copied().unwrap_or(0) as usize];
+            let mut h = TileHasher::default();
+            h.bytes(bytemuck::bytes_of(&PaintDesc { stop_off: 0, ..pd }));
+            let stops = pd.stop_off as usize..(pd.stop_off + pd.stop_count) as usize;
+            for s in &t.stops[stops] {
+                h.bytes(bytemuck::bytes_of(s));
             }
             h.finish()
         })
         .collect()
+}
+
+/// The hash of tile `i`: its commands, their pieces and backdrops, and the hash of each fill's paint.
+fn tile_hash(e: &Encoded, paints: &[u64], i: usize) -> u64 {
+    let r = e.ranges[i];
+    let mut h = TileHasher::default();
+    let cmds = &e.cmds[r[0] as usize..(r[0] + r[1]) as usize];
+    h.word(cmds.len() as u64);
+    for c in cmds {
+        h.pair(c.kind, c.piece_count);
+        h.pair(c.backdrop_val.to_bits(), c.param.to_bits());
+        h.pair(c.flags, (c.backdrop == u32::MAX) as u32);
+        for p in &e.pieces[c.piece_off as usize..(c.piece_off + c.piece_count) as usize] {
+            h.quad(*p);
+        }
+        if c.backdrop != u32::MAX {
+            for q in e.backdrops[c.backdrop as usize..c.backdrop as usize + 16].chunks_exact(4) {
+                h.quad([q[0], q[1], q[2], q[3]]);
+            }
+        }
+        if c.kind == sr_vector::tile::kind::FILL {
+            h.word(paints.get(c.paint as usize).copied().unwrap_or(0));
+        }
+    }
+    h.finish()
+}
+
+/// A hash per tile of everything its pixels depend on: its commands, their pieces and backdrops, and the resolved
+/// descriptor and stops of each fill's paint (never the paint's index, which depends on the frame's paint table).
+/// Large grids are hashed on several threads; each tile's hash is the same either way.
+fn tile_hashes(e: &Encoded, map: &[u32], t: &PaintTable) -> Vec<u64> {
+    let paints = paint_hashes(e, map, t);
+    let n = e.ranges.len();
+    let threads = sr_vector::threads();
+    if threads <= 1 || e.cmds.len() + e.pieces.len() < 4096 {
+        return (0..n).map(|i| tile_hash(e, &paints, i)).collect();
+    }
+    let chunk = n.div_ceil(threads).max(1);
+    let mut out = vec![0u64; n];
+    std::thread::scope(|s| {
+        for (k, part) in out.chunks_mut(chunk).enumerate() {
+            let paints = &paints;
+            s.spawn(move || {
+                for (j, h) in part.iter_mut().enumerate() {
+                    *h = tile_hash(e, paints, k * chunk + j);
+                }
+            });
+        }
+    });
+    out
 }
 
 /// An sRGB-encoded straight colour into the stored working representation.
@@ -268,7 +354,14 @@ impl RasterJob {
             tiles: e.tiles,
             solid_fills,
             format: target.tex.format(),
-            hashes: if track { tile_hashes(&e, &map, t) } else { Vec::new() },
+            hashes: if track {
+                let t0 = std::time::Instant::now();
+                let h = tile_hashes(&e, &map, t);
+                eprintln!("HASHNS {} {} {}", t0.elapsed().as_nanos(), e.pieces.len(), e.cmds.len());
+                h
+            } else {
+                Vec::new()
+            },
         };
         let changed: Option<Vec<u32>> = prev.filter(|p| track && p.comparable(&state)).map(|p| {
             let same = |i: &usize| p.hashes[*i] == state.hashes[*i];
@@ -496,6 +589,93 @@ impl Raster {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hash_words(words: &[u64]) -> u64 {
+        let mut h = TileHasher::default();
+        for &w in words {
+            h.word(w);
+        }
+        h.finish()
+    }
+
+    #[test]
+    fn the_tile_hasher_tells_every_bit_and_every_position_apart() {
+        let base: Vec<u64> = (0..12u64).map(|i| i.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x1234).collect();
+        let reference = hash_words(&base);
+        assert_eq!(reference, hash_words(&base), "deterministic");
+        let mut seen = std::collections::HashSet::from([reference]);
+        for i in 0..base.len() {
+            for bit in 0..64 {
+                let mut w = base.clone();
+                w[i] ^= 1 << bit;
+                assert!(seen.insert(hash_words(&w)), "word {i} bit {bit} collides");
+            }
+        }
+        for i in 0..base.len() - 1 {
+            let mut w = base.clone();
+            w.swap(i, i + 1);
+            assert!(seen.insert(hash_words(&w)), "swapping words {i} and {} collides", i + 1);
+        }
+        // lengths: a prefix, zero padding and the empty input are all different
+        assert!(seen.insert(hash_words(&base[..11])));
+        assert!(seen.insert(hash_words(&[base.as_slice(), &[0]].concat())));
+        assert!(seen.insert(hash_words(&[])));
+        assert!(seen.insert(hash_words(&[0])));
+        assert!(seen.insert(hash_words(&[0, 0])));
+    }
+
+    #[test]
+    fn tile_hashes_do_not_depend_on_the_hasher_state_of_other_tiles() {
+        let mut e = Encoded { size: [32, 16], tiles: [2, 1], ranges: vec![[0, 1], [1, 1]], ..Default::default() };
+        e.cmds = (0..2)
+            .map(|i| sr_vector::tile::GpuCmd {
+                kind: sr_vector::tile::kind::FILL,
+                backdrop: u32::MAX,
+                backdrop_val: 1.0,
+                paint: i,
+                param: 1.0,
+                ..Default::default()
+            })
+            .collect();
+        e.paints = vec![Paint::Solid { rgba: [1.0, 0.0, 0.0, 1.0], srgb: true }; 2];
+        let mut table = PaintTable::default();
+        let map: Vec<u32> = e.paints.iter().map(|p| resolve_paint(&mut table, &working_srgb(), p)).collect();
+        let h = tile_hashes(&e, &map, &table);
+        assert_eq!(h[0], h[1], "two tiles with the same inputs hash alike");
+        assert_ne!(h[0], TileHasher::default().finish());
+    }
+
+    #[test]
+    fn hashing_tiles_on_several_threads_gives_each_tile_its_own_serial_hash() {
+        let n = 5000u32;
+        let mut e = Encoded { size: [16 * n, 16], tiles: [n, 1], ..Default::default() };
+        e.ranges = (0..n).map(|i| [i, 1]).collect();
+        e.cmds = (0..n)
+            .map(|i| sr_vector::tile::GpuCmd {
+                kind: sr_vector::tile::kind::FILL,
+                backdrop: u32::MAX,
+                backdrop_val: (i % 7) as f32 / 7.0,
+                paint: i % 3,
+                param: 1.0,
+                ..Default::default()
+            })
+            .collect();
+        e.paints = (0..3).map(|i| Paint::Solid { rgba: [i as f64 / 3.0, 0.5, 0.5, 1.0], srgb: true }).collect();
+        let mut table = PaintTable::default();
+        let map: Vec<u32> = e.paints.iter().map(|p| resolve_paint(&mut table, &working_srgb(), p)).collect();
+        let all = tile_hashes(&e, &map, &table);
+        assert_eq!(all.len(), n as usize);
+        let paints = paint_hashes(&e, &map, &table);
+        for (i, h) in all.iter().enumerate() {
+            assert_eq!(*h, tile_hash(&e, &paints, i), "tile {i}");
+        }
+        assert_ne!(all[0], all[1], "different coverage");
+        assert_eq!(all[0], all[21], "the same inputs");
+    }
+
+    fn working_srgb() -> Working {
+        Working { space: sr_model::model::ColorSpace::Srgb, linear: false }
+    }
 
     #[test]
     fn solid_fill_specialization_matches_general_rasterization_exactly() {

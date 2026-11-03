@@ -3769,6 +3769,7 @@ impl Renderer {
             }
             let job = RasterJob::new_cached(enc, target.clone(), &mut plan.paints, &self.working, prev.as_ref());
             let state = job.tile_state().clone();
+            eprintln!("TILESTAT {} {} {} {}", key, job.is_partial(), job.dispatched_tiles(), size[0].div_ceil(16) * size[1].div_ceil(16));
             plan.rasters.push(job);
             self.subtree.insert(key, (hash, target.clone(), Some(state)));
             (target, None)
