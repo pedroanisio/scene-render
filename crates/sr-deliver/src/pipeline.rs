@@ -11,6 +11,13 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::sync_channel;
 use std::time::Instant;
 
+/// TEMPORARY profiling probe (never committed).
+pub fn prof(label: impl std::fmt::Display) {
+    static T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let t0 = T0.get_or_init(Instant::now);
+    eprintln!("[prof] {:8.3} {:?} {}", t0.elapsed().as_secs_f64(), std::thread::current().id(), label);
+}
+
 use sr_eval::{EvalOptions, Evaluator};
 use sr_gpu::output::{OutputColor, OutputStage};
 use sr_gpu::{Gpu, Renderer};
@@ -690,9 +697,15 @@ impl Feeder {
         let complete = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let all_sent = complete.clone();
         let handle = std::thread::Builder::new().name("sr-encode".into()).spawn(move || {
+            let mut wrote = 0.0f64;
+            let mut count = 0u32;
             for f in rx {
+                let t = Instant::now();
                 enc.write(&f)?;
+                wrote += t.elapsed().as_secs_f64();
+                count += 1;
             }
+            prof(format!("encode thread: {count} frames, write_all total {wrote:.3} s"));
             if !all_sent.load(Relaxed) {
                 // the render failed: dropping the encoder stops FFmpeg and removes the partial file
                 return Err(sr_media::MediaError::Invalid("the encode was abandoned".into()));
@@ -843,6 +856,7 @@ fn run_delivery(
     report: &mut Report,
 ) -> Result<(), DeliverError> {
     let started = Instant::now();
+    prof("run_delivery start");
     let codec = Codec::parse(output.codec.as_str())
         .ok_or_else(|| DeliverError::Invalid(format!("unknown codec {}", output.codec.as_str())))?;
     // Choosing the encoder probes FFmpeg with a test encode for each hardware encoder in turn, which takes a good part of
@@ -896,6 +910,7 @@ fn run_delivery(
     let t_audio = Instant::now();
     let mut scene_audio: Option<SceneAudio> = audio::mix_scene(&ev0, fps, representation.as_deref())?;
     report.audio_seconds = t_audio.elapsed().as_secs_f64();
+    prof("mix_scene done");
     let ev = match &scene_audio {
         Some(sa) => {
             eo.analysis = sa.analysis.clone();
@@ -904,6 +919,7 @@ fn run_delivery(
         None => ev0,
     };
     let p = ev.program();
+    prof("second evaluator built");
     report.evaluation_warnings.extend_from_slice(ev.warnings());
     if let Some(parent) = report.path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1089,6 +1105,7 @@ fn run_delivery(
         report.audio_languages.push(main_language.clone());
         report.audio_languages.extend(description_language.iter().cloned());
     }
+    prof("before audio file / ceiling");
     let mut audio_file = None;
     if let (true, Some(sa)) = (wants_audio, &scene_audio) {
         // Plain programmes start at their mapped composition time; the scene and
@@ -1132,6 +1149,7 @@ fn run_delivery(
             audio_file = Some(f);
         }
     }
+    prof("audio file ready");
     if codec.is_audio_only() {
         if report.files.is_empty() {
             let Some(f) = audio_file.clone() else {
@@ -1190,7 +1208,9 @@ fn run_delivery(
         } else {
             OutputColor::new(output.color_space, output.transfer, output.color_range.as_str() == "full" || rgb_image)
         };
+        prof("gpu handle ready");
         let mut renderer = Renderer::new(gpu.clone(), p);
+        prof("main Renderer::new done");
         renderer.quality = opts.quality;
         renderer.path_noise = opts.path_noise;
         renderer.representation = representation.clone();
@@ -1256,6 +1276,7 @@ fn run_delivery(
             // frame grid. Only the timestamps actually exported belong in this audit.
             sr_gpu::safe_audit::audit(&ev, &times)
         };
+        prof("safe audit done");
         let mut diagnostics: Vec<_> = safe.iter().map(|t| t.diagnostic(p)).collect();
         report.findings.extend(safe.iter().zip(&diagnostics).map(|(t, d)| {
             crate::render_report::Finding::node(
@@ -1278,6 +1299,7 @@ fn run_delivery(
             opts.quality,
             representation.as_deref(),
         )?;
+        prof("main overlay built");
         if let Some(layer) = &mut overlay {
             layer.set_audio(overlay_audio.clone());
             let output_times: Vec<f64> = match &frame_times {
@@ -1404,6 +1426,7 @@ fn run_delivery(
         let fit = output.max_file_size;
         let checks = Checks::of(p);
         let t_video = Instant::now();
+        prof("t_video start");
         report.segments = 1;
         // llvmpipe already spreads one device over every core, so automatic parallelism would only add
         // devices competing for them; an explicit worker count is still honoured
@@ -1521,8 +1544,15 @@ fn run_delivery(
             let worker_gpus: Vec<_> = if workers == 1 {
                 vec![gpu.clone()]
             } else {
-                (0..workers).map(|_| gpu.open_like()).collect::<Result<_, _>>()?
+                (0..workers)
+                    .map(|_| {
+                        let g = gpu.open_like();
+                        prof("worker device opened");
+                        g
+                    })
+                    .collect::<Result<_, _>>()?
             };
+            prof("worker devices ready");
             // Fixed round-robin chunk ownership lets the coordinator drain each worker in time
             // order. Two queued batches per worker plus one being rendered: at most 384 flash
             // grids (about 11.4 MiB) per worker, independent of output duration.
@@ -1563,7 +1593,9 @@ fn run_delivery(
                         );
                         sc.spawn(move || -> Result<(Report, String), DeliverError> {
                             let gpu = gpu.clone();
+                            prof("worker thread start");
                             let mut renderer = Renderer::new(gpu.clone(), p);
+                            prof("worker Renderer::new done");
                             renderer.quality = opts.quality;
                             renderer.path_noise = opts.path_noise;
                             renderer.representation = representation.clone();
@@ -1601,6 +1633,7 @@ fn run_delivery(
                                 join_tex: None,
                                 contrasts: ContrastPrefetch::default(),
                             };
+                            prof("worker ready (overlay built)");
                             let (mut part, mut encoder) = (Report::default(), String::new());
                             let mut seen = Streaming::new(tx, observe);
                             for i in (worker_index..chunks).step_by(workers) {
@@ -1608,7 +1641,9 @@ fn run_delivery(
                                     return Ok((part, encoder));
                                 }
                                 let chunk = (|| {
+                                    prof(format!("chunk {i} Feeder::start"));
                                     let mut feeder = Feeder::start(&part_spec(i))?;
+                                    prof(format!("chunk {i} feeder started"));
                                     worker.stage.seek((spec.start_number + bounds[i] as u64) as u32);
                                     worker.segments = map
                                         .zip(all_frames.as_ref())
@@ -1618,7 +1653,10 @@ fn run_delivery(
                                         feeder.send(b)
                                     })?;
                                     seen.flush().map_err(DeliverError::Invalid)?;
-                                    feeder.finish()
+                                    prof(format!("chunk {i} rendered, finishing"));
+                                    let r = feeder.finish();
+                                    prof(format!("chunk {i} finished"));
+                                    r
                                 })();
                                 match chunk {
                                     Ok(e) => encoder = e,
@@ -1694,8 +1732,11 @@ fn run_delivery(
             // every chunk was rendered, so every chunk has been judged; text the workers could not
             // measure in place is measured by this thread's renderer
             progress(n, n);
+            prof("all workers joined");
             spec.join(&parts, &tmp.join("segments.txt"))?;
+            prof("segments joined");
             video.judge(judge, &times, report)?;
+            prof("judge done");
             report.frames = n;
             report.passes = 1;
             report.segments = workers as u32;
@@ -1843,6 +1884,7 @@ fn run_delivery(
         report.uploads = crate::destinations::deliver_all(&dests, &report.files, output, &base)?;
     }
     report.seconds = started.elapsed().as_secs_f64();
+    prof("run_delivery end");
     Ok(())
 }
 
