@@ -328,14 +328,19 @@ impl OutputStage {
         });
         let blur_pipe = {
             let _creation = crate::gpu::creation_lock();
-            d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            let prof_t0 = std::time::Instant::now();
+            let p = d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("output blur"),
                 layout: Some(&blur_layout),
                 module: &blur_module,
                 entry_point: Some("cs_blur"),
                 compilation_options: Default::default(),
                 cache: None,
-            })
+            });
+            if std::env::var_os("SR_PROF_PIPE").is_some() {
+                eprintln!("PIPE output blur {:.1} ms", prof_t0.elapsed().as_secs_f64() * 1e3);
+            }
+            p
         };
         let blur_dirs = [[0i32, 0, 0, 0], [1, 0, 0, 0], [0, 1, 0, 0]].map(|v| {
             let b = d.create_buffer(&wgpu::BufferDescriptor {
@@ -371,14 +376,19 @@ impl OutputStage {
         });
         let place_pipe = {
             let _creation = crate::gpu::creation_lock();
-            d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            let prof_t0 = std::time::Instant::now();
+            let p = d.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("place"),
                 layout: Some(&place_layout),
                 module: &module,
                 entry_point: Some("cs_place"),
                 compilation_options: Default::default(),
                 cache: None,
-            })
+            });
+            if std::env::var_os("SR_PROF_PIPE").is_some() {
+                eprintln!("PIPE output place {:.1} ms", prof_t0.elapsed().as_secs_f64() * 1e3);
+            }
+            p
         };
         let samp = d.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
@@ -418,14 +428,19 @@ impl OutputStage {
     fn compile_pack(&self, blocks: bool, constants: &[(&str, f64)]) -> wgpu::ComputePipeline {
         {
             let _creation = crate::gpu::creation_lock();
-            self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            let prof_t0 = std::time::Instant::now();
+            let p = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("pack output"),
                 layout: Some(&self.pack_layout),
                 module: &self.pack_module,
                 entry_point: Some(if blocks { "cs_pack_nv12_blocks" } else { "cs_pack" }),
                 compilation_options: wgpu::PipelineCompilationOptions { constants, ..Default::default() },
                 cache: None,
-            })
+            });
+            if std::env::var_os("SR_PROF_PIPE").is_some() {
+                eprintln!("PIPE output pack blocks={blocks} {:.1} ms", prof_t0.elapsed().as_secs_f64() * 1e3);
+            }
+            p
         }
     }
 
@@ -594,7 +609,12 @@ impl OutputStage {
                 pass.dispatch_workgroups(x, y, 1);
             }
             enc.copy_buffer_to_buffer(storage, 0, staging, 0, *n as u64 * 4);
+            let prof_t0 = std::time::Instant::now();
             submitted = Some(self.queue.submit([enc.finish()]));
+            if std::env::var_os("SR_PROF_SPLIT").is_some() {
+                let _ = d.poll(wgpu::PollType::wait_indefinitely());
+                eprintln!("PROF pack_ms {:.3}", prof_t0.elapsed().as_secs_f64() * 1e3);
+            }
             let r = ready.clone();
             staging.slice(..).map_async(wgpu::MapMode::Read, move |_| {
                 r.fetch_add(1, std::sync::atomic::Ordering::Release);
