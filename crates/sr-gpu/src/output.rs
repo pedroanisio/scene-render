@@ -611,6 +611,11 @@ impl OutputStage {
             submitted = Some(self.queue.submit([enc.finish()]));
             ready.push(crate::gpu::begin_map_read(staging.slice(..)));
         }
+        if std::env::var_os("SR_PROF_STAGES").is_some() {
+            let t = std::time::Instant::now();
+            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+            eprintln!("STAGE pack {:.3}", t.elapsed().as_secs_f64() * 1000.0);
+        }
         Pending { slot, buffers: staging, bytes, submitted: submitted.expect("a frame has a piece"), ready }
     }
 
