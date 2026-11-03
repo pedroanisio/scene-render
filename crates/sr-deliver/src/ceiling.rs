@@ -78,9 +78,11 @@ fn probe_stream(tmp: &Path) -> PathBuf {
 /// The decoded true peak of `mix` after one AAC encode at `bitrate`, dBTP. The stream it measured stays at
 /// [`probe_stream`].
 fn decoded_true_peak(mix: &Planar, rate: u32, layout: Layout, bitrate: u64, tmp: &Path) -> Result<f64, DeliverError> {
+    let tc = std::time::Instant::now();
     let wav = tmp.join("ceiling-probe.wav");
     let coded = probe_stream(tmp);
     sr_audio::wav::write(&wav, mix, rate, 32, layout, false).map_err(|e| DeliverError::AudioCeiling(e.to_string()))?;
+    eprintln!("PROBE wavwrite {:?}", tc.elapsed());
     let mut cmd = Command::new(sr_media::ffmpeg());
     cmd.args(["-nostdin", "-v", "error", "-y", "-i"]).arg(&wav).args(["-c:a", "aac"]);
     cmd.args(sr_media::encode::compressed_audio_args("aac", bitrate)).arg(&coded);
@@ -95,9 +97,13 @@ fn decoded_true_peak(mix: &Planar, rate: u32, layout: Layout, bitrate: u64, tmp:
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
+    eprintln!("PROBE aac {:?}", tc.elapsed());
     let decoded = sr_media::decode_audio(&coded, 0, rate)?;
+    eprintln!("PROBE aacdec {:?}", tc.elapsed());
     let _ = std::fs::remove_file(&wav);
-    Ok(loudness::true_peak(&planar(&decoded), rate as f64))
+    let r = loudness::true_peak(&planar(&decoded), rate as f64);
+    eprintln!("PROBE tp {:?}", tc.elapsed());
+    Ok(r)
 }
 
 /// Holds `ceiling` (dBTP) for the AAC stream of `mix`: measures the decoded true peak of one encode; while it is over,
