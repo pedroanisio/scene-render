@@ -458,6 +458,23 @@ pub fn prepare_environment() -> Vec<(String, String)> {
     set
 }
 
+/// An open of the GPU begun by [`Gpu::start`].
+pub struct GpuStart {
+    needs_3d: std::sync::mpsc::Sender<bool>,
+    thread: std::thread::JoinHandle<Result<Gpu, GpuError>>,
+}
+
+impl GpuStart {
+    /// Chooses the adapter for a document that does or does not need the 3D pass (see [`choose_adapter_for`]) and opens it.
+    pub fn finish(self, needs_3d: bool) -> Result<Gpu, GpuError> {
+        let _ = self.needs_3d.send(needs_3d);
+        match self.thread.join() {
+            Ok(r) => r,
+            Err(p) => std::panic::resume_unwind(p),
+        }
+    }
+}
+
 /// A device and queue shared by renderers.
 #[derive(Debug, Clone)]
 pub struct Gpu {
@@ -566,7 +583,33 @@ impl Gpu {
     /// Opens the adapter `opts` selects for a document that does or does not need the 3D pass.
     pub fn with_options_for(opts: &GpuOptions, needs_3d: bool) -> Result<Gpu, GpuError> {
         let creation = creation_lock();
-        let mut found = enumerate(opts.backends, &creation);
+        let found = enumerate(opts.backends, &creation);
+        Gpu::choose_and_open(creation, found, opts, needs_3d)
+    }
+
+    /// Lists the adapters `opts` allows on a thread and returns at once, so that the listing (an instance that scans the
+    /// Vulkan drivers and loads EGL) runs while the caller reads its document. [`GpuStart::finish`] then chooses among them
+    /// as [`Gpu::with_options_for`] does and opens the device.
+    pub fn start(opts: &GpuOptions) -> GpuStart {
+        let opts = opts.clone();
+        let (needs_3d, wanted) = std::sync::mpsc::channel::<bool>();
+        let thread = std::thread::spawn(move || {
+            let creation = creation_lock();
+            let found = enumerate(opts.backends, &creation);
+            // a start dropped unfinished: the adapters go under the lock, and the lock is released
+            let needs_3d = wanted.recv().map_err(|_| GpuError::NoAdapter("the open was not finished".into()))?;
+            Gpu::choose_and_open(creation, found, &opts, needs_3d)
+        });
+        GpuStart { needs_3d, thread }
+    }
+
+    /// Chooses among `found` and opens the adapter. `creation` is the lock held since `found` was listed.
+    fn choose_and_open(
+        creation: std::sync::MutexGuard<'static, ()>,
+        mut found: Vec<wgpu::Adapter>,
+        opts: &GpuOptions,
+        needs_3d: bool,
+    ) -> Result<Gpu, GpuError> {
         let infos = found.iter().map(|a| a.get_info()).collect::<Vec<_>>();
         let i = choose_adapter_for(&infos, opts.adapter.as_deref(), needs_3d).map_err(|e| match e {
             GpuError::NoAdapter(_) => GpuError::NoAdapter(format!("none on {:?}", opts.backends)),

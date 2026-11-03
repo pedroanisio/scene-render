@@ -1893,6 +1893,8 @@ fn encode(
     out: &mut Out,
 ) -> std::io::Result<u8> {
     use sr_deliver::render_report::{self, Finding, OutputInfo, ReportWriter};
+    // the adapters are listed while the document loads; the document says which one it needs
+    let opening = sr_gpu::Gpu::start(&sr_gpu::gpu::GpuOptions::from_env());
     let bytes = match sr_model::limits::read_capped(file, sr_model::limits::MAX_DOCUMENT_BYTES) {
         Ok(b) => b,
         Err(e) => return Ok(out.fail(ErrorKind::Io, format!("cannot read {}: {e}", file.display()))),
@@ -2029,7 +2031,7 @@ fn encode(
         .map(|v| v.contains(&true));
     let gpu = match needs_3d {
         Ok(needs_3d) => {
-            outputs.iter().any(|o| o.codec.as_str() != "audio-only").then(|| sr_gpu::Gpu::new_for(needs_3d)).transpose()
+            outputs.iter().any(|o| o.codec.as_str() != "audio-only").then(|| opening.finish(needs_3d)).transpose()
         }
         Err(e) => {
             let exit = out.fail(ErrorKind::Usage, e.to_string());
