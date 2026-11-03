@@ -1,0 +1,2 @@
+# the Dockerfile builds from SR_GIT at SR_REF, so the build context carries nothing
+*
