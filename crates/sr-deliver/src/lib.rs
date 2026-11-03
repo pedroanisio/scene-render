@@ -36,7 +36,8 @@ pub mod segment_audio;
 pub mod segments;
 
 pub use pipeline::{
-    adhoc_output, deliver, deliver_reporting, output_uses_3d, Options, Parallel, RenderAdapter, Report,
+    adhoc_output, deliver, deliver_reporting, output_uses_3d, prepare_encoder, Options, Parallel, RenderAdapter,
+    Report,
 };
 
 /// Delivery errors.
