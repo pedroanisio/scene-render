@@ -877,19 +877,30 @@ impl Renderer {
         Some((p, maps))
     }
 
-    /// The mesh of a clay object, re-extracted when its blobs, finish or boil frame change.
+    /// The mesh of a clay object, re-extracted when its blobs, finish or boil frame change: the one the evaluator
+    /// attached when there is one ([`sr_eval::solid::attach_clay`]), otherwise extracted here.
     fn clay_mesh(&mut self, n: &sr_eval::FrameNode) -> Option<Arc<crate::three::MeshGpu>> {
-        let sr_eval::solid::Clay { blobs, finish, resolution: res } = sr_eval::solid::clay(n);
-        let boil_frame = if finish.boil > 0.0 { (n.local_time * finish.boil as f64).floor() as i64 } else { 0 };
-        let key = format!("clay|{}|{blobs:?}|{finish:?}|{res}|{boil_frame}", n.id);
+        let (spec, key) = match &n.clay_mesh {
+            Some(made) => (None, made.key),
+            None => {
+                let spec = sr_eval::solid::clay(n);
+                let key = sr_eval::solid::clay_key(&spec, n);
+                (Some(spec), key)
+            }
+        };
+        let key = format!("clay|{}|{key:016x}", n.id);
         if let Some(m) = self.three_engine().meshes.get(&key) {
             return Some(m.clone());
         }
-        let prim = sr_3d::clay::mesh(&blobs, &finish, res, n.local_time);
-        if prim.indices.is_empty() {
+        let surface = match (&n.clay_mesh, spec) {
+            (Some(made), _) => made.mesh.clone(),
+            (None, Some(spec)) => sr_eval::solid::extract_clay(&spec, n),
+            (None, None) => unreachable!("a key without an attached mesh comes with its inputs"),
+        };
+        if surface.1.is_empty() {
             return None;
         }
-        let m = self.three_engine().upload_mesh(&prim.vertices, &prim.indices);
+        let m = self.three_engine().upload_mesh_shared(surface);
         if let Some(old) = self.clay_keys.insert(n.id.clone(), key.clone()) {
             self.three_engine().meshes.remove(&old);
         }

@@ -164,6 +164,21 @@ pub fn mesh(blobs: &[Blob], finish: &Finish, resolution: u32, t: f64) -> Primiti
     mesh_with_budget(blobs, finish, resolution, t, usize::MAX).unwrap_or_default()
 }
 
+/// The key of what [`mesh`] extracts from: the blobs, the finish, the resolution and the boil step that `t` falls in
+/// (the only way the surface depends on time). Equal inputs give equal keys.
+pub fn key(blobs: &[Blob], finish: &Finish, resolution: u32, t: f64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let boil = if finish.boil > 0.0 { (t * finish.boil as f64).floor() as i64 } else { 0 };
+    (resolution, boil, finish.seed, finish.amount.to_bits(), finish.boil.to_bits(), blobs.len()).hash(&mut h);
+    for b in blobs {
+        let floats = [b.center.to_array(), b.size.to_array(), [b.radius, b.length, b.blend]];
+        (b.shape as u8, b.subtract, b.rotation.to_array().map(f32::to_bits)).hash(&mut h);
+        floats.map(|v| v.map(f32::to_bits)).hash(&mut h);
+    }
+    h.finish()
+}
+
 /// Extract the same surface with conservative grid/output admission before
 /// allocation. Caller-owned blobs are outside this component allowance.
 pub fn mesh_with_budget(
@@ -674,5 +689,28 @@ mod tests {
         let r: Vec<f32> = a.vertices.iter().map(|v| Vec3::from(v.pos).length()).collect();
         let (lo, hi) = r.iter().fold((f32::MAX, f32::MIN), |(l, h), &x| (l.min(x), h.max(x)));
         assert!(hi - lo > 1.0, "{lo}..{hi}");
+    }
+
+    #[test]
+    fn the_key_follows_every_input_and_the_boil_step_only() {
+        let clay = Finish { amount: 0.6, seed: 9, boil: 12.0 };
+        let blobs = [sphere(0.0, 40.0, 0.0), sphere(30.0, 20.0, 5.0)];
+        let k = key(&blobs, &clay, 64, 0.0);
+        // the same boil step (1/12 s) is the same surface, so the same key
+        assert_eq!(k, key(&blobs, &clay, 64, 0.04));
+        assert_ne!(k, key(&blobs, &clay, 64, 0.1));
+        assert_ne!(k, key(&blobs, &clay, 65, 0.0));
+        assert_ne!(k, key(&blobs, &Finish { seed: 10, ..clay }, 64, 0.0));
+        assert_ne!(k, key(&blobs, &Finish { amount: 0.5, ..clay }, 64, 0.0));
+        assert_ne!(k, key(&blobs[..1], &clay, 64, 0.0));
+        let mut moved = blobs;
+        moved[1].center.y += 1e-3;
+        assert_ne!(k, key(&moved, &clay, 64, 0.0));
+        let mut cut = blobs;
+        cut[1].subtract = true;
+        assert_ne!(k, key(&cut, &clay, 64, 0.0));
+        // without boil time does not enter
+        let still = Finish { boil: 0.0, ..clay };
+        assert_eq!(key(&blobs, &still, 64, 0.0), key(&blobs, &still, 64, 7.5));
     }
 }

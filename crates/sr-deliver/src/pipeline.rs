@@ -449,10 +449,16 @@ impl Video<'_> {
         // A helper thread evaluates the next frame while this one renders: the channel holds one graph and the
         // helper works on the one after it, two frames ahead at most. A simulated document gives each frame the
         // same graph whether or not the frame after it, or a sub-frame sample around it, was evaluated first
-        // (sr-eval's tests/sim_order.rs), so simulated documents evaluate ahead as well.
+        // (sr-eval's tests/sim_order.rs), so simulated documents evaluate ahead as well. The helper also extracts the
+        // frame's clay surfaces, so that work overlaps the render of the frame before.
+        let clay = std::sync::Mutex::new(sr_eval::solid::ClayCache::default());
         evaluated(
             times,
-            |t| ev.evaluate(t),
+            |t| {
+                let mut g = ev.evaluate(t);
+                sr_eval::solid::attach_clay(&mut g, &mut clay.lock().unwrap_or_else(|e| e.into_inner()));
+                g
+            },
             |next| {
                 for (k, &t) in times.iter().enumerate() {
                     let t0 = Instant::now();
