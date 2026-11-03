@@ -68,3 +68,7 @@ This release adds seven drafts of sr-core to documents of version 1.8: fields, t
 The Linux archive contains the executable, source commit identifier, capability manifest, README, changelog, disclaimer, licence, notice, commercial-licence page and third-party notices. Its executable comes from the successful CI run for the release commit and is checksum-verified and smoke-tested before packaging.
 
 Verify the download with `sha256sum -c scene-render-v0.9.0-linux-x86_64.tar.gz.sha256`, extract it, then run `./scene-render --help`.
+
+## Unreleased
+
+- A `Dockerfile` compiles `scene-render` from a git reference (`--build-arg SR_REF=v0.9.0`; a tag, a branch or a commit) rather than the build context, so it builds every version, tags older than the file included. The image is the release build (the `pdf` feature) on Ubuntu 24.04 with the CI's runtime: Mesa lavapipe and its EGL and GL drivers, FFmpeg, the golden fonts, `curl` and `heif-convert`. Building it runs the release smoke test, a `v*` tag that differs from the workspace version fails it, and any uid can run it, with Mesa's shader cache in `/cache`. Images are published by hand on Docker Hub as `pedroanisio/scene-render`, starting with `0.9.0` (also `latest`, digest `sha256:87f196b5e5ce4630403840f33db1709949e06dfa98923d218b81e3da5e2dfe25`).
