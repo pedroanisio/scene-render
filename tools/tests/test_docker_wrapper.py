@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
@@ -20,19 +21,32 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = ROOT / "tools" / "docker" / "scene-render"
 # what the wrapper, its relay and the fakes run; PATH holds only these, so no host GPU tool is found by accident
-COMMANDS = ["bash", "sh", "python3", "cat", "dirname", "id", "mkdir", "mkfifo", "mktemp", "rm", "timeout"]
+COMMANDS = ["bash", "sh", "python3", "cat", "dirname", "id", "mkdir", "mkfifo", "mktemp", "rm", "setsid", "sleep",
+            "timeout"]
 
+# The container runs in a session of its own, as one owned by the daemon does, so it outlives a killed client;
+# `docker kill NAME` ends it, and the client hands HUP, INT and TERM to it as --sig-proxy does.
 FAKE_DOCKER = r'''#!/usr/bin/env python3
-import json, os, sys
+import json, os, signal, subprocess, sys
 args = sys.argv[1:]
 log = os.environ["FAKE_DOCKER_LOG"]
+state = os.environ["FAKE_DOCKER_STATE"]
+if args[0] == "kill":
+    with open(log + ".kill", "a") as f:
+        f.write(args[1] + "\n")
+    try:
+        os.kill(int(open(os.path.join(state, args[1])).read()), signal.SIGKILL)
+    except (FileNotFoundError, ProcessLookupError):
+        sys.exit(1)
+    sys.exit(0)
 with open(log, "w") as f:
     json.dump(args, f)
 assert args[0] == "run", args
+open(os.environ["FAKE_ENGINE_REPORT"] + ".client", "w").write(str(os.getpid()))
 env = {"PATH": os.environ["PATH"], "FAKE_ENGINE_REPORT": os.environ["FAKE_ENGINE_REPORT"]}
-cwd = None
+cwd = name = None
 i = 1
-valued = {"--user", "-w", "-v", "--gpus", "-e"}
+valued = {"--user", "-w", "-v", "--gpus", "-e", "--name"}
 while args[i].startswith("-"):
     opt = args[i]
     if opt in valued:
@@ -40,21 +54,39 @@ while args[i].startswith("-"):
         i += 2
         if opt == "-w":
             cwd = value
+        elif opt == "--name":
+            name = value
         elif opt == "-e":
-            name, eq, val = value.partition("=")
-            env[name] = val if eq else os.environ.get(name, "")
+            var, eq, val = value.partition("=")
+            env[var] = val if eq else os.environ.get(var, "")
     else:
         i += 1
 image, command = args[i], args[i + 1:]
 if command and command[0] == "exit":
     sys.exit(int(command[1]))
-os.chdir(cwd)
-os.execve(os.environ["FAKE_ENGINE"], ["scene-render", *command], env)
+container = subprocess.Popen(["scene-render", *command], executable=os.environ["FAKE_ENGINE"], env=env, cwd=cwd,
+                             start_new_session=True)
+open(os.path.join(state, name), "w").write(str(container.pid))
+for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(sig, lambda s, _: container.send_signal(s))
+status = container.wait()
+os.remove(os.path.join(state, name))
+sys.exit(status if status >= 0 else 128 - status)
 '''
 
 FAKE_ENGINE = r'''#!/usr/bin/env python3
 import json, os, signal, subprocess, sys, tempfile, time
-mode, name = sys.argv[1], sys.argv[2]
+mode = sys.argv[1]
+if mode == "stdin":
+    open(os.environ["FAKE_ENGINE_REPORT"], "w").write(sys.stdin.read())
+    sys.exit(0)
+if mode == "hold":
+    pid = os.environ["FAKE_ENGINE_REPORT"] + ".engine"
+    open(pid + ".new", "w").write(str(os.getpid()))
+    os.replace(pid + ".new", pid)
+    time.sleep(60)
+    sys.exit(0)
+name = sys.argv[2]
 command = os.environ["SR_PROVIDER_" + name.upper().replace("-", "_")].split()
 work = tempfile.mkdtemp(prefix="scene-render-resolve-")
 request = {"kind": "speech", "provider": name, "prompt": "hello", "output": os.path.join(work, "result.wav"),
@@ -120,15 +152,32 @@ class Fixture:
         self.home.mkdir()
         self.log = self.base / "docker.json"
         self.report = self.base / "report.json"
+        self.containers = self.base / "containers"
+        self.containers.mkdir()
 
-    def run(self, *args, env=None, path_dirs=()):
-        full = {"PATH": os.pathsep.join([*map(str, path_dirs), str(self.bin), str(self.commands)]),
-                "HOME": str(self.home), "FAKE_DOCKER_LOG": str(self.log), "FAKE_ENGINE": str(self.engine),
-                "FAKE_ENGINE_REPORT": str(self.report), "HOST_ONLY": "host", "TMPDIR": str(self.base),
-                "SCENE_RENDER_GPUS": "none", **(env or {})}
-        done = subprocess.run([str(WRAPPER), *args], cwd=self.project, env=full, capture_output=True, text=True,
-                              timeout=60)
-        return done
+    def env(self, env=None, path_dirs=()):
+        return {"PATH": os.pathsep.join([*map(str, path_dirs), str(self.bin), str(self.commands)]),
+                "HOME": str(self.home), "FAKE_DOCKER_LOG": str(self.log), "FAKE_DOCKER_STATE": str(self.containers),
+                "FAKE_ENGINE": str(self.engine), "FAKE_ENGINE_REPORT": str(self.report), "HOST_ONLY": "host",
+                "TMPDIR": str(self.base), "SCENE_RENDER_GPUS": "none", **(env or {})}
+
+    def run(self, *args, env=None, path_dirs=(), input=None):
+        return subprocess.run([str(WRAPPER), *args], cwd=self.project, env=self.env(env, path_dirs), input=input,
+                              capture_output=True, text=True, timeout=60)
+
+    def start(self, *args, env=None):
+        """The wrapper in a session of its own, once its container runs; returns it and the container's pid."""
+        wrapper = subprocess.Popen([str(WRAPPER), *args], cwd=self.project, env=self.env(env),
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        engine = Path(str(self.report) + ".engine")
+        deadline = time.monotonic() + 20
+        while not engine.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return wrapper, int(engine.read_text())
+
+    def kills(self):
+        log = Path(str(self.log) + ".kill")
+        return log.read_text().split() if log.exists() else []
 
     def argv(self):
         return json.loads(self.log.read_text())
@@ -203,6 +252,98 @@ class RelayTests(unittest.TestCase):
         self.assertEqual([p.name for p in self.f.base.glob("tmp.*")], [])
 
 
+class StopTests(unittest.TestCase):
+    """The container stops however the wrapper or its client ends, and no relay is left behind."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.f = Fixture(tmp.name)
+
+    def assertStopped(self, engine, server=None):
+        self.assertTrue(eventually(lambda: not alive(engine)), "the container still runs")
+        self.assertIn(options(self.f.argv(), "--name")[0], self.f.kills())
+        self.assertTrue(eventually(lambda: not list(self.f.base.glob("tmp.*"))), "the relay folder is left")
+        if server is not None:
+            self.assertFalse(alive(server))
+
+    def server(self):
+        return int(next(self.f.base.glob("tmp.*/server")).read_text())
+
+    def test_sigkill_of_the_wrapper_stops_the_container(self):
+        wrapper, engine = self.f.start("hold")
+        os.kill(wrapper.pid, signal.SIGKILL)
+        wrapper.wait()
+        self.assertStopped(engine)
+
+    def test_sigkill_of_the_wrapper_with_providers_stops_the_container_and_the_relay(self):
+        wrapper, engine = self.f.start("hold", env={"SR_PROVIDER_VOICE": "./voice.py"})
+        server = self.server()
+        os.kill(wrapper.pid, signal.SIGKILL)
+        wrapper.wait()
+        self.assertStopped(engine, server)
+
+    def test_sigkill_of_the_process_group_stops_the_container(self):
+        wrapper, engine = self.f.start("hold", env={"SR_PROVIDER_VOICE": "./voice.py"})
+        server = self.server()
+        os.killpg(wrapper.pid, signal.SIGKILL)
+        wrapper.wait()
+        self.assertStopped(engine, server)
+
+    def test_sigkill_of_the_client_stops_the_container(self):
+        wrapper, engine = self.f.start("hold")
+        os.kill(int(Path(str(self.f.report) + ".client").read_text()), signal.SIGKILL)
+        self.assertEqual(wrapper.wait(timeout=20), 128 + signal.SIGKILL)
+        self.assertStopped(engine)
+
+    def test_sigterm_reaches_the_container_and_its_status_is_the_wrapper_s(self):
+        for env in ({}, {"SR_PROVIDER_VOICE": "./voice.py"}):
+            with self.subTest(env=env):
+                wrapper, engine = self.f.start("hold", env=env)
+                os.kill(wrapper.pid, signal.SIGTERM)
+                self.assertEqual(wrapper.wait(timeout=20), 128 + signal.SIGTERM)
+                self.assertFalse(alive(engine))
+                self.assertEqual(list(self.f.base.glob("tmp.*")), [])
+                Path(str(self.f.report) + ".engine").unlink()
+
+    def test_a_container_that_exits_is_not_killed_and_leaves_no_watchdog(self):
+        done = self.f.run("stdin", input="a document on standard input")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.f.report.read_text(), "a document on standard input")
+        self.assertEqual(self.f.kills(), [])
+        name = options(self.f.argv(), "--name")[0]
+        self.assertTrue(eventually(lambda: not processes_mentioning(name)), "the watchdog is left")
+
+    def test_each_run_names_its_own_container(self):
+        self.f.run("stdin", input="")
+        first = options(self.f.argv(), "--name")
+        self.f.run("stdin", input="")
+        second = options(self.f.argv(), "--name")
+        self.assertRegex(first[0], r"^scene-render-\d+-\d+$")
+        self.assertEqual(len(first), 1)
+        self.assertNotEqual(first, second)
+
+
+def eventually(condition, seconds=10):
+    deadline = time.monotonic() + seconds
+    while not condition():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def processes_mentioning(text):
+    found = []
+    for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            if text.encode() in cmdline.read_bytes():
+                found.append(cmdline.parent.name)
+        except OSError:
+            pass
+    return found
+
+
 def alive(pid):
     try:
         os.kill(pid, 0)
@@ -224,6 +365,7 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         argv = self.f.argv()
         self.assertEqual(argv[:4], ["run", "--rm", "-i", "--init"])
+        self.assertEqual(len(options(argv, "--name")), 1)
         self.assertEqual(options(argv, "--user"), [f"{os.getuid()}:{os.getgid()}"])
         self.assertEqual(options(argv, "-w"), [str(self.f.project)])
         self.assertEqual(argv[-3:], ["pedroanisio/scene-render:0.9.0", "exit", "0"])

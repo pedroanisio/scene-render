@@ -117,47 +117,46 @@ case ${SCENE_RENDER_GPUS:-auto} in
     *) gpu_args=(--gpus "$SCENE_RENDER_GPUS" -e NVIDIA_DRIVER_CAPABILITIES=all) ;;
 esac
 
-docker_args=(run --rm -i --init --user "$(id -u):$(id -g)" -w "$PWD")
+# The container belongs to the Docker daemon, not to its client: a client killed with SIGKILL leaves it
+# running. It is named, so this script stops it when the client is killed, and the watchdog stops it when
+# this script is.
+name=scene-render-$$-$RANDOM
+docker_args=(run --rm -i --init --name "$name" --user "$(id -u):$(id -g)" -w "$PWD")
+relay= watchdog= docker_pid= signalled=
 
-if [[ ${#providers[@]} -eq 0 ]]; then
-    for dir in "${mounts[@]}"; do
-        docker_args+=(-v "$dir:$dir")
-    done
-    exec docker "${docker_args[@]}" -v "$cache/container:/cache" "${gpu_args[@]}" "${env_args[@]}" "$image" "$@"
-fi
-
-relay=$(cd "$(mktemp -d)" && pwd -P)
-cleanup() {
+stop_container() {
+    docker kill "$name" > /dev/null 2>&1 || true
+}
+clean_relay() {
     local file
+    [[ -n $relay ]] || return 0
     for file in "$relay"/req.*/pid "$relay"/req.*/answer "$relay"/server; do
         [[ -f $file ]] && kill "$(< "$file")" 2> /dev/null || true
     done
     rm -rf "$relay"
 }
-trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
-if [[ $relay =~ [[:space:]] ]]; then
-    echo "scene-render: the relay folder $relay has a space in it; set TMPDIR to a folder without one" >&2
-    exit 2
-fi
-mkdir "$relay/tmp"
-mkfifo "$relay/calls"
-cat > "$relay/relay" << 'EOF'
-# one provider call, answered on the host by tools/docker/scene-render
-set -eu
-dir=$(dirname "$0")
-req=$(mktemp -d "$dir/req.XXXXXX")
-cat > "$req/in"
-mkfifo "$req/done"
-echo "${req##*/} $1" > "$dir/calls"
-read -r status < "$req/done"
-cat "$req/out"
-cat "$req/err" >&2
-rm -rf "$req"
-exit "$status"
-EOF
+# waits for PID to end, however it ends, then cleans up after it
+watch_over() {
+    while kill -0 "$1" 2> /dev/null; do sleep 1; done
+    stop_container
+    clean_relay
+}
+finish() {
+    [[ -z $watchdog ]] || kill "$watchdog" 2> /dev/null || true
+    # a client that exited on its own took the container with it; a killed one did not
+    [[ -n $docker_pid && ${status:-128} -ge 128 ]] && stop_container
+    clean_relay
+}
+# the client hands the signal to the container (--sig-proxy) and exits with the container's status
+forward() {
+    signalled=1
+    [[ -n $docker_pid ]] || exit "$2"
+    kill -s "$1" "$docker_pid" 2> /dev/null || true
+}
+trap finish EXIT
+trap 'forward HUP 129' HUP
+trap 'forward INT 130' INT
+trap 'forward TERM 143' TERM
 
 answer() {
     local req=$relay/$1 command status=0
@@ -172,25 +171,66 @@ answer() {
     echo "$status" > "$req/done"
 }
 serve() {
-    local id name
+    local id provider
     # read-write, so the FIFO stays open between callers instead of ending at the first one's EOF
     exec 3<> "$relay/calls"
-    while read -r id name <&3; do
-        [[ $id =~ ^req\.[A-Za-z0-9]{6}$ && -d $relay/$id && -v providers[$name] ]] || continue
-        answer "$id" "$name" &
+    while read -r id provider <&3; do
+        [[ $id =~ ^req\.[A-Za-z0-9]{6}$ && -d $relay/$id && -v providers[$provider] ]] || continue
+        answer "$id" "$provider" &
     done
 }
-serve &
-echo "$!" > "$relay/server"
+start_relay() {
+    relay=$(cd "$(mktemp -d)" && pwd -P)
+    if [[ $relay =~ [[:space:]] ]]; then
+        echo "scene-render: the relay folder $relay has a space in it; set TMPDIR to a folder without one" >&2
+        exit 2
+    fi
+    mkdir "$relay/tmp"
+    mkfifo "$relay/calls"
+    cat > "$relay/relay" << 'EOF'
+# one provider call, answered on the host by tools/docker/scene-render
+set -eu
+dir=$(dirname "$0")
+req=$(mktemp -d "$dir/req.XXXXXX")
+cat > "$req/in"
+mkfifo "$req/done"
+echo "${req##*/} $1" > "$dir/calls"
+read -r status < "$req/done"
+cat "$req/out"
+cat "$req/err" >&2
+rm -rf "$req"
+exit "$status"
+EOF
+    serve &
+    echo "$!" > "$relay/server"
+    mount_dir "$relay"
+    docker_args+=(-e "TMPDIR=$relay/tmp")
+    for key in "${!providers[@]}"; do
+        docker_args+=(-e "SR_PROVIDER_$key=sh $relay/relay $key")
+    done
+}
 
-mount_dir "$relay"
+[[ ${#providers[@]} -eq 0 ]] || start_relay
 for dir in "${mounts[@]}"; do
     docker_args+=(-v "$dir:$dir")
 done
-docker_args+=(-v "$cache/container:/cache" -e "TMPDIR=$relay/tmp")
-for key in "${!providers[@]}"; do
-    docker_args+=(-e "SR_PROVIDER_$key=sh $relay/relay $key")
+docker_args+=(-v "$cache/container:/cache")
+
+# in a session of its own, so a signal to this script's process group does not reach it
+if command -v setsid > /dev/null; then
+    setsid "$BASH" -c "$(declare -p name relay); $(declare -f stop_container clean_relay watch_over); watch_over $$" \
+        < /dev/null > /dev/null 2>&1 &
+    watchdog=$!
+fi
+
+# an asynchronous command reads /dev/null unless told otherwise; the container reads this script's input
+docker "${docker_args[@]}" "${gpu_args[@]}" "${env_args[@]}" "$image" "$@" <&0 &
+docker_pid=$!
+# a forwarded signal interrupts the wait; wait again for the client to exit with the container's status
+while :; do
+    signalled=
+    status=0
+    wait "$docker_pid" || status=$?
+    [[ -n $signalled ]] || break
 done
-status=0
-docker "${docker_args[@]}" "${gpu_args[@]}" "${env_args[@]}" "$image" "$@" || status=$?
 exit "$status"

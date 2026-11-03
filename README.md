@@ -952,6 +952,18 @@ install -m 755 tools/docker/scene-render generated/bin/scene-render
 SR_PROVIDER_ELEVENLABS=".venv/bin/python -m my_provider" generated/bin/scene-render resolve film.scene.xml --allow-cloud
 ```
 
+**Files outside the mounted folders.** The script mounts only the folders it can see on the command line, and it does not read the document. The container cannot see a file that the document references outside them. That includes a sibling folder (`../fonts`), an absolute path into another project, an include from elsewhere, and a `file` delivery destination such as `../renders`. The engine then reports the file as missing (`A01 … does not exist`), or the write fails, where the host binary would have worked. Mount the folder that holds every project the documents reach, usually the workspace root, through `SCENE_RENDER_MOUNTS`. A project can keep that in a short launcher rather than a copy of the script:
+
+```sh
+#!/bin/sh
+# generated/bin/scene-render
+SCENE_RENDER_MOUNTS="$HOME/src/workspace${SCENE_RENDER_MOUNTS:+:$SCENE_RENDER_MOUNTS}"
+export SCENE_RENDER_MOUNTS
+exec /path/to/scene-render/tools/docker/scene-render "$@"
+```
+
+**Stopping.** The container belongs to the Docker daemon, not to the `docker` client, so a client killed with SIGKILL would leave it rendering. The script names each container `scene-render-<pid>-<n>`. It passes HUP, INT and TERM to the container and exits with the container's status. When the client is killed, the script stops the container itself. When the script is killed with SIGKILL, alone or with its whole process group, a watchdog in a session of its own notices within a second, then stops the container and removes the relay. Each call also starts a container. Starting the script and the container was measured at about 0.2 s per call without a GPU, against a few milliseconds for the binary, and `--gpus` adds the NVIDIA Container Toolkit's own setup on top. A test suite that calls the engine thousands of times is markedly slower in the container than with the host binary.
+
 ## CLI
 
 `scene-render validate FILE… [--format text|json] [--no-assets] [--base-dir DIR] [--deny-warnings] [--quiet]` prints rustc-style diagnostics with source excerpts, or one JSON document for scripts. Exit status is 0 for valid, 1 for invalid (or warnings under `--deny-warnings`), 2 for usage or I/O errors and for internal errors, which every command reports as one `internal error: MESSAGE at FILE:LINE` line (with `RUST_BACKTRACE` set, the standard panic report and backtrace follow). A diagnostic has one of three severities: `error`, `warning`, and `info` (SREP 18: valid, and no effect on the result, such as an attribute the element or curve does not read); information is shown, listed in the JSON, and counted apart ("N info"), and never counts toward `--deny-warnings` or `--strict`. Colour follows `--color`, `NO_COLOR` and terminal detection. `inspect` summarises the typed model or dumps it with `--json`; `explain` describes any code; `scene-render completions SHELL` prints the completion script of a shell.
