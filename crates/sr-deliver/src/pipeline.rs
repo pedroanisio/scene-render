@@ -1190,6 +1190,20 @@ fn start_encoder(
     Feeder::start(spec)
 }
 
+/// Starts choosing the encoder `output` will use, on a thread of its own, and returns that thread. Choosing probes
+/// FFmpeg with a test encode for each hardware encoder in turn, which takes about a second; a caller starts it before
+/// the work that does not need the answer (opening the adapter and device, the audio mix, the renderer's setup), and
+/// the encode later finds the answer waiting (sr_media keeps it, and a caller that asks while the probe runs waits for
+/// it rather than probing again). `None` for an output that opens no video encoder.
+pub fn prepare_encoder(
+    output: &m::Output,
+    opts: &Options,
+) -> Option<std::thread::JoinHandle<Result<String, sr_media::MediaError>>> {
+    let codec = Codec::parse(output.codec.as_str()).filter(|c| !c.is_audio_only())?;
+    let hardware = opts.hardware;
+    Some(std::thread::spawn(move || sr_media::encode::choose_encoder(codec, hardware)))
+}
+
 fn run_delivery(
     doc: &sr_model::Document,
     output: &m::Output,
@@ -1201,11 +1215,8 @@ fn run_delivery(
     let started = Instant::now();
     let codec = Codec::parse(output.codec.as_str())
         .ok_or_else(|| DeliverError::Invalid(format!("unknown codec {}", output.codec.as_str())))?;
-    // Choosing the encoder probes FFmpeg with a test encode for each hardware encoder in turn, which takes a good part of
-    // a second; it starts now, beside the audio mix and the renderer's setup, and the encode later finds the answer
-    // waiting (sr_media keeps it, and a caller that asks while the probe runs waits for it rather than probing again).
-    let hardware = opts.hardware;
-    std::thread::spawn(move || sr_media::encode::choose_encoder(codec, hardware));
+    // The CLI started the choice before it opened the device; starting it again joins that answer rather than probing.
+    prepare_encoder(output, opts);
     let base =
         opts.out_dir.clone().or_else(|| Some(doc.base_dir().to_path_buf())).unwrap_or_else(|| PathBuf::from("."));
     let representation = opts.representation.clone().or_else(|| output.representation.clone());
@@ -3325,6 +3336,16 @@ mod tests {
         }
         enc.finish().ok()?;
         Some((spec, inter))
+    }
+
+    #[test]
+    fn the_encoder_is_chosen_beside_the_caller_for_a_video_output_only() {
+        let opts = Options::default();
+        let prores = adhoc_output("a.mov", "prores").unwrap();
+        let chosen = prepare_encoder(&prores, &opts).expect("a video output has an encoder to choose");
+        assert_eq!(chosen.join().unwrap().unwrap(), "prores_ks");
+        let audio = adhoc_output("a.wav", "audio-only").unwrap();
+        assert!(prepare_encoder(&audio, &opts).is_none(), "an audio-only output opens no video encoder");
     }
 
     #[test]

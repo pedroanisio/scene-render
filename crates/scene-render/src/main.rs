@@ -2020,6 +2020,10 @@ fn encode(
         }
         return Ok(exit);
     }
+    // the encoder probe (a test encode per hardware encoder) runs while the adapter and device open
+    for o in &outputs {
+        sr_deliver::prepare_encoder(o, &opts);
+    }
     // the adapter is chosen from the document: one that cannot run the 3D pass is skipped when an output draws in 3D
     let needs_3d = outputs
         .iter()
