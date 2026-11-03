@@ -8,6 +8,7 @@ Versions up to v0.4.1 were released under the MIT License from github.com/pedroa
 ## Unreleased
 
 - A `Dockerfile` compiles `scene-render` from a git reference (`--build-arg SR_REF=v0.9.0`; a tag, a branch or a commit) rather than the build context, so it builds every version, tags older than the file included. The image is the release build (the `pdf` feature) on Ubuntu 24.04 with the CI's runtime: Mesa lavapipe and its EGL and GL drivers, FFmpeg, the golden fonts, `curl` and `heif-convert`. Building it runs the release smoke test, a `v*` tag that differs from the workspace version fails it, and any uid can run it, with Mesa's shader cache in `/cache`. Images are published by hand on Docker Hub as `pedroanisio/scene-render`, starting with `0.9.0` (also `latest`, digest `sha256:87f196b5e5ce4630403840f33db1709949e06dfa98923d218b81e3da5e2dfe25`).
+- `tools/docker/scene-render` runs the image in place of the host binary on Linux. `resolve` providers named by `SR_PROVIDER_<NAME>` or found on `PATH` as `scene-render-provider-<name>` stay on the host, answered through a FIFO relay, where a plain `docker run` failed with `cannot run …: No such file or directory`. Host folders are mounted at their own paths (the working directory, path arguments, `SR_*` paths, `SCENE_RENDER_MOUNTS` and the resolve store), the container runs as the caller, and on NVIDIA with the Container Toolkit it passes `--gpus all -e NVIDIA_DRIVER_CAPABILITIES=all`.
 
 ## v0.9.0 — 2026-10-27
 

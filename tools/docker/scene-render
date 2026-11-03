@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# scene-render run from its container image, in place of the host binary (Linux hosts).
+#
+#   SCENE_RENDER_IMAGE   the image (default pedroanisio/scene-render:0.9.0)
+#   SCENE_RENDER_GPUS    auto (default), none, or a value for `docker run --gpus`
+#   SCENE_RENDER_MOUNTS  more host folders to mount, separated by ':'
+#
+# Host folders are mounted at their own paths: the working directory, the folder of every
+# path argument and of every SR_* variable that names an absolute path, the resolve store
+# and SCENE_RENDER_MOUNTS, so a path means the same inside the container and outside it.
+#
+# Providers stay on the host. Each SR_PROVIDER_<NAME> and each scene-render-provider-<name>
+# on PATH becomes, in the container, a relay that hands the request to this script through a
+# FIFO; the script runs the host command in its own environment and working directory and
+# hands back its output and exit status. The engine's scratch folder (TMPDIR) is in the relay
+# folder, so the provider writes its result where the engine reads it.
+set -euo pipefail
+
+image=${SCENE_RENDER_IMAGE:-pedroanisio/scene-render:0.9.0}
+cache=${XDG_CACHE_HOME:-$HOME/.cache}/scene-render
+
+mounts=()
+# DIR at its own path, unless it is / or a mounted folder already holds it
+mount_dir() {
+    local dir m
+    [[ -d $1 ]] || return 0
+    dir=$(cd "$1" && pwd)
+    [[ $dir != / ]] || return 0
+    for m in "${mounts[@]}"; do
+        [[ $dir == "$m" || $dir == "$m"/* ]] && return 0
+    done
+    mounts+=("$dir")
+}
+# the folder a path names, or the folder that would hold it
+mount_path() {
+    if [[ -d $1 ]]; then
+        mount_dir "$1"
+    elif [[ $1 == */* ]]; then
+        mount_dir "${1%/*}"
+    fi
+}
+
+mount_dir "$PWD"
+for arg in "$@"; do
+    [[ $arg == -*=* ]] && arg=${arg#*=}
+    mount_path "$arg"
+done
+if [[ -n ${SCENE_RENDER_MOUNTS:-} ]]; then
+    IFS=: read -ra extra <<< "$SCENE_RENDER_MOUNTS"
+    for dir in "${extra[@]}"; do
+        mount_dir "$dir"
+    done
+fi
+
+env_args=()
+declare -A providers=()
+# PATH programs first, so SR_PROVIDER_<NAME> overrides them as it does in the engine
+IFS=: read -ra path_dirs <<< "${PATH:-}"
+for dir in "${path_dirs[@]}"; do
+    for program in "$dir"/scene-render-provider-*; do
+        [[ -f $program && -x $program ]] || continue
+        key=${program##*/scene-render-provider-}
+        key=${key^^}
+        key=${key//-/_}
+        [[ -v providers[$key] ]] || providers[$key]=$program
+    done
+done
+for name in $(compgen -e); do
+    case $name in
+        SR_PROVIDER_TIMEOUT) env_args+=(-e "$name") ;;
+        SR_PROVIDER_*)
+            # the engine splits the command on whitespace; one with nothing in it is unset
+            read -ra command <<< "${!name}"
+            [[ ${#command[@]} -gt 0 ]] && providers[${name#SR_PROVIDER_}]=${!name}
+            ;;
+        # the store is set below; the image has its own FFmpeg, curl and converters, and the
+        # host programs these name do not exist in it
+        SR_RESOLVE_STORE | SR_FFMPEG | SR_FFPROBE | SR_CURL | SR_HEIF_CONVERT | SR_OCIOBAKELUT) ;;
+        SR_WHISPER | SR_PIPER | SR_AUDIOFORGE) ;;
+        SR_*)
+            env_args+=(-e "$name")
+            [[ ${!name} == /* ]] && mount_path "${!name}"
+            ;;
+        # by name only, so a key never appears in the process list
+        OPENAI_API_KEY | OPENAI_BASE_URL | ELEVENLABS_API_KEY | ELEVENLABS_BASE_URL) env_args+=(-e "$name") ;;
+        NO_COLOR | RUST_BACKTRACE | RAYON_NUM_THREADS | MALLOC_ARENA_MAX) env_args+=(-e "$name") ;;
+    esac
+done
+
+# the resolve store the host binary would use, so results are shared with it and survive the container
+if [[ -v SR_RESOLVE_STORE && -z $SR_RESOLVE_STORE ]]; then
+    env_args+=(-e SR_RESOLVE_STORE=)
+else
+    store=${SR_RESOLVE_STORE:-$cache/resolve}
+    mkdir -p "$store"
+    store=$(cd "$store" && pwd)
+    mount_dir "$store"
+    env_args+=(-e "SR_RESOLVE_STORE=$store")
+fi
+# Mesa's shader cache (XDG_CACHE_HOME=/cache in the image), kept between runs
+mkdir -p "$cache/container"
+
+gpu_args=()
+case ${SCENE_RENDER_GPUS:-auto} in
+    none) ;;
+    auto)
+        if command -v nvidia-smi > /dev/null; then
+            if command -v nvidia-container-cli > /dev/null; then
+                # --gpus alone mounts only compute and utility: no Vulkan or EGL (graphics), no NVENC (video)
+                gpu_args=(--gpus all -e NVIDIA_DRIVER_CAPABILITIES=all)
+            else
+                echo "scene-render: an NVIDIA GPU is present but not the NVIDIA Container Toolkit;" \
+                    "rendering on lavapipe (SCENE_RENDER_GPUS=none hides this)" >&2
+            fi
+        fi
+        ;;
+    *) gpu_args=(--gpus "$SCENE_RENDER_GPUS" -e NVIDIA_DRIVER_CAPABILITIES=all) ;;
+esac
+
+docker_args=(run --rm -i --init --user "$(id -u):$(id -g)" -w "$PWD")
+
+if [[ ${#providers[@]} -eq 0 ]]; then
+    for dir in "${mounts[@]}"; do
+        docker_args+=(-v "$dir:$dir")
+    done
+    exec docker "${docker_args[@]}" -v "$cache/container:/cache" "${gpu_args[@]}" "${env_args[@]}" "$image" "$@"
+fi
+
+relay=$(cd "$(mktemp -d)" && pwd -P)
+cleanup() {
+    local file
+    for file in "$relay"/req.*/pid "$relay"/req.*/answer "$relay"/server; do
+        [[ -f $file ]] && kill "$(< "$file")" 2> /dev/null || true
+    done
+    rm -rf "$relay"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+if [[ $relay =~ [[:space:]] ]]; then
+    echo "scene-render: the relay folder $relay has a space in it; set TMPDIR to a folder without one" >&2
+    exit 2
+fi
+mkdir "$relay/tmp"
+mkfifo "$relay/calls"
+cat > "$relay/relay" << 'EOF'
+# one provider call, answered on the host by tools/docker/scene-render
+set -eu
+dir=$(dirname "$0")
+req=$(mktemp -d "$dir/req.XXXXXX")
+cat > "$req/in"
+mkfifo "$req/done"
+echo "${req##*/} $1" > "$dir/calls"
+read -r status < "$req/done"
+cat "$req/out"
+cat "$req/err" >&2
+rm -rf "$req"
+exit "$status"
+EOF
+
+answer() {
+    local req=$relay/$1 command status=0
+    echo "$BASHPID" > "$req/answer"
+    read -ra command <<< "${providers[$2]}"
+    if command -v timeout > /dev/null; then
+        command=(timeout --kill-after=10 "${SR_PROVIDER_TIMEOUT:-1800}" "${command[@]}")
+    fi
+    "${command[@]}" < "$req/in" > "$req/out" 2> "$req/err" &
+    echo "$!" > "$req/pid"
+    wait "$!" || status=$?
+    echo "$status" > "$req/done"
+}
+serve() {
+    local id name
+    # read-write, so the FIFO stays open between callers instead of ending at the first one's EOF
+    exec 3<> "$relay/calls"
+    while read -r id name <&3; do
+        [[ $id =~ ^req\.[A-Za-z0-9]{6}$ && -d $relay/$id && -v providers[$name] ]] || continue
+        answer "$id" "$name" &
+    done
+}
+serve &
+echo "$!" > "$relay/server"
+
+mount_dir "$relay"
+for dir in "${mounts[@]}"; do
+    docker_args+=(-v "$dir:$dir")
+done
+docker_args+=(-v "$cache/container:/cache" -e "TMPDIR=$relay/tmp")
+for key in "${!providers[@]}"; do
+    docker_args+=(-e "SR_PROVIDER_$key=sh $relay/relay $key")
+done
+status=0
+docker "${docker_args[@]}" "${gpu_args[@]}" "${env_args[@]}" "$image" "$@" || status=$?
+exit "$status"
