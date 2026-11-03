@@ -553,6 +553,7 @@ impl Mix {
     /// programme, so every stage visits every sample (the reference the
     /// extent-limited render is checked against).
     fn render_inner(&self, full: bool) -> Result<Mixed, MixError> {
+        let t0 = std::time::Instant::now();
         let order = self.order()?;
         let rate = self.rate as f64;
         let total = self.frames();
@@ -572,6 +573,7 @@ impl Mix {
                 NodeKind::Bus | NodeKind::Tap { .. } => None,
             })
             .collect();
+        eprintln!("PROBE place+route {:?} nodes={}", t0.elapsed(), self.nodes.len());
         let mut outputs: HashMap<String, Planar> = HashMap::new();
         let mut extents: HashMap<String, Extent> = HashMap::new();
         for &i in &order {
@@ -615,6 +617,7 @@ impl Mix {
             outputs.insert(n.id.clone(), buf);
             extents.insert(n.id.clone(), ext);
         }
+        eprintln!("PROBE nodes {:?}", t0.elapsed());
         let mut master = silent();
         let mut master_ext = Extent::EMPTY;
         for n in self.nodes.iter().filter(|n| n.output.is_none()) {
@@ -633,7 +636,9 @@ impl Mix {
         }
         master_ext = self.fade(&mut master, master_ext, &self.master.volume, None);
         let weights = self.layout.loudness_weights();
+        eprintln!("PROBE master pre {:?}", t0.elapsed());
         let before = loudness::integrated_in(&master, master_ext, rate, &weights);
+        eprintln!("PROBE integrated1 {:?}", t0.elapsed());
         match self.master.normalize {
             Normalize::None => {}
             Normalize::Integrated => {
@@ -682,8 +687,11 @@ impl Mix {
         if self.master.limiter || self.master.normalize != Normalize::None {
             loudness::limit_in(&mut master, master_ext, rate, self.master.true_peak, 0.05);
         }
+        eprintln!("PROBE limit {:?}", t0.elapsed());
         let loudness = loudness::integrated_in(&master, master_ext, rate, &weights);
+        eprintln!("PROBE integrated2 {:?}", t0.elapsed());
         let true_peak = loudness::true_peak_in(&master, master_ext, rate);
+        eprintln!("PROBE truepeak {:?}", t0.elapsed());
         Ok(Mixed {
             master,
             nodes: outputs,

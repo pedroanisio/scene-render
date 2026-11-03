@@ -1081,7 +1081,9 @@ impl AudioJob {
             let master = programme.as_ref().map(|a| &a.master).unwrap_or(&sa.mixed.master);
             let mut part = audio::slice(master, sa.mix.rate, start - origin, end - origin);
             let weights = sa.mix.layout.loudness_weights();
+            let tq = std::time::Instant::now();
             done.loudness = Some(sr_audio::loudness::measure(&part, sa.mix.rate as f64, &weights));
+            eprintln!("PROBE measure {:?}", tq.elapsed());
             let container = output
                 .container
                 .map(|c| c.as_str().to_string())
@@ -1102,6 +1104,7 @@ impl AudioJob {
                     output.audio_bitrate,
                     &tmp,
                 )?;
+                eprintln!("PROBE hold {:?} passes={}", tq.elapsed(), held.passes.len());
                 if !held.passes.is_empty() {
                     done.loudness = Some(sr_audio::loudness::measure(&part, sa.mix.rate as f64, &weights));
                 }

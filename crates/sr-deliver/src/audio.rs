@@ -512,7 +512,9 @@ pub fn mix_scene(ev: &Evaluator, fps: f64, representation: Option<&str>) -> Resu
             wanted.push((path, *stream));
         }
     }
+    let tp = std::time::Instant::now();
     sources.prefetch(wanted);
+    eprintln!("PROBE prefetch {:?}", tp.elapsed());
     let curve = |key: &str, prop: &'static str, fallback: f64| auto.curve(key, prop, fallback);
     let mut nodes = Vec::new();
     let mut master = Master::default();
@@ -568,7 +570,9 @@ pub fn mix_scene(ev: &Evaluator, fps: f64, representation: Option<&str>) -> Resu
         });
     }
     let mix = Mix { rate, layout, duration: p.duration, control_fps: fps, nodes, master };
+    let tp = std::time::Instant::now();
     let mixed = mix.render()?;
+    eprintln!("PROBE render {:?}", tp.elapsed());
     // analysis: envelopes of every track and audio layer (independent, so in parallel, over
     // the extent the mix found for each), beats from a beat grid's source
     let frames = (p.duration * fps).ceil() as usize;
@@ -600,6 +604,7 @@ pub fn mix_scene(ev: &Evaluator, fps: f64, representation: Option<&str>) -> Resu
             a.children.iter().find_map(|c| if let m::AudioMixChild::Master(ms) = c { Some(ms.dither) } else { None })
         })
         .unwrap_or(true);
+    eprintln!("PROBE analysis {:?}", tp.elapsed());
     Ok(Some(SceneAudio { mix, mixed, bits, dither, analysis }))
 }
 
