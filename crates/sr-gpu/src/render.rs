@@ -5104,10 +5104,14 @@ impl Renderer {
                 multiview_mask: None,
             })
         }
+        let pq = self.gpu.queue.clone();
+        let mut prof_t = std::time::Instant::now();
+        prof_stage(&d, &pq, &mut enc, "setup", &mut prof_t);
         for rj in &plan.rasters {
             self.raster.record(&d, &mut enc, rj, &paints, &stops, &self.globals);
             plan.stats.targets += 1;
         }
+        prof_stage(&d, &pq, &mut enc, "raster", &mut prof_t);
         for gj in &plan.gens {
             let mut pass = clear_pass(&mut enc, &gj.target, true);
             pass.set_pipeline(self.pipelines.generator());
@@ -5118,6 +5122,7 @@ impl Renderer {
             pass.draw(0..3, 0..1);
             plan.stats.targets += 1;
         }
+        prof_stage(&d, &pq, &mut enc, "gens", &mut prof_t);
         let coverage = self.prepare_mask_coverage(&mut plan);
         // Transient vector rasters: how many of each size are still to be drawn (a released target goes back to the pool
         // while another will want it, or when it is the size of a target it draws into, which the next frame wants too).
@@ -5161,6 +5166,7 @@ impl Renderer {
                 plan.stats.targets += 1;
             }
         }
+        prof_stage(&d, &pq, &mut enc, "mask", &mut prof_t);
         let mut jobs = std::mem::take(&mut plan.jobs);
         let mut scratch: HashMap<[u32; 2], Arc<Tex>> = HashMap::new();
         for job in &mut jobs {
@@ -5261,6 +5267,7 @@ impl Renderer {
                     live += bytes;
                     checked_out.push(i + k);
                 }
+                prof_stage(&d, &pq, &mut enc, "pre_batch+lazy_raster", &mut prof_t);
                 plan.stats.peak_vector_target_bytes = plan.stats.peak_vector_target_bytes.max(kept + live);
                 // Disjoint backdrop reads see the same pixels before this batch
                 // as immediately before their draw. Copy them first, then keep
@@ -5341,8 +5348,12 @@ impl Renderer {
                 // a copy that leaves pixels out would need the clear as well: only one that writes them all
                 .filter(|(rect, _)| *rect == [0, 0, tsize[0], tsize[1]]);
                 let mut skip = 0;
-                if let Some((rect, at)) = copied {
+                if let (Some(_), true) = (copied, std::env::var_os("SR_SKIP_FRAME").is_some()) {
+                    clear = false;
+                    skip = j - i;
+                } else if let Some((rect, at)) = copied {
                     Self::copy_from(&mut enc, &first.src, at, &job.target, rect);
+                    prof_stage(&d, &pq, &mut enc, "texel_copy", &mut prof_t);
                     plan.stats.draws += 1;
                     plan.stats.texel_copies += 1;
                     clear = false;
@@ -5377,6 +5388,9 @@ impl Renderer {
                         } else {
                             0
                         };
+                        if std::env::var("SR_PROF_SKIP").ok().and_then(|v| v.parse::<usize>().ok()) == Some(variant) {
+                            continue;
+                        }
                         pass.set_pipeline(if coverage.contains_key(&c.draw) {
                             self.pipelines.cached_mask()
                         } else if c.backdrop.is_some() {
@@ -5391,10 +5405,14 @@ impl Renderer {
                         pass.set_bind_group(0, &bg0, &[c.draw * draw_stride]);
                         pass.set_bind_group(1, &c.src.bind, &[]);
                         pass.set_bind_group(2, groups[k].as_ref().unwrap_or(&dummy_pair), &[]);
+                        if std::env::var_os("SR_PROF_STAGES").is_some() {
+                            eprintln!("DRAW variant {variant} backdrop {} cov {} blend {} src_kind {} flags {} masks {} verts {} target {:?} src {:?} root {}", c.backdrop.is_some(), coverage.contains_key(&c.draw), draw.blend, draw.src_kind, draw.flags, draw.mask_count, c.count, job.target.size, c.src.size, job.root);
+                        }
                         pass.draw(c.first_vertex..c.first_vertex + c.count, c.draw..c.draw + 1);
                         plan.stats.draws += 1;
                     }
                 }
+                prof_stage(&d, &pq, &mut enc, "draw_batch", &mut prof_t);
                 // the batch is recorded (the encoder holds what it reads): release its transient targets
                 for k in checked_out {
                     let t = std::mem::replace(&mut job.cmds[k].src, self.dummy.clone());
@@ -5428,6 +5446,7 @@ impl Renderer {
                 self.snapshot(&mut enc, &job.target, &hashes[..job.cmds.len()]);
             }
         }
+        prof_stage(&d, &pq, &mut enc, "jobs", &mut prof_t);
         if !plan.post.is_empty() {
             plan.stats.fx_passes += self.fx.record(&mut enc, &plan.post);
             let into = plan.post_into.as_ref().or_else(|| jobs.iter().find(|j| j.root).map(|j| &j.target));
@@ -5442,6 +5461,7 @@ impl Renderer {
             t.resolve(&mut enc);
             self.last_timer = Some(t);
         }
+        prof_stage(&d, &pq, &mut enc, "post", &mut prof_t);
         self.last_submit = Some(self.gpu.queue.submit([enc.finish()]));
         for (_, t) in scratch {
             self.pool.put(t);
@@ -6004,4 +6024,15 @@ mod texel_copy_region_tests {
         assert_eq!(texel_copy_region(&d, &skew, [64, 32], TARGET), None);
         assert_eq!(texel_copy_region(&d, &quad([0.0, 0.0, 64.0, 32.0])[..3], [64, 32], TARGET), None);
     }
+}
+
+fn prof_stage(d: &wgpu::Device, q: &wgpu::Queue, enc: &mut wgpu::CommandEncoder, name: &str, t: &mut std::time::Instant) {
+    if std::env::var_os("SR_PROF_STAGES").is_none() {
+        return;
+    }
+    let done = std::mem::replace(enc, d.create_command_encoder(&Default::default()));
+    q.submit([done.finish()]);
+    let _ = d.poll(wgpu::PollType::wait_indefinitely());
+    eprintln!("STAGE {name} {:.3}", t.elapsed().as_secs_f64() * 1000.0);
+    *t = std::time::Instant::now();
 }
