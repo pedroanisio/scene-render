@@ -1919,11 +1919,22 @@
         <xs:enumeration value="spherize"/><xs:enumeration value="ripple"/>
         <xs:enumeration value="turbulence"/><xs:enumeration value="corner-pin"/>
         <xs:enumeration value="matrix"/><xs:enumeration value="map"/><xs:enumeration value="complex"/>
+        <xs:enumeration value="strain"/>
       </xs:restriction></xs:simpleType>
     </xs:attribute>
     <xs:attribute name="amount" type="xs:double" default="0"/>
     <xs:attribute name="frequency" type="xs:double" default="1"/>
     <xs:attribute name="phase" type="xs:double" default="0"/>
+    <xs:attribute name="hPlus" type="xs:double" default="0">
+      <xs:annotation><xs:documentation>type="strain" (the relativity draft, version 1.8): the plus and cross
+      amplitudes of a plane gravitational wave along the viewing axis, which moves every outline point (x, y) about
+      (centerX, centerY) by ((hPlus x + hCross y) / 2, (hCross x - hPlus y) / 2) times cos(2 pi frequency t + phase),
+      or, with chirpMass (solar masses) and merger (seconds), at the quadrupole-formula chirp until merger. Exactly one
+      of frequency and chirpMass is written (RD4).</xs:documentation></xs:annotation>
+    </xs:attribute>
+    <xs:attribute name="hCross" type="xs:double" default="0"/>
+    <xs:attribute name="chirpMass" type="positiveDecimal"/>
+    <xs:attribute name="merger" type="xs:double"/>
     <xs:attribute name="axis" type="xs:string" default="y"/>
     <xs:attribute name="rows" type="gridSizeType" default="4"/>
     <xs:attribute name="cols" type="gridSizeType" default="4"/>
@@ -2749,6 +2760,30 @@
     <xs:attribute name="color" type="colorType"/>
     <xs:attribute name="fade" type="xs:boolean" default="true"/>
   </xs:complexType>
+  <xs:complexType name="embeddingType">
+    <xs:annotation><xs:documentation>The sheet of primitive="embedding" (one per such object, RD3): Flamm's paraboloid
+    z = 2 sqrt(rs (r - rs)) of the Schwarzschild equatorial slice (rs, else 2 mass of the blackHole), or the Newtonian
+    potential sheet z = -k / r, from rMin (default rs for flamm, rs / 4 for potential) to rMax, drawn as rings circles
+    and spokes radial lines of samples vertices, sagging toward +y. The relativity draft, version 1.8.</xs:documentation></xs:annotation>
+    <xs:attribute name="kind" use="required">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="flamm"/><xs:enumeration value="potential"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="rs" type="positiveDecimal"/>
+    <xs:attribute name="blackHole" type="xs:IDREF"/>
+    <xs:attribute name="k" type="positiveDecimal"/>
+    <xs:attribute name="rMin" type="positiveDecimal"/>
+    <xs:attribute name="rMax" type="positiveDecimal" use="required"/>
+    <xs:attribute name="rings" type="xs:positiveInteger" default="12"/>
+    <xs:attribute name="spokes" type="xs:positiveInteger" default="24"/>
+    <xs:attribute name="samples" default="64">
+      <xs:simpleType><xs:restriction base="xs:positiveInteger"><xs:minInclusive value="2"/><xs:maxInclusive value="4096"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="lineWidth" type="positiveDecimal"/>
+    <xs:attribute name="color" type="paintType" default="#FFFFFFFF"/>
+    <xs:attribute name="surface" type="xs:boolean" default="false"/>
+  </xs:complexType>
   <xs:complexType name="object3DType">
     <xs:choice minOccurs="0" maxOccurs="unbounded">
       <xs:group ref="animationElements"/>
@@ -2767,6 +2802,7 @@
       <xs:element name="plot3D" type="plot3DType"/>
       <xs:element name="orbit" type="orbitType"/>
       <xs:element name="trail" type="trailType"/>
+      <xs:element name="embedding" type="embeddingType"/>
     </xs:choice>
     <xs:attribute name="id" type="xs:ID" use="required"/>
     <xs:attribute name="name" type="xs:string"/>
@@ -2781,6 +2817,7 @@
         <xs:enumeration value="volume"/><xs:enumeration value="voxels"/>
         <xs:enumeration value="parametric"/><xs:enumeration value="heightfield"/>
         <xs:enumeration value="axes"/><xs:enumeration value="planet"/>
+        <xs:enumeration value="embedding"/>
       </xs:restriction></xs:simpleType>
     </xs:attribute>
     <xs:attribute name="material" type="xs:IDREF"/>
@@ -3652,6 +3689,7 @@
     <xs:choice minOccurs="0" maxOccurs="unbounded">
       <xs:group ref="nodeBehaviour"/>
       <xs:element name="plot" type="plotType"/>
+      <xs:element name="spacetime" type="spacetimeType"/>
       <xs:group ref="nodeChoice"/>
     </xs:choice>
     <xs:attributeGroup ref="nodeAttributes"/>
@@ -3718,6 +3756,85 @@
     <xs:attribute name="stroke" type="paintType" default="#FFCC00FF"/>
     <xs:attribute name="strokeWidth" type="positiveDecimal" default="3"/>
     <xs:attribute name="fill" type="paintType"/>
+  </xs:complexType>
+  <!-- ===================================================== the relativity draft: spacetime diagrams (version 1.8) -->
+  <xs:complexType name="spacetimeType">
+    <xs:annotation><xs:documentation>Turns its axes into a Minkowski diagram in units of c: x is position, y is time,
+    light moves at 45 degrees. Every child's events are Lorentz-transformed by boost (beta = v/c, keyed in rapidity)
+    and then compactified (compact) before the axes map them to pixels. At most one per axes; boost strictly between
+    -1 and 1; compact="schwarzschild" names a blackHole (RD1). The relativity draft of sr-core
+    (srep/srep-0000-relativity.md).</xs:documentation></xs:annotation>
+    <xs:choice minOccurs="0" maxOccurs="unbounded">
+      <xs:group ref="animationElements"/>
+      <xs:element name="event" type="spacetimeEventType"/>
+      <xs:element name="worldline" type="worldlineType"/>
+      <xs:element name="lightRay" type="lightRayType"/>
+    </xs:choice>
+    <xs:attribute name="c" type="positiveDecimal" default="1"/>
+    <xs:attribute name="boost" type="xs:double" default="0"/>
+    <xs:attribute name="grid" type="xs:boolean" default="false"/>
+    <xs:attribute name="compact" default="none">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="none"/><xs:enumeration value="minkowski"/><xs:enumeration value="schwarzschild"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="blackHole" type="xs:IDREF"/>
+  </xs:complexType>
+  <xs:attributeGroup name="spacetimeStroke">
+    <xs:annotation><xs:documentation>The line of a diagram's child: the strokeStyle group with its paint and width
+    (the plot's defaults).</xs:documentation></xs:annotation>
+    <xs:attributeGroup ref="strokeStyle"/>
+    <xs:attribute name="stroke" type="paintType" default="#FFCC00FF"/>
+    <xs:attribute name="strokeWidth" type="positiveDecimal" default="3"/>
+  </xs:attributeGroup>
+  <xs:complexType name="spacetimeEventType">
+    <xs:annotation><xs:documentation>An event (x, t) drawn as a dot of markerSize pixels, optionally labelled, with
+    its future and past light cones reaching extent units of t (default the axes' yMax - yMin).</xs:documentation></xs:annotation>
+    <xs:attributeGroup ref="spacetimeStroke"/>
+    <xs:attribute name="x" type="xs:double" use="required"/>
+    <xs:attribute name="t" type="xs:double" use="required"/>
+    <xs:attribute name="label" type="xs:string"/>
+    <xs:attribute name="lightCone" type="xs:boolean" default="false"/>
+    <xs:attribute name="extent" type="positiveDecimal"/>
+    <xs:attribute name="future" type="paintType" default="#FFCC0040"/>
+    <xs:attribute name="past" type="paintType" default="#4080FF40"/>
+    <xs:attribute name="markerSize" type="positiveDecimal" default="8"/>
+  </xs:complexType>
+  <xs:complexType name="worldlineType">
+    <xs:annotation><xs:documentation>A worldline: inertial through (x0, t0) at velocity (beta), the Rindler hyperbola
+    of proper acceleration from rest at (x0, t0), or parametric x and t of the proper time tau, sampled from tau0 to
+    tau1 (default -extent to extent). Each kind takes only its own attributes (RD2).</xs:documentation></xs:annotation>
+    <xs:attributeGroup ref="spacetimeStroke"/>
+    <xs:attribute name="kind" use="required">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="inertial"/><xs:enumeration value="accelerated"/><xs:enumeration value="parametric"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="x0" type="xs:double" default="0"/>
+    <xs:attribute name="t0" type="xs:double" default="0"/>
+    <xs:attribute name="velocity" type="xs:double"/>
+    <xs:attribute name="acceleration" type="positiveDecimal"/>
+    <xs:attribute name="x" type="expressionString"/>
+    <xs:attribute name="t" type="expressionString"/>
+    <xs:attribute name="tau0" type="xs:double"/>
+    <xs:attribute name="tau1" type="xs:double"/>
+    <xs:attribute name="samples" default="256">
+      <xs:simpleType><xs:restriction base="xs:positiveInteger"><xs:minInclusive value="2"/><xs:maxInclusive value="1000000"/></xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="label" type="xs:string"/>
+  </xs:complexType>
+  <xs:complexType name="lightRayType">
+    <xs:annotation><xs:documentation>A light ray from the event (x, t) along (direction, 1) for length units of t
+    (default the axes' extent).</xs:documentation></xs:annotation>
+    <xs:attributeGroup ref="spacetimeStroke"/>
+    <xs:attribute name="x" type="xs:double" use="required"/>
+    <xs:attribute name="t" type="xs:double" use="required"/>
+    <xs:attribute name="direction" default="1">
+      <xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="1"/><xs:enumeration value="-1"/>
+      </xs:restriction></xs:simpleType>
+    </xs:attribute>
+    <xs:attribute name="length" type="positiveDecimal"/>
   </xs:complexType>
   <!-- ===================================================== the fields draft: vector, scalar and complex fields (version 1.8) -->
   <xs:complexType name="fieldType">

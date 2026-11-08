@@ -49,7 +49,7 @@ The production handbook defines rollout: newly started films use this contract; 
 
 - **Schema tables** — all simple types with their facets and all complex types with attribute declarations and content particles. `xsd::structure` interprets them.
 - **Typed model** (~20,000 lines) — 134 enums for the enumerations, 18 checked newtypes for the numeric restrictions (`UnitDecimal::new(1.5)` fails), one struct per complex type with defaults applied, and shared enums for the model groups (`Node`, `Animation`, `NodeBehaviour`, `BodyBehaviour`).
-- **Assert catalogue** — id, context, test and message of all <!-- facts:sch-asserts -->366<!-- /facts --> Schematron asserts, used by `scene-render explain`.
+- **Assert catalogue** — id, context, test and message of all <!-- facts:sch-asserts -->370<!-- /facts --> Schematron asserts, used by `scene-render explain`.
 
 The generator accepts exactly the XSD subset the schema uses and aborts the build on anything else, so an unsupported construct cannot be ignored silently.
 
@@ -62,7 +62,7 @@ The canonical copy of the schema lives in [sr-core](https://github.com/pedroanis
 | Stage | Module | Codes | What it enforces |
 |---|---|---|---|
 | Structure | `xsd::structure`, `xsd::simple` | `S01`–`S12`, `W01` | Content models, attribute declarations, lexical forms, enumerations, bounds, patterns, `xs:ID` uniqueness, `xs:IDREF` resolution |
-| Rules | `rules` | `V1`–<!-- facts:rule-v-max -->V17<!-- /facts -->, `C1`–<!-- facts:rule-c-max -->C80<!-- /facts -->, `R1`–<!-- facts:rule-r-max -->R54<!-- /facts --> (with the `R24-*`, `R25-*`, `R30-*` and `R31-*` families), `P01`–`P05` | The <!-- facts:sch-patterns -->109<!-- /facts --> Schematron patterns, including the version gates, and the limits a renderer needs: soft-body stiffness, counts that multiply into nodes or particles, symbols that contain themselves, expression nesting and cyclic matte dependencies |
+| Rules | `rules` | `V1`–<!-- facts:rule-v-max -->V17<!-- /facts -->, `C1`–<!-- facts:rule-c-max -->C80<!-- /facts -->, `R1`–<!-- facts:rule-r-max -->R54<!-- /facts --> (with the `R24-*`, `R25-*`, `R30-*` and `R31-*` families), `P01`–`P05` | The <!-- facts:sch-patterns -->110<!-- /facts --> Schematron patterns, including the version gates, and the limits a renderer needs: soft-body stiffness, counts that multiply into nodes or particles, symbols that contain themselves, expression nesting and cyclic matte dependencies |
 | Assets | `assets` | `A01`–`A09` | Existence of every input URI, SHA-256 of every `@sha256`/`@cacheSha256` (generated media, transcriptions, physics caches), every frame of every image sequence, declared image dimensions against readable local image headers |
 | Model | `model`, `document` | `M01` | Typed construction and the ID index |
 
@@ -74,7 +74,7 @@ Structure and rules always both run, so one pass reports every problem. The mode
 
 `tools/oracle.py` validates with libxml2's XSD validator and ISO Schematron on libxslt, the engines the schema names. Two results follow from it:
 
-- **Corpus** — `tools/build_corpus.py` writes <!-- facts:corpus-total -->848<!-- /facts --> documents into `tests/corpus`: a kitchen-sink document that exercises every section, one mutation per Schematron assert (all <!-- facts:sch-asserts -->366<!-- /facts --> ids, including every paint and colour attribute of the `R24`, `R25`, `R30` and `R31` families), one per structural and asset code, and the oracle's verdict for each. `cargo test` requires the Rust validator to produce exactly the manifest's codes for every document.
+- **Corpus** — `tools/build_corpus.py` writes <!-- facts:corpus-total -->883<!-- /facts --> documents into `tests/corpus`: a kitchen-sink document that exercises every section, one mutation per Schematron assert (all <!-- facts:sch-asserts -->370<!-- /facts --> ids, including every paint and colour attribute of the `R24`, `R25`, `R30` and `R31` families), one per structural and asset code, and the oracle's verdict for each. `cargo test` requires the Rust validator to produce exactly the manifest's codes for every document.
 - **Differential fuzzing** — `tools/oracle_diff.py COUNT SEED` mutates the kitchen sink at random and compares the XSD verdict and the multiset of (assert id, line) pairs. Seeds 1–4 (7,000 mutants, about 5,300 failed asserts) produce zero disagreements.
 
 sr-model is stricter than libxml2 in three places, each required by XSD 1.0: it resolves `xs:IDREF` values (`S10`), rejects whitespace-only `xs:IDREFS`, and rejects `1e` as an `xs:double`. XPath `number()` follows libxml2, which parses exponent forms (`2.4e1` compares as 24), because the Schematron file names libxslt as its engine.
@@ -1014,7 +1014,7 @@ crates/sr-eval/src/         program (templating, instantiation, compilation), ev
                             curve, expr/{parse,vm}, value, path, data, rng, rig (constraints, bones,
                             tracking, stabilisation), sim (physics and particles), sim3d (3D rigid bodies), agents (flocks, fluids,
                             slime, erosion), geo (map cameras for rendering and expressions), codes; connector (SREP 16), points (repeat points), region (pdf regions), safe_area (`enforce`), font_policy
-                            (pinned fonts), stroke_font (Hershey fonts), fractal (SREP 75), parametric (SREP 70), plots and axes (the plots draft), fields and field_node (the fields draft), fold (reactive values), joints (model sockets),
+                            (pinned fonts), stroke_font (Hershey fonts), fractal (SREP 75), parametric (SREP 70), plots and axes (the plots draft), fields and field_node (the fields draft), spacetime (the relativity draft's diagrams), fold (reactive values), joints (model sockets),
                             local_ids (SREP 87), mesh_sequence (mesh caches), physcache (baked physics), inert (rule I8), pending (accepted
                             SREPs not implemented); the cratering and fracture family: crater, debris, splash, fracture, group (coupled
                             solvers), ocean, orbits (orbits and N-body members placed by a space), particles3d, pyro, terrain, time_frames (bodies placed by a space), solid, voxel, voxels, voxel_asset, voxel_cache, voxel_crater,
@@ -1030,7 +1030,9 @@ crates/sr-3d/src/           import (glTF, OBJ, PLY, splats, FBX, USD), usdc (USD
                             limb darkening, clouds, rings and spin), planet_shell (a planet's atmosphere shell seen
                             from one observer), subsurface (SREP 71 lobe), stars (a dome's star field: scene directions,
                             pixel discs, constellation labels and boundaries), scale (depth resolution, geometric keys,
-                            the scale bar and the floating origin); `space` re-exports sr-space
+                            the scale bar and the floating origin), relativity (boosts, light cones, worldlines, the
+                            Penrose and Kruskal maps, Flamm's paraboloid, gravitational-wave strain and its chirp);
+                            `space` re-exports sr-space
 crates/sr-gpu/src/          gpu (device), color, drape (drawings rasterised on the CPU), render_map3d (3D maps and
                             globes), resources (textures, images, pool), paint, render (planning,
                             caching, execution), video (decode conversion, frame blending, optical flow),

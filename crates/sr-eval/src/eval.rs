@@ -1181,11 +1181,55 @@ impl<'p> Frame<'p> {
                 tick_length: num("tickLength", a.tick_length.get()),
             };
             match crate::axes::frame(&spec) {
-                Ok(af) => self.axes.push((n, Arc::new(af))),
+                Ok(mut af) => {
+                    // the relativity draft: the diagram's labels join the axes', whose y labels read t
+                    if let Some(d) = p.spacetimes.iter().find(|d| d.axes == n) {
+                        let labelled = self.spacetime_view(d).and_then(|v| {
+                            crate::spacetime::labels(&d.inst, &v, &mut af, &mut |x, at| self.tau_samples(n, x, at))
+                        });
+                        if let Err(e) = labelled {
+                            problems.push(format!("{}: {e}", d.inst.id));
+                        }
+                    }
+                    self.axes.push((n, Arc::new(af)))
+                }
                 Err(e) => problems.push(format!("{}: {e}", node.id)),
             }
         }
         problems
+    }
+
+    /// The relativity draft: diagram `d`'s attribute values at this frame, its element target's over its own.
+    fn spacetime_view(&self, d: &crate::spacetime::Diagram) -> Result<crate::spacetime::View, String> {
+        use sr_3d::relativity::Compact;
+        let i = &d.inst;
+        let props = d.own.map(|e| self.props(&self.p.elements[e as usize].slots));
+        let get = |k: &str| props.as_ref().and_then(|p| p.get(k));
+        let beta = get("boost").and_then(Value::as_num).unwrap_or(i.boost);
+        let c = get("c").and_then(Value::as_num).unwrap_or(i.c);
+        let grid = match get("grid") {
+            Some(Value::Bool(b)) => *b,
+            _ => i.grid,
+        };
+        let compact = match get("compact") {
+            Some(Value::Str(s)) => match (&**s, i.compact) {
+                ("none", _) => Compact::None,
+                ("minkowski", _) => Compact::Minkowski,
+                ("schwarzschild", Compact::Schwarzschild(rs)) => Compact::Schwarzschild(rs),
+                (other, _) => return Err(format!("compact {other:?} has no diagram here")),
+            },
+            _ => i.compact,
+        };
+        sr_3d::relativity::validate_spacetime(c, beta, compact).map_err(|e| e.0)?;
+        Ok(crate::spacetime::View { beta, c, grid, compact })
+    }
+
+    /// Expression `x` of axes node `n` at each τ of `at` (the relativity draft's parametric worldlines).
+    fn tau_samples(&mut self, n: u32, x: u32, at: &[f64]) -> Vec<f64> {
+        let samples: Vec<[f64; 2]> = at.iter().map(|&t| [t, 0.0]).collect();
+        let mut out = Vec::new();
+        self.sampled(n, x, &samples, &mut out);
+        out
     }
 
     /// The frame of `axes` node `n`, when it is live and its values are valid.
@@ -1209,6 +1253,19 @@ impl<'p> Frame<'p> {
             AxesPart::Axis => crate::axes::lines(&af.axis),
             AxesPart::Ticks => crate::axes::lines(&af.ticks),
             AxesPart::Labels => return,
+            AxesPart::Spacetime(k, part) => {
+                let d = &self.p.spacetimes[k as usize];
+                let drawn = self.spacetime_view(d).and_then(|v| {
+                    crate::spacetime::part_path(&d.inst, part, &v, &af, &mut |x, at| self.tau_samples(a, x, at))
+                });
+                match drawn {
+                    Ok(d) => d,
+                    Err(e) => {
+                        problems.push(format!("{}: {e}", out.id));
+                        return;
+                    }
+                }
+            }
             AxesPart::Plot(k) => {
                 let p = self.p;
                 let clip = matches!(&*p.nodes[a as usize].elem, Node::Axes(x) if x.clip);

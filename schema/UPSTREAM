@@ -106,16 +106,31 @@ non-zero and of one sign. The curves that ease a progress from 0 to 1 (motionPat
 flyTo/@easing, transition/@curve and the particle sizeCurve and colorCurve) start at zero, so SC2 refuses geometric on
 them. SC1 holds a positive near, a far beyond it and a ratio far / near of at most 1e20. SC3 holds at most one scaleBar per camera, a maxWidth at most the project's width and units auto or si; SC4 a
 distance between the camera's near and far (defaults 0.1 and 10000).
++ the diff of sr-core srep/srep-0000-relativity.md (draft, Schema-Version 1.8, as of sr-core f2691b8): axesType's
+child spacetime (c, boost, grid, compact none|minkowski|schwarzschild, blackHole; children event, worldline, lightRay
+and animate), object3D's primitive embedding and child embedding (kind flamm|potential, rs, blackHole, k, rMin, rMax,
+rings, spokes, samples, lineWidth, color, surface), the modifier type strain with hPlus, hCross, chirpMass and merger,
+RD1 to RD4 (pattern p-srep-relativity, last) and V17's clause. The readings: the draft's strokeStyle is the
+strokeStyle group with a stroke of #FFCC00FF and a strokeWidth of 3 (attribute group spacetimeStroke), and an event's
+point is markerSize across, default 8; the strain modifier reuses the modifier's frequency and phase. RD1 holds at most
+one spacetime per axes, a positive c, a literal boost strictly between -1 and 1 (keyed values are the build's, as rule 5
+seeks them) and a blackHole with compact="schwarzschild". RD2's "no other attributes of another kind" is a map:
+velocity is inertial's, acceleration accelerated's, x and t parametric's, tau0 and tau1 accelerated's and parametric's;
+an accelerated worldline's acceleration is positive. RD3 is one assert on the object: rs falls back to twice the mass of
+the blackHole the sheet names, rMin defaults to rs for flamm and rs / 4 for potential, so a potential sheet without
+rMin names rs or a blackHole, and a flamm sheet's rMin is at least rs (the throat: the Flamm height is not real
+inside it); rings at least 1 is the type's. RD4 adds that a frequency is positive. W11 (SREP 76) does not report a
+black hole that a spacetime or an embedding names: the diagram or the sheet draws it.
 V17 is SREP 12's one shared 1.8 gate: one pattern, p-v17 (after p-srep75), whose one assert is the conjunction of
 the drafts' clauses.
 The branch merges when those SREPs are accepted; this file then names the schema-1.8.0 tag.
 Source: https://github.com/pedroanisio/sr-core
 
-Canonical upstream files (SHA-256; the files of that tag with the thirteen drafts' diffs; at the tag the .xsd is
+Canonical upstream files (SHA-256; the files of that tag with the fourteen drafts' diffs; at the tag the .xsd is
 5ef91e6ca9a6d860047f2a5347c59fa17423cb99ef7535b7ceaca16619f8ce2c and the .sch, as in sr-core's schema/SHA256SUMS,
 868863e9ea4caf04e7f0bd9873c23ce5f723205714178349a4f385c4778fd368):
-  scene-render.xsd: b3103f8c1d549774874192207f054ad66c96ed637db646c51d634d7c0eb9362f
-  scene-render.sch: 2827b338cdeb3289d337e4e245325cbdf2108ad96740eff725598ac625f68a5b
+  scene-render.xsd: 00bb421558d87e8f550614e93f05152bbb41a2fec8bab05a9fdfc8a7bc9dfe7a
+  scene-render.sch: 9a6c68dec4f31766a4f1757f81f3ff7d10af8d44495b87c1e7343f955f12cf61
   capabilities-1.schema.json: 6cb35c8ec6d37df32c9a0ad12eb33332d2abe4f11ac6000a9311d9891ec2e8b3
 
 scene-render-1.1.xsd, scene-render-1.1.sch and capabilities-1.schema.json are byte-identical to these files. Local
@@ -128,11 +143,11 @@ native OCN7 refuses an animated tracking on an ocean collider, as P3D6 and PYRO8
 document (corpus case ocn7-text-tracking, a native-only rule case). It is an erratum of sr-core's OCN7 for an SREP to
 settle. The warnings W05, W11 and W12 (SREP 76) and the program diagnostics are native only, as the SREPs define them.
 
-Document version 1.8 (sr_model::SCHEMA_VERSION is "1.8") is the random-streams, media, plots, space-transforms, semantic-tex, reactive-values, fields, time-frames, star-fields, physical-sky, planets, orbits and scale drafts', a local addition
+Document version 1.8 (sr_model::SCHEMA_VERSION is "1.8") is the random-streams, media, plots, space-transforms, semantic-tex, reactive-values, fields, time-frames, star-fields, physical-sky, planets, orbits, scale and relativity drafts', a local addition
 on this branch: a 1.8 document is a 1.7 document whose simulations draw from the D24 streams of the random-streams
-draft's section 5, whose media may name a phase function and which may hold axes, plots, the space transforms, tagged formula parts and morphs, value assets, fields, a space, ephemerides, star fields, a physical sky, planets, orbits, trails, an N-body system, a camera's depth mapping and scale bar and geometric keys (MED4 refuses the media
-attributes and V17 the plots elements, space transforms, semantic-tex syntax, value assets, fields, the time-frames, the star-fields, the physical-sky, the planets, the orbits and the scale syntax before 1.8; crates/sr-model/tests/version_1_8.rs,
-plots_rules.rs, space_rules.rs, semantic_tex_rules.rs, reactive_values_rules.rs, fields_rules.rs, time_frames_rules.rs, star_fields_rules.rs, physical_sky_rules.rs, planets_rules.rs, orbits_rules.rs and scale_rules.rs). Document version 1.7 is schema 1.7.0's. It adds no syntax and has no version
+draft's section 5, whose media may name a phase function and which may hold axes, plots, the space transforms, tagged formula parts and morphs, value assets, fields, a space, ephemerides, star fields, a physical sky, planets, orbits, trails, an N-body system, a camera's depth mapping and scale bar, geometric keys, spacetime diagrams, embedding sheets and strain modifiers (MED4 refuses the media
+attributes and V17 the plots elements, space transforms, semantic-tex syntax, value assets, fields, the time-frames, the star-fields, the physical-sky, the planets, the orbits, the scale and the relativity syntax before 1.8; crates/sr-model/tests/version_1_8.rs,
+plots_rules.rs, space_rules.rs, semantic_tex_rules.rs, reactive_values_rules.rs, fields_rules.rs, time_frames_rules.rs, star_fields_rules.rs, physical_sky_rules.rs, planets_rules.rs, orbits_rules.rs, scale_rules.rs and relativity_rules.rs). Document version 1.7 is schema 1.7.0's. It adds no syntax and has no version
 gate: SREP 87's scoping applies to documents of every version, and a 1.7 document validates and renders as the same
 document at 1.6 (crates/sr-model/tests/version_1_7.rs). Document version 1.6 is schema 1.6.0's. A 1.6 document holding
 1.5 content

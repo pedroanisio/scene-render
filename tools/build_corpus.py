@@ -1120,6 +1120,60 @@ CASES += [
     ("camera-depth-enum", ["S06"], lambda _: SCALE.replace('depth="logarithmic"', 'depth="linear"')),
     ("scale-bar-units-enum", ["S06", "SC3"], lambda _: SCALE.replace('distance="1000"', 'distance="1000" units="imperial"')),
 ]
+# the relativity draft: a spacetime diagram in axes, an embedding sheet, a strained shape, RD1 to RD4 and V17
+RELATIVITY = ('<scene version="1.8"><project width="640" height="360" fps="24" duration="10"/><composition>'
+    '<blackHole id="hole" mass="1"/>'
+    '<axes id="ax" width="400" height="300" x="100" y="50" xMin="-2" xMax="2" yMin="-1.5" yMax="1.5">'
+    '<spacetime c="1" boost="0.6" grid="true"><animate property="boost"><key time="0" value="0"/><key time="10" value="0.8"/></animate>'
+    '<event x="0" t="0" label="O" lightCone="true" extent="1"/><event x="3" t="5"/>'
+    '<worldline kind="inertial" velocity="0.5" label="ship"/><worldline kind="accelerated" acceleration="2" tau0="-1" tau1="1"/>'
+    '<worldline kind="parametric" x="0.5 * Math.sin(tau)" t="tau" tau0="0" tau1="3"/><lightRay x="0" t="0" direction="-1" length="2"/>'
+    '</spacetime></axes>'
+    '<object3D id="sheet" primitive="embedding"><embedding kind="flamm" blackHole="hole" rMax="10"/></object3D>'
+    '<shape id="ring" shape="ellipse" width="100" height="100"><deform><modifier type="strain" hPlus="0.2" hCross="-0.1" frequency="1"/></deform></shape>'
+    '</composition></scene>\n')
+RELATIVITY_SHEET = '<embedding kind="flamm" blackHole="hole" rMax="10"/>'
+RELATIVITY_SHEET_OBJECT = '<object3D id="sheet" primitive="embedding">' + RELATIVITY_SHEET + '</object3D>'
+RELATIVITY_DIAGRAM = RELATIVITY[RELATIVITY.index('<axes'):RELATIVITY.index('</axes>') + len('</axes>')]
+RELATIVITY_RING = RELATIVITY[RELATIVITY.index('<shape'):RELATIVITY.index('</shape>') + len('</shape>')]
+VALID["relativity"] = RELATIVITY
+VALID["relativity-schwarzschild"] = RELATIVITY.replace('c="1" boost="0.6" grid="true"', 'compact="schwarzschild" blackHole="hole"')
+VALID["relativity-minkowski"] = RELATIVITY.replace('c="1" boost="0.6" grid="true"', 'boost="-0.999" compact="minkowski"')
+VALID["relativity-throat"] = RELATIVITY.replace(RELATIVITY_SHEET, '<embedding kind="flamm" blackHole="hole" rMax="3"/>')
+VALID["relativity-potential"] = RELATIVITY.replace('<blackHole id="hole" mass="1"/>', '').replace(RELATIVITY_SHEET, '<embedding kind="potential" k="4" rMin="1" rMax="10" surface="true"/>')
+VALID["relativity-potential-hole"] = RELATIVITY.replace(RELATIVITY_SHEET, '<embedding kind="potential" k="4" blackHole="hole" rMax="10"/>')
+# RD1 reads the literal boost: keyed values are the build's (rule 5)
+VALID["relativity-boost-key-unread"] = RELATIVITY.replace('value="0.8"', 'value="-1.2"')
+VALID["relativity-chirp"] = RELATIVITY.replace('frequency="1"', 'chirpMass="28" merger="8"')
+CASES += [
+    ("v17-spacetime", ["V17"], lambda _: RELATIVITY.replace('version="1.8"', 'version="1.7"').replace('<blackHole id="hole" mass="1"/>', '').replace(RELATIVITY_SHEET_OBJECT, '').replace(RELATIVITY_RING, '')),
+    ("v17-embedding", ["V17"], lambda _: RELATIVITY.replace('version="1.8"', 'version="1.7"').replace(RELATIVITY_DIAGRAM, '').replace(RELATIVITY_RING, '')),
+    ("v17-strain", ["V17"], lambda _: RELATIVITY.replace('version="1.8"', 'version="1.7"').replace('<blackHole id="hole" mass="1"/>', '').replace(RELATIVITY_DIAGRAM, '').replace(RELATIVITY_SHEET_OBJECT, '')),
+    ("rd1-speed-of-light", ["RD1", "S06"], lambda _: RELATIVITY.replace('c="1"', 'c="0"')),
+    ("rd1-boost", ["RD1"], lambda _: RELATIVITY.replace('boost="0.6"', 'boost="1"')),
+    ("rd1-schwarzschild-without-hole", ["RD1"], lambda _: RELATIVITY.replace('c="1" boost="0.6" grid="true"', 'compact="schwarzschild"')),
+    ("rd1-two-diagrams", ["RD1"], lambda _: RELATIVITY.replace('</spacetime></axes>', '</spacetime><spacetime/></axes>')),
+    ("rd2-superluminal", ["RD2"], lambda _: RELATIVITY.replace('velocity="0.5"', 'velocity="1"')),
+    ("rd2-parametric-without-t", ["RD2"], lambda _: RELATIVITY.replace(' t="tau" tau0="0"', ' tau0="0"')),
+    ("rd2-inertial-without-velocity", ["RD2"], lambda _: RELATIVITY.replace(' velocity="0.5"', '')),
+    ("rd2-acceleration-zero", ["RD2", "S06"], lambda _: RELATIVITY.replace('acceleration="2"', 'acceleration="0"')),
+    ("rd2-attribute-of-another-kind", ["RD2"], lambda _: RELATIVITY.replace('acceleration="2"', 'acceleration="2" velocity="0.5"')),
+    ("rd3-inside-horizon", ["RD3"], lambda _: RELATIVITY.replace('rMax="10"/></object3D>', 'rMin="1" rMax="10"/></object3D>')),
+    ("rd3-range", ["RD3"], lambda _: RELATIVITY.replace('rMax="10"/></object3D>', 'rMin="12" rMax="10"/></object3D>')),
+    ("rd3-rmin-zero", ["RD3", "S06"], lambda _: RELATIVITY.replace('<blackHole id="hole" mass="1"/>', '').replace(RELATIVITY_SHEET, '<embedding kind="potential" k="4" rMin="0" rMax="10"/>')),
+    ("rd3-spokes", ["RD3"], lambda _: RELATIVITY.replace('rMax="10"/></object3D>', 'rMax="10" spokes="2"/></object3D>')),
+    ("rd3-potential-without-k", ["RD3"], lambda _: RELATIVITY.replace('<blackHole id="hole" mass="1"/>', '').replace(RELATIVITY_SHEET, '<embedding kind="potential" rMin="1" rMax="10"/>')),
+    ("rd3-without-sheet", ["RD3"], lambda _: RELATIVITY.replace(RELATIVITY_SHEET, '').replace('<blackHole id="hole" mass="1"/>', '')),
+    ("rd3-sheet-elsewhere", ["RD3"], lambda _: RELATIVITY.replace('primitive="embedding"', 'primitive="sphere"')),
+    ("rd4-amplitude", ["RD4"], lambda _: RELATIVITY.replace('hPlus="0.2"', 'hPlus="2"')),
+    ("rd4-no-frequency", ["RD4"], lambda _: RELATIVITY.replace(' frequency="1"', '')),
+    ("rd4-both", ["RD4"], lambda _: RELATIVITY.replace('frequency="1"', 'frequency="1" chirpMass="28"')),
+    ("rd4-chirp-without-merger", ["RD4"], lambda _: RELATIVITY.replace('frequency="1"', 'chirpMass="28"')),
+    ("spacetime-compact-enum", ["S06"], lambda _: RELATIVITY.replace('grid="true"', 'grid="true" compact="kerr"')),
+    ("worldline-kind-enum", ["S06"], lambda _: RELATIVITY.replace('<lightRay', '<worldline kind="geodesic"/><lightRay')),
+    ("light-ray-direction-enum", ["S06"], lambda _: RELATIVITY.replace('direction="-1"', 'direction="2"')),
+    ("embedding-samples", ["S06"], lambda _: RELATIVITY.replace('rMax="10"/></object3D>', 'rMax="10" samples="4097"/></object3D>')),
+]
 CASES += [
     ("v16-fractal", ["V16"], lambda _: FRACTAL.replace('version="1.6"', 'version="1.5"')),
     ("frc1-julia-without-c", ["FRC1"], lambda _: FRACTAL.replace(' juliaX="-0.8" juliaY="0.156"', ' juliaX="-0.8"')),

@@ -71,6 +71,9 @@ pub struct AxesFrame {
     pub ticks: Vec<Vec<[f64; 2]>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<Label>,
+    /// The x and y tick steps (a polar grid's ring step twice; a number line's x step twice).
+    #[serde(skip)]
+    pub steps: [f64; 2],
 }
 
 impl AxesFrame {
@@ -95,7 +98,8 @@ pub fn frame(spec: &Spec) -> Result<AxesFrame, PlotError> {
     // a number-line does not read yMin and yMax: its one axis runs through the middle of the box
     let (y_min, y_max) = if spec.kind == AxesKind::NumberLine { (-1.0, 1.0) } else { (y_min, y_max) };
     let axes = Axes::new(x_min, x_max, y_min, y_max, spec.width, spec.height)?;
-    let mut out = AxesFrame { kind: spec.kind, axes, grid: vec![], axis: vec![], ticks: vec![], labels: vec![] };
+    let mut out =
+        AxesFrame { kind: spec.kind, axes, grid: vec![], axis: vec![], ticks: vec![], labels: vec![], steps: [0.0; 2] };
     let (w, h) = (spec.width, spec.height);
     let half = spec.tick_length / 2.0;
     let step = |k: usize, lo: f64, hi: f64| match spec.steps[k] {
@@ -105,6 +109,7 @@ pub fn frame(spec: &Spec) -> Result<AxesFrame, PlotError> {
     if spec.kind == AxesKind::Polar {
         let r = [x_min, x_max, y_min, y_max].iter().fold(0.0f64, |m, v| m.max(v.abs()));
         let s = step(0, 0.0, r)?;
+        out.steps = [s, s];
         let o = plots::to_pixel(&axes, 0.0, 0.0);
         for rho in plots::ticks(0.0, r, s)?.into_iter().filter(|&v| v > 0.0) {
             let circle: Vec<[f64; 2]> = (0..=CIRCLE_SEGMENTS)
@@ -145,6 +150,7 @@ pub fn frame(spec: &Spec) -> Result<AxesFrame, PlotError> {
         let s = step(1, y_min, y_max)?;
         Some((s, plots::ticks(y_min, y_max, s)?))
     };
+    out.steps = [sx, ys.as_ref().map_or(sx, |(s, _)| *s)];
     let xs_px: Vec<f64> = xs.iter().map(|&v| plots::to_pixel(&axes, v, 0.0)[0]).collect();
     let ys_px: Vec<f64> = ys.iter().flat_map(|(_, t)| t.iter().map(|&v| plots::to_pixel(&axes, 0.0, v)[1])).collect();
     if spec.grid && !line {

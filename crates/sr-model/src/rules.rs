@@ -25,6 +25,9 @@ use roxmltree::{Document, Node};
 
 use crate::diag::{element_path, Diagnostic, Loc};
 
+/// RD3's message, which its two rules share.
+const RD3: &str = "an object with primitive=\"embedding\" has exactly one embedding, and only such an object has one; a flamm sheet has rs or a blackHole and a potential sheet k; rMin (default rs for flamm, rs / 4 for potential, rs being 2 mass of the blackHole when rs is absent) is positive, below rMax and, for flamm, at least rs; spokes is at least 3.";
+
 /// Attributes that carry paints and may reference `url(#id)` or `var(--name)`.
 pub const PAINT_ATTRS: [&str; 8] =
     ["fill", "stroke", "color", "background", "paint", "activeColor", "highlight", "strokeColor"];
@@ -876,6 +879,83 @@ impl<'a> Eval<'a> {
         }
     }
 
+    /// The relativity draft's pattern p-srep-relativity: RD1 on a spacetime, RD2 on a worldline, RD3 on an object
+    /// that is or holds an embedding, RD4 on a strain modifier.
+    fn relativity(&mut self, n: Node, local: &str) {
+        let has = |k: &str| n.attribute(k).is_some();
+        let kind = n.attribute("kind");
+        match local {
+            "spacetime" => {
+                let b = num(n, "boost");
+                let one = n.parent_element().map_or(1, |p| kids(p, "spacetime").count()) <= 1;
+                let ok = (!has("c") || num(n, "c") > 0.0)
+                    && (!has("boost") || (b > -1.0 && b < 1.0))
+                    && (n.attribute("compact") != Some("schwarzschild") || has("blackHole"))
+                    && one;
+                self.check(ok, n, "RD1", || {
+                    "an axes has at most one spacetime, whose c is positive, whose boost as a literal lies strictly between -1 and 1, and which names a blackHole with compact=\"schwarzschild\".".into()
+                });
+            }
+            "worldline" => {
+                let (v, a) = (num(n, "velocity"), num(n, "acceleration"));
+                // XPath's @kind!='inertial' is false for an absent kind, as these comparisons are
+                let not = |k: &str| kind.is_some_and(|x| x != k);
+                let ok = (not("inertial") || (has("velocity") && v > -1.0 && v < 1.0))
+                    && (not("accelerated") || (has("acceleration") && a > 0.0))
+                    && (not("parametric") || (has("x") && has("t")))
+                    && (!has("velocity") || kind == Some("inertial"))
+                    && (!has("acceleration") || kind == Some("accelerated"))
+                    && (!(has("x") || has("t")) || kind == Some("parametric"))
+                    && (!(has("tau0") || has("tau1")) || not("inertial"));
+                self.check(ok, n, "RD2", || {
+                    "an inertial worldline has a velocity strictly between -1 and 1, an accelerated one a positive acceleration and a parametric one x and t; velocity is written only on an inertial worldline, acceleration on an accelerated one, x and t on a parametric one, tau0 and tau1 on an accelerated or a parametric one.".into()
+                });
+            }
+            "object3D" if n.attribute("primitive") == Some("embedding") || has_kid(n, "embedding") => {
+                // one assert on the object, reading its first embedding (the count refuses any other)
+                let e = kids(n, "embedding").next();
+                let at = |k: &str| e.and_then(|e| e.attribute(k));
+                let val = |k: &str| e.map_or(f64::NAN, |e| num(e, k));
+                let kind = at("kind");
+                let hole = at("blackHole").map_or(f64::NAN, |id| {
+                    n.document()
+                        .descendants()
+                        .find(|h| is(*h, "blackHole") && h.attribute("id") == Some(id))
+                        .map_or(f64::NAN, |h| 2.0 * num(h, "mass"))
+                });
+                let rs = if at("rs").is_some() { val("rs") } else { hole };
+                let rmin = match (at("rMin").is_some(), kind) {
+                    (true, _) => val("rMin"),
+                    (false, Some("flamm")) => rs,
+                    (false, Some("potential")) => rs / 4.0,
+                    _ => f64::NAN,
+                };
+                let not = |k: &str| kind.is_some_and(|x| x != k);
+                let ok = n.attribute("primitive") == Some("embedding")
+                    && kids(n, "embedding").count() == 1
+                    && (not("flamm") || at("rs").is_some() || at("blackHole").is_some())
+                    && (not("potential") || at("k").is_some())
+                    && rmin > 0.0
+                    && rmin < val("rMax")
+                    && (not("flamm") || rmin >= rs)
+                    && (at("spokes").is_none() || val("spokes") >= 3.0);
+                self.check(ok, n, "RD3", || RD3.into());
+            }
+            "modifier" if n.attribute("type") == Some("strain") => {
+                let unit = |k: &str| !has(k) || (num(n, k) >= -1.0 && num(n, k) <= 1.0);
+                let ok = unit("hPlus")
+                    && unit("hCross")
+                    && usize::from(has("frequency")) + usize::from(has("chirpMass")) == 1
+                    && (!has("frequency") || num(n, "frequency") > 0.0)
+                    && (!has("chirpMass") || has("merger"));
+                self.check(ok, n, "RD4", || {
+                    "a strain modifier has |hPlus| and |hCross| at most 1 and exactly one of a positive frequency and a chirpMass, which comes with merger.".into()
+                });
+            }
+            _ => {}
+        }
+    }
+
     /// The scale draft's pattern p-srep-scale: SC1, SC3 and SC4 on a camera, SC2 on a key whose segment is geometric
     /// (its own `interpolation`, else its animation's `defaultInterpolation`) and on the curves that ease a progress.
     fn scale(&mut self, n: Node, local: &str) {
@@ -1094,7 +1174,15 @@ impl<'a> Eval<'a> {
             }
             _ => {}
         }
+        // a black hole that a diagram or a sheet names lends them its mass and is not meant to be rendered
+        let lent = local == "blackHole"
+            && n.document().descendants().any(|d| {
+                (is(d, "spacetime") || is(d, "embedding"))
+                    && d.attribute("blackHole").is_some()
+                    && d.attribute("blackHole") == n.attribute("id")
+            });
         if matches!(local, "blackHole" | "accretionDisk")
+            && !lent
             && !scoped("camera").any(|c| xs_true(c.attribute("geodesics")))
         {
             self.warn(
@@ -1465,6 +1553,15 @@ impl<'a> Eval<'a> {
                         || ((is(d, "particleEmitter") || is(d, "particles3D"))
                             && (geometric("sizeCurve") || geometric("colorCurve")))
                 })
+                // the relativity draft's diagram, embedding and strain
+                || n.descendants().any(|d| {
+                    is(d, "spacetime")
+                        || is(d, "embedding")
+                        || (is(d, "object3D") && d.attribute("primitive") == Some("embedding"))
+                        || (is(d, "modifier")
+                            && (d.attribute("type") == Some("strain")
+                                || ["hPlus", "hCross", "chirpMass", "merger"].iter().any(|k| d.has_attribute(*k))))
+                })
                 // the planets draft's primitive and attributes
                 || n.descendants().any(|d| {
                     is(d, "object3D")
@@ -1472,7 +1569,7 @@ impl<'a> Eval<'a> {
                             || PLANET_ATTRIBUTES.iter().any(|k| d.has_attribute(*k)))
                 });
             self.check(!uses, n, "V17", || {
-                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets, starField, sky=\"physical\", primitive=\"planet\" and its attributes, orbit, nbody and trail, camera/@depth, scaleBar and the geometric curve need version=\"1.8\".".into()
+                "axes, plot, axes3D, plot3D, primitive=\"axes\", the modifier types matrix, map and complex, a group's deform, formulaAnimator, formulaMorph, shape/@morph, \\part in a formula, value assets, field nodes, space, ephemeris assets, object3D/@body, @positionFrom and @orientation, catalogue assets, starField, sky=\"physical\", primitive=\"planet\" and its attributes, orbit, nbody and trail, camera/@depth, scaleBar and the geometric curve, spacetime, primitive=\"embedding\", embedding and the strain modifier with hPlus, hCross, chirpMass and merger need version=\"1.8\".".into()
             });
         }
         // the time-frames draft (p-srep-time-frames)
@@ -1642,6 +1739,8 @@ impl<'a> Eval<'a> {
         self.orbits(n, local);
         // the scale draft (p-srep-scale)
         self.scale(n, local);
+        // the relativity draft (p-srep-relativity)
+        self.relativity(n, local);
         // the fields draft (p-srep-fields)
         if local == "field" {
             let sources = ["u", "function", "w", "grid", "forceField"].iter().filter(|k| has(k)).count()

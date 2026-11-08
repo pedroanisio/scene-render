@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- expect: V17 -->
+<scene version="1.7"><project width="640" height="360" fps="24" duration="10"/><composition><blackHole id="hole" mass="1"/><object3D id="sheet" primitive="embedding"><embedding kind="flamm" blackHole="hole" rMax="10"/></object3D></composition></scene>

@@ -351,6 +351,8 @@ pub enum AxesPart {
     Ticks,
     /// A plot, in [`Program::plots`].
     Plot(u32),
+    /// A part of a `spacetime` diagram (the relativity draft), in [`Program::spacetimes`].
+    Spacetime(u32, crate::spacetime::Part),
     Labels,
 }
 
@@ -600,6 +602,8 @@ pub struct Program {
     pub geoms: Vec<crate::parametric::Geom>,
     /// The plots of `axes` nodes (the plots draft), indexed by [`AxesPart::Plot`].
     pub plots: Vec<crate::axes::PlotInst>,
+    /// The `spacetime` diagrams of `axes` nodes (the relativity draft), indexed by [`AxesPart::Spacetime`].
+    pub spacetimes: Vec<crate::spacetime::Diagram>,
     /// The `axes` nodes, whose frames the evaluator computes before it places their children.
     pub axes_nodes: Vec<u32>,
     /// The 3D axes objects (the plots draft, rules 10 and 11), indexed by [`InstNode::axes3d`].
@@ -1320,6 +1324,9 @@ struct Builder {
     plots: Vec<crate::axes::PlotInst>,
     /// Plots waiting for their expressions to compile: (plot shape node, axes node, plot index, plot, scope, doc).
     pending_plot: Vec<(u32, u32, usize, m::Plot, Arc<str>, u16)>,
+    spacetimes: Vec<crate::spacetime::Diagram>,
+    /// A `spacetime`'s axes, element, part nodes, scope and document, built once every node exists.
+    pending_spacetime: Vec<(u32, m::Spacetime, Vec<(u32, crate::spacetime::Part)>, Arc<str>, u16)>,
     axes3d: Vec<crate::axes::Axes3DInst>,
     /// 3D axes objects waiting for their plots' expressions to compile: (node, axes, plots, scope, doc).
     pending_axes3d: Vec<(u32, m::Axes3D, Vec<m::Plot3D>, Arc<str>, u16)>,
@@ -2103,6 +2110,12 @@ impl Builder {
             let fill = if p.fill.is_none() { r##" fill="#00000000""## } else { "" };
             parts.push((format!(r#"<shape id="plot{i}" shape="path"{fill}{attrs}/>"#), AxesPart::Plot(i as u32)));
         }
+        let spacetime = a.children.iter().find_map(|c| match c {
+            m::AxesChild::Spacetime(st) => Some(st),
+            _ => None,
+        });
+        let diagram: Vec<(String, crate::spacetime::Part)> =
+            spacetime.map_or_else(Vec::new, |st| spacetime_parts(st, &path("spacetimeGrid", &grid_stroke, sw / 2.0)));
         let cctx = Ctx { scope: id.clone(), ..ctx.clone() };
         let mut kids = Vec::new();
         let one = |b: &mut Self, xml: &str| -> Option<u32> {
@@ -2123,6 +2136,12 @@ impl Builder {
                 self.nodes[k as usize].axes_part = Some((idx, part));
             }
             kids.push(k);
+        }
+        if let Some(st) = spacetime {
+            let nodes: Vec<(u32, crate::spacetime::Part)> =
+                diagram.iter().filter_map(|(xml, part)| one(self, xml).map(|k| (k, *part))).collect();
+            kids.extend(nodes.iter().map(|(k, _)| *k));
+            self.pending_spacetime.push((idx, st.clone(), nodes, ctx.scope.clone(), ctx.doc));
         }
         if let Some(c) = one(self, &format!(r#"<group id="content" width="{w}" height="{h}" clip="{}"/>"#, a.clip)) {
             let children = node_children(&Node::Axes(a.clone()));
@@ -3036,6 +3055,17 @@ impl Builder {
                     if morph && a.property == "path" && self.channels.len() > compiled {
                         self.channels[compiled].morph = true;
                     }
+                    // the relativity draft's rule 5: a spacetime's boost keys interpolate in rapidity
+                    let boost = e.as_any().downcast_ref::<m::Spacetime>().is_some() && a.property == "boost";
+                    if boost && self.channels.len() > compiled {
+                        if let Err(msg) = self.channels[compiled].in_rapidity() {
+                            let ci = compiled as u32;
+                            for s in &mut self.slots {
+                                s.channels.retain(|&c| c != ci);
+                            }
+                            self.diags.push(err("E04", format!("animate \"boost\" on {who:?}: {msg}"), a.loc, who));
+                        }
+                    }
                 }
                 "expression" => {
                     let x = c.as_any().downcast_ref::<m::Expression>().expect("expression");
@@ -3728,6 +3758,132 @@ impl Builder {
     /// presentations. A source that does not fit the field's kind, a field with no box, a mobius function without
     /// its eight coefficients, a portrait base of at most 1, Poynting arrows without a current-carrying wire and a
     /// charge, and a grid that is not a data source of a regular lattice are FLDE1.
+    /// The relativity draft: each `spacetime`'s diagram, built once every node exists: its `blackHole`'s r_s for the
+    /// Schwarzschild compactification, its parametric worldlines' expressions of `tau`, and its element target, which
+    /// carries the animated `boost`, `c`, `grid` and `compact`.
+    fn compile_spacetimes(&mut self) {
+        use crate::spacetime::{Diagram, EventInst, Motion, RayInst, SpacetimeInst, WorldlineInst};
+        use sr_3d::relativity::Compact;
+        for (axes, st, nodes, scope, doc) in std::mem::take(&mut self.pending_spacetime) {
+            let id = self.nodes[axes as usize].id.clone();
+            let who = format!("{id}/spacetime");
+            let compact = match st.compact {
+                m::Compact::None => Compact::None,
+                m::Compact::Minkowski => Compact::Minkowski,
+                m::Compact::Schwarzschild => {
+                    let hole = st.black_hole.as_deref().and_then(|h| {
+                        self.nodes.iter().find_map(|n| match &*n.elem {
+                            Node::BlackHole(b) if b.id == h && n.doc == doc => Some(b.mass.get()),
+                            _ => None,
+                        })
+                    });
+                    match hole {
+                        Some(mass) => Compact::Schwarzschild(2.0 * mass),
+                        None => {
+                            let msg = format!("{who}: compact=\"schwarzschild\" names no blackHole of the document");
+                            self.diags.push(err("E11", msg, st.loc, &*id));
+                            continue;
+                        }
+                    }
+                }
+            };
+            let (mut events, mut worldlines, mut rays, mut failed) = (Vec::new(), Vec::new(), Vec::new(), false);
+            for c in &st.children {
+                match c {
+                    m::SpacetimeChild::Event(e) => events.push(EventInst {
+                        x: e.x,
+                        t: e.t,
+                        light_cone: e.light_cone,
+                        extent: e.extent.map(|v| v.get()),
+                        marker_size: e.marker_size.get(),
+                        label: e.label.clone(),
+                    }),
+                    m::SpacetimeChild::Worldline(w) => {
+                        let i = worldlines.len();
+                        let motion = match w.kind {
+                            m::WorldlineKind::Inertial => w.velocity.map(Motion::Inertial),
+                            m::WorldlineKind::Accelerated => w.acceleration.map(|a| Motion::Accelerated(a.get())),
+                            m::WorldlineKind::Parametric => {
+                                let mut exprs = Vec::with_capacity(2);
+                                for (attr, src) in [("x", &w.x), ("t", &w.t)] {
+                                    let Some(src) = src else { continue };
+                                    let at = format!("{who}/worldline[{i}]@{attr}");
+                                    let mut res = ExprResolver {
+                                        b: self,
+                                        scope: scope.clone(),
+                                        doc,
+                                        points: false,
+                                        sample: &["tau"],
+                                        fold: false,
+                                    };
+                                    match vm::compile(src, &mut res) {
+                                        Ok(code) => {
+                                            let seed = self.project_seed;
+                                            self.exprs.push(ExprInst { code, slot: None, node: Some(axes), doc, seed });
+                                            exprs.push((self.exprs.len() - 1) as u32);
+                                        }
+                                        Err(e) => {
+                                            let msg = format!("{at}: {}", e.message);
+                                            self.diags.push(err("E01", msg, w.loc, at.as_str()));
+                                        }
+                                    }
+                                }
+                                <[u32; 2]>::try_from(exprs).ok().map(Motion::Parametric)
+                            }
+                        };
+                        let Some(motion) = motion else {
+                            // RD2 asks each kind for its attributes; an expression that did not compile has its E01
+                            if !matches!(w.kind, m::WorldlineKind::Parametric) || w.x.is_none() || w.t.is_none() {
+                                let msg = format!("{who}: worldline {i} lacks the attributes of its kind (RD2)");
+                                self.diags.push(err("E04", msg, w.loc, &*id));
+                            }
+                            failed = true;
+                            continue;
+                        };
+                        worldlines.push(WorldlineInst {
+                            motion,
+                            x0: w.x0,
+                            t0: w.t0,
+                            tau: [w.tau0, w.tau1],
+                            samples: w.samples as usize,
+                            label: w.label.clone(),
+                        });
+                    }
+                    m::SpacetimeChild::LightRay(r) => rays.push(RayInst {
+                        x: r.x,
+                        t: r.t,
+                        direction: match r.direction {
+                            m::LightRayDirection::V1 => 1.0,
+                            m::LightRayDirection::Minus1 => -1.0,
+                        },
+                        length: r.length.map(|v| v.get()),
+                    }),
+                    m::SpacetimeChild::Animation(_) => {}
+                }
+            }
+            if failed {
+                continue;
+            }
+            let key = format!("{id}/spacetime[0]");
+            let own = self.elements.iter().position(|e| *e.key == *key && e.node == Some(axes)).map(|t| t as u32);
+            let inst = SpacetimeInst {
+                id: who,
+                c: st.c.get(),
+                boost: st.boost,
+                grid: st.grid,
+                compact,
+                events,
+                worldlines,
+                rays,
+            };
+            self.spacetimes.push(Diagram { axes, inst, own });
+            let d = (self.spacetimes.len() - 1) as u32;
+            for (k, part) in nodes {
+                self.nodes[k as usize].axes_part = Some((axes, AxesPart::Spacetime(d, part)));
+            }
+        }
+    }
+
     fn compile_fields(&mut self) {
         use crate::field_node::{FieldInst, Kind, Part, Source};
         const XY: &[&str] = &["x", "y"];
@@ -4006,6 +4162,7 @@ impl Builder {
                 self.nodes[n as usize].axes_part = Some((axes, AxesPart::Plot(k)));
             }
         }
+        self.compile_spacetimes();
         // the plots draft: the x, y and z expressions of a 3D axes' plots, in t
         for (n, axes, plots, scope, doc) in std::mem::take(&mut self.pending_axes3d) {
             let points = self.nodes[n as usize].point.is_some();
@@ -4448,6 +4605,8 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         pending_geom: Vec::new(),
         plots: Vec::new(),
         pending_plot: Vec::new(),
+        spacetimes: Vec::new(),
+        pending_spacetime: Vec::new(),
         axes3d: Vec::new(),
         pending_axes3d: Vec::new(),
         fields: Vec::new(),
@@ -4682,6 +4841,7 @@ pub fn build(doc: &Document, opts: &EvalOptions) -> Result<Program, sr_model::Re
         exprs: b.exprs,
         geoms: b.geoms,
         plots: b.plots,
+        spacetimes: b.spacetimes,
         axes_nodes,
         axes3d: b.axes3d,
         fields: b.fields,
@@ -5013,6 +5173,58 @@ fn zero_opacity_sources(scene: &sr_model::model::Scene, warnings: &mut Vec<Diagn
             ));
         }
     }
+}
+
+/// The relativity draft: the path shapes of a `spacetime`, in paint order (the grid, every event's cones, the
+/// worldlines, the light rays, the event points), with the grid's shape given. Lines take their element's stroke
+/// style; cones fill with their event's `future` and `past`, points with their event's stroke.
+fn spacetime_parts(st: &m::Spacetime, grid: &str) -> Vec<(String, crate::spacetime::Part)> {
+    use crate::spacetime::Part;
+    let style = |e: &dyn Element| -> String {
+        ["strokeCap", "strokeJoin", "miterLimit", "dash", "dashOffset", "strokePosition"]
+            .iter()
+            .filter_map(|k| e.get_attr(k).map(|v| format!(r#" {k}="{}""#, xml_attr(&v.to_string()))))
+            .collect()
+    };
+    let none = "#00000000";
+    let (mut events, mut lines, mut rays) = (Vec::new(), Vec::new(), Vec::new());
+    for c in &st.children {
+        match c {
+            m::SpacetimeChild::Event(e) => events.push(e),
+            m::SpacetimeChild::Worldline(w) => lines.push(w),
+            m::SpacetimeChild::LightRay(r) => rays.push(r),
+            m::SpacetimeChild::Animation(_) => {}
+        }
+    }
+    let mut out = Vec::new();
+    if st.grid || st.children.iter().any(|c| matches!(c, m::SpacetimeChild::Animation(_))) {
+        out.push((grid.to_string(), Part::Grid));
+    }
+    for (i, e) in events.iter().enumerate().filter(|(_, e)| e.light_cone) {
+        for (future, name, paint) in [(true, "Future", &e.future), (false, "Past", &e.past)] {
+            let fill = xml_attr(&paint.to_string());
+            let xml = format!(r#"<shape id="cone{i}{name}" shape="path" fill="{fill}" stroke="{none}"/>"#);
+            out.push((xml, Part::Cone(i as u32, future)));
+        }
+    }
+    let stroked = |id: String, e: &dyn Element, stroke: &sr_model::values::Paint, width: f64| {
+        let stroke = xml_attr(&stroke.to_string());
+        format!(r#"<shape id="{id}" shape="path" fill="{none}" stroke="{stroke}" strokeWidth="{width}"{}/>"#, style(e))
+    };
+    for (i, w) in lines.iter().enumerate() {
+        out.push((stroked(format!("worldline{i}"), *w, &w.stroke, w.stroke_width.get()), Part::Worldline(i as u32)));
+    }
+    for (i, r) in rays.iter().enumerate() {
+        out.push((stroked(format!("lightRay{i}"), *r, &r.stroke, r.stroke_width.get()), Part::Ray(i as u32)));
+    }
+    for (i, e) in events.iter().enumerate() {
+        let fill = xml_attr(&e.stroke.to_string());
+        out.push((
+            format!(r#"<shape id="event{i}" shape="path" fill="{fill}" stroke="{none}"/>"#),
+            Part::Event(i as u32),
+        ));
+    }
+    out
 }
 
 #[cfg(test)]

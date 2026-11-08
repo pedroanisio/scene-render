@@ -543,7 +543,12 @@ fn plural(s: &str) -> String {
 
 /// Enumeration literal to a Rust variant name.
 fn variant_name(v: &str) -> String {
-    let mut out = String::new();
+    // a negative number keeps its sign, so that `-1` and `1` stay apart
+    let mut out = if v.strip_prefix('-').is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit())) {
+        String::from("Minus")
+    } else {
+        String::new()
+    };
     for seg in v.split(['-', '.', '_', ' ']) {
         if seg.is_empty() {
             continue;

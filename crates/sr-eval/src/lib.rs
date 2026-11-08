@@ -58,6 +58,7 @@ pub mod safe_area;
 pub mod sim;
 mod sim3d;
 pub mod solid;
+pub mod spacetime;
 #[doc(hidden)]
 pub mod splash;
 pub mod stroke_font;

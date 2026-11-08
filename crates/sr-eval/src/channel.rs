@@ -40,6 +40,9 @@ pub struct Channel {
     pub time_base: TimeBase,
     /// Path-data keys morph into each other (`shape/@morph`, the semantic-tex draft) instead of holding.
     pub morph: bool,
+    /// Number keys are speeds β = v/c that interpolate in rapidity atanh β (a spacetime's `boost`, the relativity
+    /// draft's rule 5); set by [`Channel::in_rapidity`].
+    rapidity: bool,
 }
 
 /// Inputs for compiling a channel.
@@ -138,7 +141,25 @@ impl Channel {
             additive: spec.additive,
             time_base: spec.time_base,
             morph: false,
+            rapidity: false,
         })
+    }
+
+    /// The relativity draft's rule 5: the keys are speeds, each a number strictly between −1 and 1, and a segment
+    /// interpolates their rapidities, so that the boosts of equal times compose to equal boosts. An additive channel
+    /// is refused, since speeds compose by `compose_beta` and not by addition.
+    pub fn in_rapidity(&mut self) -> Result<(), String> {
+        if self.additive {
+            return Err("boost keys interpolate in rapidity, and an additive boost would add speeds".into());
+        }
+        for (i, k) in self.keys.iter().enumerate() {
+            match k.v {
+                Value::Num(b) if -1.0 < b && b < 1.0 => {}
+                ref v => return Err(format!("key {}: a boost lies strictly between -1 and 1, not {v:?}", i + 1)),
+            }
+        }
+        self.rapidity = true;
+        Ok(())
     }
 
     /// First and last key time.
@@ -230,6 +251,18 @@ impl Channel {
             return b.v.clone();
         }
         let u = ((t - a.t) / d).clamp(0.0, 1.0);
+        if let (true, Value::Num(b0), Value::Num(b1)) = (self.rapidity, &a.v, &b.v) {
+            // the key's curve shapes the progress from one rapidity to the next (Catmull-Rom, TCB and geometric
+            // segments, whose tangents and ratios are of values, progress linearly)
+            let e = match a.ease {
+                Ease::Spring { stiffness, damping, mass } => {
+                    curve::spring_segment(t - a.t, d, stiffness, damping, mass)
+                }
+                other => other.apply(u),
+            };
+            let (p0, p1) = (b0.atanh(), b1.atanh());
+            return Value::Num((p0 + (p1 - p0) * e).tanh());
+        }
         let morph = self.morph && matches!((&a.v, &b.v), (Value::Str(_), Value::Str(_)));
         if let (Ease::Spring { stiffness, damping, mass }, true, true, false) = (a.ease, a.carry, i > 0, morph) {
             if a.spatial.is_none() {

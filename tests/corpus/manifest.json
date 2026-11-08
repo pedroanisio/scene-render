@@ -456,6 +456,9 @@
     "crt9-capture-without-source.scene.xml": [
       "CRT9"
     ],
+    "embedding-samples.scene.xml": [
+      "S06"
+    ],
     "ephemeris-digest-pattern.scene.xml": [
       "S06"
     ],
@@ -652,6 +655,9 @@
     ],
     "itr2-nested.scene.xml": [
       "ITR2"
+    ],
+    "light-ray-direction-enum.scene.xml": [
+      "S06"
     ],
     "med-droplet-range.scene.xml": [
       "S06"
@@ -1415,6 +1421,69 @@
     "r9.scene.xml": [
       "R9"
     ],
+    "rd1-boost.scene.xml": [
+      "RD1"
+    ],
+    "rd1-schwarzschild-without-hole.scene.xml": [
+      "RD1"
+    ],
+    "rd1-speed-of-light.scene.xml": [
+      "RD1",
+      "S06"
+    ],
+    "rd1-two-diagrams.scene.xml": [
+      "RD1"
+    ],
+    "rd2-acceleration-zero.scene.xml": [
+      "RD2",
+      "S06"
+    ],
+    "rd2-attribute-of-another-kind.scene.xml": [
+      "RD2"
+    ],
+    "rd2-inertial-without-velocity.scene.xml": [
+      "RD2"
+    ],
+    "rd2-parametric-without-t.scene.xml": [
+      "RD2"
+    ],
+    "rd2-superluminal.scene.xml": [
+      "RD2"
+    ],
+    "rd3-inside-horizon.scene.xml": [
+      "RD3"
+    ],
+    "rd3-potential-without-k.scene.xml": [
+      "RD3"
+    ],
+    "rd3-range.scene.xml": [
+      "RD3"
+    ],
+    "rd3-rmin-zero.scene.xml": [
+      "RD3",
+      "S06"
+    ],
+    "rd3-sheet-elsewhere.scene.xml": [
+      "RD3"
+    ],
+    "rd3-spokes.scene.xml": [
+      "RD3"
+    ],
+    "rd3-without-sheet.scene.xml": [
+      "RD3"
+    ],
+    "rd4-amplitude.scene.xml": [
+      "RD4"
+    ],
+    "rd4-both.scene.xml": [
+      "RD4"
+    ],
+    "rd4-chirp-without-merger.scene.xml": [
+      "RD4"
+    ],
+    "rd4-no-frequency.scene.xml": [
+      "RD4"
+    ],
     "rv1-update-without-step.scene.xml": [
       "RV1"
     ],
@@ -1568,6 +1637,9 @@
       "S06",
       "TF2"
     ],
+    "spacetime-compact-enum.scene.xml": [
+      "S06"
+    ],
     "spt1-mobius.scene.xml": [
       "SPT1"
     ],
@@ -1692,6 +1764,9 @@
     "v17-axes3d.scene.xml": [
       "V17"
     ],
+    "v17-embedding.scene.xml": [
+      "V17"
+    ],
     "v17-fields.scene.xml": [
       "V17"
     ],
@@ -1725,7 +1800,13 @@
     "v17-space.scene.xml": [
       "V17"
     ],
+    "v17-spacetime.scene.xml": [
+      "V17"
+    ],
     "v17-star-fields.scene.xml": [
+      "V17"
+    ],
+    "v17-strain.scene.xml": [
       "V17"
     ],
     "v17-time-frames.scene.xml": [
@@ -1921,6 +2002,9 @@
     ],
     "whitewater-foam-mode.scene.xml": [
       "S06"
+    ],
+    "worldline-kind-enum.scene.xml": [
+      "S06"
     ]
   },
   "valid": {
@@ -2062,6 +2146,14 @@
     "r15-has-audio-padded-true.scene.xml": [],
     "r48-threed-0.scene.xml": [],
     "reactive-values.scene.xml": [],
+    "relativity-boost-key-unread.scene.xml": [],
+    "relativity-chirp.scene.xml": [],
+    "relativity-minkowski.scene.xml": [],
+    "relativity-potential-hole.scene.xml": [],
+    "relativity-potential.scene.xml": [],
+    "relativity-schwarzschild.scene.xml": [],
+    "relativity-throat.scene.xml": [],
+    "relativity.scene.xml": [],
     "repeat-points-neutral-steps.scene.xml": [],
     "repeat-points.scene.xml": [],
     "scale-bar-si.scene.xml": [],
