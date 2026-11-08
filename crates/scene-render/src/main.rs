@@ -496,8 +496,9 @@ enum Command {
         /// Scene document.
         #[arg(value_name = "FILE")]
         file: PathBuf,
-        /// An adapter's measured rate in path segments per second (repeatable): part of its name, ignoring case, then
-        /// `=` and the rate, such as `rtx=2.6e9`. An encode report's `paths.traced` over its render time measures it.
+        /// An adapter's measured rate in path segments per second (repeatable): its name or part of it, ignoring case,
+        /// then `=` and the rate, such as `rtx=2.6e9`; a whole name names its adapter even where another adapter's
+        /// name contains it. An encode report's `paths.traced` over its render time measures it.
         #[arg(long, value_name = "NAME=RATE")]
         rate: Vec<String>,
     },
@@ -1180,16 +1181,12 @@ fn schedule(file: &Path, rates: &[String], out: &mut Out) -> std::io::Result<u8>
                 format!("--rate {given}: the rate must be a positive number of path segments per second"),
             ));
         };
-        let part = part.trim().to_lowercase();
-        let hit: Vec<usize> =
-            (0..list.len()).filter(|&i| !part.is_empty() && list[i].name.to_lowercase().contains(&part)).collect();
-        let devices =
-            hit.iter().filter(|&&i| !hit.iter().any(|&k| k < i && schedule::same_device(&list[k].name, &list[i].name)));
-        let devices = devices.count();
-        if devices != 1 {
-            let why = if devices == 0 { "names no adapter" } else { "names more than one adapter" };
-            return Ok(out.fail(ErrorKind::Usage, format!("--rate {given} {why}; the adapters are: {names}")));
-        }
+        let hit = match schedule::named(&list, part) {
+            Ok(hit) => hit,
+            Err(why) => {
+                return Ok(out.fail(ErrorKind::Usage, format!("--rate {given} {why}; the adapters are: {names}")))
+            }
+        };
         for i in hit {
             list[i].rate = Some(rate);
         }
