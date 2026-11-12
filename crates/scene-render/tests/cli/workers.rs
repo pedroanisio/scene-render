@@ -34,8 +34,13 @@ fn scene(d: &Path) -> PathBuf {
 
 /// A worker serving one coordinator, and the address it listens on.
 fn worker(cache: &Path, token: &str) -> (Child, String) {
+    worker_at_once(cache, token, 1)
+}
+
+/// A worker that renders `at_once` chunks at once.
+fn worker_at_once(cache: &Path, token: &str, at_once: usize) -> (Child, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_scene-render"))
-        .args(["serve", "--listen", "127.0.0.1:0", "--once", "--cache"])
+        .args(["serve", "--listen", "127.0.0.1:0", "--once", "--parallel", &at_once.to_string(), "--cache"])
         .arg(cache)
         .env("SR_WORKER_TOKEN", token)
         .env("NO_COLOR", "1")
@@ -114,6 +119,35 @@ fn a_worker_on_the_network_renders_chunks_that_join_into_the_serial_frames() {
     assert_eq!(scenes.len(), 1);
     assert!(scenes[0].path().join("s.scene.xml").is_file() && scenes[0].path().join("assets/tile.png").is_file());
     assert_eq!(std::fs::read_dir(d.join("cache/chunks")).unwrap().count(), 0, "a sent chunk is not kept");
+}
+
+#[test]
+fn a_worker_that_renders_two_chunks_at_once_is_given_two_links() {
+    if !ffmpeg("encode --workers") {
+        return;
+    }
+    let d = dir("two");
+    let scene = scene(&d);
+    let (mut child, address) = worker_at_once(&d.join("cache"), "one token", 2);
+    let o = encode(&scene, &d.join("shared.mkv"), &address, "one token");
+    if no_gpu(&o) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return;
+    }
+    let err = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert_eq!(o.status.code(), Some(0), "{err}");
+    assert!(err.contains("ready, 2 chunk(s) at once"), "{err}");
+    // one worker here and two links: three chunks of two seconds, and the links take at least the last two
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    let remote = v["result"]["outputs"][0]["remote"].as_array().unwrap_or_else(|| panic!("{v:#}"));
+    assert_eq!(remote.len(), 2, "{v:#}");
+    assert!(remote[0]["worker"].as_str().unwrap().ends_with("#1"), "{v:#}");
+    assert!(remote[1]["worker"].as_str().unwrap().ends_with("#2"), "{v:#}");
+    assert!(remote.iter().all(|r| r["failed"].is_null()), "{v:#}");
+    assert!(remote.iter().map(|r| r["chunks"].as_u64().unwrap()).sum::<u64>() >= 2, "{v:#}");
+    assert_eq!(decode(&d.join("shared.mkv")).len(), 60 * 64 * 36 * 3);
+    assert!(child.wait().unwrap().success());
 }
 
 #[test]

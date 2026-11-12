@@ -124,8 +124,12 @@ fn link_error(e: LinkError) -> String {
     e.to_string()
 }
 
-/// Opens the link to one worker and readies the scene there.
-fn ready(spec: &str, token: &str, bundle: &Bundle) -> Result<(Link, String, String), String> {
+/// A link to a worker with the scene ready there: the link, the worker's name, the scene as it names it, and how
+/// many chunks it renders at once.
+type Ready = (Link, String, String, usize);
+
+/// Opens a link to one worker and readies the scene there.
+fn ready(spec: &str, token: &str, bundle: &Bundle) -> Result<Ready, String> {
     let at = address(spec);
     let addresses: Vec<_> = at.to_socket_addrs().map_err(|e| format!("cannot find {at}: {e}"))?.collect();
     let mut stream = Err(format!("cannot find {at}"));
@@ -144,6 +148,8 @@ fn ready(spec: &str, token: &str, bundle: &Bundle) -> Result<(Link, String, Stri
     if theirs != env!("CARGO_PKG_VERSION") {
         return Err(format!("it is scene-render {theirs} and this is {}", env!("CARGO_PKG_VERSION")));
     }
+    let most = crate::serve::MAX_SLOTS as u64;
+    let slots = about.get("slots").and_then(Value::as_u64).unwrap_or(1).clamp(1, most) as usize;
     let host = about.get("host").and_then(Value::as_str).filter(|h| !h.is_empty()).map(str::to_string);
     let name = host.map_or_else(|| at.clone(), |h| format!("{h} ({at})"));
     let mut quiet = |_: &str, _: &Value| Ok(());
@@ -163,23 +169,47 @@ fn ready(spec: &str, token: &str, bundle: &Bundle) -> Result<(Link, String, Stri
     let manifest = serde_json::to_value(&bundle.manifest).map_err(|e| e.to_string())?;
     let (opened, _) = link.call("open", manifest, None, &mut quiet).map_err(link_error)?;
     let scene = opened.get("scene").and_then(Value::as_str).ok_or("it did not name the scene it opened")?.to_string();
-    Ok((link, name, scene))
+    Ok((link, name, scene, slots))
 }
 
 impl Workers {
     /// Readies every worker of `specs`, all at once. Each that cannot be readied is reported through `note` and
     /// left out.
     pub fn connect(specs: &[String], token: &str, bundle: &Bundle, job: Job, note: &mut dyn FnMut(String)) -> Workers {
-        let readied: Vec<Result<(Link, String, String), String>> = std::thread::scope(|sc| {
-            let handles: Vec<_> = specs.iter().map(|spec| sc.spawn(move || ready(spec, token, bundle))).collect();
+        // The first link to each worker sends the files; then one more link for each further chunk it renders at
+        // once, which finds the files there and the scene loaded.
+        let readied: Vec<Result<Vec<Ready>, String>> = std::thread::scope(|sc| {
+            let handles: Vec<_> = specs
+                .iter()
+                .map(|spec| {
+                    sc.spawn(move || {
+                        let first = ready(spec, token, bundle)?;
+                        let mut links = Vec::new();
+                        for _ in 1..first.3 {
+                            // a link that does not open costs a slot, not the worker
+                            if let Ok(more) = ready(spec, token, bundle) {
+                                links.push(more);
+                            }
+                        }
+                        links.insert(0, first);
+                        Ok(links)
+                    })
+                })
+                .collect();
             handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("its set-up panicked".into()))).collect()
         });
         let mut workers = Vec::new();
         for (spec, r) in specs.iter().zip(readied) {
             match r {
-                Ok((link, name, scene)) => {
-                    note(format!("worker {name}: ready"));
-                    workers.push(Worker { name, scene, link: Mutex::new(Some(link)) });
+                Ok(links) => {
+                    let several = links.len() > 1;
+                    if let Some(first) = links.first() {
+                        note(format!("worker {}: ready, {} chunk(s) at once", first.1, links.len()));
+                    }
+                    for (k, (link, name, scene, _)) in links.into_iter().enumerate() {
+                        let name = if several { format!("{name} #{}", k + 1) } else { name };
+                        workers.push(Worker { name, scene, link: Mutex::new(Some(link)) });
+                    }
                 }
                 Err(e) => note(format!("worker {spec} is left out: {e}")),
             }

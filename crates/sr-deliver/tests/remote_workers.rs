@@ -12,9 +12,10 @@ use std::sync::{Arc, Mutex};
 use sr_deliver::remote::{Part, PartDone, RemoteWorkers, Segment};
 
 /// Held by each test while it runs.
-fn alone() -> std::sync::MutexGuard<'static, ()> {
+fn alone() -> Option<std::sync::MutexGuard<'static, ()>> {
     static ONE: Mutex<()> = Mutex::new(());
-    ONE.lock().unwrap_or_else(|e| e.into_inner())
+    // SR_TEST_TOGETHER lets them run at once, to look at what stops
+    std::env::var_os("SR_TEST_TOGETHER").is_none().then(|| ONE.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 fn gpu() -> Option<sr_gpu::Gpu> {

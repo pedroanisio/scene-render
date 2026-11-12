@@ -485,6 +485,9 @@ enum Command {
         /// (never that scene's own), and sent again when next needed.
         #[arg(long, value_name = "BYTES", default_value_t = serve::DEFAULT_CACHE_BYTES)]
         cache_bytes: u64,
+        /// Chunks rendered at once, each on a GPU device of its own; a coordinator opens that many links.
+        #[arg(long, value_name = "N", default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=16))]
+        parallel: u8,
         /// File holding the token shared with the coordinators (default: the environment variable
         /// SR_WORKER_TOKEN).
         #[arg(long, value_name = "PATH")]
@@ -2792,8 +2795,8 @@ fn dispatch(command: Command, out: &mut Out) -> std::io::Result<u8> {
                 out,
             )
         }
-        Command::Serve { listen, cache, cache_bytes, token_file, once } => {
-            match serve::run(&listen, cache, cache_bytes, token_file.as_deref(), once, false) {
+        Command::Serve { listen, cache, cache_bytes, parallel, token_file, once } => {
+            match serve::run(&listen, cache, cache_bytes, parallel as usize, token_file.as_deref(), once, false) {
                 Ok(()) => Ok(0),
                 Err(message) => Ok(out.fail(ErrorKind::Usage, message)),
             }

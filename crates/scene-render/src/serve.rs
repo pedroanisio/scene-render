@@ -4,8 +4,15 @@
 //! The worker listens on a TCP address and speaks the protocol of [`crate::net`]. A coordinator that holds the
 //! same token sends the files of a scene (each once: they are kept by their SHA-256), opens the scene, and asks
 //! for chunks of its outputs; the worker renders each with [`sr_deliver::remote::Segment`] and sends the file back.
-//! It renders one chunk at a time, on one GPU device it keeps between chunks, and keeps the scenes it has loaded
-//! in memory, so a second chunk of the same scene, from the same encode or a later one, does not load it again.
+//! It renders `--parallel` chunks at once (one by default), each on a GPU device of its own that it keeps between
+//! chunks, and keeps the scenes it has loaded in memory, so a second chunk of the same scene, from the same encode
+//! or a later one, does not load it again. A coordinator opens one link for each chunk the worker renders at once.
+//!
+//! Chunks render on threads the worker starts once and keeps (`Renderers`), each with its own device. With
+//! NVIDIA's driver 580 on Linux, a Vulkan device destroyed while another thread that used the driver ends can
+//! stop both for good (seen in `vkDestroyDevice`, under two deliveries at once in one process). A session's thread
+//! comes and goes with its coordinator, so it never touches the driver; a render thread never ends, so a device
+//! can be destroyed, on its own thread, when the card proves too small for as many renders at once.
 //!
 //! What a coordinator sends is untrusted until its messages verify, and bounded after: file names are relative,
 //! without `..`, and land under the scene's own directory in the cache; a scene holds at most [`MAX_FILES`] files;
@@ -32,6 +39,8 @@ use crate::net::{self, answer, is_digest, notice, refusal, Link, LinkError, Side
 pub const MAX_FILES: usize = 100_000;
 /// The longest relative path of a scene's file, in bytes.
 pub const MAX_PATH: usize = 1_024;
+/// The most chunks a worker renders at once.
+pub const MAX_SLOTS: usize = 16;
 /// Scenes kept loaded in memory.
 const LOADED: usize = 2;
 /// Bytes of files a worker keeps when no limit is given: past it, the files used longest ago go first.
@@ -169,8 +178,8 @@ struct Shared {
     cache: PathBuf,
     /// Bytes of files kept.
     cache_bytes: u64,
-    /// One chunk renders at a time; the device is made for the first and kept.
-    gpu: Mutex<Option<sr_gpu::Gpu>>,
+    /// The threads that render, `--parallel` of them at the start.
+    renderers: Arc<Renderers>,
     /// Scenes loaded, most recently used last.
     loaded: Mutex<Vec<(String, Arc<sr_model::Document>)>>,
     /// Counts the chunk files, so two never share a name.
@@ -194,8 +203,105 @@ impl Shared {
     }
 }
 
+/// What a render thread did with a chunk, for what it does with its device.
+enum Verdict {
+    /// The device is good for the next chunk.
+    Keep,
+    /// The GPU ran out of memory while `at_once` chunks were allowed.
+    OutOfMemory {
+        /// Chunks allowed at once when this one started.
+        at_once: usize,
+    },
+    /// The render panicked: the device is destroyed and another made for the next chunk.
+    Panicked,
+}
+
+/// A chunk for a render thread: it is given the thread's device, which it makes when there is none.
+type Job = Box<dyn FnOnce(&mut Option<sr_gpu::Gpu>) -> Verdict + Send>;
+
+/// The worker's render threads. Each takes the next chunk as it finishes the last and owns the device it renders
+/// on. When the GPU runs out of memory the thread that met it destroys its device and renders no more, so fewer
+/// chunks render at once from then on; the last thread always stays.
+struct Renderers {
+    queue: Mutex<std::collections::VecDeque<Job>>,
+    waiting: std::sync::Condvar,
+    /// Threads still rendering: the chunks rendered at once now.
+    active: Mutex<usize>,
+}
+
+impl Renderers {
+    /// Starts `threads` render threads.
+    fn start(threads: usize) -> Arc<Renderers> {
+        let threads = threads.max(1);
+        let pool = Arc::new(Renderers {
+            queue: Mutex::new(std::collections::VecDeque::new()),
+            waiting: std::sync::Condvar::new(),
+            active: Mutex::new(threads),
+        });
+        for _ in 0..threads {
+            let pool = pool.clone();
+            std::thread::spawn(move || pool.render());
+        }
+        pool
+    }
+
+    /// Chunks rendered at once now.
+    fn at_once(&self) -> usize {
+        *self.active.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Hands a chunk to the next free thread.
+    fn give(&self, job: Job) {
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).push_back(job);
+        self.waiting.notify_one();
+    }
+
+    /// A render thread's life. It does not return: a thread that stops rendering waits for ever, so no thread that
+    /// used the driver ever ends while the worker runs.
+    fn render(&self) {
+        let mut device: Option<sr_gpu::Gpu> = None;
+        loop {
+            let job = {
+                let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+                loop {
+                    if let Some(job) = queue.pop_front() {
+                        break job;
+                    }
+                    queue = self.waiting.wait(queue).unwrap_or_else(|e| e.into_inner());
+                }
+            };
+            match job(&mut device) {
+                Verdict::Keep => {}
+                Verdict::Panicked => device = None,
+                Verdict::OutOfMemory { at_once } => {
+                    // Chunks that fail together were all allowed the same number: they lower it by one, once.
+                    let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+                    if *active > at_once.saturating_sub(1).max(1) {
+                        *active -= 1;
+                        eprintln!("the GPU ran out of memory: {} chunk(s) at once from now on", *active);
+                        drop(active);
+                        // the memory goes back to the card, on this thread, which then renders no more
+                        drop(device.take());
+                        loop {
+                            std::thread::park();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What a session hears from the render thread that has its chunk.
+enum Heard {
+    /// Frames rendered so far.
+    Frames(u64),
+    /// The chunk's outcome.
+    Done(Result<Box<sr_deliver::Report>, String>),
+}
+
 /// What a worker says of itself in answer to `hello`.
-fn about() -> Value {
+fn about(slots: usize) -> Value {
     let ffmpeg = std::process::Command::new(sr_media::ffmpeg())
         .arg("-version")
         .output()
@@ -208,6 +314,7 @@ fn about() -> Value {
         "host": std::env::var("HOSTNAME").ok().or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string())).unwrap_or_default(),
         "ffmpeg": ffmpeg,
         "document_bytes": sr_model::limits::MAX_DOCUMENT_BYTES,
+        "slots": slots,
     })
 }
 
@@ -216,10 +323,12 @@ pub fn run(
     listen: &str,
     cache: Option<PathBuf>,
     cache_bytes: u64,
+    slots: usize,
     token_file: Option<&Path>,
     once: bool,
     quiet: bool,
 ) -> Result<(), String> {
+    let slots = slots.clamp(1, MAX_SLOTS);
     let token = net::token(token_file)?;
     let cache = match cache {
         Some(c) => c,
@@ -241,7 +350,7 @@ pub fn run(
         token,
         cache,
         cache_bytes,
-        gpu: Mutex::new(None),
+        renderers: Renderers::start(slots),
         loaded: Mutex::new(Vec::new()),
         chunk: AtomicU64::new(0),
         quiet,
@@ -249,7 +358,7 @@ pub fn run(
     let address = listener.local_addr().map_or_else(|_| listen.to_string(), |a| a.to_string());
     // one line a caller can wait for and read the port from (`--listen 127.0.0.1:0` takes a free one)
     println!(
-        "scene-render {} worker listening on {address}, cache {}",
+        "scene-render {} worker listening on {address}, cache {}, {slots} chunk(s) at once",
         env!("CARGO_PKG_VERSION"),
         shared.cache.display()
     );
@@ -276,7 +385,20 @@ pub fn run(
             }
         });
         if once {
-            let _ = session.join();
+            // one coordinator: its first link and the others it opens, one for each chunk at once
+            let mut sessions = vec![session];
+            listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+            while sessions.iter().any(|s| !s.is_finished()) {
+                if let Ok((stream, _)) = listener.accept() {
+                    let _ = stream.set_nonblocking(false);
+                    let shared_for = shared.clone();
+                    sessions.push(std::thread::spawn(move || {
+                        let _ = serve(stream, &shared_for);
+                    }));
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
             return Ok(());
         }
     }
@@ -357,7 +479,7 @@ fn serve(stream: TcpStream, shared: &Shared) -> Result<(), LinkError> {
         link.send(refusal(&id, message.clone()), None)?;
         return Err(LinkError::Refused(message));
     }
-    link.send(answer(&id, about()), None)?;
+    link.send(answer(&id, about(shared.renderers.at_once())), None)?;
     shared.say(format!("{peer}: connected"));
     // the scenes this session opened: their documents stay loaded while it lasts
     let mut open: BTreeMap<String, Arc<sr_model::Document>> = BTreeMap::new();
@@ -590,38 +712,55 @@ fn render(
         segment: Some(sr_deliver::remote::Segment { part: request.part, cancel: Some(cancel.clone()) }),
         remote: None,
     };
-    // one chunk at a time: a second coordinator's waits here
-    let mut gpu = shared.gpu.lock().unwrap_or_else(|e| e.into_inner());
-    if gpu.is_none() {
-        *gpu = Some(sr_gpu::Gpu::new_for(true).map_err(|e| e.to_string())?);
-    }
-    let Some(device) = gpu.as_ref() else { return Err("no GPU device".into()) };
+    // The chunk goes to a render thread; this thread, the session's, passes on what it hears. Every frame is
+    // announced, which is also how a coordinator that went away is noticed: the render stops at its next frame.
     let began = std::time::Instant::now();
     shared.say(format!("{peer}: frames {}..{} of {}", request.part.first, request.part.last, request.part.frames));
-    // every frame is announced, which is also how a coordinator that went away is noticed: the render stops
-    let mut announced = 0u64;
-    let mut progress = |done: u64, _total: u64| {
-        if done > announced && !cancel.load(Relaxed) {
-            announced = done;
-            if link.send(notice("progress", json!({ "done": done })), None).is_err() {
-                cancel.store(true, Relaxed);
+    let (tell, heard) = std::sync::mpsc::channel::<Heard>();
+    let (doc, at_once) = (doc.clone(), shared.renderers.at_once());
+    shared.renderers.give(Box::new(move |device: &mut Option<sr_gpu::Gpu>| {
+        let mut announced = 0u64;
+        let mut progress = |done: u64, _total: u64| {
+            if done > announced {
+                announced = done;
+                let _ = tell.send(Heard::Frames(done));
             }
-        }
-    };
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        sr_deliver::deliver(doc, &output, Some(device), &opts, &mut progress)
+        };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if device.is_none() {
+                *device = Some(sr_gpu::Gpu::new_for(true).map_err(|e| e.to_string())?);
+            }
+            let Some(gpu) = device.as_ref() else { return Err("no GPU device".to_string()) };
+            sr_deliver::deliver(&doc, &output, Some(gpu), &opts, &mut progress).map_err(|e| e.to_string())
+        }));
+        let (said, verdict) = match outcome {
+            Ok(Ok(report)) => (Ok(Box::new(report)), Verdict::Keep),
+            Ok(Err(message)) if message.contains("Out of Memory") => (Err(message), Verdict::OutOfMemory { at_once }),
+            Ok(Err(message)) => (Err(message), Verdict::Keep),
+            Err(_) => (
+                Err("the render failed inside the engine (a panic; see the worker's output)".into()),
+                Verdict::Panicked,
+            ),
+        };
+        let _ = tell.send(Heard::Done(said));
+        verdict
     }));
-    let report = match outcome {
-        Ok(Ok(report)) => report,
-        Ok(Err(e)) => {
-            let _ = std::fs::remove_file(&file);
-            return Err(e.to_string());
-        }
-        Err(_) => {
-            let _ = std::fs::remove_file(&file);
-            // a device a panic left half used is not kept
-            *gpu = None;
-            return Err("the render failed inside the engine (a panic; see the worker's output)".into());
+    let report = loop {
+        match heard.recv() {
+            Ok(Heard::Frames(done)) => {
+                if !cancel.load(Relaxed) && link.send(notice("progress", json!({ "done": done })), None).is_err() {
+                    cancel.store(true, Relaxed);
+                }
+            }
+            Ok(Heard::Done(Ok(report))) => break report,
+            Ok(Heard::Done(Err(message))) => {
+                let _ = std::fs::remove_file(&file);
+                return Err(message);
+            }
+            Err(_) => {
+                let _ = std::fs::remove_file(&file);
+                return Err("the render thread ended without an answer".into());
+            }
         }
     };
     let frames = (request.part.last - request.part.first) as f64;
