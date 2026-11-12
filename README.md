@@ -245,7 +245,7 @@ default sidecars remain unchanged. SRT sidecars use `.sdh.srt` or `.forced.srt` 
 - An output's conversion to its colour space and transfer does not tone-map; HDR outputs convert primaries and transfer, and tone mapping comes from `colorManagement` (see [effects, transitions and colour finishing](#effects-transitions-and-colour-finishing)).
 - Remote media is not fetched while rendering.
 - Video layers sample without mipmaps, so strong minification aliases.
-- One output renders on one GPU at a time.
+- One output renders on one GPU at a time on one machine; `encode --workers` adds the GPUs of other machines, one or more renders each (see "Rendering on several machines").
 
 ## Vector graphics, deformation and rigging
 
