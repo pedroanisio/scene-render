@@ -5,7 +5,7 @@ at each tag; edit `RELEASE_NOTES.md`, not this file. Entries are kept as release
 been removed since: "the cinematic impact SREP" is sr-core SREP 40, whose working draft this repository removed after v0.3.2.
 Versions up to v0.4.1 were released under the MIT License from github.com/pedroanisio/rs-scene-render.
 
-## v0.9.1 — unreleased
+## v0.9.1 — 2026-11-12
 
 This release renders one video on several machines. `scene-render serve` is a render worker, and `encode --workers` hands chunks of a video output to workers on other machines beside the one that encodes; the chunks are joined without encoding again, and a lossless output decodes to the frames of a serial render. A scene document may now hold 256 MiB and 16,000,000 XML nodes. The release also carries what was merged after v0.9.0: the relativity draft of sr-core for documents of version 1.8, a Dockerfile that compiles any git reference with a wrapper that runs the image in place of the host binary, and two fixes to `schedule`. A render without workers gives the frames it gave in v0.9.0. The CLI output schema is 1.4.0 with one more command name, `serve`, and each output's report gains `remote`.
 
