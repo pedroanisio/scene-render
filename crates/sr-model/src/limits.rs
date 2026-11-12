@@ -7,14 +7,14 @@
 use std::io::Read as _;
 use std::path::Path;
 
-/// Bytes a scene document may hold (64 MiB). A file past it is refused before it is read; the bound also caps the
+/// Bytes a scene document may hold (256 MiB). A file past it is refused before it is read; the bound also caps the
 /// attribute text, which [`MAX_XML_NODES`] does not count.
-pub const MAX_DOCUMENT_BYTES: u64 = 64 << 20;
+pub const MAX_DOCUMENT_BYTES: u64 = 256 << 20;
 
 /// XML nodes (elements, text, comments and processing instructions) a document may hold. A node program's output
 /// may hold up to [`crate::program::MAX_ELEMENTS`] elements, and the document holding it is parsed again with the
 /// output in place, so the bound leaves room for those, the text between them and the document around them.
-pub const MAX_XML_NODES: u32 = 4_000_000;
+pub const MAX_XML_NODES: u32 = 16_000_000;
 
 /// Levels elements may nest below the root element (`S12`). The parser and the validators descend recursively, so
 /// the nesting is measured on the raw text before the parse.

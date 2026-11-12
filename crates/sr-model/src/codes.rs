@@ -20,7 +20,7 @@ const FIXED: &[(&str, &str, &str)] = &[
     (
         "XML",
         "xml",
-        "The file is not well-formed XML, or is past a document limit: larger than 64 MiB or more than 4,000,000 XML nodes.",
+        "The file is not well-formed XML, or is past a document limit: larger than 256 MiB or more than 16,000,000 XML nodes.",
     ),
     ("S01", "structure", "The root element is not <scene>."),
     ("S02", "structure", "An element is not allowed where it appears: unknown, out of order, or repeated too often."),
