@@ -31,6 +31,7 @@ pub mod legibility;
 pub mod metadata;
 pub mod overlay;
 pub mod pipeline;
+pub mod remote;
 pub mod render_report;
 pub mod segment_audio;
 pub mod segments;

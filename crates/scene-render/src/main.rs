@@ -5,8 +5,11 @@ mod arena;
 mod changes;
 mod frames;
 mod mcp;
+mod net;
 mod output;
 mod schedule;
+mod serve;
+mod workers;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -449,6 +452,46 @@ enum Command {
         /// with several outputs, include {id} in the path for the output's id.
         #[arg(long, value_name = "PATH")]
         report: Option<PathBuf>,
+        /// Engines on other machines (`scene-render serve`) that render chunks of the video outputs beside this
+        /// one: HOST or HOST:PORT (port 7878 when none), separated by commas. The chunks are one queue that
+        /// every worker takes from, so a faster machine renders more; a worker that cannot be reached, or fails,
+        /// is left out and the others render its share. Every worker must be this version and hold the same
+        /// token (the environment variable SR_WORKER_TOKEN, or --token-file). With workers, `--hw auto` encodes
+        /// in software so that every chunk is encoded the same way. Outputs that render as one stream (two
+        /// passes, a file size to fit, flash or contrast checks) render here alone.
+        #[arg(long, value_name = "HOST[:PORT],...", value_delimiter = ',', env = workers::WORKERS_ENV)]
+        workers: Vec<String>,
+        /// File holding the token shared with the workers (default: the environment variable SR_WORKER_TOKEN).
+        #[arg(long, value_name = "PATH")]
+        token_file: Option<PathBuf>,
+    },
+    /// Render chunks of video outputs for `encode --workers` on other machines.
+    ///
+    /// Listens on a TCP address for coordinators that hold the same token (the environment variable
+    /// SR_WORKER_TOKEN, or --token-file). A coordinator sends the scene's files (each once: they are kept by
+    /// SHA-256 in the cache directory), and asks for chunks; the worker renders one at a time on its GPU and keeps
+    /// loaded scenes in memory between chunks. Messages are JSON-RPC 2.0, authenticated with HMAC-SHA256 and not
+    /// encrypted: on a network others can read, run the link through a tunnel. The first line on standard output
+    /// names the address listened on.
+    Serve {
+        /// Address to listen on; port 0 takes a free one. The default is reachable from this machine only.
+        #[arg(long, value_name = "ADDRESS", default_value = serve::DEFAULT_LISTEN)]
+        listen: String,
+        /// Directory for the files and scenes coordinators send (default: scene-render/worker in the user's
+        /// cache directory).
+        #[arg(long, value_name = "DIR")]
+        cache: Option<PathBuf>,
+        /// Bytes of files the cache keeps: past it, the files used longest ago are removed as a scene is opened
+        /// (never that scene's own), and sent again when next needed.
+        #[arg(long, value_name = "BYTES", default_value_t = serve::DEFAULT_CACHE_BYTES)]
+        cache_bytes: u64,
+        /// File holding the token shared with the coordinators (default: the environment variable
+        /// SR_WORKER_TOKEN).
+        #[arg(long, value_name = "PATH")]
+        token_file: Option<PathBuf>,
+        /// Serve one coordinator, then exit.
+        #[arg(long)]
+        once: bool,
     },
     /// Simulate the document's physics and write its cache file (physics@cache).
     Simulate {
@@ -536,6 +579,7 @@ impl Command {
             Command::Render { .. } => "render",
             Command::Watch { .. } => "watch",
             Command::Encode { .. } => "encode",
+            Command::Serve { .. } => "serve",
             Command::Simulate { .. } => "simulate",
             Command::BakeVolume(_) => "bake-volume",
             Command::Resolve { .. } => "resolve",
@@ -2111,9 +2155,10 @@ fn encode(
     ids: &[String],
     path: Option<String>,
     codec: Option<String>,
-    opts: sr_deliver::Options,
+    mut opts: sr_deliver::Options,
     strict: bool,
     report_to: Option<&Path>,
+    (workers, token_file): (&[String], Option<&Path>),
     out: &mut Out,
 ) -> std::io::Result<u8> {
     use sr_deliver::render_report::{self, Finding, OutputInfo, ReportWriter};
@@ -2280,6 +2325,41 @@ fn encode(
             );
         }
     }
+    if !workers.is_empty() {
+        // remote workers: the token, the scene's files, and one way of encoding for every chunk
+        let token = match net::token(token_file) {
+            Ok(t) => t,
+            Err(e) => return Ok(out.fail(ErrorKind::Usage, format!("--workers: {e}"))),
+        };
+        if opts.hardware == sr_media::encode::Hardware::Auto {
+            eprintln!("--workers: encoding in software, so that every chunk is encoded the same way (name an encoder family with --hw to use it on every machine)");
+            opts.hardware = sr_media::encode::Hardware::Software;
+        }
+        let named = match sr_eval::Evaluator::new(&doc, &Default::default()) {
+            Ok(ev) => changes::effective_files(file, &doc, ev.program()),
+            Err(_) => changes::files(file, &doc),
+        }?;
+        match workers::Bundle::of(file, &named) {
+            Ok(bundle) => {
+                let job = workers::Job {
+                    params: opts.params.clone(),
+                    row: opts.row.clone(),
+                    quality: opts.quality,
+                    representation: opts.representation.clone(),
+                    path_noise: opts.path_noise,
+                    hardware: opts.hardware,
+                    outputs: doc.scene.outputs.iter().filter_map(|o| o.id.clone()).collect(),
+                };
+                let ready = workers::Workers::connect(workers, &token, &bundle, job, &mut |line| eprintln!("{line}"));
+                if ready.is_empty() {
+                    eprintln!("warning: no remote worker is ready; rendering here alone");
+                } else {
+                    opts.remote = Some(std::sync::Arc::new(ready));
+                }
+            }
+            Err(e) => eprintln!("warning: the scene cannot be sent to the workers ({e}); rendering here alone"),
+        }
+    }
     let mut failed = false;
     let mut delivered = Vec::new();
     for o in &outputs {
@@ -2337,6 +2417,16 @@ fn encode(
         // the measures a report has
         let o_opts = sr_deliver::Options { report: !report_paths.is_empty() || strict, ..opts.clone() };
         let (r, outcome) = sr_deliver::deliver_reporting(&doc, o, gpu.as_ref(), &o_opts, &mut progress);
+        for share in &r.remote {
+            eprintln!(
+                "{}: worker {} rendered {} chunk(s), {} frames{}",
+                o.path,
+                share.worker,
+                share.chunks,
+                share.frames,
+                share.failed.as_ref().map_or_else(String::new, |why| format!("; it then failed: {why}"))
+            );
+        }
         let mut counted = 0;
         if !report_paths.is_empty() || strict {
             let mut findings: Vec<Finding> = doc.warnings().iter().map(Finding::of_diagnostic).collect();
@@ -2669,6 +2759,8 @@ fn dispatch(command: Command, out: &mut Out) -> std::io::Result<u8> {
             quality,
             path_noise,
             report,
+            workers,
+            token_file,
         } => {
             let opts = sr_deliver::Options {
                 out_dir,
@@ -2683,8 +2775,28 @@ fn dispatch(command: Command, out: &mut Out) -> std::io::Result<u8> {
                 quality: quality.map(QualityArg::model),
                 path_noise,
                 report: false,
+                segment: None,
+                remote: None,
             };
-            encode(&file, &outputs, path, codec, opts, strict, report.as_deref(), out)
+            let workers: Vec<String> =
+                workers.into_iter().map(|w| w.trim().to_string()).filter(|w| !w.is_empty()).collect();
+            encode(
+                &file,
+                &outputs,
+                path,
+                codec,
+                opts,
+                strict,
+                report.as_deref(),
+                (&workers, token_file.as_deref()),
+                out,
+            )
+        }
+        Command::Serve { listen, cache, cache_bytes, token_file, once } => {
+            match serve::run(&listen, cache, cache_bytes, token_file.as_deref(), once, false) {
+                Ok(()) => Ok(0),
+                Err(message) => Ok(out.fail(ErrorKind::Usage, message)),
+            }
         }
         Command::Simulate { file, output } => simulate(&file, output, out),
         Command::BakeVolume(args) => bake_volume(args, out),

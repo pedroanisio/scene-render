@@ -51,6 +51,10 @@ pub struct Options {
     /// Measure what only a render report reads (SREP 18): text that does not fit its box. The checks the document
     /// asks for (accessibility, safe area) run either way.
     pub report: bool,
+    /// Render one chunk of a video output and nothing else (`crate::remote`): what a remote worker is asked for.
+    pub segment: Option<crate::remote::Segment>,
+    /// Engines on other machines that take chunks of a video output (`crate::remote`).
+    pub remote: Option<std::sync::Arc<dyn crate::remote::RemoteWorkers>>,
 }
 
 /// How many time segments of a video output render and encode at once.
@@ -90,6 +94,8 @@ impl Default for Options {
             quality: None,
             path_noise: None,
             report: false,
+            segment: None,
+            remote: None,
         }
     }
 }
@@ -196,6 +202,8 @@ pub struct Report {
     pub segments: u32,
     /// Why the render ran with one worker although more were asked for or chosen (GPU debug layers on).
     pub serial_because: Option<String>,
+    /// What each remote worker rendered of the output (`Options::remote`); empty when none took part.
+    pub remote: Vec<crate::remote::RemoteShare>,
     /// The output time range rendered, seconds (after command-line overrides).
     pub range: [f64; 2],
     /// What the delivery found, for the render report (SREP 18): accessibility, safe area, caption and segment
@@ -1335,7 +1343,9 @@ fn run_delivery(
     }
     // CLI overrides define the effective output, including the origin/duration of its own
     // audio, overlay and captions. Explicit segments retain their independent output clock.
-    let effective_output = m::Output { start, end: Some(end), ..output.clone() };
+    // a remote worker's chunk is picture alone: the coordinator muxes the audio into the joined file
+    let effective_output =
+        m::Output { start, end: Some(end), audio: output.audio && opts.segment.is_none(), ..output.clone() };
     let output = &effective_output;
     // OUT1 before anything is rendered: validate checks the document's outputs, not an ad-hoc one (encode -o)
     let (frame, source) = output_frame(p0, output);
@@ -1845,9 +1855,385 @@ fn run_delivery(
             plan.workers = 1;
         }
         let workers = plan.workers;
+        // remote workers take chunks of an output that splits, renders in one pass and has no check that reads
+        // every frame in order; any other output renders here as it would without them
+        let remote = opts.remote.as_ref().filter(|r| {
+            let usable = can_split && !observe && !output.two_pass && fit.is_none() && n >= 2 && !r.names().is_empty();
+            if !usable {
+                report.warnings.push(
+                    "the remote workers were not used: this output renders as one stream (two passes, a file size to fit, flash or contrast checks, or a codec that does not split)".into(),
+                );
+            }
+            usable
+        });
+        if let Some(segment) = &opts.segment {
+            // One chunk of the output, as a parallel delivery encodes it, and nothing else: the coordinator joins it.
+            use std::sync::atomic::Ordering::Relaxed;
+            let part = segment.part;
+            if part.frames as u64 != n || part.first >= part.last || part.last as u64 > n {
+                return Err(DeliverError::Invalid(format!(
+                    "the segment is frames {}..{} of {}, and this output has {n} frames: the worker's document or options are not the coordinator's",
+                    part.first, part.last, part.frames
+                )));
+            }
+            if output.two_pass || fit.is_some() || !can_split {
+                return Err(DeliverError::Invalid("this output renders as one stream and has no segments".into()));
+            }
+            let part_spec = EncodeSpec {
+                path: report.path.clone(),
+                audio: None,
+                faststart: false,
+                metadata: Vec::new(),
+                chapters: None,
+                ..spec.clone()
+            };
+            let mut feeder = Feeder::start(&part_spec, 1)?;
+            video.stage.seek((spec.start_number + part.first as u64) as u32);
+            if let Some((_, frames)) = video.segments.as_mut() {
+                *frames = frames[part.first..part.last].to_vec();
+            }
+            let mut judge = Judge::new(false);
+            let (mut done, total) = (0u64, (part.last - part.first) as u64);
+            video.run(&times[part.first..part.last], report, &mut judge, |b| {
+                if segment.cancel.as_ref().is_some_and(|c| c.load(Relaxed)) {
+                    return Err(DeliverError::Invalid("the segment was cancelled".into()));
+                }
+                done += 1;
+                progress(done, total);
+                feeder.send(b)
+            })?;
+            report.encoder = feeder.finish()?;
+            report.frames = total;
+            report.passes = 1;
+            report.files = vec![report.path.clone()];
+            report.render_fps = total as f64 / t_video.elapsed().as_secs_f64();
+            report.seconds = started.elapsed().as_secs_f64();
+            return Ok(());
+        } else if let Some(remote) = remote {
+            // The chunks are one queue. The workers here and the remote ones each take the next chunk as they finish
+            // the last; a chunk a remote worker fails goes back to the queue and that worker takes no more.
+            use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+            let names = remote.names();
+            let locals = workers.max(1);
+            let chunks = crate::remote::chunks_for(locals + names.len(), n, fps);
+            let bounds: Vec<usize> = (0..=chunks).map(|i| (i as u64 * n / chunks as u64) as usize).collect();
+            let ext = report.path.extension().and_then(|e| e.to_str()).unwrap_or("mp4").to_string();
+            let parts: Vec<PathBuf> = (0..chunks).map(|i| tmp.join(format!("segment{i:04}.{ext}"))).collect();
+            let part_spec = |i: usize| EncodeSpec {
+                path: parts[i].clone(),
+                audio: None,
+                faststart: false,
+                metadata: Vec::new(),
+                chapters: None,
+                ..spec.clone()
+            };
+            let (audio, keep_alpha) = (video.renderer.audio.clone(), video.keep_alpha);
+            let all_frames = video.segments.as_ref().map(|(_, f)| f.clone());
+            let map = segments.as_ref();
+            let cancelled = AtomicBool::new(false);
+            let done = AtomicU64::new(0);
+            // (chunks nobody has taken, in time order; chunks remote workers hold, which may come back)
+            let queue = std::sync::Mutex::new(((0..chunks).collect::<std::collections::VecDeque<usize>>(), 0usize));
+            let returned = std::sync::Condvar::new();
+            // devices are created one after the other and kept until every worker has joined, as for local chunks
+            let worker_gpus: Vec<_> = (1..locals).map(|_| gpu.open_like()).collect::<Result<_, _>>()?;
+            let mut lend = Some(&mut video);
+            type Local = Result<(Report, String), DeliverError>;
+            let (results, shares): (Vec<Local>, Vec<(crate::remote::RemoteShare, Vec<String>)>) =
+                std::thread::scope(|sc| {
+                    let local_handles: Vec<_> = (0..locals)
+                        .map(|worker_index| {
+                            let lent = if worker_index == 0 { lend.take() } else { None };
+                            let own_gpu = worker_index.checked_sub(1).map(|k| &worker_gpus[k]);
+                            let (
+                                cancelled,
+                                done,
+                                bounds,
+                                times,
+                                part_spec,
+                                audio,
+                                all_frames,
+                                representation,
+                                ev,
+                                eo,
+                                captions,
+                                overlay_audio,
+                                queue,
+                                returned,
+                            ) = (
+                                &cancelled,
+                                &done,
+                                &bounds,
+                                &times,
+                                &part_spec,
+                                &audio,
+                                &all_frames,
+                                &representation,
+                                &ev,
+                                &eo,
+                                &captions,
+                                &overlay_audio,
+                                &queue,
+                                &returned,
+                            );
+                            sc.spawn(move || -> Local {
+                                let mut built;
+                                let worker: &mut Video = match (lent, own_gpu) {
+                                    (Some(video), _) => video,
+                                    (None, Some(gpu)) => {
+                                        let gpu = gpu.clone();
+                                        let mut renderer = Renderer::new(gpu.clone(), p);
+                                        renderer.quality = opts.quality;
+                                        renderer.path_noise = opts.path_noise;
+                                        renderer.representation = representation.clone();
+                                        renderer.burn_captions = output.burn_captions.clone();
+                                        renderer.audio = audio.clone();
+                                        renderer.captions_off = map.is_some();
+                                        renderer.share_budgets(locals);
+                                        let stage = OutputStage::new(gpu.device.clone(), gpu.queue.clone());
+                                        let mut overlay = crate::overlay::Overlay::new(
+                                            doc,
+                                            output,
+                                            timeline,
+                                            size,
+                                            captions,
+                                            &gpu,
+                                            eo,
+                                            opts.quality,
+                                            representation.as_deref(),
+                                        )
+                                        .inspect_err(|_| cancelled.store(true, Relaxed))?;
+                                        if let Some(layer) = &mut overlay {
+                                            layer.set_audio(overlay_audio.clone());
+                                        }
+                                        built = Video {
+                                            ev,
+                                            renderer,
+                                            stage,
+                                            color,
+                                            format,
+                                            size,
+                                            keep_alpha,
+                                            fps,
+                                            reframe: p.reframe,
+                                            segments: None,
+                                            overlay,
+                                            origin: if map.is_some() { 0.0 } else { output.start },
+                                            join_tex: None,
+                                            contrasts: ContrastPrefetch::default(),
+                                        };
+                                        &mut built
+                                    }
+                                    (None, None) => {
+                                        return Err(DeliverError::Invalid("a local worker has no device".into()));
+                                    }
+                                };
+                                let (mut part, mut encoder) = (Report::default(), String::new());
+                                let mut closing = Closing::default();
+                                loop {
+                                    // the next chunk, or the end: nothing is left and no remote worker holds one
+                                    let i = {
+                                        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                                        loop {
+                                            if cancelled.load(Relaxed) {
+                                                break None;
+                                            }
+                                            if let Some(i) = q.0.pop_front() {
+                                                break Some(i);
+                                            }
+                                            if q.1 == 0 {
+                                                break None;
+                                            }
+                                            q = returned
+                                                .wait_timeout(q, std::time::Duration::from_millis(200))
+                                                .unwrap_or_else(|e| e.into_inner())
+                                                .0;
+                                        }
+                                    };
+                                    let Some(i) = i else { break };
+                                    let chunk = (|| {
+                                        let mut feeder = Feeder::start(&part_spec(i), locals)?;
+                                        worker.stage.seek((spec.start_number + bounds[i] as u64) as u32);
+                                        worker.segments = map
+                                            .zip(all_frames.as_ref())
+                                            .map(|(tm, f)| (tm, f[bounds[i]..bounds[i + 1]].to_vec()));
+                                        let mut unseen = Judge::new(false);
+                                        worker.run(&times[bounds[i]..bounds[i + 1]], &mut part, &mut unseen, |b| {
+                                            if cancelled.load(Relaxed) {
+                                                return Err(DeliverError::Invalid("the render was cancelled".into()));
+                                            }
+                                            done.fetch_add(1, Relaxed);
+                                            feeder.send(b)
+                                        })?;
+                                        closing.start(feeder)
+                                    })();
+                                    match chunk {
+                                        Ok(Some(e)) => encoder = e,
+                                        Ok(None) => {}
+                                        Err(e) => {
+                                            cancelled.store(true, Relaxed);
+                                            returned.notify_all();
+                                            return Err(e);
+                                        }
+                                    }
+                                }
+                                match closing.wait() {
+                                    Ok(Some(e)) => encoder = e,
+                                    Ok(None) => {}
+                                    Err(e) => {
+                                        cancelled.store(true, Relaxed);
+                                        return Err(e);
+                                    }
+                                }
+                                Ok((part, encoder))
+                            })
+                        })
+                        .collect();
+                    let remote_handles: Vec<_> = names
+                        .iter()
+                        .enumerate()
+                        .map(|(worker_index, name)| {
+                            let (cancelled, done, bounds, parts, queue, returned) =
+                                (&cancelled, &done, &bounds, &parts, &queue, &returned);
+                            sc.spawn(move || -> (crate::remote::RemoteShare, Vec<String>) {
+                                let began = Instant::now();
+                                let mut share =
+                                    crate::remote::RemoteShare { worker: name.clone(), ..Default::default() };
+                                let mut unsupported = Vec::new();
+                                loop {
+                                    let i = {
+                                        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                                        if cancelled.load(Relaxed) {
+                                            break;
+                                        }
+                                        // the latest chunk left: the workers here take them from the front
+                                        let Some(i) = q.0.pop_back() else { break };
+                                        q.1 += 1;
+                                        i
+                                    };
+                                    let sent = AtomicU64::new(0);
+                                    let part = crate::remote::Part {
+                                        first: bounds[i],
+                                        last: bounds[i + 1],
+                                        frames: n as usize,
+                                    };
+                                    let outcome =
+                                        remote.render(worker_index, output, part, &parts[i], cancelled, &|| {
+                                            sent.fetch_add(1, Relaxed);
+                                            done.fetch_add(1, Relaxed);
+                                        });
+                                    let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                                    q.1 -= 1;
+                                    match outcome {
+                                        Ok(got) => {
+                                            // frames the worker did not announce one by one
+                                            let frames = (bounds[i + 1] - bounds[i]) as u64;
+                                            done.fetch_add(frames.saturating_sub(sent.load(Relaxed)), Relaxed);
+                                            share.chunks += 1;
+                                            share.frames += frames;
+                                            share.seconds = began.elapsed().as_secs_f64();
+                                            unsupported.extend(got.unsupported);
+                                            returned.notify_all();
+                                        }
+                                        Err(e) => {
+                                            // the chunk goes back, in its place, for another worker
+                                            done.fetch_sub(sent.load(Relaxed), Relaxed);
+                                            let _ = std::fs::remove_file(&parts[i]);
+                                            let at = q.0.iter().position(|&j| j > i).unwrap_or(q.0.len());
+                                            q.0.insert(at, i);
+                                            share.failed = Some(e);
+                                            returned.notify_all();
+                                            break;
+                                        }
+                                    }
+                                }
+                                (share, unsupported)
+                            })
+                        })
+                        .collect();
+                    // the count is announced as it changes, and its end once, after the join
+                    let mut announced = 0;
+                    while !local_handles.iter().all(|h| h.is_finished())
+                        || !remote_handles.iter().all(|h| h.is_finished())
+                    {
+                        let now = done.load(Relaxed).min(n.saturating_sub(1));
+                        if now != announced {
+                            announced = now;
+                            progress(now, n);
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    }
+                    let results = local_handles
+                        .into_iter()
+                        .map(|h| {
+                            h.join().unwrap_or_else(|p| {
+                                Err(DeliverError::Invalid(format!("a segment render panicked: {}", panic_message(&*p))))
+                            })
+                        })
+                        .collect();
+                    let shares = remote_handles
+                        .into_iter()
+                        .map(|h| {
+                            h.join().unwrap_or_else(|p| {
+                                let failed = Some(format!("its thread panicked: {}", panic_message(&*p)));
+                                (crate::remote::RemoteShare { failed, ..Default::default() }, Vec::new())
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    (results, shares)
+                });
+            let mut unsupported = std::collections::BTreeSet::new();
+            for r in results {
+                let (part, encoder) = r?;
+                for (a, b) in report.stage_seconds.iter_mut().zip(part.stage_seconds) {
+                    *a += b;
+                }
+                report.decode_wait_seconds += part.decode_wait_seconds;
+                report.vector_seconds += part.vector_seconds;
+                report.subframe_seconds += part.subframe_seconds;
+                report.checkpoint_hits += part.checkpoint_hits;
+                report.checkpoint_misses += part.checkpoint_misses;
+                report.paths = merge_paths(report.paths, part.paths);
+                for (who, [lo, hi]) in part.iterate_steps {
+                    let e = report.iterate_steps.entry(who).or_insert([lo, hi]);
+                    *e = [e[0].min(lo), e[1].max(hi)];
+                }
+                for (id, seen) in part.objects3d_seen {
+                    merge_seen(&mut report.objects3d_seen, id, seen);
+                }
+                for (id, metal) in part.metal_without_environment {
+                    merge_metal(&mut report.metal_without_environment, id, metal);
+                }
+                unsupported.extend(part.unsupported);
+                if report.encoder.is_empty() {
+                    report.encoder = encoder;
+                }
+            }
+            for (share, theirs) in shares {
+                if let Some(why) = &share.failed {
+                    report.warnings.push(format!(
+                        "remote worker {} failed and its chunk was rendered by another worker: {why}",
+                        share.worker
+                    ));
+                }
+                unsupported.extend(theirs);
+                report.remote.push(share);
+            }
+            if let Some(missing) = parts.iter().find(|p| !p.is_file()) {
+                return Err(DeliverError::Invalid(format!("a chunk was not rendered: {}", missing.display())));
+            }
+            report.unsupported = unsupported.into_iter().collect();
+            progress(n, n);
+            // the chunks carry no audio: the join muxes the chain's files
+            join_audio(&mut pending, report, &mut spec, output)?;
+            spec.join(&parts, &tmp.join("segments.txt"))?;
+            video.judge(Judge::new(false), &times, report)?;
+            report.frames = n;
+            report.passes = 1;
+            report.segments = (locals + report.remote.iter().filter(|s| s.chunks > 0).count()) as u32;
         // a sequence takes no bitrate and no passes: its frames are encoded once, from the frames themselves (the
         // intermediate's 16-bit planes would clip an EXR's values above 1)
-        if (output.two_pass && !codec.is_sequence()) || fit.is_some() {
+        } else if (output.two_pass && !codec.is_sequence()) || fit.is_some() {
             // render once into a lossless intermediate, then encode it as often as needed
             let inter = tmp.join("intermediate.mkv");
             let ipix = match format {

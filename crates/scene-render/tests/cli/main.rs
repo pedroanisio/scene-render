@@ -13,3 +13,4 @@ mod program_findings;
 mod render_output;
 mod scopes;
 mod solver_failures;
+mod workers;

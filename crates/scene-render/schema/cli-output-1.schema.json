@@ -11,7 +11,7 @@
     "schema_version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"},
     "command": {
       "description": "the subcommand that ran; null when the command line names none that could be understood",
-      "enum": [null, "validate", "inspect", "params", "eval", "captions", "render", "watch", "encode", "simulate", "bake-volume", "resolve", "scopes", "gpus", "schedule", "capabilities", "explain", "completions"]
+      "enum": [null, "validate", "inspect", "params", "eval", "captions", "render", "watch", "encode", "simulate", "bake-volume", "resolve", "scopes", "gpus", "schedule", "serve", "capabilities", "explain", "completions"]
     },
     "ok": {"type": "boolean", "description": "true exactly when exit_code is 0"},
     "exit_code": {"enum": [0, 1, 2], "description": "the process exit status: 0 success, 1 invalid or failed, 2 usage, I/O, unavailable or internal error"},
